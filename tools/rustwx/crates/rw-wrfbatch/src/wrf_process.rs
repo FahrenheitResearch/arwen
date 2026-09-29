@@ -96,6 +96,10 @@ pub struct WrfProcessOptions {
     pub viewer_2d: bool,
     #[serde(default)]
     pub chart_selectors: Vec<FieldSelector>,
+    /// Restrict diagnostic grids to the named renderer catalog. Core planes,
+    /// raw input planes and sounding volumes retain their existing paths.
+    #[serde(default)]
+    pub named_products_only: bool,
 }
 
 impl Default for WrfProcessOptions {
@@ -110,11 +114,20 @@ impl Default for WrfProcessOptions {
             skip: Vec::new(),
             viewer_2d: false,
             chart_selectors: Vec::new(),
+            named_products_only: false,
         }
     }
 }
 
 impl WrfProcessOptions {
+    fn needs_diagnostic_grid(&self, name: &str, store_name: &str) -> bool {
+        !self.named_products_only
+            || DIAGNOSTIC_CHART_PLANES
+                .iter()
+                .any(|(diagnostic, _, _)| *diagnostic == name)
+            || rustwx_products::derived::store_derived_recipe_slugs().contains(&store_name)
+    }
+
     pub fn normalized(mut self) -> Self {
         self.only = normalize_filter_tokens(self.only);
         self.skip = normalize_filter_tokens(self.skip);
@@ -156,7 +169,8 @@ impl WrfProcessOptions {
             } else {
                 WrfProductGroup::Diagnostic
             };
-            if self.should_process(def.name, Some(&store_name), group) {
+            if self.needs_diagnostic_grid(def.name, &store_name)
+                && self.should_process(def.name, Some(&store_name), group) {
                 names.push(store_name);
             }
         }
@@ -167,9 +181,76 @@ impl WrfProcessOptions {
             }
         }
         names.extend(crate::wrf_column_planes::planned_store_fields(self));
+        names.extend(
+            self.planned_store_selectors()
+                .into_iter()
+                .map(store_name_for_selector),
+        );
         names.sort();
         names.dedup();
         names
+    }
+
+    /// The canonical SELECTORS the current selection would write: the
+    /// question a product recipe asks.
+    ///
+    /// [`Self::planned_store_fields`] answers in store NAMES, and a
+    /// recipe's requirements are selectors (`temperature_2m_agl`, not
+    /// `temperature_2m`), so holding one against the other was a
+    /// comparison of two vocabularies.  Measured on a real child it called
+    /// `2m_temperature` and `500mb_height_winds` undrawable on a run that
+    /// then drew 143 pictures of them, and that reading was retired.  This
+    /// answers in the recipe's own vocabulary, from the same tables the
+    /// writer reads: [`core_field_selector`] for the core planes, the
+    /// isobaric recipe ladder the volumes publish,
+    /// [`crate::wrf_column_planes::COLUMN_PLANE_CATALOG`], and the three
+    /// layer cloud planes.  A selector a given wrfout cannot fill is
+    /// skipped at process time with a note, exactly like a planned field.
+    pub fn planned_store_selectors(&self) -> Vec<FieldSelector> {
+        let mut selectors = Vec::new();
+        for (wrf_name, store_name) in CORE_FIELD_CATALOG {
+            if self.should_process(wrf_name, Some(store_name), WrfProductGroup::Core) {
+                selectors.push(core_field_selector(store_name));
+            }
+        }
+        let mut isobaric = |field: CanonicalField, level: u16| {
+            let selector = FieldSelector::isobaric(field, level);
+            let key = selector.key();
+            if self.should_process(&key, Some(&key), WrfProductGroup::Core) {
+                selectors.push(selector);
+            }
+        };
+        if self.viewer_2d {
+            for selector in &self.chart_selectors {
+                if let rustwx_core::VerticalSelector::IsobaricHpa(level) = selector.vertical {
+                    if ISOBARIC_RECIPE_LEVELS_HPA.contains(&level) {
+                        isobaric(selector.field, level);
+                    }
+                }
+            }
+        } else if self.core_fields {
+            for field in ISOBARIC_RECIPE_FIELDS {
+                for level in ISOBARIC_RECIPE_LEVELS_HPA {
+                    isobaric(field, level);
+                }
+            }
+        }
+        selectors.extend(crate::wrf_column_planes::planned_store_selectors(self));
+        for (diagnostic, _, field) in DIAGNOSTIC_CHART_PLANES {
+            let source = derived_name(diagnostic, None);
+            if self.needs_diagnostic_grid(diagnostic, &source)
+                && self.should_process(diagnostic, Some(&source), WrfProductGroup::Diagnostic)
+            {
+                let selector = FieldSelector::entire_atmosphere(field);
+                let key = selector.key();
+                if self.should_process(&key, Some(&key), WrfProductGroup::Diagnostic) {
+                    selectors.push(selector);
+                }
+            }
+        }
+        selectors.sort_by_key(|selector| selector.key());
+        selectors.dedup();
+        selectors
     }
 
     pub(crate) fn should_process(
@@ -235,6 +316,114 @@ const CORE_FIELD_CATALOG: &[(&str, &str)] = &[
     ("apcp", "apcp"),
 ];
 
+/// The canonical selector each [`CORE_FIELD_CATALOG`] row is written under.
+///
+/// ONE declaration for the writer and the plan: [`read_wrf_products`]
+/// writes every core plane under the selector this returns, and
+/// [`WrfProcessOptions::planned_store_selectors`] plans the same one, so a
+/// plan review and the store it predicts cannot name two different
+/// selectors for one plane.  Every catalog row has an arm; the
+/// `every_core_row_has_one_selector` test holds the two tables together.
+pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
+    match store_name {
+        "orography" => FieldSelector::surface(CanonicalField::GeopotentialHeight),
+        "temperature_2m" => FieldSelector::height_agl(CanonicalField::Temperature, 2),
+        "dewpoint_2m" => FieldSelector::height_agl(CanonicalField::Dewpoint, 2),
+        "relative_humidity_2m" => FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2),
+        "u_10m" => FieldSelector::height_agl(CanonicalField::UWind, 10),
+        "v_10m" => FieldSelector::height_agl(CanonicalField::VWind, 10),
+        "wind_speed_10m" => FieldSelector::height_agl(CanonicalField::WindSpeed, 10),
+        "mslp" => FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+        "surface_pressure" => FieldSelector::surface(CanonicalField::Pressure),
+        "pwat" => FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater),
+        COMPOSITE_REFLECTIVITY_STORE => composite_reflectivity_selector(),
+        REFLECTIVITY_1KM_STORE => reflectivity_1km_selector(),
+        "updraft_helicity_2to5km" => {
+            FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000)
+        }
+        "apcp" => FieldSelector::surface(CanonicalField::TotalPrecipitation),
+        other => panic!("core store field {other:?} has no row in core_field_selector"),
+    }
+}
+
+/// Chart planes use selector keys unless a shared writer table assigns a
+/// public store name to that selector.
+fn store_name_for_selector(selector: FieldSelector) -> String {
+    CORE_FIELD_CATALOG
+        .iter()
+        .find(|(_, name)| core_field_selector(name) == selector)
+        .map(|(_, name)| *name)
+        .or_else(|| {
+            crate::wrf_column_planes::COLUMN_PLANE_CATALOG
+                .iter()
+                .find(|plane| plane.selector() == selector)
+                .map(|plane| plane.store_name)
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| selector.key())
+}
+
+/// The interpolated volumes whose recipe levels are published as
+/// isobaric selector planes, and the canonical field each one is.  Read
+/// by the writer ([`push_isobaric_recipe_planes`]) and the plan alike.
+const ISOBARIC_RECIPE_VOLUMES: [(&str, CanonicalField); 7] = [
+    ("temperature_iso", CanonicalField::Temperature),
+    ("dewpoint_iso", CanonicalField::Dewpoint),
+    ("u_iso", CanonicalField::UWind),
+    ("v_iso", CanonicalField::VWind),
+    ("height_iso", CanonicalField::GeopotentialHeight),
+    ("rh_chart_levels", CanonicalField::RelativeHumidity),
+    ("avo_chart_levels", CanonicalField::AbsoluteVorticity),
+];
+
+/// The chart-level selector whose store name is `key`, among the fields
+/// and levels [`push_isobaric_recipe_planes`] publishes; `None` for any
+/// other name. A `var:` request names a plane by its store name, and the
+/// 2-D viewer builds isobaric planes only for the selectors it is handed.
+pub(crate) fn isobaric_recipe_selector_for_key(key: &str) -> Option<FieldSelector> {
+    ISOBARIC_RECIPE_FIELDS
+        .iter()
+        .flat_map(|field| {
+            ISOBARIC_RECIPE_LEVELS_HPA
+                .iter()
+                .map(|level| FieldSelector::isobaric(*field, *level))
+        })
+        .find(|selector| selector.key() == key)
+}
+
+/// The canonical fields [`ISOBARIC_RECIPE_VOLUMES`] publishes.
+const ISOBARIC_RECIPE_FIELDS: [CanonicalField; 7] = [
+    ISOBARIC_RECIPE_VOLUMES[0].1,
+    ISOBARIC_RECIPE_VOLUMES[1].1,
+    ISOBARIC_RECIPE_VOLUMES[2].1,
+    ISOBARIC_RECIPE_VOLUMES[3].1,
+    ISOBARIC_RECIPE_VOLUMES[4].1,
+    ISOBARIC_RECIPE_VOLUMES[5].1,
+    ISOBARIC_RECIPE_VOLUMES[6].1,
+];
+
+/// Diagnostic outputs republished under canonical entire-atmosphere
+/// selectors: (source diagnostic, split store plane, canonical field).
+/// The named import, field plan and writer share these dependency rows.
+/// No source produces total cloud cover, so no row publishes that field.
+const DIAGNOSTIC_CHART_PLANES: [(&str, &str, CanonicalField); 3] = [
+    (
+        "cloudfrac",
+        "wrf_cloudfrac_low",
+        CanonicalField::LowCloudCover,
+    ),
+    (
+        "cloudfrac",
+        "wrf_cloudfrac_mid",
+        CanonicalField::MiddleCloudCover,
+    ),
+    (
+        "cloudfrac",
+        "wrf_cloudfrac_high",
+        CanonicalField::HighCloudCover,
+    ),
+];
+
 /// Isobaric sounding volumes written alongside the `Core` group (skew-T
 /// columns). 3D `pressure3d` store variables, not 2D fields.
 const ISO_VOLUME_NAMES: &[&str] = &[
@@ -271,14 +460,16 @@ pub const RAW_EXTRA_CATALOG: &[&str] = &[
     // on the generic ramp (audit R-053). `engine_precipitation_catalog.rs`
     // holds this list to the engine's own inventory.
     //
-    // Its unit comes from the file, not from wrf-core's raw-name fallback
-    // table: WRF's Registry declares HAILNC in mm (Registry.EM_COMMON:1592)
-    // and every wrfout this renderer reads -- stock WRF's and ArWen's
-    // alike -- carries that attribute, which is what the viewer's QPF
-    // palette arm matches on. The fallback table lives under
-    // `vendor/crates-io`, which VENDOR.md forbids editing (each crate
-    // carries a `.cargo-checksum.json` cargo validates at build time), so
-    // the row that would have been added there is deliberately not.
+    // Its unit comes from the file (the raw-extras loop in
+    // `read_wrf_products` reads the units attribute), not from wrf-core's
+    // raw-name fallback table: WRF's Registry declares HAILNC in mm
+    // (Registry.EM_COMMON:1592) and every wrfout this renderer reads --
+    // stock WRF's and ArWen's alike -- carries that attribute, which is
+    // what the viewer's QPF palette arm matches on. The fallback table
+    // lives under `vendor/crates-io`, which VENDOR.md forbids editing
+    // (each crate carries a `.cargo-checksum.json` cargo validates at
+    // build time), so the row that would have been added there is
+    // deliberately not.
     "HAILNC",
     "WSPD10MAX",
     "UP_HELI_MAX",
@@ -297,8 +488,9 @@ const PROFILE_FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const PROFILE_FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// WRF-specific science marker. Keep this in the processing profile and the
 /// writer provenance so a reflectivity-method change cannot silently replace
-/// an older imported run.
-const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v4";
+/// an older imported run. v5: raw extras carry the file's own units, so an
+/// import that stored HAILNC or UP_HELI_MAX with no unit is not reused.
+const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v5";
 const COMPOSITE_REFLECTIVITY_FILTER: &str = "maxdbz";
 const COMPOSITE_REFLECTIVITY_STORE: &str = "composite_reflectivity";
 const REFLECTIVITY_1KM_FILTER: &str = "reflectivity_1km";
@@ -321,6 +513,10 @@ pub struct WrfProcessSummary {
     pub hours_written: usize,
     pub variables: Vec<String>,
     pub notes: Vec<String>,
+    /// Which input file each stored slot was read from, `(slot, file)`.
+    /// What lets a per-frame event name the FILE it is about: a series
+    /// import has many inputs and a slot is not a filename.
+    pub frame_sources: Vec<(u16, PathBuf)>,
 }
 
 pub(crate) struct WrfHourFields {
@@ -804,26 +1000,49 @@ fn process_paths_with_target(
         // The wrf-core reader answers by NAME; it cannot LIST what a file
         // carries, and listing is the whole question a user-added plane
         // asks. netcrust's index answers it. Built once per file, only
-        // when the stored-plane pass is on, and only for enumeration and
-        // units -- every plane's values still come off the wrf-core fast
-        // path through `PlaneSource`. It is the metadata indexing the
-        // post-processed probe was reordered to avoid paying on raw files,
-        // so the option that turns this pass off is the way back to that
-        // cost profile.
-        let stored_plane_index = if options.stored_planes {
+        // when the stored-plane pass is on or a raw extra is selected, and
+        // only for enumeration and units -- every plane's values still come
+        // off the wrf-core fast path through `PlaneSource`. It is the
+        // metadata indexing the post-processed probe was reordered to avoid
+        // paying on raw files, so turning off both of those is the way back
+        // to that cost profile.
+        //
+        // A raw extra needs the index for its UNITS: wrf-core's raw-name
+        // fallback table has no row for HAILNC, UP_HELI_MAX, WSPD10MAX,
+        // W_UP_MAX or W_DN_MAX and stored them with no unit at all, so
+        // hail was drawn as a unitless -1..1 field instead of in inches on
+        // the precipitation palette, although the file declares `mm`.
+        let raw_extras_selected = RAW_EXTRA_CATALOG.iter().any(|raw| {
+            options.should_process(raw, Some(&derived_name(raw, None)), WrfProductGroup::Raw)
+        });
+        let stored_plane_index = if options.stored_planes || raw_extras_selected {
             let _ = tx.send(WrfProcessMessage::Progress(format!(
-                "Indexing {} for stored 2-D planes",
-                display_name(path)
+                "Indexing {} for {}",
+                display_name(path),
+                if options.stored_planes {
+                    "stored 2-D planes"
+                } else {
+                    "raw field units"
+                }
             )));
             match netcrust::open(path) {
                 Ok(index) => Some(index),
                 Err(err) => {
-                    all_notes.push(format!(
-                        "{}: stored 2-D planes unavailable: {err}; a variable \
-                         this file carries but no product catalog names will \
-                         not render through var:<name>",
-                        display_name(path)
-                    ));
+                    all_notes.push(if options.stored_planes {
+                        format!(
+                            "{}: stored 2-D planes unavailable: {err}; a variable \
+                             this file carries but no product catalog names will \
+                             not render through var:<name>, and raw fields keep \
+                             the reader's own units",
+                            display_name(path)
+                        )
+                    } else {
+                        format!(
+                            "{}: file units unavailable: {err}; raw fields keep \
+                             the reader's own units",
+                            display_name(path)
+                        )
+                    });
                     None
                 }
             }
@@ -930,6 +1149,14 @@ fn process_paths_with_target(
             "Published live WRF timestep into {model}/{run}"
         )));
     }
+    let frame_sources = plans
+        .iter()
+        .flat_map(|plan| {
+            plan.records
+                .iter()
+                .map(|record| (record.storage_slot, plan.path.clone()))
+        })
+        .collect();
     Ok(WrfProcessSummary {
         store_root: store_root.to_path_buf(),
         model,
@@ -938,6 +1165,7 @@ fn process_paths_with_target(
         hours_written: written.len(),
         variables: all_vars,
         notes: all_notes,
+        frame_sources,
     })
 }
 
@@ -1005,25 +1233,25 @@ fn read_wrf_products(
     push_core!(
         "terrain",
         "orography",
-        FieldSelector::surface(CanonicalField::GeopotentialHeight),
+        core_field_selector("orography"),
         None
     );
     push_core!(
         "t2",
         "temperature_2m",
-        FieldSelector::height_agl(CanonicalField::Temperature, 2),
+        core_field_selector("temperature_2m"),
         Some("K")
     );
     push_core!(
         "dp2m",
         "dewpoint_2m",
-        FieldSelector::height_agl(CanonicalField::Dewpoint, 2),
+        core_field_selector("dewpoint_2m"),
         Some("K")
     );
     push_core!(
         "rh2m",
         "relative_humidity_2m",
-        FieldSelector::height_agl(CanonicalField::RelativeHumidity, 2),
+        core_field_selector("relative_humidity_2m"),
         Some("%")
     );
     // WRF's raw U10/V10 components are grid-relative. Ask wrf-core for
@@ -1044,7 +1272,7 @@ fn read_wrf_products(
                         &grid,
                         projection.clone(),
                         "u_10m",
-                        FieldSelector::height_agl(CanonicalField::UWind, 10),
+                        core_field_selector("u_10m"),
                         &units,
                         u_earth,
                     );
@@ -1055,7 +1283,7 @@ fn read_wrf_products(
                         &grid,
                         projection.clone(),
                         "v_10m",
-                        FieldSelector::height_agl(CanonicalField::VWind, 10),
+                        core_field_selector("v_10m"),
                         &units,
                         v_earth,
                     );
@@ -1078,13 +1306,13 @@ fn read_wrf_products(
     push_core!(
         "wspd10",
         "wind_speed_10m",
-        FieldSelector::height_agl(CanonicalField::WindSpeed, 10),
+        core_field_selector("wind_speed_10m"),
         Some("m/s")
     );
     push_core!(
         "slp",
         "mslp",
-        FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+        core_field_selector("mslp"),
         Some("Pa")
     );
     // Surface pressure (Pa) — required by the skew-T column builder. WRF PSFC
@@ -1098,7 +1326,7 @@ fn read_wrf_products(
                     &grid,
                     projection.clone(),
                     "surface_pressure",
-                    FieldSelector::surface(CanonicalField::Pressure),
+                    core_field_selector("surface_pressure"),
                     "Pa",
                     values,
                 ),
@@ -1110,7 +1338,7 @@ fn read_wrf_products(
     push_core!(
         "pw",
         "pwat",
-        FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater),
+        core_field_selector("pwat"),
         None
     );
     push_reflectivity_products(
@@ -1125,7 +1353,7 @@ fn read_wrf_products(
     push_core!(
         "UP_HELI_MAX",
         "updraft_helicity_2to5km",
-        FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000),
+        core_field_selector("updraft_helicity_2to5km"),
         Some("m2/s2")
     );
     crate::wrf_column_planes::push_column_planes(
@@ -1145,7 +1373,7 @@ fn read_wrf_products(
                 &grid,
                 projection.clone(),
                 "apcp",
-                FieldSelector::surface(CanonicalField::TotalPrecipitation),
+                core_field_selector("apcp"),
                 "kg/m^2",
                 values,
             );
@@ -1167,7 +1395,8 @@ fn read_wrf_products(
         } else {
             WrfProductGroup::Diagnostic
         };
-        if !options.should_process(def.name, Some(&store_name), group) {
+        if !options.needs_diagnostic_grid(def.name, &store_name)
+            || !options.should_process(def.name, Some(&store_name), group) {
             continue;
         }
         diagnostic_index += 1;
@@ -1188,7 +1417,17 @@ fn read_wrf_products(
         if !options.should_process(raw, Some(&store_name), WrfProductGroup::Raw) {
             continue;
         }
-        if let Ok(output) = compute_var(file, raw, timeidx, None) {
+        if let Ok(mut output) = compute_var(file, raw, timeidx, None) {
+            // A raw extra is the file's own variable, read without any
+            // conversion, so the file's units attribute is what its values
+            // are in. wrf-core's fallback table is only a guess at WRF's
+            // conventions and is kept only where the file names no unit.
+            if let Some(units) = stored_plane_index
+                .and_then(|index| crate::local_import::variable_units(index, raw))
+                .filter(|units| !units.trim().is_empty())
+            {
+                output.units = units;
+            }
             push_derived_output(&mut fields, raw, output, shape.len());
         }
     }
@@ -1210,11 +1449,7 @@ fn read_wrf_products(
     // planes under their canonical selectors so the recipes see them.
     // WRF carries no total-cloud field, so `cloud_cover` (total) stays
     // accurately unstored.
-    for (derived_plane, canonical_field) in [
-        ("wrf_cloudfrac_low", CanonicalField::LowCloudCover),
-        ("wrf_cloudfrac_mid", CanonicalField::MiddleCloudCover),
-        ("wrf_cloudfrac_high", CanonicalField::HighCloudCover),
-    ] {
+    for (_, derived_plane, canonical_field) in DIAGNOSTIC_CHART_PLANES {
         let Some(source) = fields
             .derived
             .iter()
@@ -2018,16 +2253,10 @@ fn push_isobaric_recipe_planes<'a>(
     options: &WrfProcessOptions,
 ) {
     let canonical_field = |volume_name: &str| -> Option<CanonicalField> {
-        match volume_name {
-            "temperature_iso" => Some(CanonicalField::Temperature),
-            "dewpoint_iso" => Some(CanonicalField::Dewpoint),
-            "u_iso" => Some(CanonicalField::UWind),
-            "v_iso" => Some(CanonicalField::VWind),
-            "height_iso" => Some(CanonicalField::GeopotentialHeight),
-            "rh_chart_levels" => Some(CanonicalField::RelativeHumidity),
-            "avo_chart_levels" => Some(CanonicalField::AbsoluteVorticity),
-            _ => None,
-        }
+        ISOBARIC_RECIPE_VOLUMES
+            .iter()
+            .find(|(name, _)| *name == volume_name)
+            .map(|(_, field)| *field)
     };
     for volume in volumes {
         let Some(field) = canonical_field(&volume.name) else {
@@ -2577,6 +2806,9 @@ fn processing_profile_suffix(options: &WrfProcessOptions) -> String {
             hash = profile_hash_update(hash, b"\0");
         }
         format!("viewer2d_{WRF_PROCESS_SCIENCE_MARKER}_{hash:016x}")
+    } else if normalized.named_products_only {
+        hash = profile_hash_update(hash, b"named-products-v1\0");
+        format!("named_{WRF_PROCESS_SCIENCE_MARKER}_{hash:016x}")
     } else {
         format!("full_{WRF_PROCESS_SCIENCE_MARKER}_{hash:016x}")
     }
@@ -2655,7 +2887,7 @@ fn writer_build() -> &'static str {
         env!("CARGO_PKG_NAME"),
         " ",
         env!("CARGO_PKG_VERSION"),
-        " wrf_science_v4"
+        " wrf_science_v5"
     )
 }
 
@@ -3376,6 +3608,47 @@ mod tests {
             narrowed.len(),
             default.len()
         );
+    }
+
+    #[test]
+    fn every_direct_product_supported_by_full_import_is_planned_in_named_mode() {
+        let full = WrfProcessOptions::default();
+        let selectors = full.planned_store_selectors();
+        let named = WrfProcessOptions {
+            named_products_only: true,
+            ..full
+        };
+        let fields = named.planned_store_fields();
+        let mut covered = 0;
+        for slug in rustwx_products::direct::store_direct_recipe_slugs() {
+            let requirements = rustwx_models::plot_recipe_store_requirements(&slug).unwrap();
+            // The full import defines which direct charts this source format
+            // can supply; unsupported fields must not become new promises.
+            if !requirements.iter().all(|row| {
+                row.selector
+                    .is_some_and(|selector| selectors.contains(&selector))
+            }) {
+                continue;
+            }
+            covered += 1;
+            for requirement in requirements {
+                let selector = requirement.selector.unwrap();
+                let store_name = CORE_FIELD_CATALOG
+                    .iter()
+                    .find(|(_, name)| core_field_selector(name) == selector)
+                    .map(|(_, name)| *name)
+                    .or_else(|| {
+                        crate::wrf_column_planes::COLUMN_PLANE_CATALOG
+                            .iter()
+                            .find(|plane| plane.selector() == selector)
+                            .map(|plane| plane.store_name)
+                    })
+                    .map(str::to_string)
+                    .unwrap_or_else(|| selector.key());
+                assert!(fields.contains(&store_name), "{slug} needs {store_name}");
+            }
+        }
+        assert!(covered > 20, "the full import must cover a direct gallery");
     }
 
     #[test]

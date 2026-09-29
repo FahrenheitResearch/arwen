@@ -1,6 +1,6 @@
 """Davies lateral-boundary clock bind: root external dtbc consumption.
 
-Seam-closure pins (CLAUDE-FABLE-GPUWM-DAVIES-CLOCK-DOSSIER-20260727).
+Seam-closure pins (the Davies clock dossier, 2026-07-27).
 WRF resets ``dtbc`` when a boundary interval is read
 (share/mediation_integrate.F:1515-1522) and increments it by one model
 step at solve entry, before any Davies consumer runs

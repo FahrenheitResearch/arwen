@@ -3548,7 +3548,7 @@ def _f32_exp(value) -> np.float32:
     its own error -- so rounding once yields a *third* function, not a more
     accurate one.  ``gpuwm/core/noahmp_libm.py`` measures the gap directly:
     the round-once shim misses glibc ``expf`` on 21,750 of 34,902,602
-    arguments.  ``codex/ruc-snowsoil``'s ``b303e61`` retracted the identical
+    arguments.  ``b303e61`` on the ruc-snowsoil branch retracted the identical
     claim on its own branch; this is the same retraction.
 
     It is kept because it is the closest available and because the CUDA half

@@ -171,6 +171,10 @@ def test_live_bounded_move_keeps_owner_and_continues_exactly(monkeypatch, tmp_pa
                  for key, value in frame.items()}
         header, payload = restart._load_restart(path, with_arrays=True)
         header.pop("created")
+        # Which memory road wrote the file is provenance, never identity:
+        # the resident writer stamps it and the streamed writer does not
+        # yet, so the two roads' headers are compared without it.
+        header.pop("written_mode", None)
         if stream is not None:
             stream.tiled_run.close()
         return arrays, scalars, parent_arrays, int(result.steps), int(child.coupler.force_count), frame, header, payload

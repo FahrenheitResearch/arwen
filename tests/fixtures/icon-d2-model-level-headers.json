@@ -1,0 +1,123 @@
+[
+  {
+    "field": "p",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/p/icon-d2_germany_icosahedral_model-level_2026092800_000_1_p.grib2.bz2",
+    "category": 3,
+    "parameter": 0,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAApQogAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoPAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAwACAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqRZwZ7IAJAAAQAA4gAIA="
+  },
+  {
+    "field": "t",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/t/icon-d2_germany_icosahedral_model-level_2026092800_000_1_t.grib2.bz2",
+    "category": 0,
+    "parameter": 0,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAmi/AAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoOAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAAACAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqQ1YDSoANAAAQAA4gAIA="
+  },
+  {
+    "field": "u",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/u/icon-d2_germany_icosahedral_model-level_2026092800_000_1_u.grib2.bz2",
+    "category": 2,
+    "parameter": 2,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAoV3wAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoKAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAgICAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqvrkDHoANAAAQAA4gAIA="
+  },
+  {
+    "field": "v",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/v/icon-d2_germany_icosahedral_model-level_2026092800_000_1_v.grib2.bz2",
+    "category": 2,
+    "parameter": 3,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAkMLQAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoLAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAgMCAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqPj+KD4AMAAAQAA4gAIA="
+  },
+  {
+    "field": "qv",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/qv/icon-d2_germany_icosahedral_model-level_2026092800_000_1_qv.grib2.bz2",
+    "category": 1,
+    "parameter": 0,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAApZ5gAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoQAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAQACAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqNiTIN4AnAAAQAA4gAIA="
+  },
+  {
+    "field": "qc",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/qc/icon-d2_germany_icosahedral_model-level_2026092800_000_1_qc.grib2.bz2",
+    "category": 1,
+    "parameter": 22,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAEJcAAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoRAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAARYCAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqAAAAAIAKAAAAAA4gAIA="
+  },
+  {
+    "field": "qi",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/qi/icon-d2_germany_icosahedral_model-level_2026092800_000_1_qi.grib2.bz2",
+    "category": 1,
+    "parameter": 82,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAql7wAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoSAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAVICAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqHtWsSYBMAAAQAA4gAIA="
+  },
+  {
+    "field": "qr",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/qr/icon-d2_germany_icosahedral_model-level_2026092800_000_1_qr.grib2.bz2",
+    "category": 1,
+    "parameter": 24,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAp8uQAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoTAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAARgCAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqHHgWHIBNAAAQAA4gAIA="
+  },
+  {
+    "field": "qs",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/qs/icon-d2_germany_icosahedral_model-level_2026092800_000_1_qs.grib2.bz2",
+    "category": 1,
+    "parameter": 25,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAmyIQAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoUAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAARkCAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqHtAHF4BLAAAQAA4gAIA="
+  },
+  {
+    "field": "qg",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/qg/icon-d2_germany_icosahedral_model-level_2026092800_000_1_qg.grib2.bz2",
+    "category": 1,
+    "parameter": 32,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 150,
+    "second_level_value": 2,
+    "header_base64": "R1JJQv//AAIAAAAAAAnnTAAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoUAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAASACAAsAAAAAAAAAAJYAAAAAAZYAAAAAAkKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqAAAAAIBOAAAQAA4gAIA="
+  },
+  {
+    "field": "hhl",
+    "url": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/hhl/icon-d2_germany_icosahedral_time-invariant_2026092800_000_1_hhl.grib2.bz2",
+    "category": 3,
+    "parameter": 6,
+    "level_type": 150,
+    "level_value": 1,
+    "second_level_type": 101,
+    "second_level_value": 0,
+    "header_base64": "R1JJQv//AAIAAAAAAAEJcAAAABUBAE4A/xMBAQfqCRwAAAAAAQAAABsC/gAH6gkcACoHAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAOgQABgAAAwYCAAsAAAAAAAAAAJYAAAAAAWUAAAAAAEKEAABAgAAAIqIYohGs66+SSNKuYH4tAAAAABkFAAgDEAAqRqvgAIAKAAAAAA4gAIA="
+  }
+]

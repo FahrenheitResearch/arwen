@@ -8,10 +8,31 @@
       "kind": "pressure",
       "units": "Pa",
       "positive": "down",
-      "levels": [1000, 5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 85000, 92500, 100000]
+      "levels": [1000, 5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 85000, 92500, 100000],
+      "era_ladders": [
+        [5000, 10000, 15000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 85000, 92500, 100000]
+      ]
     },
     "time": {"kind": "embedded_metadata"}
   },
+  "record_aliases": [
+    {"record": {"discipline": 2, "category": 0, "parameter": 2, "level_type": 106, "level_value": 0},
+     "reads_as": {"discipline": 2, "category": 3, "parameter": 18, "level_type": 151, "level_value": 0, "second_level_type": 151, "second_level_value": 1}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 170, "level_type": 106, "level_value": 7},
+     "reads_as": {"discipline": 2, "category": 3, "parameter": 18, "level_type": 151, "level_value": 1, "second_level_type": 151, "second_level_value": 2}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 183, "level_type": 106, "level_value": 28},
+     "reads_as": {"discipline": 2, "category": 3, "parameter": 18, "level_type": 151, "level_value": 2, "second_level_type": 151, "second_level_value": 3}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 236, "level_type": 106, "level_value": 100},
+     "reads_as": {"discipline": 2, "category": 3, "parameter": 18, "level_type": 151, "level_value": 3, "second_level_type": 151, "second_level_value": 4}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 39, "level_type": 106, "level_value": 0},
+     "reads_as": {"discipline": 2, "category": 0, "parameter": 25, "level_type": 151, "level_value": 0, "second_level_type": 151, "second_level_value": 1}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 40, "level_type": 106, "level_value": 7},
+     "reads_as": {"discipline": 2, "category": 0, "parameter": 25, "level_type": 151, "level_value": 1, "second_level_type": 151, "second_level_value": 2}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 41, "level_type": 106, "level_value": 28},
+     "reads_as": {"discipline": 2, "category": 0, "parameter": 25, "level_type": 151, "level_value": 2, "second_level_type": 151, "second_level_value": 3}},
+    {"record": {"discipline": 192, "category": 128, "parameter": 42, "level_type": 106, "level_value": 100},
+     "reads_as": {"discipline": 2, "category": 0, "parameter": 25, "level_type": 151, "level_value": 3, "second_level_type": 151, "second_level_value": 4}}
+  ],
   "fields": {
     "geopotential_height": {
       "selectors": [{"format": "grib2", "discipline": 0, "category": 3, "parameter": 5, "level_type": 100}],
@@ -57,6 +78,7 @@
     },
     "terrain_height": {
       "selectors": [{"format": "grib2", "discipline": 0, "category": 3, "parameter": 4, "level_type": 1}],
+      "when_absent": {"operation": "height_at_surface_pressure", "geopotential_height": "geopotential_height", "temperature": "air_temperature", "specific_humidity": "specific_humidity", "surface_pressure": "surface_pressure", "surface_temperature": "air_temperature_2m", "surface_dewpoint": "dewpoint_2m"},
       "units": {"source": "m**2 s**-2", "target": "m", "scale": 0.10197162129779283, "offset": 0.0},
       "source_axes": ["y", "x"], "target_axes": ["y", "x"],
       "location": "surface", "staggering": "none", "missing": {"kind": "reject"}
@@ -138,6 +160,7 @@
     "target_vertical_levels": 49,
     "soil_layer_count": 4,
     "boundary_interval_seconds": 10800,
+    "accept_boundary_interval_multiples": true,
     "required_fields": [
       {"name": "air_temperature", "axes": ["vertical", "y", "x"], "location": "mass", "target_units": "K"},
       {"name": "specific_humidity", "axes": ["vertical", "y", "x"], "location": "mass", "target_units": "kg kg-1"},

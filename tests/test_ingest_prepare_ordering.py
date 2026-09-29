@@ -1,26 +1,32 @@
-"""The prepare loop builds its START time last, and that changes no number.
+"""A prepare loop holds ONE forcing time, and its order changes no number.
 
 THE DEFECT.  Every prepared-cache adapter walked its forcing times in
-time order.  The start time is the first one built and the last one used
--- the prepared cache, the wrfinput export and the surface analysis are
-all written from it once the boundaries are complete -- so it sat on the
-device for the whole loop while each later time was interpolated and
-initialized underneath it.  Two complete full-domain analyses and two
-complete states therefore coexisted at the peak with only one of them
-being worked on.  Priced by ``estimate_ingest`` at 800x800x49, mp=10,
-three GFS times, that second resident time is 14.67 GiB of device
-residency against 7.66, and a peak envelope of 23.92 GiB against 15.86:
-the difference between preparing that domain on a 16 GiB card and dying
-in preprocessing after the whole forcing chain had already been fetched.
+time order and kept the start time until the end: the prepared cache,
+the wrfinput export and the surface analysis were all written from it
+once the boundaries were complete, so it sat on the device for the whole
+loop while each later time was interpolated and initialized underneath
+it.  Two complete full-domain analyses and two complete states therefore
+coexisted at the peak with only one of them being worked on.  Priced by
+``estimate_ingest`` at 800x800x49, mp=10, three GFS times, that second
+resident time is 14.67 GiB of device residency against 7.66, and a peak
+envelope of 23.92 GiB against 15.86: the difference between preparing
+that domain on a 16 GiB card and dying in preprocessing after the whole
+forcing chain had already been fetched.
 
-THE FIX is an order and nothing else.  ``start_last_forcing_order`` puts
-the start time last; each earlier time hands
+THE FIX holds one time either way.  A single-domain preparation builds
+the start time FIRST, writes it into the prepared head, releases it and
+only then builds each later time, writing each boundary interval as soon
+as its two times exist (chained preparation,
+``gpuwm/ingest/boundary_stream.py``).  A preparation that needs every
+interval before it can write anything -- a domain tree, or ERA5 with a
+water-temperature overlay -- builds the start time LAST instead
+(``start_last_forcing_order``); each earlier time hands
 :class:`StateBoundaryFrames` its four perimeter strips (host memory,
-O(perimeter)) against its own POSITION and is released before the next is
-built.  Which makes the acceptance test for this change a bit-identity
-test, not a memory test: a pure reordering that moves one boundary
-number is not a reordering, and a prepared cache is not allowed to notice
-that its inputs were built in a different sequence.
+O(perimeter)) against its own POSITION and is released before the next
+is built.  Which makes the acceptance test a bit-identity test, not a
+memory test: a reordering that moves one boundary number is not a
+reordering, and a prepared cache is not allowed to notice that its
+inputs were built in a different sequence.
 
 Every test here is CPU-only and needs no device.
 """
@@ -395,16 +401,20 @@ def test_retained_bytes_still_counts_only_the_perimeter():
 # ---------------------------------------------------------------------------
 
 
-def test_every_prepare_adapter_builds_its_start_time_last():
-    """The loop is duplicated three times, so the fix has to be.
+def test_every_prepare_adapter_holds_one_forcing_time_in_either_order():
+    """The loop is duplicated three times, so the contract has to be.
 
     Source-level because reaching these loops for real needs a decoded
-    GRIB chain, a geog root and a device; what is pinned is that each of
-    the three adapters drives its forcing loop from
+    GRIB chain, a geog root and a device.  Each of the three adapters
+    has two arms.  The one that needs every interval first (a domain
+    tree, and ERA5 with a water-temperature overlay) drives its loop from
     ``start_last_forcing_order`` and hands the accumulator an explicit
-    ``index=``.  A fourth adapter growing an in-order copy of the loop is
-    exactly the event this fails on -- ``enumerate(snapshots)`` is the
-    shape that had the defect.
+    ``index=``.  The single-domain arm writes the start time into the
+    prepared head, releases it, and only then streams the later times,
+    so the start time is never resident under a later build.  A fourth
+    adapter growing an in-order copy of the loop is exactly the event
+    this fails on -- ``enumerate(snapshots)`` is the shape that had the
+    defect.
     """
     import inspect
 
@@ -412,10 +422,25 @@ def test_every_prepare_adapter_builds_its_start_time_last():
 
     for module in (gfs_direct, era5_direct, mapped_direct):
         source = inspect.getsource(module)
-        assert "for index in start_last_forcing_order(len(snapshots)):" in \
-            source, f"{module.__name__} does not build the start time last"
+        assert "for index in start_last_forcing_order(len(snapshots)):" in             source, f"{module.__name__} does not build the start time last"
         assert "forcing.add_state(initialized.state, index=index)" in source, (
             f"{module.__name__} adds frames by arrival order, so the "
             "reordered loop would write the intervals out of sequence")
         assert "for index, source in enumerate(snapshots)" not in source, (
             f"{module.__name__} still has an in-order forcing loop")
+        # The single-domain arm: the head, then the start time released,
+        # then the later times streamed, each step after the one before.
+        assert source.count("writer.write_head(") == 1
+        assert source.count("writer.stream_forcing_times(") == 1, (
+            f"{module.__name__} streams its forcing times from more than "
+            "one place; this gate reads only one")
+        at = source.index("writer.write_head(")
+        for step in ("del initial_result, initial_met",
+                     "release_backend_memory(preprocess)",
+                     "writer.stream_forcing_times("):
+            found = source.find(step, at)
+            assert found > at, (
+                f"{module.__name__}'s single-domain arm has no {step!r} "
+                "after its previous step, so the start time may still be "
+                "resident when the later forcing times are built")
+            at = found

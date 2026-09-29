@@ -454,8 +454,24 @@ FROZEN_MODULE_DIGESTS = {
         '68a743950e30e308676fada38f96ea3139d283447028edfeb85d2d64c36441fa',
         '233391c535605271d70b32dc5ce85321cb0ed633340dae3fe2cd3ebcf08ab6ba'),
     'lbc_state': (
-        'fadf66fea201e4eac56e8a58d72b11940325b142a4e08fcc0b8db80fd78b53ec',
-        '4cd1c59322d6a800eaebee8182a5a2a25413c37ffe4681f56a164a71ebd3a47b'),
+        # Re-pinned for the per-side relaxation mask:
+        # state_specified_relaxation takes relax_sides, and
+        # a streamed tile clears the bit of each interior seam so a
+        # relaxation zone sized in parent cells cannot reach owned cells.
+        # A whole domain passes 15, where every branch condition reduces
+        # to the previous one and the two new j-neighbour clamps are
+        # inert (j >= 2 and j <= ny - 3 there), so no whole-domain bit
+        # moves.  lbc_state is not an mp=8 translation unit.
+        #
+        # RE-PINNED: frame_point and frame_offset list the middle ring of
+        # an odd side once.  A streamed tile window narrower than two
+        # relaxation zones listed that line twice and two threads raced on
+        # each of its cells.  A whole domain never has such a ring
+        # (_validate_frame_domain), so every ring there keeps two rows and
+        # two columns, the enumeration is the previous one entry for entry,
+        # and no whole-domain bit moves.
+        'ef419942c2d00572ca53c04dec7224832f06a5391fe85c69105046fe242f8884',
+        'ac121aaa14ee44aeac81791fd40c63e4926f06376c103a5a5be0b7d21fcff88d'),
     'morrison': (
         # MOVER: the deposition-freezing cold-trap bound, carried to the
         # engine line from lane/level5-owner 0c54221d2.  UNLIKE the two
@@ -956,8 +972,19 @@ FROZEN_MODULE_DIGESTS = {
         'cbfc98e8d025a4511fd7f8a41ca4bd163c261da4a48dec22bb979ec5a496b14e',
         '9dc88c6e14b2aaaa4249a9f844dc231f105431623375c988a2894e322de2f3ea'),
     'vert_interp': (
-        'ab608d651d99f882a42881f7b977b29d8879f474ea26404a79d06c77a86125d9',
-        '65b0fe8a9aadda83084e0286d3f70570e251bb6d2fb1a0636a0530103b8d9d89'),
+        # Re-pinned for the source-column tier ladder: the unconditional
+        # `#define WRF_VI_MAX_LEVELS 64` became an `#ifndef` guard around
+        # the same literal (plus a comment), so gpuwm/ingest/vert.py can
+        # compile the WRF-real vertical kernel at 160 and 256 levels for
+        # deep sources.  vert_interp is not an mp=8 translation unit and
+        # the mp=8 numerics guarantee is untouched.  The guard is a
+        # preprocessor no-op at the default tier: NVRTC emits
+        # byte-identical PTX for the old and new source at compute_86,
+        # compute_89 and compute_120, and tests/test_wrf_vert_interp.py
+        # holds every tier to identical output bytes.  Previously
+        # ab608d65/65b0fe8a.
+        'd03c5656b7fd62c57e9598fcdf88ce89cca30f24cf9356230ae531c5626a6b30',
+        'f23a28175208a3da96af2b60a97050870cfe045d91698a06e054a8433c3dcf42'),
     'wsm6': (
         '0526192b79d90d3be7c733a475987216d37cc81b17f8de4f1fe3e4220a6b81d7',
         '1a6d20da0d450f235227fe609bdb12b368d96aec5ac231752074ff4dd9cc50e6'),

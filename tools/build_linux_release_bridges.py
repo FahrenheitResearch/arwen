@@ -252,7 +252,8 @@ def loader_closure(text: str, policy: dict) -> list[dict]:
 
 
 def qualify_artifacts(release: Path, source: Path, revision: str,
-                      policy: dict, commands: Commands) -> list[dict]:
+                      policy: dict, commands: Commands,
+                      workspaces: tuple[str, ...] = WORKSPACES) -> list[dict]:
     sys.path.insert(0, str(source))
     bridge_assets = importlib.import_module("gpuwm.bridge_assets")
     bridges = importlib.import_module("gpuwm.bridges")
@@ -267,6 +268,8 @@ def qualify_artifacts(release: Path, source: Path, revision: str,
             "release declaration must contain all 29 distinct native artifacts")
     results = []
     for artifact in declarations:
+        if artifact.crate not in workspaces:
+            continue
         path = release / bridge_assets.artifact_filename(artifact, "linux-x86_64")
         require(path.is_file(), f"missing declared native artifact: {artifact.name}")
         before = file_identity(path)
@@ -351,7 +354,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--image", default=IMAGE)
     parser.add_argument("--reuse-target", action="store_true")
+    parser.add_argument("--workspace", action="append", choices=WORKSPACES,
+                        help="build and qualify only this workspace's artifacts (repeatable); "
+                             "the release cut reuses the others from a build whose inputs are unchanged")
     args = parser.parse_args(argv)
+    selected = tuple(args.workspace) if args.workspace else WORKSPACES
     require(args.image == IMAGE, "image identity differs from the pinned compatibility baseline")
     require(re.fullmatch(r"[0-9a-f]{40}", args.revision) is not None, "revision must be a full Git SHA")
     source = args.source.resolve()
@@ -396,11 +403,12 @@ def main(argv: list[str] | None = None) -> int:
         policy, report["policy"] = load_policy(commands, source)
         marker, context = target_context(args.target_dir, image=args.image, toolchain=report["toolchain"],
                                          revision=args.revision, reuse=args.reuse_target)
-        for index, workspace in enumerate(WORKSPACES):
+        report["workspaces"] = list(selected)
+        for index, workspace in enumerate(selected):
             commands.run(f"build-{index + 1}", [str(args.rust_toolchain / "bin/cargo"),
                          "build", "--release", "--locked", "--offline"], cwd=source / workspace)
         report["artifacts"] = qualify_artifacts(args.target_dir / "release", source,
-                                               args.revision, policy, commands)
+                                               args.revision, policy, commands, selected)
         report["source_after"] = source_identity(source, args.revision, commands)
         require(report["source_before"] == report["source_after"], "payload source identity changed")
         require(toolchain_identity(args.rust_toolchain, commands, source) == report["toolchain"],
@@ -410,7 +418,10 @@ def main(argv: list[str] | None = None) -> int:
         # went stale the release the bundle grew, and the drivers that compared
         # the literal kept passing over a number that was no longer true.
         report["artifact_count"] = len(report["artifacts"])
-        report["status"] = "PASS_MANYLINUX_2_28_ALL_NATIVE_ARTIFACTS"
+        # A subset build says so in its status, so no reader of the report can
+        # take it for the whole bundle.
+        report["status"] = ("PASS_MANYLINUX_2_28_ALL_NATIVE_ARTIFACTS" if selected == WORKSPACES
+                            else "PASS_MANYLINUX_2_28_SELECTED_NATIVE_ARTIFACTS")
         returncode = 0
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"

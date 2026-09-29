@@ -46,10 +46,15 @@ def test_mapped_preparation_reports_real_completed_stages(monkeypatch, tmp_path,
     mapped.prepare_mapped_wrf(**args, stock_wrf_export="off")
     records = _events(capsys.readouterr().err)
     stages = [row["stage"] for row in records if row["event"] == "finished"]
+    # Chained preparation: the start time is initialized, published as the
+    # head, the remaining times build the boundary segments, then the seal.
     assert stages == ["source_decode", "root_static", "root_initialize",
-                      "prepared_cache", "wrf_export"]
+                      "prepared_head", "root_boundaries", "prepared_cache",
+                      "wrf_export"]
     init = next(row for row in records if row["stage"] == "root_initialize")
-    assert init["backend"] == "cpu" and init["count"] == calls["initialize"]
+    rest = next(row for row in records if row["stage"] == "root_boundaries")
+    assert init["backend"] == "cpu" and rest["backend"] == "cpu"
+    assert init["count"] + rest["count"] == calls["initialize"]
     assert records[-1]["outcome"] == "not_requested"
 
 

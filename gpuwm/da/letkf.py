@@ -224,6 +224,28 @@ class LetkfCapacityError(LetkfError):
 EIGENSOLVER_MODES = ("auto", "jacobi", "library")
 
 
+#: How the ensemble-space products of the transform are formed on the device
+#: (``C Yb``, ``U D U^T`` and the contractions that build the mean and
+#: perturbation updates).
+#:
+#: ``"fixed-order"`` -- :mod:`gpuwm.da.fixed_order_gemm`: one thread per
+#:   output element, a sequential fused multiply-add over the contracted
+#:   index.  The same bytes on every card and for every chunk split.  This
+#:   is the default.
+#:
+#: ``"library"`` -- ``@`` and ``einsum``, i.e. ``cupy.matmul`` and cuBLAS,
+#:   which picks its kernel and reduction split per card: the einsum
+#:   contractions (matrix-vector shapes to cuBLAS) differ between an RTX 5090
+#:   and an RTX 5070 Ti, so the two cards' analyses agree to the last bit,
+#:   not bitwise, and a convective cycle grows that last bit into a
+#:   different storm (footprint rain 0.31 against 0.20 from byte-identical
+#:   model legs).  Kept as the A/B arm.
+#:
+#: On numpy both mean numpy: its per-matrix loops are already one answer per
+#: input, and the host path is the reference the device path is graded on.
+MATMUL_MODES = ("fixed-order", "library")
+
+
 #: Posterior relaxation schemes, by name.
 #:
 #: ``"rtps"`` -- relaxation to prior SPREAD, Whitaker and Hamill (2012)
@@ -732,8 +754,14 @@ class LetkfConfig:
     solve_dtype: str = "float64"
     #: See :data:`EIGENSOLVER_MODES`.
     eigensolver: str = "auto"
+    #: See :data:`MATMUL_MODES`.  Last in the field list so no positional
+    #: caller of this dataclass moves.
+    matmul: str = "fixed-order"
 
     def __post_init__(self) -> None:
+        if self.matmul not in MATMUL_MODES:
+            raise LetkfError(
+                f"matmul must be one of {MATMUL_MODES}, got {self.matmul!r}.")
         if self.eigensolver not in EIGENSOLVER_MODES:
             raise LetkfError(
                 f"eigensolver must be one of {EIGENSOLVER_MODES}, got"
@@ -808,6 +836,11 @@ class LetkfDiagnostics:
     #: two agree to rounding, not bitwise, so an increment array does not say
     #: on its face which produced it, and a reproducibility receipt needs to.
     eigensolver: str = ""
+    #: Which product route the transform used on the device (see
+    #: :data:`MATMUL_MODES`): ``"fixed-order"``, ``"library"``, or ``"numpy"``
+    #: when the analysis ran on the host.  Recorded because the two device
+    #: routes agree to rounding, not bitwise.
+    matmul: str = ""
     #: Sweeps the project kernel needed on its worst matrix, or 0 when the
     #: library solver ran.  A number climbing toward
     #: ``gpuwm.core.jacobi_eigh.SWEEP_CAP`` is the early warning that the
@@ -1744,6 +1777,26 @@ def analyze(
     # that turns out to have no active gridpoint and never reaches a solve.
     eigensolver = _resolve_eigensolver(solve_xp, members, solve_dtype, config)
     diagnostics.eigensolver = eigensolver
+    # The kernel takes CuPy arrays only; a host namespace (numpy, or a test's
+    # numpy-backed stand-in) keeps its own products, which are already one
+    # answer per input.
+    on_cupy = getattr(solve_xp, "__name__", "") == "cupy"
+    fixed_order = on_cupy and config.matmul == "fixed-order"
+    diagnostics.matmul = str(config.matmul) if on_cupy else "numpy"
+    if fixed_order:
+        from gpuwm.da.fixed_order_gemm import bgemm, einsum_fixed_order
+
+        def _mm(a, b):
+            return bgemm(a, b)
+
+        def _es(spec, a, b):
+            return einsum_fixed_order(spec, a, b)
+    else:
+        def _mm(a, b):
+            return a @ b
+
+        def _es(spec, a, b):
+            return solve_xp.einsum(spec, a, b)
 
     # Prior mean and perturbations, once, for the whole domain.  Xb is what
     # step 9 multiplies; nothing downstream needs the members again.
@@ -2097,7 +2150,7 @@ def analyze(
 
         # C = Yb^T R^-1 L, (G, R, P).
         cmat = xp.swapaxes(yb, 1, 2) * winv[:, None, :]
-        amat = cmat @ yb                                   # (G, R, R)
+        amat = _mm(cmat, yb)                               # (G, R, R)
         amat = amat + scale * ident[None]
         # Symmetrise: C Yb is symmetric analytically, and the rounding that
         # breaks it is exactly what makes eigh's answer depend on which
@@ -2119,20 +2172,20 @@ def analyze(
         inv = 1.0 / evals
         # Pa~ = U D^-1 U^T and Wa = U D^-1/2 U^T sqrt(R-1) share U, which is
         # the entire reason step 6 is free.
-        pa = (evecs * inv[:, None, :]) @ xp.swapaxes(evecs, 1, 2)
+        pa = _mm(evecs * inv[:, None, :], xp.swapaxes(evecs, 1, 2))
         rt = xp.sqrt(inv * solve_dtype.type(members - 1))
-        wa = (evecs * rt[:, None, :]) @ xp.swapaxes(evecs, 1, 2)
+        wa = _mm(evecs * rt[:, None, :], xp.swapaxes(evecs, 1, 2))
 
-        wbar = xp.einsum("grp,gp->gr", cmat, dvec)
-        wbar = xp.einsum("grs,gs->gr", pa, wbar)           # (G, R)
+        wbar = _es("grp,gp->gr", cmat, dvec)
+        wbar = _es("grs,gs->gr", pa, wbar)                 # (G, R)
 
         # ---- apply to every analysis field ----------------------------
         alpha = solve_dtype.type(config.rtps_alpha)
         chunk_results = []
         for field_index, f in enumerate(fields):
             xbg = chunk_xb[field_index] if host_staging else xb_flat[f][:, gpts].astype(solve_dtype)   # (R, G)
-            dbar = xp.einsum("mg,gm->g", xbg, wbar)         # mean increment
-            xa = xp.einsum("mg,gmk->kg", xbg, wa)           # (R, G)
+            dbar = _es("mg,gm->g", xbg, wbar)               # mean increment
+            xa = _es("mg,gmk->kg", xbg, wa)                 # (R, G)
             if config.rtps_alpha > 0.0:
                 if config.relaxation == "rtpp":
                     # Zhang et al. (2004): mix the perturbations, not their

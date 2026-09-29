@@ -233,7 +233,7 @@ def test_the_display_twin_is_computed_but_never_drawn_here(tmp_path):
     ``make_synoptic_maps`` used to contour ``mslp_display`` with
     matplotlib, and this test pinned that it contoured the treated field
     rather than the raw one.  Weather-field product plots come from
-    ``rw_wrfbatch`` now (CLAUDE.md, Drew 2026-08-06; audit F6), so the
+    ``rw_wrfbatch`` now (render law, 2026-08-06; audit F6), so the
     MSLP panel is the renderer's ``mslp_10m_winds`` and the contouring
     question is no longer this module's to answer.
 

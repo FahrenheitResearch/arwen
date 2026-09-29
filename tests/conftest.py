@@ -26,6 +26,7 @@ import ast
 import functools
 import os
 import pathlib
+import re
 
 import pytest
 
@@ -620,6 +621,11 @@ def pytest_configure(config):
         "with the command that stages it, when the probe in tests/conftest.py "
         "CAPABILITY_PROBES finds this box cannot do it.  Spelled through the "
         "requires_* marks defined beside the probes.")
+    config.addinivalue_line(
+        "markers",
+        "requires_case_inputs(config): loads a shipped case configuration with "
+        "its declared inputs required; skipped, naming the file the case "
+        "loader finds absent, on a machine that does not hold them.")
 
 
 def _state_the_reason_to_the_deselection_guard(path, why: str) -> None:
@@ -790,6 +796,7 @@ def pytest_collection_modifyitems(config, items):
                                    "opens no device but " + row))
                         break
     _gate_on_capabilities(items)
+    _gate_on_case_inputs(items)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -843,6 +850,25 @@ def _wizard_probe_pinned_to_a_24gib_card(monkeypatch):
         lambda **_kwargs: {"free_bytes": int(domain_wizard.card_assumed_free_gib(24) * 1024 ** 3),
                            "total_bytes": 24 * 1024 ** 3,
                            "profile": None})
+
+
+@pytest.fixture(autouse=True)
+def _run_disk_pinned_to_ample_free_space(monkeypatch):
+    """Pin the free disk run-plan's refusal before the download compares with.
+
+    ``gpuwm run-plan`` refuses a run whose projection (download,
+    preparation, history, checkpoints and pictures) is larger than the
+    free space on the run directory's disk.  The plans this suite executes
+    stub every stage and write almost nothing, yet unpinned their verdict
+    followed the host's disk: on node-4 with 12 GB free, 17 run-plan tests
+    failed with "This run would write about 29.0 GiB" before reaching the
+    stage they test.  The pin is a petabyte; the refusal itself is tested
+    by the disk-budget tests, which pin their own free space.
+    """
+
+    from gpuwm import disk_budget
+
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 10 ** 15)
 
 
 def complete_runtime_manifest(payload: dict | None = None,
@@ -1082,6 +1108,21 @@ CAPABILITY_PROBES = {
                                        "gpuwm_wrf_eta_f32"),
     "wrf_sfcprs_bridge": functools.partial(cpu_preprocess_gap,
                                           "gpuwm_wrf_sfcprs3_from_f64"),
+    # Every masked surface field (soil, snow, skin, sea ice) maps through
+    # this entry under both backends; without it they cannot be mapped.
+    "wps_masked_chain_bridge": functools.partial(
+        cpu_preprocess_gap, "gpuwm_wps_masked_chain_f64"),
+    # The native HRRR route's soil maps through this entry under both
+    # backends; without it that route cannot map its soil.
+    "masked_stencil_bridge": functools.partial(
+        cpu_preprocess_gap, "gpuwm_masked_bilinear_stencil_f64"),
+    # The lake skin search, the water-temperature blends, the labelling,
+    # the water repairs and the source owner run through these entries
+    # under both backends; without them no water temperature can be
+    # assembled.  Probed by the newest entry, the CPU backend's
+    # surface-nearest search, built after all of them.
+    "water_blend_bridge": functools.partial(
+        cpu_preprocess_gap, "gpuwm_masked_nearest_f32"),
     "wrf_rust": wrf_rust_gap,
     "grib1_bridge": grib1_bridge_gap,
 }
@@ -1093,6 +1134,12 @@ requires_wrf_eta_bridge = pytest.mark.requires_capability("wrf_eta_bridge")
 requires_wrf_sfcprs_bridge = pytest.mark.requires_capability(
     "wrf_sfcprs_bridge")
 requires_wrf_rust = pytest.mark.requires_capability("wrf_rust")
+requires_wps_masked_chain_bridge = pytest.mark.requires_capability(
+    "wps_masked_chain_bridge")
+requires_masked_stencil_bridge = pytest.mark.requires_capability(
+    "masked_stencil_bridge")
+requires_water_blend_bridge = pytest.mark.requires_capability(
+    "water_blend_bridge")
 requires_grib1_bridge = pytest.mark.requires_capability("grib1_bridge")
 
 
@@ -1123,4 +1170,67 @@ def _gate_on_capabilities(items) -> None:
             gap = capability_gap(name)
             if gap is not None:
                 item.add_marker(pytest.mark.skip(reason=gap))
+                break
+
+
+# ---------------------------------------------------------------------------
+# Case inputs: the files a shipped case configuration declares
+# ---------------------------------------------------------------------------
+
+CASE_INPUTS_MARKER = "requires_case_inputs"
+
+#: The case loader's refusal for a declared input that is not on this disk
+#: (gpuwm/case_data.py, build_case_data): "<role> file <path> declared in
+#: [case_data] of <config> does not exist." and the geog_root directory form.
+_CASE_INPUT_ABSENT = re.compile(
+    r"declared in \[case_data\] of .* does not exist")
+
+
+@functools.lru_cache(maxsize=None)
+def case_inputs_absent(config: str) -> str | None:
+    """The case loader's own missing-input refusal for ``config``, or None.
+
+    A test that loads a shipped case configuration with its inputs required
+    (the default of ``gpuwm.case_data.load_experiment_case``) runs only on a
+    machine holding every file that configuration's ``[case_data]`` declares,
+    and some of those are third-party reference data that ship in no wheel.
+    Without the data such a test raised the loader's ValueError instead of
+    skipping, so a release install reported it as a failure.  The loader
+    names the absent file; that sentence becomes the skip reason.  Any other
+    refusal returns None, so the test runs and reports it: only a missing
+    declared input is a property of the machine rather than of the tree.
+    """
+    from gpuwm.case_data import load_experiment_case
+
+    try:
+        load_experiment_case(config)
+    except ValueError as error:
+        message = str(error)
+        if _CASE_INPUT_ABSENT.search(message):
+            return message
+    except Exception:                                   # noqa: BLE001
+        return None
+    return None
+
+
+def requires_case_inputs(config) -> pytest.MarkDecorator:
+    """Mark a test that loads ``config`` with its declared inputs required."""
+    return pytest.mark.requires_case_inputs(str(config))
+
+
+def _gate_on_case_inputs(items) -> None:
+    """Skip every item whose case configuration's inputs are not on disk.
+
+    Resolved here rather than in a skipif so the loader runs once per
+    configuration and only for configurations a collected item names.
+    """
+    for item in items:
+        for mark in item.iter_markers(name=CASE_INPUTS_MARKER):
+            if item.get_closest_marker("skip") is not None:
+                break
+            absent = case_inputs_absent(str(mark.args[0]))
+            if absent is not None:
+                item.add_marker(pytest.mark.skip(
+                    reason=f"this machine does not hold the case inputs: "
+                           f"{absent}"))
                 break

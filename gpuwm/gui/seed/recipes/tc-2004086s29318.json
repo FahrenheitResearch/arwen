@@ -1,0 +1,1021 @@
+{
+ "schema": "gpuwm.wiki.v1",
+ "origin": "recipes",
+ "built": "2026-09-25",
+ "sources": {
+  "rule-recipe-best-tc": {
+   "kind": "rule",
+   "title": "Best simulation of a tropical cyclone for each card size",
+   "method": "The key time is the storm's first landfall after its peak (the first best-track row, from six hours before the highest wind on, whose centre is within 25 km of land), or the peak itself when the storm is already ashore by then or never reaches land. Start 36 hours before the highest wind, so the model builds its own inner core from the analysis, and stop 18 hours after it or 12 hours after the key landfall, whichever is later, at most 120 hours. A 1 km grid is the best-track path from 12 hours before to 12 hours after the key time (IBTrACS positions, linear between rows, every hour) with 240, 180, 130, 90 or 60 km of grid around it, and every rung checks that the centre stays at least 60 km inside its edge over all of those hours, so the eyewall and not only the centre is on it. The rungs, best first: 12, 3 and 1 km with the 3 km grid holding the whole track; the same with the 3 km grid holding the track from 24 hours before the key time to the end and the 12 km grid carrying the earlier hours; the same pair with a narrower 1 km grid; 12 and 3 km with the 3 km grid holding the whole track; a 3 km grid that follows the storm inside a fixed 12 km parent, used only while the storm stays inside that parent; 12 and 3 km with the 3 km grid holding the key hours only; a later start, 30 then 18 hours before the key time, with 3 km over the rest of the track; a run from 18 hours before to 6 hours after the key time with a smaller 3 km grid over just those hours; 12 km alone. Every 12 km grid reaches at least 700 km beyond the 3 km grid (500 for a later start), measured on the fitted grids. Every cyclone row sets the surface layer's tropical cyclone option over the sea (isftcflx 1). Each card takes the first rung the engine fits on it with at least 5% of its memory to spare and whose download, preparation, history, kept checkpoint and pictures fit the card's disk budget (40, 50, 60, 80 and 100 GiB for 8 to 32 GB) with the nests writing hourly, two-hourly or three-hourly.",
+   "code": "tools/wiki_seed/design_recipes.py: tc_plan",
+   "inputs": [
+    "rule-recipe-landfall"
+   ],
+   "retrieved": "2026-09-25"
+  },
+  "rule-recipe-landfall": {
+   "kind": "rule",
+   "title": "The landfall a cyclone recipe is timed around",
+   "method": "The first IBTrACS main-track row at or after six hours before the highest wind whose DIST2LAND is 25 km or less, or whose USA_RECORD is L. 25 km puts the eyewall ashore when the centre passes just off a coast.",
+   "code": "tools/wiki_seed/landfall_table.py",
+   "retrieved": "2026-09-25"
+  },
+  "ibtracs-2004086S29318-2004-03-28T06": {
+   "kind": "record",
+   "dataset": "dataset-ibtracs",
+   "title": "IBTrACS row: storm 2004086S29318, 2004-03-28 06:00 UTC (key landfall)",
+   "publisher": "NOAA National Centers for Environmental Information",
+   "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+   "retrieved": "2026-09-25",
+   "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+   "row": {
+    "SID": "2004086S29318",
+    "SEASON": "2004",
+    "BASIN": "SA",
+    "NAME": "UNNAMED",
+    "ISO_TIME": "2004-03-28 06:00:00",
+    "NATURE": "TS",
+    "LAT": "-29.0",
+    "LON": "-49.6",
+    "DIST2LAND": "0",
+    "USA_RECORD": " ",
+    "USA_AGENCY": "atcf",
+    "USA_WIND": "75",
+    "USA_PRES": "981",
+    "USA_SSHS": "1"
+   }
+  },
+  "computed-fit-tc-2004086s29318-8gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 8 GB recipe",
+   "method": "gpuwm cyclone-setup with these arguments, sized for a declared 8 GB card, no GPU used; the storm moves 565 km east-west and 78 km north-south and the nest has room for 716 and 476 km",
+   "code": "gpuwm/cyclone_setup.py: plan_cyclone",
+   "inputs": [
+    "rule-recipe-best-tc",
+    "ibtracs-2004086S29318-track",
+    "rule-recipe-landfall",
+    "ibtracs-2004086S29318-2004-03-28T06"
+   ],
+   "result": "12 km 200 by 160 points (2388 by 1908 km); 3 km following 240 by 240 points (717 by 717 km); 49 levels; priced at 5.98 GiB of a 6.75 GiB budget; cumulus per grid, outer to inner: 1, 0"
+  },
+  "computed-fit-tc-2004086s29318-12gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 12 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 12 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tc",
+    "ibtracs-2004086S29318-track",
+    "rule-recipe-landfall",
+    "ibtracs-2004086S29318-2004-03-28T06"
+   ],
+   "result": "12 km 218 by 182 points (2604 by 2172 km); 3 km 400 by 256 points (1197 by 765 km); 49 levels; priced at 7.99 GiB of a 10.75 GiB budget; cumulus per grid, outer to inner: 1, 0"
+  },
+  "computed-fit-tc-2004086s29318-16gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 16 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 16 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tc",
+    "ibtracs-2004086S29318-track",
+    "rule-recipe-landfall",
+    "ibtracs-2004086S29318-2004-03-28T06"
+   ],
+   "result": "12 km 234 by 224 points (2796 by 2676 km); 3 km 456 by 408 points (1365 by 1221 km); 1 km 444 by 306 points (443 by 305 km); 49 levels; priced at 13.63 GiB of a 14.54 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "computed-fit-tc-2004086s29318-24gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 24 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 24 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tc",
+    "ibtracs-2004086S29318-track",
+    "rule-recipe-landfall",
+    "ibtracs-2004086S29318-2004-03-28T06"
+   ],
+   "result": "12 km 244 by 232 points (2916 by 2772 km); 3 km 496 by 448 points (1485 by 1341 km); 1 km 630 by 486 points (629 by 485 km); 49 levels; priced at 19.55 GiB of a 22.06 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "computed-fit-tc-2004086s29318-32gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 32 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 32 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tc",
+    "ibtracs-2004086S29318-track",
+    "rule-recipe-landfall",
+    "ibtracs-2004086S29318-2004-03-28T06"
+   ],
+   "result": "12 km 244 by 232 points (2916 by 2772 km); 3 km 496 by 448 points (1485 by 1341 km); 1 km 756 by 612 points (755 by 611 km); 49 levels; priced at 25.82 GiB of a 29.58 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "rule-recipe-time-estimate": {
+   "kind": "rule",
+   "id": "rule-recipe-time-estimate",
+   "title": "Run time of a recipe that has not been run",
+   "method": "A forecast's time grows with its grid points and its time steps: each grid's points (east by north by levels) divided by its spacing in km, summed over the grids, times the hours. The measured runs give the seconds per unit of that for each kind of storm, on the card they ran on; a recipe that has not run gets that rate times its own grids and hours. The time to all pictures adds the download and preparation and the pictures. The download is this layout's own, as the engine prices it, over the throughput measured on real downloads of the same source; the preparation is at the rate measured on real preparations of the same kind, per byte downloaded for HRRR, whose preparation decodes every file it downloads, and per grid cell and forcing time for ERA5; the pictures are the measured seconds per picture frame per grid point times this layout's frames (each grid's history files) and points.",
+   "code": "tools/wiki_seed/estimate_times.py",
+   "inputs": [
+    "computed-run-tc-2019063s18038-16gb",
+    "computed-run-tornado-1999-466-16gb",
+    "computed-run-tornado-2023-2303241857-01-16gb"
+   ],
+   "retrieved": "2026-09-25"
+  }
+ },
+ "recipes": [
+  {
+   "event": "tc-2004086s29318",
+   "title": "Unnamed South Atlantic cyclone (2004)",
+   "type": "tropical-cyclone",
+   "key_hours": {
+    "start": "2004-03-27T18:00Z",
+    "end": "2004-03-28T12:00Z",
+    "key_time": "2004-03-28T06:00Z",
+    "key_is": "peak",
+    "text": "From 12 hours before to 12 hours after the highest wind in the best track."
+   },
+   "ideal": {
+    "rung": "static-12-3-1-m240",
+    "finest_km": 1.0,
+    "text": "The 3 km grid holds the storm for all 42 hours, so its eyewall and rain bands are resolved from the start, and a 743 by 603 km grid at 1 km holds the eyewall over the hours around the peak at 2004-03-28 06:00 UTC, where the inner core's strength and the damage are decided."
+   },
+   "disk_budget_gib": {
+    "8": 40,
+    "12": 50,
+    "16": 60,
+    "24": 80,
+    "32": 100
+   },
+   "start": "2004-03-26T18:00Z",
+   "length_h": 42,
+   "source": "era5",
+   "cards": [
+    {
+     "card_gb": 8,
+     "rung": "following-12-3",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 200,
+       "ny": 160,
+       "nz": 49,
+       "width_km": 2388.0,
+       "height_km": 1908.0,
+       "parent_grid_ratio": null,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": -28.9,
+        "lon": -44.3
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 240,
+       "ny": 240,
+       "nz": 49,
+       "width_km": 717.0,
+       "height_km": 717.0,
+       "parent_grid_ratio": null,
+       "following": true,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -28.9,
+        "lon": -44.3,
+        "moves": "follows the 850 hPa circulation"
+       }
+      }
+     ],
+     "start": "2004-03-26T18:00Z",
+     "length_h": 42,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 km grid, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
+     },
+     "fitted_grid": "12 km 200 by 160 points (2388 by 1908 km); 3 km following 240 by 240 points (717 by 717 km); 49 levels",
+     "memory": {
+      "need_gib": 5.98,
+      "budget_gib": 6.75
+     },
+     "disk_gib": 24.3,
+     "disk_budget_gib": 40,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 3600,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.2 GiB of ERA5 files for 8 forcing times; the preparation, 0.0 GiB; the history files, 16.4 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 1.7 GiB; the rendered pictures, 6.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
+     "download": {
+      "bytes": 224400000,
+      "transfer_bytes": 4408000000,
+      "objects": 8,
+      "leads": 8,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 16683520,
+      "chain": "experiment"
+     },
+     "est_minutes": 25,
+     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.2 GB of ERA5 files, about 4 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 1 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 4 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 3 km grid rides on the storm's 850 hPa circulation for the whole run inside a fixed 12 km parent, which keeps the eyewall resolved at a fraction of the memory of a fixed 3 km grid.",
+     "what_is_given_up": "No 1 km grid at the peak at 2004-03-28 06:00 UTC; the 3 km grid is a following nest 717 km wide instead of a fixed grid over the whole track, so the outer rain bands leave it.",
+     "finest_km": 3.0,
+     "door": "cyclone-setup",
+     "args": {
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "advisory_position": "-28.90,-44.30",
+      "hours": 42,
+      "isftcflx": 1,
+      "nest_budget_gib": 8,
+      "history_interval": 3600,
+      "nest_history_interval": 3600,
+      "card": "8gb"
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "card": "8gb",
+      "lat": -28.9,
+      "lon": -44.3,
+      "width_km": 2388.0,
+      "height_km": 1908.0,
+      "dx_km": 12.0,
+      "following": true,
+      "cyclone_setup": {
+       "source": "era5",
+       "cycle": "2004-03-26T18",
+       "advisory_position": "-28.90,-44.30",
+       "hours": 42,
+       "isftcflx": 1
+      }
+     },
+     "cite": [
+      "computed-fit-tc-2004086s29318-8gb",
+      "rule-recipe-best-tc",
+      "ibtracs-2004086S29318-track",
+      "rule-recipe-landfall",
+      "ibtracs-2004086S29318-2004-03-28T06",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "static-12-3-1-m240",
+       "need_gib": 25.82,
+       "reason": "needs 25.82 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m180",
+       "need_gib": 19.55,
+       "reason": "needs 19.55 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m130",
+       "need_gib": 15.89,
+       "reason": "needs 15.89 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m240",
+       "need_gib": 24.7,
+       "reason": "needs 24.7 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m180",
+       "need_gib": 18.44,
+       "reason": "needs 18.44 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m130",
+       "need_gib": 14.42,
+       "reason": "needs 14.42 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m90",
+       "need_gib": 13.63,
+       "reason": "needs 13.63 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m90",
+       "need_gib": 11.24,
+       "reason": "needs 11.24 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m60",
+       "need_gib": 13.11,
+       "reason": "needs 13.11 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m60",
+       "need_gib": 10.41,
+       "reason": "needs 10.41 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "static-12-3-track",
+       "need_gib": 7.99,
+       "reason": "needs 7.99 GiB; this card's budget is 6.75 GiB"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 35
+    },
+    {
+     "card_gb": 12,
+     "rung": "static-12-3-track",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 218,
+       "ny": 182,
+       "nz": 49,
+       "width_km": 2604.0,
+       "height_km": 2172.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": -29.05,
+        "lon": -47.2
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 400,
+       "ny": 256,
+       "nz": 49,
+       "width_km": 1197.0,
+       "height_km": 765.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -47.2
+       }
+      }
+     ],
+     "start": "2004-03-26T18:00Z",
+     "length_h": 42,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 km grid, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
+     },
+     "fitted_grid": "12 km 218 by 182 points (2604 by 2172 km); 3 km 400 by 256 points (1197 by 765 km); 49 levels",
+     "memory": {
+      "need_gib": 7.99,
+      "budget_gib": 10.75
+     },
+     "disk_gib": 35.0,
+     "disk_budget_gib": 50,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 3600,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.3 GiB of ERA5 files for 8 forcing times; the preparation, 0.0 GiB; the history files, 26.1 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 2.6 GiB; the rendered pictures, 6.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
+     "download": {
+      "bytes": 271095600,
+      "transfer_bytes": 4408000000,
+      "objects": 8,
+      "leads": 8,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 26454551,
+      "chain": "experiment"
+     },
+     "est_minutes": 45,
+     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.3 GB of ERA5 files, about 4 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 7 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "The 3 km grid holds the whole track for all 42 hours, so the eyewall is resolved from the start through the peak at 2004-03-28 06:00 UTC and the storm never crosses a nest edge.",
+     "what_is_given_up": "No 1 km grid at the peak at 2004-03-28 06:00 UTC, so the eyewall is at 3 km and the peak wind is likely to be too low.",
+     "finest_km": 3.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 699
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4",
+      "buffer_km": "700,0",
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "era5_provider": "arco",
+      "isftcflx": 1,
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 3600,
+      "card": "12gb"
+     },
+     "box": {
+      "lat": -29.05,
+      "lon": -47.2,
+      "width_km": 1165,
+      "height_km": 723
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "card": "12gb",
+      "lat": -29.05,
+      "lon": -47.2,
+      "width_km": 1165,
+      "height_km": 723,
+      "dx_km": 12.0,
+      "chain": "4",
+      "buffer_km": "700,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tc-2004086s29318-12gb",
+      "rule-recipe-best-tc",
+      "ibtracs-2004086S29318-track",
+      "rule-recipe-landfall",
+      "ibtracs-2004086S29318-2004-03-28T06",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "static-12-3-1-m240",
+       "need_gib": 25.82,
+       "reason": "needs 25.82 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m180",
+       "need_gib": 19.55,
+       "reason": "needs 19.55 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m130",
+       "need_gib": 15.89,
+       "reason": "needs 15.89 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m240",
+       "need_gib": 24.7,
+       "reason": "needs 24.7 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m180",
+       "need_gib": 18.44,
+       "reason": "needs 18.44 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m130",
+       "need_gib": 14.42,
+       "reason": "needs 14.42 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m90",
+       "need_gib": 13.63,
+       "reason": "needs 13.63 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m90",
+       "need_gib": 11.24,
+       "reason": "needs 11.24 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m60",
+       "need_gib": 13.11,
+       "reason": "needs 13.11 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m60",
+       "need_gib": 10.41,
+       "reason": "priced at 10.41 GiB of a 10.75 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 55
+    },
+    {
+     "card_gb": 16,
+     "rung": "static-12-3-1-m90",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 234,
+       "ny": 224,
+       "nz": 49,
+       "width_km": 2796.0,
+       "height_km": 2676.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 456,
+       "ny": 408,
+       "nz": 49,
+       "width_km": 1365.0,
+       "height_km": 1221.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 444,
+       "ny": 306,
+       "nz": 49,
+       "width_km": 443.0,
+       "height_km": 305.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      }
+     ],
+     "start": "2004-03-26T18:00Z",
+     "length_h": 42,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
+     },
+     "fitted_grid": "12 km 234 by 224 points (2796 by 2676 km); 3 km 456 by 408 points (1365 by 1221 km); 1 km 444 by 306 points (443 by 305 km); 49 levels",
+     "memory": {
+      "need_gib": 13.63,
+      "budget_gib": 14.54
+     },
+     "disk_gib": 53.0,
+     "disk_budget_gib": 60,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 7200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.3 GiB of ERA5 files for 8 forcing times; the preparation, 0.1 GiB; the history files, 39.8 GiB, written every hour on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 6.7 GiB; the rendered pictures, 6.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "download": {
+      "bytes": 352593600,
+      "transfer_bytes": 4408000000,
+      "objects": 8,
+      "leads": 8,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 69699874,
+      "chain": "experiment"
+     },
+     "est_minutes": 230,
+     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.4 GB of ERA5 files, about 4 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 4 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 11 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "The 3 km grid holds the storm for all 42 hours, so its eyewall and rain bands are resolved from the start, and a 443 by 303 km grid at 1 km holds the eyewall from 13 hours before to 6 hours after the peak at 2004-03-28 06:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, where the inner core's strength and the damage are decided.",
+     "what_is_given_up": "The 1 km grid has 90 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the nests write every 2 hours instead of every hour, to keep the run within this card's 60 GiB disk budget.",
+     "finest_km": 1.0,
+     "key_cover_h": [
+      13,
+      6
+     ],
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 711
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 457
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "1162,462,0",
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "era5_provider": "arco",
+      "isftcflx": 1,
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 7200,
+      "card": "16gb"
+     },
+     "box": {
+      "lat": -29.05,
+      "lon": -48.75,
+      "width_km": 443,
+      "height_km": 303
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "card": "16gb",
+      "lat": -29.05,
+      "lon": -48.75,
+      "width_km": 443,
+      "height_km": 303,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "1162,462,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tc-2004086s29318-16gb",
+      "rule-recipe-best-tc",
+      "ibtracs-2004086S29318-track",
+      "rule-recipe-landfall",
+      "ibtracs-2004086S29318-2004-03-28T06",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "static-12-3-1-m240",
+       "need_gib": 25.82,
+       "reason": "needs 25.82 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m180",
+       "need_gib": 19.55,
+       "reason": "needs 19.55 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m130",
+       "need_gib": 15.89,
+       "reason": "needs 15.89 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m240",
+       "need_gib": 24.7,
+       "reason": "needs 24.7 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m180",
+       "need_gib": 18.44,
+       "reason": "needs 18.44 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m130",
+       "need_gib": 14.42,
+       "reason": "priced at 14.42 GiB of a 14.54 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 250
+    },
+    {
+     "card_gb": 24,
+     "rung": "static-12-3-1-m180",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 244,
+       "ny": 232,
+       "nz": 49,
+       "width_km": 2916.0,
+       "height_km": 2772.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 496,
+       "ny": 448,
+       "nz": 49,
+       "width_km": 1485.0,
+       "height_km": 1341.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 630,
+       "ny": 486,
+       "nz": 49,
+       "width_km": 629.0,
+       "height_km": 485.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      }
+     ],
+     "start": "2004-03-26T18:00Z",
+     "length_h": 42,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
+     },
+     "fitted_grid": "12 km 244 by 232 points (2916 by 2772 km); 3 km 496 by 448 points (1485 by 1341 km); 1 km 630 by 486 points (629 by 485 km); 49 levels",
+     "memory": {
+      "need_gib": 19.55,
+      "budget_gib": 22.06
+     },
+     "disk_gib": 68.2,
+     "disk_budget_gib": 80,
+     "output": {
+      "history_interval_s": 10800,
+      "nest_history_interval_s": 7200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 8 forcing times; the preparation, 0.1 GiB; the history files, 53.2 GiB, written every 3 hours on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 10.4 GiB; the rendered pictures, 4.1 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "download": {
+      "bytes": 379440000,
+      "transfer_bytes": 4408000000,
+      "objects": 8,
+      "leads": 8,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 108926255,
+      "chain": "experiment"
+     },
+     "est_minutes": 440,
+     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.4 GB of ERA5 files, about 4 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 7 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 14 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "The 3 km grid holds the storm for all 42 hours, so its eyewall and rain bands are resolved from the start, and a 623 by 483 km grid at 1 km holds the eyewall from 19 hours before to 6 hours after the peak at 2004-03-28 06:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, where the inner core's strength and the damage are decided.",
+     "what_is_given_up": "The 1 km grid has 180 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the nests write every 2 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 80 GiB disk budget.",
+     "finest_km": 1.0,
+     "key_cover_h": [
+      19,
+      6
+     ],
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 711
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 427
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "1122,422,0",
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "era5_provider": "arco",
+      "isftcflx": 1,
+      "history_interval_s": 10800,
+      "nest_history_interval_s": 7200,
+      "card": "24gb"
+     },
+     "box": {
+      "lat": -29.05,
+      "lon": -48.75,
+      "width_km": 623,
+      "height_km": 483
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "card": "24gb",
+      "lat": -29.05,
+      "lon": -48.75,
+      "width_km": 623,
+      "height_km": 483,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "1122,422,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tc-2004086s29318-24gb",
+      "rule-recipe-best-tc",
+      "ibtracs-2004086S29318-track",
+      "rule-recipe-landfall",
+      "ibtracs-2004086S29318-2004-03-28T06",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "static-12-3-1-m240",
+       "need_gib": 25.82,
+       "reason": "needs 25.82 GiB; this card's budget is 22.06 GiB"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 465
+    },
+    {
+     "card_gb": 32,
+     "rung": "static-12-3-1-m240",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 244,
+       "ny": 232,
+       "nz": 49,
+       "width_km": 2916.0,
+       "height_km": 2772.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 496,
+       "ny": 448,
+       "nz": 49,
+       "width_km": 1485.0,
+       "height_km": 1341.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 756,
+       "ny": 612,
+       "nz": 49,
+       "width_km": 755.0,
+       "height_km": 611.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": -29.05,
+        "lon": -48.75
+       }
+      }
+     ],
+     "start": "2004-03-26T18:00Z",
+     "length_h": 42,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
+     },
+     "fitted_grid": "12 km 244 by 232 points (2916 by 2772 km); 3 km 496 by 448 points (1485 by 1341 km); 1 km 756 by 612 points (755 by 611 km); 49 levels",
+     "memory": {
+      "need_gib": 25.82,
+      "budget_gib": 29.58
+     },
+     "disk_gib": 85.6,
+     "disk_budget_gib": 100,
+     "output": {
+      "history_interval_s": 10800,
+      "nest_history_interval_s": 7200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 8 forcing times; the preparation, 0.1 GiB; the history files, 67.9 GiB, written every 3 hours on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 13.1 GiB; the rendered pictures, 4.1 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
+     "download": {
+      "bytes": 379440000,
+      "transfer_bytes": 4408000000,
+      "objects": 8,
+      "leads": 8,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 138065066,
+      "chain": "experiment"
+     },
+     "est_minutes": 620,
+     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.4 GB of ERA5 files, about 4 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 9 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 18 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "The 3 km grid holds the storm for all 42 hours, so its eyewall and rain bands are resolved from the start, and a 743 by 603 km grid at 1 km holds the eyewall from 24 hours before to 6 hours after the peak at 2004-03-28 06:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, where the inner core's strength and the damage are decided.",
+     "what_is_given_up": "The nests write every 2 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 100 GiB disk budget; the layout itself is the ideal one.",
+     "finest_km": 1.0,
+     "key_cover_h": [
+      24,
+      6
+     ],
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 711
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 364
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "1062,362,0",
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "era5_provider": "arco",
+      "isftcflx": 1,
+      "history_interval_s": 10800,
+      "nest_history_interval_s": 7200,
+      "card": "32gb"
+     },
+     "box": {
+      "lat": -29.05,
+      "lon": -48.75,
+      "width_km": 743,
+      "height_km": 603
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "2004-03-26T18",
+      "hours": 42,
+      "card": "32gb",
+      "lat": -29.05,
+      "lon": -48.75,
+      "width_km": 743,
+      "height_km": 603,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "1062,362,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tc-2004086s29318-32gb",
+      "rule-recipe-best-tc",
+      "ibtracs-2004086S29318-track",
+      "rule-recipe-landfall",
+      "ibtracs-2004086S29318-2004-03-28T06",
+      "rule-recipe-time-estimate"
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 650
+    }
+   ],
+   "cite": [
+    "rule-recipe-best-tc",
+    "ibtracs-2004086S29318-track",
+    "rule-recipe-landfall",
+    "ibtracs-2004086S29318-2004-03-28T06"
+   ]
+  }
+ ]
+}

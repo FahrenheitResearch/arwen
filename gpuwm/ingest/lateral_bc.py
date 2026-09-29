@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
 import numpy as np
 
+from gpuwm.boundary_fields import SCALAR_ARRAY_BOUNDARY_FIELDS
 from gpuwm.core.kernels import get_kernel
 from gpuwm.grid_requirements import boundary_axis
 
@@ -46,13 +48,70 @@ def _host(value):
     return np.asarray(value, dtype=np.float64)
 
 
+def _frozen_boundary_view(array) -> bool:
+    """Whether no writer can reach ``array``'s memory at all.
+
+    True for an array that is read-only at every link of its base chain and
+    whose memory is an immutable ``bytes`` object -- which is exactly what
+    :func:`_immutable_boundary_array` produces, and what every slice or
+    zero-stride broadcast of one of those is.  numpy refuses to make such
+    an array writeable again, so it needs no private copy to stay
+    immutable.
+    """
+    link = array
+    while isinstance(link, np.ndarray):
+        if link.flags.writeable:
+            return False
+        link = link.base
+    return isinstance(link, bytes)
+
+
 def _immutable_boundary_array(value):
+    """An immutable table: a private copy, or the view itself when frozen.
+
+    A VIEW OF A FROZEN TABLE IS KEPT AS A VIEW.  A streamed domain's tile
+    tables are windows of the domain's own tables, and copying every window
+    is what made host memory grow with tile count: 27.7 GB at 1,190 tiles,
+    and 125 GB committed on a 96 GB box, against a 0.93 GiB estimate.  A
+    window of a frozen table cannot go stale under an attached device
+    mirror -- nothing can write it -- so the copy bought nothing.
+    """
     source = np.asarray(value)
     if source.dtype.hasobject:
         raise TypeError("boundary tables must have a numeric dtype")
+    if _frozen_boundary_view(source):
+        return source
     packed = np.ascontiguousarray(source)
     return np.frombuffer(packed.tobytes(order="C"),
                          dtype=packed.dtype).reshape(packed.shape)
+
+
+#: The one zero every inert boundary table is a view of.  Immutable storage
+#: (``bytes``), so :func:`_immutable_boundary_array` keeps views of it as
+#: views.
+_INERT_ZERO = np.frombuffer(bytes(8), dtype=np.float64).reshape(())
+
+
+def inert_boundary_table(shape):
+    """A zero table of ``shape`` that allocates nothing.
+
+    A zero-stride, read-only view of one shared zero.  An interior tile side
+    touches no domain edge, so its value and tendency are zero, and the one
+    thing the table has to carry is its SHAPE -- the device slot a buffer
+    reuses when it later serves an edge tile is sized from it.  Allocating
+    real zeros for every interior side of every tile, interval and field is
+    the other half of the host memory that grew with tile count.
+
+    One view per shape, shared: a streamed run asks for the same few window
+    shapes on every tile bind, and the view is immutable, so handing out
+    the same object is safe and keeps a bind from rebuilding it.
+    """
+    return _inert_boundary_table(tuple(int(n) for n in shape))
+
+
+@lru_cache(maxsize=256)
+def _inert_boundary_table(shape: tuple[int, ...]):
+    return np.broadcast_to(_INERT_ZERO, shape)
 
 
 @dataclass(frozen=True)
@@ -178,21 +237,71 @@ class BoundaryInterval:
         object.__setattr__(self, "fields", fields)
 
 
+#: The four sides in the bit order ``state_specified_relaxation`` reads its
+#: ``relax_sides`` mask in (lbc_state.cu).
+_RELAX_SIDE_BITS = (("south", 1), ("north", 2), ("west", 4), ("east", 8))
+_ALL_RELAX_SIDES = 15
+
+
 @dataclass(frozen=True)
 class LateralBoundaries:
     intervals: tuple[BoundaryInterval, ...]
     spec_bdy_width: int = 5
     spec_zone: int = 1
     relax_zone: int = 4
+    #: Sides of this array that are NOT domain edges: the interior seams of
+    #: a streamed tile (gpuwm.core.streaming.window_boundaries), whose
+    #: tables are inert placeholders.  The relaxation zone is not applied
+    #: on a seam.  Empty for every whole domain.
+    #:
+    #: WHY A SEAM CANNOT SIMPLY RELAX TOWARD ITS PLACEHOLDER.  Doing so is
+    #: harmless only while the zone sits inside the tile's halo, and a
+    #: halo of ``tilestream.harness.halo_radius`` (16 cells at
+    #: time_step_sound 4) holds WRF's 4-cell zone with room to spare.  A
+    #: downscaled child's zone is sized in parent cells -- 24 child cells
+    #: at ratio 12, 40 at ratio 20 -- so a seam relaxing toward its zero
+    #: placeholder would pull OWNED cells 16 to 39 cells in from the seam
+    #: toward zero wind and zero coupled theta, every step.
+    seam_sides: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        seams = tuple(self.seam_sides)
+        unknown = sorted(set(seams) - {side for side, _ in _RELAX_SIDE_BITS})
+        if unknown:
+            raise ValueError(
+                f"seam_sides names no side of the array: {unknown}")
+        object.__setattr__(self, "seam_sides", seams)
 
     def interval_at(self, elapsed_seconds: float) -> BoundaryInterval:
-        t = float(elapsed_seconds)
-        for interval in self.intervals:
+        return self.intervals[interval_index(self.intervals, elapsed_seconds)]
+
+
+def interval_index(intervals, elapsed_seconds: float) -> int:
+    """Index of the forcing interval that serves ``elapsed_seconds``.
+
+    Reads only ``start_seconds``/``end_seconds``, so a windowed tile series
+    can be searched on its DOMAIN's intervals (same times) without windowing
+    any interval it does not return.
+    """
+    t = float(elapsed_seconds)
+    # A streamed series (gpuwm.ingest.boundary_stream.StreamedIntervals)
+    # declares its schedule as ``bounds``, so the search reads no interval
+    # it does not return and never waits on one that is not prepared yet.
+    bounds = getattr(intervals, "bounds", None)
+    if bounds is None:
+        for index, interval in enumerate(intervals):
             if interval.start_seconds <= t < interval.end_seconds:
-                return interval
-        if t == self.intervals[-1].end_seconds:
-            return self.intervals[-1]
-        raise ValueError(f"boundary time {t} s is outside the available intervals")
+                return index
+        if t == intervals[-1].end_seconds:
+            return len(intervals) - 1
+        raise ValueError(
+            f"boundary time {t} s is outside the available intervals")
+    for index, (start, end) in enumerate(bounds):
+        if start <= t < end:
+            return index
+    if t == bounds[-1][1]:
+        return len(bounds) - 1
+    raise ValueError(f"boundary time {t} s is outside the available intervals")
 
 
 @dataclass(frozen=True)
@@ -346,7 +455,48 @@ def build_lateral_boundaries(snapshots: Sequence[Mapping[str, object]],
                              int(spec_zone), int(relax_zone))
 
 
-def _weights(width, spec_zone, relax_zone, dt, spec_exp, *, wrf_real=False):
+def relax_timescale_seconds(cfg) -> float:
+    """``cfg.relax_timescale_s``, 0.0 for a config that predates the key."""
+    return float(getattr(cfg, "relax_timescale_s", 0.0) or 0.0)
+
+
+def specified_relaxes_w(cfg) -> bool:
+    """Whether a SPECIFIED domain relaxes and specifies ``w`` from its table.
+
+    A nest always does (WRF relax_bdy_dry, nested branch); this is the same
+    treatment on a specified domain that asks for it (``cfg.relax_w``).
+    """
+    return bool(getattr(cfg, "specified", False)
+                and not getattr(cfg, "nested", False)
+                and getattr(cfg, "relax_w", False))
+
+
+def _relax_side_mask(boundaries) -> int:
+    """Bit mask of the sides whose relaxation zone applies (all four for a
+    whole domain; a streamed tile's seams drop out)."""
+    seams = getattr(boundaries, "seam_sides", ()) or ()
+    mask = _ALL_RELAX_SIDES
+    for side, bit in _RELAX_SIDE_BITS:
+        if side in seams:
+            mask &= ~bit
+    return mask
+
+
+def _frame_rings(ny: int, nx: int, width: int) -> int:
+    """How many of the ``width`` perimeter frames a ``ny x nx`` array has.
+
+    A whole domain always has all of them (``_validate_frame_domain``).  A
+    streamed tile window narrower than twice a wide relaxation zone does
+    not, and the frames past the middle would be degenerate: every cell is
+    already in one of the first ``(min(ny, nx) + 1) // 2``.  On an odd side
+    the last of those is a single line, which :func:`_perimeter_count` and
+    ``frame_point`` list once.
+    """
+    return max(0, min(int(width), (min(int(ny), int(nx)) + 1) // 2))
+
+
+def _weights(width, spec_zone, relax_zone, dt, spec_exp, *, wrf_real=False,
+             timescale_s=0.0):
     fcx = np.zeros(width, dtype=np.float32)
     gcx = np.zeros(width, dtype=np.float32)
     for loop in range(spec_zone + 1, spec_zone + relax_zone + 1):
@@ -356,19 +506,36 @@ def _weights(width, spec_zone, relax_zone, dt, spec_exp, *, wrf_real=False):
         if wrf_real:
             # module_bc_em.F:1329-1331, nested branch: default-REAL
             # left-to-right operations and no sponge multiplication.
-            dt32 = np.float32(dt)
             numerator = np.float32(spec_zone + relax_zone - loop)
             denominator = np.float32(relax_zone - 1)
-            f = np.float32(np.float32(0.1) / dt32)
+            if timescale_s > 0.0:
+                # The same order with the time scale in seconds
+                # (RunConfig.relax_timescale_s): 1/tau and 1/(5 tau) in
+                # place of 0.1/dt and 1/(50 dt).
+                tau32 = np.float32(timescale_s)
+                f = np.float32(np.float32(1.0) / tau32)
+                g = np.float32(np.float32(1.0) / tau32)
+                g = np.float32(g / np.float32(5.0))
+            else:
+                dt32 = np.float32(dt)
+                f = np.float32(np.float32(0.1) / dt32)
+                g = np.float32(np.float32(1.0) / dt32)
+                g = np.float32(g / np.float32(50.0))
             f = np.float32(f * numerator)
             fcx[index] = np.float32(f / denominator)
-            g = np.float32(np.float32(1.0) / dt32)
-            g = np.float32(g / np.float32(50.0))
             g = np.float32(g * numerator)
             gcx[index] = np.float32(g / denominator)
             continue
         ramp = (spec_zone + relax_zone - loop) / (relax_zone - 1)
         sponge = np.exp(-(loop - (spec_zone + 1)) * spec_exp)
+        if timescale_s > 0.0:
+            # The same law as below with its time scale set in seconds
+            # instead of in steps: 0.1 / dt is 1 / (10 dt) and 1 / (50 dt)
+            # is a fifth of that, so timescale_s = 10 dt reproduces WRF's
+            # coefficients to rounding.
+            fcx[index] = ramp * sponge / timescale_s
+            gcx[index] = ramp * sponge / (5.0 * timescale_s)
+            continue
         fcx[index] = 0.1 / dt * ramp * sponge
         gcx[index] = 1.0 / dt / 50.0 * ramp * sponge
     return fcx, gcx
@@ -387,14 +554,49 @@ def lateral_boundary_clock_dt(cfg) -> float:
 
 
 def _perimeter_count(ny: int, nx: int, width: int) -> int:
-    """Number of cells in ``width`` nested frames (Y sides own corners)."""
-    return sum(2 * (nx - 2 * d) + 2 * max(ny - 2 * d - 2, 0)
-               for d in range(width))
+    """Number of cells in ``width`` nested frames (Y sides own corners).
+
+    Each cell once: the middle ring of an odd side, whose two rows (or two
+    columns) are one line, counts that line once, as ``frame_point`` in
+    lbc_state.cu lists it.  Only a streamed tile window narrower than two
+    relaxation zones has such a ring (:func:`_frame_rings`).
+    """
+    total = 0
+    for d in range(width):
+        rows = 2 if ny - 1 - d > d else 1
+        cols = 2 if nx - 1 - d > d else 1
+        total += (rows * max(nx - 2 * d, 0)
+                  + cols * max(ny - 2 * d - 2, 0))
+    return total
 
 
 def _validate_frame_domain(ny: int, nx: int, width: int, purpose: str) -> None:
     if width < 1 or min(ny, nx) <= boundary_axis(width):
         raise ValueError(f"{purpose} width leaves no unique interior frame")
+
+
+def _validate_relaxation_window(ny: int, nx: int, width: int,
+                                relax_sides: int, purpose: str) -> None:
+    """The frame check, for an array that may be a streamed tile window.
+
+    A whole domain (all four sides relax) keeps the whole-domain rule.  A
+    tile window only has to hold the relaxation band of the domain edges
+    it owns: its seams relax nothing, so a window narrower than two zones
+    is legal as long as each owned band, and the row inside it that the
+    relaxation stencil reads, fits.
+    """
+    if relax_sides == _ALL_RELAX_SIDES:
+        _validate_frame_domain(ny, nx, width, purpose)
+        return
+    if width < 1:
+        raise ValueError(f"{purpose} width leaves no unique interior frame")
+    for n, low, high, axis in ((ny, 1, 2, "y"), (nx, 4, 8, "x")):
+        owned = bool(relax_sides & low) + bool(relax_sides & high)
+        if owned and n <= owned * width:
+            raise ValueError(
+                f"{purpose}: a {n}-cell tile window along {axis} cannot "
+                f"hold the {width}-cell relaxation band of the domain "
+                "edge it owns plus the row inside it; plan wider tiles")
 
 
 def _boundary_field_shape(boundary: FieldBoundary
@@ -618,7 +820,7 @@ def _active_device_interval(state, cfg):
 
 
 def _resident_weights(state, width, spec_zone, relax_zone, dt, spec_exp, *,
-                      wrf_real=False):
+                      wrf_real=False, timescale_s=0.0):
     import cupy as cp
 
     resident = getattr(state, "_lateral_boundary_device", None)
@@ -626,11 +828,12 @@ def _resident_weights(state, width, spec_zone, relax_zone, dt, spec_exp, *,
         raise RuntimeError("lateral boundaries were not attached to the state")
     dt_key = np.float32(dt) if wrf_real else float(dt)
     key = (int(width), int(spec_zone), int(relax_zone), dt_key,
-           float(spec_exp), bool(wrf_real))
+           float(spec_exp), bool(wrf_real), float(timescale_s))
     hit = resident.weights.get(key)
     if hit is None:
         fcx, gcx = _weights(
-            key[0], key[1], key[2], key[3], key[4], wrf_real=key[5])
+            key[0], key[1], key[2], key[3], key[4], wrf_real=key[5],
+            timescale_s=key[6])
         # BOUNDED.  The key carries dt, so under a FIXED clock this cache
         # holds exactly one entry for the life of the run and the bound
         # never engages.  Under an adaptive clock dt changes almost every
@@ -677,7 +880,7 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
                                state=None, field_name=None, weights=None,
                                clear_specified=False, add_held=None,
                                divide_msf=False, source_field=None,
-                               source_mup=None):
+                               source_mup=None, timescale_s=0.0):
     """Apply ``spec_bdytend`` + ``relax_bdytend_core`` to device arrays."""
     try:
         import cupy as cp
@@ -709,7 +912,7 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
             apply_relax=apply_relax, weights=weights,
             clear_specified=clear_specified, add_held=add_held,
             divide_msf=divide_msf, source_field=source_field,
-            source_mup=source_mup)
+            source_mup=source_mup, timescale_s=timescale_s)
         return
 
     field = cp.asarray(field, dtype=cp.float32)
@@ -729,7 +932,8 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
     if nonlinear:
         dtbc = 0.0
     if weights is None:
-        fcx, gcx = _weights(width, spec_zone, relax_zone, dt, spec_exp)
+        fcx, gcx = _weights(width, spec_zone, relax_zone, dt, spec_exp,
+                            timescale_s=timescale_s)
         fcx = cp.asarray(fcx)
         gcx = cp.asarray(gcx)
     else:
@@ -767,7 +971,8 @@ def _apply_legacy_held_interior(tendency, held, msft, active_width, *,
 def _launch_state_relaxation(state, field_name, tendency, boundary, *,
                              dtbc, dt, spec_zone, relax_zone, spec_exp,
                              apply_relax, weights, clear_specified, add_held,
-                             divide_msf, source_field, source_mup):
+                             divide_msf, source_field, source_mup,
+                             timescale_s=0.0):
     """Perimeter-only coupled-field relaxation without 3-D temporaries."""
     import cupy as cp
 
@@ -776,12 +981,19 @@ def _launch_state_relaxation(state, field_name, tendency, boundary, *,
     if width < spec_zone + relax_zone:
         raise ValueError("boundary width is smaller than spec_zone + relax_zone")
     if weights is None:
-        fcx, gcx = _weights(width, spec_zone, relax_zone, dt, spec_exp)
+        fcx, gcx = _weights(width, spec_zone, relax_zone, dt, spec_exp,
+                            timescale_s=timescale_s)
         weights = (cp.asarray(fcx), cp.asarray(gcx))
     fcx, gcx = weights
     active_width = max(spec_zone, relax_zone)
-    _validate_frame_domain(
-        ny, nx, active_width, f"{field_name} specified/relaxation")
+    relax_sides = _relax_side_mask(getattr(state, "lateral_boundaries", None))
+    _validate_relaxation_window(
+        ny, nx, active_width, relax_sides,
+        f"{field_name} specified/relaxation")
+    # A whole domain passes _validate_frame_domain, so this is
+    # active_width itself there; only a seamed tile window can be narrower
+    # than two zones.
+    active_width = _frame_rings(ny, nx, active_width)
     frame_count = _perimeter_count(ny, nx, active_width)
     count = nz * frame_count
     sides = []
@@ -818,7 +1030,7 @@ def _launch_state_relaxation(state, field_name, tendency, boundary, *,
         np.int32(add_held is not None), np.int32(divide_msf),
         np.int32(state.has_msf), np.int32(state.thb.ndim == 3),
         np.int32(kind), np.int32(nz), np.int32(ny), np.int32(nx),
-        np.int32(frame_count)))
+        np.int32(frame_count), np.int32(relax_sides)))
     _apply_legacy_held_interior(
         tendency, held, state.msft, active_width,
         divide_msf=divide_msf, add_held=(add_held is not None))
@@ -1062,6 +1274,18 @@ def build_state_lateral_boundaries(states, times, *, spec_bdy_width=5,
 def start_last_forcing_order(count: int) -> tuple[int, ...]:
     """The positions of ``count`` forcing times, START TIME LAST.
 
+    WHO STILL USES IT.  The preparations that build every forcing time
+    before anything is published: the domain-tree (hierarchy) arms of
+    ``gpuwm/mapped_direct.py``, ``gpuwm/gfs_direct.py`` and
+    ``gpuwm/era5_direct.py``, the single-domain ERA5 arm with a
+    water-temperature overlay (its receipt binds every forcing time into
+    the cache identity), the met_em route (``gpuwm/metem_forecast.py``)
+    and ``gpuwm/runtime.py``.  Every other single-domain preparation
+    builds the start time FIRST instead, writes it into the prepared head
+    and releases it before the next time
+    (``gpuwm/ingest/boundary_stream.py``), which holds the same one time.
+    This guard retires when those routes are chained too.
+
     THE DEFECT THIS EXISTS TO CLOSE.  A prepare loop that walks its
     forcing times in time order has to hold the START time for the whole
     loop: it is the first one built and the last one used, because the
@@ -1143,9 +1367,17 @@ class StateBoundaryFrames:
         #: None until the first add fixes which addressing this
         #: accumulator uses; see :meth:`_position`.
         self._indexed: bool | None = None
+        self._released: set[int] = set()
 
     def __len__(self) -> int:
         return len(self._frames)
+
+    @property
+    def inventory(self) -> tuple[str, ...]:
+        """The boundary field names, fixed by the first frame added."""
+        if self._inventory is None:
+            raise ValueError("no boundary frame has been added yet")
+        return tuple(sorted(self._inventory))
 
     @property
     def retained_bytes(self) -> int:
@@ -1154,6 +1386,22 @@ class StateBoundaryFrames:
                    for frame in self._frames.values()
                    for side in frame.values()
                    for array in side.values())
+
+    @property
+    def interval_host_bytes(self) -> int:
+        """Host bytes of one interval :meth:`interval` builds from these frames.
+
+        Its value and its tendency, each a float64 copy of one frame's
+        four sides, which is also what a reader of the written interval
+        holds.  Needs one frame held, the start time's in a chained
+        preparation.
+        """
+        if not self._frames:
+            raise ValueError("no boundary frame is held to price an interval")
+        frame = next(iter(self._frames.values()))
+        return 2 * sum(int(array.size) * np.dtype(np.float64).itemsize
+                       for side in frame.values()
+                       for array in side.values())
 
     def _position(self, index: int | None) -> int:
         """Where this frame belongs in the forcing sequence.
@@ -1180,7 +1428,7 @@ class StateBoundaryFrames:
         if position < 0:
             raise ValueError(
                 f"forcing-time index {position} is negative")
-        if position in self._frames:
+        if position in self._frames or position in self._released:
             raise ValueError(
                 f"forcing-time index {position} was added twice")
         return position
@@ -1242,53 +1490,104 @@ class StateBoundaryFrames:
             raise ValueError(
                 f"forcing-time indices {missing} were never added, so no "
                 "boundary interval can be built across them")
-        frames = [self._frames[index] for index in range(len(times))]
         seconds = _seconds(times)
         intervals = tuple(
-            build_lateral_interval_from_sides(
-                frames[index], frames[index + 1],
-                start_seconds=float(seconds[index]),
-                end_seconds=float(seconds[index + 1]))
-            for index in range(len(frames) - 1))
+            self._interval(index, seconds)
+            for index in range(len(times) - 1))
         return LateralBoundaries(intervals, self.spec_bdy_width,
                                  self.spec_zone, self.relax_zone)
 
+    def interval(self, index: int,
+                 times: Sequence[datetime | float]) -> BoundaryInterval:
+        """Interval ``index``, from frames ``index`` and ``index + 1``.
 
-def _validate_lateral_attachment(state, boundaries: LateralBoundaries) -> None:
-    """Validate external forcing geometry against one target state."""
-    if not boundaries.intervals:
+        The unit a chained preparation publishes as soon as both frames
+        exist.  :meth:`build` is exactly this call for every index, so a
+        streamed interval and the whole-set one share operands and
+        function, bit for bit.
+        """
+        return self._interval(int(index), _seconds(times))
+
+    def _interval(self, index: int, seconds) -> BoundaryInterval:
+        if not 0 <= index < len(seconds) - 1:
+            raise ValueError(
+                f"boundary interval {index} is outside the {len(seconds)} "
+                "forcing times")
+        missing = [position for position in (index, index + 1)
+                   if position not in self._frames]
+        if missing:
+            released = [position for position in missing
+                        if position in self._released]
+            raise ValueError(
+                f"forcing-time frames {missing} are not held"
+                + (f" ({released} were released after their intervals "
+                   "were written)" if released else "")
+                + f", so boundary interval {index} cannot be built")
+        return build_lateral_interval_from_sides(
+            self._frames[index], self._frames[index + 1],
+            start_seconds=float(seconds[index]),
+            end_seconds=float(seconds[index + 1]))
+
+    def release(self, index: int) -> None:
+        """Drop frame ``index`` once every interval that reads it exists.
+
+        A chained preparation holds two frames at a time instead of all of
+        them.  The position stays taken, so it cannot be added again.
+        """
+        index = int(index)
+        if self._frames.pop(index, None) is not None:
+            self._released.add(index)
+
+
+def _validate_lateral_attachment(state, boundaries: LateralBoundaries, *,
+                                 intervals=None) -> None:
+    """Validate external forcing geometry against one target state.
+
+    ``intervals`` limits the per-interval checks to those given (a streamed
+    series validates interval 0 at attach and each later one as it loads,
+    through :func:`_validate_lateral_interval`); the default is every one.
+    """
+    if not len(boundaries.intervals):
         raise ValueError("at least one lateral-boundary interval is required")
     if boundaries.spec_zone < 1 or boundaries.relax_zone < 2:
         raise ValueError("spec_zone must be >=1 and relax_zone >=2")
     if boundaries.spec_bdy_width < (
             boundaries.spec_zone + boundaries.relax_zone):
         raise ValueError("spec_bdy_width must cover spec_zone + relax_zone")
-    required = {"u", "v", "theta", "phi", "mu"}
-    for interval in boundaries.intervals:
-        missing = required - set(interval.fields)
-        if missing:
-            raise ValueError(f"state boundary interval is missing {sorted(missing)}")
+    for interval in (boundaries.intervals if intervals is None
+                     else intervals):
+        _validate_lateral_interval(state, boundaries, interval)
 
-        for name, boundary in interval.fields.items():
-            nz, ny, nx, width = _boundary_field_shape(boundary)
-            if width != boundaries.spec_bdy_width:
-                raise ValueError(
-                    f"{name} boundary width {width} does not match "
-                    f"spec_bdy_width {boundaries.spec_bdy_width}")
-            _validate_frame_domain(
-                ny, nx, max(boundaries.spec_zone, boundaries.relax_zone),
-                f"{name} specified/relaxation")
-            if name == "mu":
-                target = getattr(state, "mup", None)
-                expected = None if target is None else (1, *target.shape)
-            else:
-                target_name = {"theta": "thp", "phi": "php"}.get(name, name)
-                target = getattr(state, target_name, None)
-                expected = None if target is None else target.shape
-            if expected is not None and (nz, ny, nx) != expected:
-                raise ValueError(
-                    f"{name} boundary shape {(nz, ny, nx)} does not match "
-                    f"state shape {expected}")
+
+def _validate_lateral_interval(state, boundaries: LateralBoundaries,
+                               interval: BoundaryInterval) -> None:
+    """One interval's checks against the target state."""
+    required = {"u", "v", "theta", "phi", "mu"}
+    missing = required - set(interval.fields)
+    if missing:
+        raise ValueError(f"state boundary interval is missing {sorted(missing)}")
+
+    for name, boundary in interval.fields.items():
+        nz, ny, nx, width = _boundary_field_shape(boundary)
+        if width != boundaries.spec_bdy_width:
+            raise ValueError(
+                f"{name} boundary width {width} does not match "
+                f"spec_bdy_width {boundaries.spec_bdy_width}")
+        _validate_relaxation_window(
+            ny, nx, max(boundaries.spec_zone, boundaries.relax_zone),
+            _relax_side_mask(boundaries),
+            f"{name} specified/relaxation")
+        if name == "mu":
+            target = getattr(state, "mup", None)
+            expected = None if target is None else (1, *target.shape)
+        else:
+            target_name = {"theta": "thp", "phi": "php"}.get(name, name)
+            target = getattr(state, target_name, None)
+            expected = None if target is None else target.shape
+        if expected is not None and (nz, ny, nx) != expected:
+            raise ValueError(
+                f"{name} boundary shape {(nz, ny, nx)} does not match "
+                f"state shape {expected}")
 
 def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
     """Attach validated, immutable specified forcing to a model state.
@@ -1399,9 +1698,30 @@ def attach_streaming_lateral_boundaries(
     the DOMAIN's clock right after converting; this function's preservation
     covers every later re-attachment on the same state.
     """
-    _validate_lateral_attachment(state, boundaries)
-    carried_clock = _carried_external_clock(state)
+    # A streamed series (gpuwm.ingest.boundary_stream) holds intervals that
+    # may not be prepared yet: interval 0 is validated here, and the series
+    # validates each later interval against this state as it loads it,
+    # with the layout check below, so attaching never waits for the seal.
+    lazy = getattr(boundaries.intervals, "bounds", None) is not None
     first = boundaries.intervals[0]
+    _validate_lateral_attachment(
+        state, boundaries, intervals=(first,) if lazy else None)
+    if lazy:
+        reference = None
+
+        def validate(interval):
+            # The per-interval checks the eager loops below make, made as
+            # each interval is first read: against this state, and the
+            # same inventory and side layout as interval 0.
+            _validate_lateral_interval(state, boundaries, interval)
+            if (tuple(interval.fields) != inventory
+                    or layout(interval) != reference):
+                raise ValueError(
+                    "streaming lateral intervals must have identical "
+                    "inventories and side layouts")
+
+        boundaries.intervals.validate = validate
+    carried_clock = _carried_external_clock(state)
     inventory = tuple(first.fields)
 
     def layout(interval):
@@ -1412,7 +1732,9 @@ def attach_streaming_lateral_boundaries(
             for name in inventory)
 
     reference_layout = layout(first)
-    for interval in boundaries.intervals[1:]:
+    if lazy:
+        reference = reference_layout
+    for interval in (() if lazy else boundaries.intervals[1:]):
         if (tuple(interval.fields) != inventory or
                 layout(interval) != reference_layout):
             raise ValueError(
@@ -1575,15 +1897,31 @@ def apply_state_lateral_boundaries(state, cfg, *, rk_stage: int) -> None:
         ("u", state.ru_t), ("v", state.rv_t),
         ("theta", state.rth_t), ("phi", state.rph_t),
     ]
+    timescale_s = relax_timescale_seconds(cfg)
     common = dict(
         dtbc=dtbc, dt=dt,
         spec_zone=cfg.spec_zone,
-        relax_zone=cfg.relax_zone, spec_exp=spec_exp)
+        relax_zone=cfg.relax_zone, spec_exp=spec_exp,
+        timescale_s=timescale_s)
     weights = _resident_weights(
         state, device_interval.fields["u"].west.value.shape[-1],
         cfg.spec_zone, cfg.relax_zone, common["dt"], spec_exp,
-        wrf_real=bool(cfg.nested))
+        wrf_real=bool(cfg.nested), timescale_s=timescale_s)
     if cfg.specified:
+        if specified_relaxes_w(cfg):
+            # w joins the held rows exactly as it joins a nest's
+            # (nested_rows below): relaxed in the zone toward the table,
+            # and the table's tendency on the specified rows, which the
+            # acoustic frame kernel then integrates instead of copying the
+            # first interior row (gpuwm/core/acoustic.py).
+            if "w" not in device_interval.fields:
+                raise RuntimeError(
+                    "relax_w = true needs a w boundary table, and this "
+                    "domain's lateral forcing carries none (its source "
+                    "supplies no vertical velocity).  Set relax_w = false "
+                    "for this forcing, or force the domain from parent "
+                    "history, which carries W.")
+            held_rows = held_rows + [("w", state.rw_t)]
         for name, tendency in held_rows:
             held = state.scratch(tendency.shape, "lbc_relax_" + name)
             if rk_stage == 0:
@@ -1655,10 +1993,11 @@ def apply_state_scalar_lateral_boundary(state, cfg, field_name, tendency, *,
     device_interval, dtbc, dt, spec_exp = _active_device_interval(state, cfg)
     if field_name not in device_interval.fields:
         return
+    timescale_s = relax_timescale_seconds(cfg)
     weights = _resident_weights(
         state, device_interval.fields[field_name].west.value.shape[-1],
         cfg.spec_zone, cfg.relax_zone, dt, spec_exp,
-        wrf_real=bool(cfg.nested))
+        wrf_real=bool(cfg.nested), timescale_s=timescale_s)
     apply_specified_relaxation(
         getattr(state, field_name), tendency, device_interval.fields[field_name],
         dtbc=dtbc, dt=dt,
@@ -1666,7 +2005,8 @@ def apply_state_scalar_lateral_boundary(state, cfg, field_name, tendency, *,
         spec_exp=spec_exp, apply_relax=apply_relax,
         state=state, field_name=field_name, weights=weights,
         source_field=source_field,
-        source_mup=(state.mup0 if cfg.nested else None))
+        source_mup=(state.mup0 if cfg.nested else None),
+        timescale_s=timescale_s)
 
 
 def _launch_mu_boundary_values(state, boundary, dtbc, spec_zone):
@@ -1754,30 +2094,46 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
     # five coupled 3-D arrays.
     old_mup_frame = _launch_mu_boundary_values(
         state, device_interval.fields["mu"], dtbc, cfg.spec_zone)
-    # WHICH FIELDS spec_bdy_final forces back.  Every SPECIFIED prognostic
-    # -- the four dry ones plus every supplied external scalar.  The scalar
-    # half is read off the BOUND TABLE (the inventory
-    # ``_coupled_device_fields`` wrote from
+    # WHICH FIELDS spec_bdy_final forces back.  On a NESTED domain every
+    # field the parent supplies.  On a SPECIFIED domain the four dry
+    # prognostics and the supplied moist-array scalars (water vapour): WRF
+    # runs spec_bdy_final on a scalar-array species only when nested
+    # (solve_em.F scalar_species_bdy_loop_3), so a specified domain's
+    # supplied aerosol ring moves by its boundary tendency alone
+    # (``SCALAR_ARRAY_BOUNDARY_FIELDS``).  The scalar half is read off the
+    # BOUND TABLE (the inventory ``_coupled_device_fields`` wrote from
     # ``state._external_scalar_boundary_fields``) rather than spelled here,
     # so a stream that supplies a further scalar is table work and not a new
     # branch.  ``mu`` is excluded because ``_launch_mu_boundary_values``
     # above already installed it and handed back the pre-install frame, and
     # ``w`` because a specified root takes the zero-gradient w of
-    # ``apply_specified_w_zero_gradient``, not a table.
+    # ``apply_specified_w_zero_gradient``, not a table -- unless it relaxes
+    # w (``relax_w``), when it takes the table like a nest.
     #
-    # THE BREAKAGE A HARDCODED ("u", "v", "theta", "phi", "qv") CAUSED.  An
-    # mp=28 domain forced from the monthly WIF climatology supplies nwfa and
-    # nifa as specified scalars (WRF v4.6.1 solve_em.F:2904-2930, the
-    # inventory in gpuwm/boundary_fields.py).  Their spec zone therefore
-    # integrated a boundary TENDENCY every step and was never forced back to
-    # the boundary VALUE, so the relax zone's Davies term and the spec row
-    # fed each other: the aerosol number at the outermost corner grew
-    # geometrically, 74x in the first forecast hour, while qv in that same
-    # cell moved 1.2 percent over that hour, and the full-state health gate
-    # stopped the forecast on ``nwfa`` at the corner cell.
+    # WHY THE AEROSOL IS NOT FORCED BACK HERE ANY MORE.  An mp=28 domain
+    # forced from the monthly WIF climatology supplies nwfa and nifa as
+    # specified scalars.  Their ring once grew geometrically (74x in the
+    # first forecast hour at the outermost corner, five decades in 3.9 h in
+    # the lid layer of a boundary row) until the full-state health gate
+    # stopped the forecast, and this finalizer was widened to force them
+    # back.  That hid the cause rather than removing it: the final
+    # positive-definite scalar stage applied the ring's vertical advection,
+    # which WRF computes and never applies
+    # (``moist._exclude_specified_ring_advection``).  With the ring left to
+    # its boundary tendency, as WRF leaves it, it follows its table on its
+    # own: a 2.25 km parent forced for 4 h kept its aerosol ring within
+    # 1.0e-4 of the table at every level, the mass-coupling roundoff WRF's
+    # ring carries as well, where the ring advection had been moving it up
+    # to 1.6 percent a step for the force-back to put back.
     scalars = tuple(name for name in device_interval.fields
-                    if name in COUPLED_SCALAR_STATE_FIELDS)
-    names = (("u", "v", "theta", "phi", *scalars) if cfg.specified else
+                    if name in COUPLED_SCALAR_STATE_FIELDS
+                    and name not in SCALAR_ARRAY_BOUNDARY_FIELDS)
+    # ``w`` joins a specified domain's list when it relaxes w
+    # (``specified_relaxes_w``): the table's w is then forced back on the
+    # specified rows, as on a nest, instead of the zero-gradient copy.
+    specified_w = ("w",) if specified_relaxes_w(cfg) else ()
+    names = (("u", "v", *specified_w, "theta", "phi", *scalars)
+             if cfg.specified else
              tuple(name for name in device_interval.fields if name != "mu"))
     for name in names:
         if name not in device_interval.fields or (
@@ -1896,7 +2252,9 @@ def apply_specified_w_zero_gradient(state, cfg, field=None) -> None:
     """
     if getattr(cfg, "nested", False):
         return
-    if not cfg.specified:
+    if not cfg.specified or specified_relaxes_w(cfg):
+        # A specified domain that relaxes w takes the nest's treatment
+        # (the table's w on the specified rows), not this copy.
         return
     import cupy as cp
 
@@ -1933,4 +2291,5 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "build_lateral_interval_from_sides", "extract_lateral_side",
            "couple_nest_field", "domain_boundary_snapshot",
            "lateral_boundary_clock_dt", "lateral_boundary_reload_count",
-           "lateral_boundary_resident_bytes", "start_last_forcing_order"]
+           "lateral_boundary_resident_bytes", "relax_timescale_seconds",
+           "specified_relaxes_w", "start_last_forcing_order"]

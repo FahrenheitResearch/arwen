@@ -63,6 +63,16 @@ def fit_hyperdiffusion(observations: Sequence[BandObservation], *, dt_s: float,
     # through a very strong shadow-mode proposal without an optimizer dependency.
     refs = np.geomspace(float(np.min(wavelengths)) * 0.5,
                         float(np.max(wavelengths)) * 2.0, 96)
+    if protect_wavelength_m is not None:
+        # Every candidate reference at or above the protected scale is
+        # skipped below; with none left the search found nothing and the
+        # fit ended in a bare AssertionError instead of this sentence.
+        if not (math.isfinite(protect_wavelength_m)
+                and protect_wavelength_m > float(refs[0])):
+            raise ValueError(
+                f"protect wavelength {protect_wavelength_m:g} m leaves no "
+                "reference wavelength to fit: it must be longer than "
+                f"{float(refs[0]):g} m, half the shortest observed band")
     taus = dt_s * np.geomspace(1.0 / 16.0, 256.0, 128)
     best = None
     for order in orders:

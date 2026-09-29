@@ -537,6 +537,10 @@ class RucSoilState:
     #: column it describes is the one ``remap_soil_to_ruc_levels`` builds
     #: and ``LSMRUC`` integrates -- not Noah's discarded four layers.
     soil_texture_downscale: Mapping[str, object] = field(default_factory=dict)
+    #: real.exe's TSLB reasonableness rebuild on RUC's own levels, spelled
+    #: as :class:`gpuwm.ingest.soil.NoahSoilState`'s; EMPTY when no land
+    #: column needed it.
+    soil_temperature_repair: Mapping[str, object] = field(default_factory=dict)
 
 
 def _midpoint_cm(name: str, prefix: str) -> int:
@@ -556,7 +560,7 @@ def _midpoint_cm(name: str, prefix: str) -> int:
     return (int(digits[:3]) + int(digits[3:])) // 2
 
 
-def _source_soil_profiles(fields, soil_layer_contract):
+def _source_soil_profiles(fields, soil_layer_contract, *, land=None):
     """Return ``(temperature, moisture, levels, geometry, depth_scale)``.
 
     The four source modes are exactly the four
@@ -603,42 +607,23 @@ def _source_soil_profiles(fields, soil_layer_contract):
                 f"{sample_count} leading {policy['declaration']} samples; got "
                 f"temperature {temperature.shape} and moisture "
                 f"{moisture.shape}")
-        # The mapped route's OWN two bounded moisture repairs, applied to
-        # the source samples RUC integrates exactly as
-        # gpuwm/ingest/soil.py's mapped branch applies them to the Noah
-        # copy (which this arm discards): the bound-kissing decode clamp,
-        # then the counted +-0.05 WPS sixteen_pt overshoot clamp -- "the
-        # mapped twin of the native route's convex-bilinear soil
-        # divergence".  A value beyond the margin is left untouched so
-        # the fail-closed range refusal downstream
-        # (gpuwm/core/ruc.py:ruc_initialize_cold_start's 0..1 check, the
-        # refusal that found this seam) still sees it exactly as decoded.
+        # The mapped route's OWN moisture admission, applied to the source
+        # samples RUC integrates exactly as gpuwm/ingest/soil.py's mapped
+        # branch applies it to the Noah copy (which this arm discards):
+        # the bound-kissing decode clamp, then interpolation overshoot put
+        # on 0..1 and a land value beyond the operator's reach refused
+        # (clamp_soil_moisture_overshoot), judged on the same land the
+        # Noah call judges, since water columns become 1.0 either way.
+        # A non-finite value is left as decoded, so the fail-closed check
+        # downstream (gpuwm/core/ruc.py:ruc_initialize_cold_start's 0..1
+        # check, the refusal that found this seam) still sees it.
         from gpuwm.ingest.quantization import clamp_bound_kissing
+        from gpuwm.ingest.soil import clamp_soil_moisture_overshoot
 
         moisture, _ = clamp_bound_kissing(moisture, minimum=0.0, maximum=1.0)
-        overshoot_margin = 0.05
-        overshoot = (
-            (moisture < 0.0) & (moisture >= -overshoot_margin)
-        ) | (
-            (moisture > 1.0) & (moisture <= 1.0 + overshoot_margin)
-        )
-        if bool(overshoot.any()):
-            import sys as _sys
-
-            exceedance = float(np.max(np.where(
-                overshoot,
-                np.maximum(-moisture, moisture - 1.0), 0.0)))
-            print(
-                "mapped soil moisture (RUC "
-                f"{policy['policy']}): WPS sixteen_pt "
-                f"overshoot clamped to [0, 1] on "
-                f"{int(np.count_nonzero(overshoot))} value(s) (largest "
-                f"exceedance {exceedance:.4f}); same bounded repair as the "
-                "mapped Noah branch, applied to the source column RUC "
-                "integrates", file=_sys.stderr)
-            repaired = moisture.copy()
-            repaired[overshoot] = np.clip(repaired[overshoot], 0.0, 1.0)
-            moisture = repaired
+        moisture, _ = clamp_soil_moisture_overshoot(
+            moisture, land=land,
+            subject=f"mapped soil moisture (RUC {policy['policy']})")
         del contract
         levels_cm = np.array(policy["sample_depths"], dtype=np.int64)
         return (temperature, moisture, levels_cm,
@@ -770,11 +755,20 @@ def preprocess_ruc_soil(
     from gpuwm.ingest.soil import (_host, _soil_temperature_elevation_delta,
                                    preprocess_noah_soil)
 
+    # The land the Noah call below decides on (the static landmask over the
+    # met-source LANDSEA, lake-override cells as water), which the mapped
+    # arm's moisture admission judges; the Noah call names a source
+    # without either.
+    decision = landmask if landmask is not None else fields.get("LANDSEA")
+    terrestrial = None if decision is None else _host(decision) >= 0.5
+    if terrestrial is not None and lake_mask is not None:
+        terrestrial = terrestrial & ~_host(lake_mask).astype(bool)
     # Selected BEFORE the Noah call, so a source RUC has no arm for is
     # refused by name rather than by whatever preprocess_noah_soil says
     # about it first.
     (temperature, moisture, levels_cm, geometry,
-     depth_scale) = _source_soil_profiles(fields, soil_layer_contract)
+     depth_scale) = _source_soil_profiles(
+         fields, soil_layer_contract, land=terrestrial)
 
     surface = preprocess_noah_soil(
         fields,
@@ -831,6 +825,26 @@ def preprocess_ruc_soil(
         downscale_receipt = dict(downscale_receipt)
         downscale_receipt["soil_table"] = "STAS-RUC"
 
+    # real.exe's TSLB reasonableness rebuild on RUC's column: the land
+    # columns the Noah call above rebuilt (the same samples, lapse and
+    # land) are held at TSK through the remap and rebuilt TSK-to-TMN on
+    # RUC's own levels after it (gpuwm.ingest.soil.
+    # unreasonable_land_soil_columns).  The Noah call announced them.
+    from gpuwm.ingest.soil import (soil_temperature_repair_receipt,
+                                   tsk_tmn_soil_profile,
+                                   unreasonable_land_soil_columns)
+
+    repair_land = (_host(landmask) if landmask is not None
+                   else _host(fields["LANDSEA"])) >= 0.5
+    if lake_mask is not None:
+        repair_land = repair_land & ~_host(lake_mask).astype(bool)
+    rebuilt_columns = unreasonable_land_soil_columns(temperature, repair_land)
+    temperature_repair = soil_temperature_repair_receipt(
+        temperature, rebuilt_columns, repair_land)
+    if temperature_repair:
+        temperature = np.array(temperature, copy=True)
+        temperature[:, rebuilt_columns] = _host(surface.tsk)[rebuilt_columns]
+
     columns = remap_soil_to_ruc_levels(
         source_temperature=temperature,
         source_moisture=moisture,
@@ -845,8 +859,16 @@ def preprocess_ruc_soil(
         source_depth_scale=depth_scale,
     )
 
+    soil_temperature = columns.soil_temperature
+    if temperature_repair:
+        soil_temperature = np.array(soil_temperature, copy=True)
+        soil_temperature[:, rebuilt_columns] = tsk_tmn_soil_profile(
+            columns.level_depths, surface.tsk,
+            surface.deep_soil_temperature)[:, rebuilt_columns].astype(
+                soil_temperature.dtype)
+
     return RucSoilState(
-        soil_temperature=columns.soil_temperature,
+        soil_temperature=soil_temperature,
         soil_moisture=columns.soil_moisture,
         liquid_moisture=np.array(columns.soil_moisture, copy=True),
         deep_soil_temperature=surface.deep_soil_temperature,
@@ -859,6 +881,7 @@ def preprocess_ruc_soil(
         level_depths=columns.level_depths,
         level_thicknesses=columns.level_thicknesses,
         soil_texture_downscale=downscale_receipt,
+        soil_temperature_repair=temperature_repair,
     )
 
 
@@ -880,6 +903,7 @@ def preprocess_land_surface_soil(
     soil_mesh=None,
     route=None,
     fractional_seaice: bool = False,
+    soil_no_source_land=None,
 ):
     """Route a soil source to the selected land surface's own geometry.
 
@@ -896,10 +920,23 @@ def preprocess_land_surface_soil(
     shape check downstream (``_as_soil``) would have caught a four-layer array
     handed to a nine-layer allocation, but only as an unexplained broadcast
     error, and only for the schemes whose counts differ.
+
+    ``soil_no_source_land`` is the horizontal snapshot's mask of land the
+    source holds no land for (an island in a source area of open sea).
+    Those cells carry METGRID.TBL fill_missing in ``fields``, and they take
+    :func:`gpuwm.ingest.soil.island_soil_columns` instead, before either
+    geometry reads its source profiles, so every scheme builds its levels
+    from the same column.  ``None`` or an empty mask changes nothing.
     """
 
     if not isinstance(fractional_seaice, bool):
         raise TypeError("fractional_seaice must be boolean")
+    if soil_no_source_land is not None:
+        from gpuwm.ingest.soil import island_soil_columns
+
+        fields, _ = island_soil_columns(
+            fields, no_source_land=soil_no_source_land, soil_type=soil_type,
+            landmask=landmask, lake_mask=lake_mask)
     scheme = int(sf_surface_physics)
     if scheme == RUCLSMSCHEME:
         # The landmask/terrain/source-orography seam is forwarded whole:

@@ -16,6 +16,12 @@ The question is answered from DECLARED FACTS instead:
                    server.  Zero where a completeness PROBE decides
                    publication -- the probe IS the answer there, and a
                    declared delay would only start the walk-back late.
+``usual_delay_hours``  where the probe decides (``delay_hours`` zero),
+                   how long after a nominal init the whole run is
+                   usually on the server, measured.  The page's answer
+                   while no probe has answered: a start this old is
+                   taken as published unless a check found it missing.
+                   Unset, it reads as ``delay_hours``.
 ``search_hours``   how far back ``latest`` walks the grid before it
                    gives up and says so.
 ``record_end``     the last init of a CLOSED archive, or ``None`` for a
@@ -70,6 +76,12 @@ class CycleGrid:
     #: declares no per-cycle variation and no candidate is filtered on
     #: this ground.
     horizons: tuple[tuple[tuple[int, ...] | None, int], ...] = ()
+    #: How long after a nominal init the whole run is usually on the
+    #: server, measured, where ``delay_hours`` is zero because the probe
+    #: decides publication.  ``None`` reads as ``delay_hours``: a source
+    #: whose walk already starts at its measured lag.  See
+    #: :attr:`usual_delay`.
+    usual_delay_hours: float | None = None
 
     def __post_init__(self) -> None:
         if not self.hours:
@@ -85,6 +97,8 @@ class CycleGrid:
                 f"CycleGrid hours {self.hours} must be UTC hours of day")
         if self.delay_hours < 0.0:
             raise ValueError("CycleGrid delay_hours cannot be negative")
+        if self.usual_delay_hours is not None and self.usual_delay_hours < 0.0:
+            raise ValueError("CycleGrid usual_delay_hours cannot be negative")
         if self.search_hours <= 0:
             raise ValueError(
                 "CycleGrid search_hours must be a positive window; zero "
@@ -106,10 +120,23 @@ class CycleGrid:
                 return through
         return None
 
+    @property
+    def usual_delay(self) -> float:
+        """Hours after a nominal init by which the whole run is usually published.
+
+        A page takes a start at least this old as published while no
+        check has answered for it, and opens on the newest such start
+        until a check confirms a newer one.  The probe still decides:
+        a start a check found missing is not taken, however old.
+        """
+
+        return float(self.delay_hours if self.usual_delay_hours is None
+                     else self.usual_delay_hours)
+
     def declaration(self) -> dict[str, object]:
         """This grid as JSON-safe fields, for a manifest or a front end."""
 
-        return {
+        value = {
             "hours": list(self.hours),
             "delay_hours": float(self.delay_hours),
             "search_hours": int(self.search_hours),
@@ -119,6 +146,9 @@ class CycleGrid:
             "horizons": [[None if hours is None else list(hours), through]
                          for hours, through in self.horizons],
         }
+        if self.usual_delay_hours is not None:
+            value["usual_delay_hours"] = float(self.usual_delay_hours)
+        return value
 
     def snap(self, moment: datetime) -> datetime:
         """The newest grid point at or before ``moment``.

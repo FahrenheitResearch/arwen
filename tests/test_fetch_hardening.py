@@ -299,7 +299,7 @@ def test_the_front_door_guard_and_the_transfer_share_one_lock(monkeypatch,
 
     import inspect
     source = inspect.getsource(fetch.fetch_main)
-    guard_index = source.index("check_prior_request(args.out, source=source")
+    guard_index = source.index("require_matching_request(args.out, source=source")
     hold_index = source.rindex('fetch_guard.hold("fetch-out", args.out)',
                                0, guard_index)
     assert source.index("manifest = fetch_gfs(") > hold_index
@@ -504,7 +504,8 @@ def test_an_orphaned_pressure_file_is_set_aside_before_the_rust_run(
     payload = _grib2(hrrr_transport.SOIL_RECORD_COUNT)
 
     def fake_backbone(*, binary, cycle, hour, kind, host, mode, out,
-                      cache_dir, progress):
+                      cache_dir, progress, retries=0, shown_name=None,
+                      streams=None, byte_relay=None):
         landing = out / "hrrr.t05z.wrfprsf00.grib2"
         if landing.exists():
             raise AssertionError(

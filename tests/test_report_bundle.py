@@ -994,6 +994,34 @@ def test_the_failure_comes_from_the_receipt_when_there_is_one(tmp_path):
         "gpuwm run (supervised front door)"
 
 
+def test_a_front_door_failure_without_its_heartbeat_lists_it_missing(tmp_path):
+    """A capsule and no run-progress.json: the absent heartbeat is a gap.
+
+    The Missing section lists only what the detected route writes, and
+    a failure capsule makes that route the supervised front door.  The
+    heartbeat's row carried a route no detection ever returns, so the
+    one file that says how far the run got went unmentioned.
+    """
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "failure-capsule.json").write_text(json.dumps({
+        "exception_type": "RuntimeError",
+        "exception_message": "the worker exited 1",
+    }), encoding="utf-8")
+
+    report = report_bundle.build_report(run, environ={})
+
+    assert report.manifest["route_detected"] == \
+        "gpuwm run (supervised front door)"
+    row = next(item for item in report.manifest["missing_expected_artifacts"]
+               if item["artifact"] == "run-progress.json")
+    assert row["route"] == "gpuwm run (supervised front door)"
+    assert "gpuwm go" in row["would_have_shown"]
+    listed = report.text.split("## Missing", 1)[1].split("\n## ", 1)[0]
+    assert "- run-progress.json  (gpuwm run (supervised front door))" in listed
+
+
 def test_a_real_sized_receipt_is_kept_whole_and_still_parses(tmp_path):
     """A 6 h HRRR report.json is 320 KiB; a truncated one loses the failure.
 

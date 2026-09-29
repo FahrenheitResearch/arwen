@@ -78,7 +78,11 @@ twins across `awp130pgrb`/`awp130bgrb`) and the rotated lat-lon native
 `wrfprs` grid (GDT 32769).
 `ecmwf-open-data` is the same packaged-profile shape on ECMWF's
 public 0.25-degree IFS `oper` product: a plain global GDT-0 feed whose
-14 pressure levels, dewpoint-derived 2 m humidity, ordinal-addressed IFS
+14 pressure levels (earlier publications' 13-level ladder, soil
+spelling and missing surface geopotential are an era ladder, record
+aliases and a terrain derivation of the same mapping), dewpoint-derived
+2 m humidity,
+ordinal-addressed IFS
 soil (`selector_depth_binding`) and once-per-cycle in-band terrain
 (the cycle-invariant broadcast) are all rows in its packaged documents --
 authored against the CC-BY-4.0 open data; the 9 km native HRES is
@@ -102,13 +106,16 @@ documents; neither names the other's traps in code.
 packaged profile, and it is runnable: NCEP's GraphCast-based
 0.25-degree AI forecast ships six 3-D fields on 13 pressure levels plus
 2 m/10 m/MSLP state and NO land surface of any kind, so the hybrid
-mapping declares the seven missing canonicals `composition_bound` and
-its composition binds them to the SAME CYCLE's GDAS 0.25-degree
-analysis (the caller's one supplement) under the
+mapping declares the six missing land-surface canonicals
+`composition_bound` and its composition binds them to the SAME CYCLE's
+GDAS 0.25-degree analysis (the caller's one supplement) under the
 `source_cycle_analysis_broadcast` clock -- the donor decoding through
 its own SHA-256-pinned mapping, shipped with the profile as a fourth
 authority, and the receipt naming both sources with hashes and every
-carried valid time.  The atmosphere-only profile
+carried valid time.  Surface pressure, also unpublished, is derived at
+every lead from the AIGFS MSLP and isobaric heights at the analysis
+terrain height (`surface_pressure_from_sea_level`), so it follows the
+forecast instead of holding the analysis value.  The atmosphere-only profile
 (`aigfs-nomads-grib2-v1`, its composition role an explicit PENDING
 declaration that refuses by naming the missing state) stays shipped as
 the record that a solo init is impossible; a donorless call still

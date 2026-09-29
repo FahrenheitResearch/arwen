@@ -79,8 +79,32 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # RunConfig here, the same correction ``ntiedtke_tiedtke_closure`` took
     # in 2.6.4.  Same reconstruction rule: names[-112:-1] is exactly the
     # window this assertion held before per-domain ladders.
-    assert names[-1] == "eta_levels"
-    assert names[-112:-1] == [
+    # RE-BASELINED AGAIN: 112 -> 114.  TWO fields, ``relax_timescale_s``
+    # and ``relax_w``, the downscaled child's lateral-boundary pair,
+    # appended after ``eta_levels`` and last.  Both default to WRF's own treatment (0.0 = the Davies time
+    # scale is 10 of the domain's steps; False = w is not relaxed and the
+    # specified rows copy the first interior row), so every frozen
+    # configuration below resolves to what it ran before.  Same
+    # reconstruction rule: names[-114:-2] is exactly the window this
+    # assertion held before them.
+    # RE-BASELINED AGAIN: 114 -> 115.  ONE field, ``min_time_step_sound``,
+    # the adaptive clock's floor under its derived acoustic substep count,
+    # appended after ``relax_w`` and last.  Its default 0 leaves WRF's
+    # derived count, and nothing reads it under a fixed clock, which is
+    # every golden entry below, so each resolves to what it ran before
+    # plus the one key at 0.  It is one of
+    # gpuwm.core.model.ADAPTIVE_TIMESTEP_RUN_FIELDS, so it moves no
+    # experiment fingerprint.  Same reconstruction rule: names[-115:-1] is
+    # exactly the window this assertion held before it.
+    assert names[-1] == "min_time_step_sound"
+    assert RunConfig.__dataclass_fields__["min_time_step_sound"].default == 0
+    every_name = set(names)
+    names = names[:-1]
+    assert names[-2:] == ["relax_timescale_s", "relax_w"]
+    assert RunConfig.__dataclass_fields__["relax_timescale_s"].default == 0.0
+    assert RunConfig.__dataclass_fields__["relax_w"].default is False
+    assert names[-3] == "eta_levels"
+    assert names[-114:-3] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -392,7 +416,7 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         assert entry["sf_surface_physics"] not in (3, 4)
     # the golden snapshot carries exactly the current field set
     for key, entry in GOLDEN.items():
-        assert set(entry) == set(names), key
+        assert set(entry) == every_name, key
 
 
 

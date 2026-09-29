@@ -329,7 +329,11 @@ def parse_object(spec: NormalizationSpec, path: str | Path) -> InputObject:
     row = spec.fields.get(field)
     valid = row is not None and row["kind"] == kind
     if valid and kind == INVARIANT_KIND:
-        valid = lead is None and level is None
+        declared = spec.levels_for(field)
+        invariant_level = g.get("invariant_level")
+        if declared and invariant_level is not None:
+            level = int(invariant_level)
+        valid = lead is None and ((level in declared) if declared else (level is None and invariant_level in (None, "0")))
     elif valid:
         step = int(spec.cadence["step_hours"])
         horizon = spec.horizon_hours(cycle.hour)
@@ -374,9 +378,10 @@ def validate_inventory(spec: NormalizationSpec,
             "duplicate object identity, even if its path or compression differs")
     if len({obj.cycle for obj in objects}) != 1:
         raise ValueError("mixed cycle references are not a forcing series")
-    required = {name for name, row in spec.fields.items()
-                if row["kind"] == INVARIANT_KIND}
-    missing_invariants = required - {obj.field for obj in objects
+    required = {(name, level) for name, row in spec.fields.items()
+                if row["kind"] == INVARIANT_KIND
+                for level in (spec.levels_for(name) or (None,))}
+    missing_invariants = required - {(obj.field, obj.level) for obj in objects
                                      if obj.kind == INVARIANT_KIND}
     if missing_invariants:
         raise ValueError(

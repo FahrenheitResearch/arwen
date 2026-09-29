@@ -429,7 +429,7 @@
       }
     },
     "surface_pressure": {
-      "provider": "composition_bound",
+      "selectors": [],
       "units": {
         "source": "Pa",
         "target": "Pa"
@@ -446,7 +446,8 @@
       "staggering": "none",
       "missing": {
         "kind": "reject"
-      }
+      },
+      "derivation": "surface-pressure-from-sea-level"
     },
     "specific_humidity_2m": {
       "provider": "composition_bound",
@@ -467,12 +468,53 @@
       "missing": {
         "kind": "reject"
       }
+    },
+    "air_pressure_at_mean_sea_level": {
+      "selectors": [
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 3,
+          "parameter": 1,
+          "center": 7,
+          "subcenter": 0,
+          "master_table_version": 2,
+          "local_table_version": 1,
+          "level_type": 101,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
     }
   },
   "derivations": [
     {
       "name": "pressure-from-coordinate",
       "operation": "pressure_from_vertical_coordinate"
+    },
+    {
+      "name": "surface-pressure-from-sea-level",
+      "operation": "surface_pressure_from_sea_level",
+      "sea_level_pressure": "air_pressure_at_mean_sea_level",
+      "level_height": "geopotential_height",
+      "pressure": "air_pressure",
+      "surface_height": "terrain_height"
     }
   ],
   "target": {

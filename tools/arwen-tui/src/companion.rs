@@ -244,6 +244,9 @@ fn parse_downscale(value: &Value) -> Result<DownscaleRequest, String> {
             && !spec.chars().any(char::is_control) => Some(spec.trim().to_owned()),
         Some(_) => return Err("Requested plots must be a comma-separated product list, all, or none.".into()),
     };
+    if let Some(spec) = &request.render_products {
+        crate::plotsettings::for_section(spec, false)?;
+    }
     request.plan = match value["mode"].as_str() {
         Some("plan") => true,
         Some("run") => false,
@@ -343,7 +346,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
             sequence:value.get("sequence").map(|v|v.as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or("Frame sequence must be a positive integer.")).transpose()?,
             options:crate::remote::ViewerOptions::from_value(value)?,
             reader_leases:value.get("reader_leases").map(|v|v.as_bool().ok_or("Reader leases must be a boolean.")).transpose()?.unwrap_or(false),
-            cache_bytes:value.get("cache_bytes").map(|v|v.as_u64().filter(|n|(64*1024*1024..=1024_u64.pow(4)).contains(n)).ok_or("Viewer cache must be 64 MiB to 1 TiB.")).transpose()?},
+            cache_bytes:value.get("cache_bytes").map(|v|v.as_u64().filter(|n|*n>0).ok_or(crate::remote::VIEWER_CACHE_REFUSAL)).transpose()?},
         "sync_native_plots"=>Action::SyncNativePlots{job:argument.unwrap().to_owned(),domain:domain()?,sequence:value["sequence"].as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or("Native plots require an exact positive frame sequence.")?},
         "artifact_index"=>Action::ArtifactIndex{job:argument.unwrap().to_owned(),domain:domain()?,
             after_sequence:match value.get("after_sequence"){None=>0,Some(value)=>value.as_u64().filter(|n|*n<=i64::MAX as u64).ok_or("Artifact cursor must be a nonnegative integer.")?}},
@@ -1184,6 +1187,8 @@ mod downscale_requests {
             Some("composite_reflectivity,mslp_10m_winds"));
         drawn["render_products"] = json!("none");
         assert_eq!(parse(&drawn).unwrap().render_products.as_deref(), Some("none"));
+        drawn["render_products"] = json!("xsec:wa");
+        assert!(parse(&drawn).unwrap_err().contains("cannot locate the slice"));
         drawn["render_products"] = json!(7);
         assert!(parse(&drawn).unwrap_err().contains("comma-separated product list"));
 
@@ -1407,6 +1412,35 @@ mod tests {
         assert!(matches!(super::parse_request(&value,"compact-1","s").unwrap().action,super::Action::SyncProcessedFrameV2{domain:2,sequence:Some(42),reader_leases:true,..}));
         value["prefetch_sequences"]=serde_json::json!([1,2,3,4,5,6,7,8,9]);assert!(super::parse_request(&value,"compact-1","s").is_err());
         value["prefetch_sequences"]=serde_json::json!([]);value["target"]=serde_json::json!({"kind":"local"});assert!(super::parse_request(&value,"compact-1","s").is_err());
+    }
+    fn viewer_request(products:serde_json::Value)->serde_json::Value{
+        serde_json::json!({"schema":"arwen.companion-request.v1","session_id":"s","id":"compact-1","action":"sync_processed_frame_v2",
+            "target":{"kind":"ssh","node_id":"node-2","connection_sha256":"a".repeat(64)},"job_id":"job-1","domain":2,"products":products})
+    }
+    #[test]
+    fn compact_viewer_request_takes_any_positive_cache_budget(){
+        let mut value=viewer_request(serde_json::json!(["mslp_10m_winds"]));
+        // Frame admission judges a budget against the frame's measured size.
+        for bytes in [32*1024*1024_u64,2*1024_u64.pow(4)]{
+            value["cache_bytes"]=serde_json::json!(bytes);
+            match super::parse_request(&value,"compact-1","s").unwrap().action{
+                super::Action::SyncProcessedFrameV2{cache_bytes,..}=>assert_eq!(cache_bytes,Some(bytes)),
+                _=>panic!("not a viewer request"),
+            }
+        }
+        value["cache_bytes"]=serde_json::json!(0);
+        assert!(super::parse_request(&value,"compact-1","s").err().unwrap().contains("can hold no viewer frame"));
+        for wrong in [serde_json::json!(-1),serde_json::json!(true),serde_json::json!("33554432"),serde_json::json!(33554432.5)]{
+            value["cache_bytes"]=wrong.clone();assert!(super::parse_request(&value,"compact-1","s").is_err(),"{wrong}");
+        }
+    }
+    #[test]
+    fn compact_viewer_request_takes_stored_field_selectors(){
+        match super::parse_request(&viewer_request(serde_json::json!(["var:temperature_2m","mslp_10m_winds"])),"compact-1","s").unwrap().action{
+            super::Action::SyncProcessedFrameV2{options,..}=>assert_eq!(options.products,["var:temperature_2m","mslp_10m_winds"]),
+            _=>panic!("not a viewer request"),
+        }
+        assert!(super::parse_request(&viewer_request(serde_json::json!(["var:a,b"])),"compact-1","s").is_err());
     }
     use super::*;
     #[test]

@@ -63,7 +63,7 @@ def read_document(source, *, expected_grid,
 
     ``expected_grid`` is required for the reason
     :func:`gpuwm.da.obs_radar.read_document` gives -- the identity is a
-    digest over four arrays of which the file stores three -- plus one
+    digest over arrays the file stores only in part -- plus one
     that is specific to this product: ``obs_level`` is an index into
     ``z_w``, and ``z_w`` is the array the file does not carry.  A
     goes-grid file bound to the wrong vertical structure centres every
@@ -90,7 +90,7 @@ def read_document(source, *, expected_grid,
             f"adapter reads {GOES_GRID_SCHEMA!r}")
     demanded = expected_grid.identity_sha256()
     if (expected_grid_identity is not None
-            and expected_grid_identity != demanded):
+            and not expected_grid.matches_identity(expected_grid_identity)):
         raise GoesObsAdapterError(
             f"expected_grid hashes to {demanded} but expected_grid_identity "
             f"demands {expected_grid_identity}; the caller is asking for two "

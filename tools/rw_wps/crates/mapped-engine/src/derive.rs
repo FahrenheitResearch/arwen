@@ -32,6 +32,275 @@ const HYDROSTATIC_VIRTUAL: f64 = 0.609133;
 /// level integrates against 0.1 Pa with alpha = ln 2.
 const HYDROSTATIC_TOP_PA: f64 = 0.1;
 
+/// Canonical 3-D fields a pressure-level frame completes from its own
+/// state when the source leaves them out, at some levels or at all of
+/// them.  Keyed on canonical names, so every pressure-level source is
+/// served without a line of per-source code: a source that publishes the
+/// field keeps every value it publishes, and only the levels it does not
+/// publish are derived.
+pub const PRESSURE_COMPLETED_FIELDS: [&str; 1] = ["geopotential_height"];
+
+/// What the hypsometric completion reads, by canonical name and unit.
+pub const HYPSOMETRIC_OPERANDS: [(&str, &str); 5] = [
+    ("air_temperature", "K"),
+    ("specific_humidity", "kg kg-1"),
+    ("air_pressure", "Pa"),
+    ("surface_pressure", "Pa"),
+    ("terrain_height", "m"),
+];
+
+/// The first reference of a completed field, as
+/// `@completed.hypsometric:<values derived>`.  The preparation receipt
+/// counts the derived values from it.
+pub const HYPSOMETRIC_COMPLETION_REFERENCE: &str = "@completed.hypsometric";
+
+/// Standard gravity, the constant geopotential height is defined by.
+const STANDARD_GRAVITY: f64 = 9.80665;
+
+/// Geopotential height where a pressure-level source leaves it out.
+///
+/// `seed` is the source's own field, NaN on the levels (or cells) the
+/// source did not publish, or `None` when it published none of it.  Every
+/// finite seed value is kept as it is.  Each missing value is placed by
+/// the hypsometric equation, dz = -(Rd / g) Tv dln(p), with virtual
+/// temperature taken linear in ln(p) between the published levels:
+///
+/// * from the nearest level of the same column that carries the source's
+///   own height (the level below on a tie), so a derived level sits on
+///   the source's own heights wherever there are any;
+/// * from the surface otherwise, with the source's surface pressure and
+///   terrain height as the anchor and the virtual temperature at the
+///   surface interpolated between the levels that bracket it (held at the
+///   nearest level when the surface lies outside the ladder).
+///
+/// The level ladder is the frame's own `air_pressure`, one pressure per
+/// level.  `Ok(None)` means an operand is absent, so there is nothing to
+/// integrate and the frame keeps its missing-field refusal.
+pub fn complete_geopotential_height(
+    seed: Option<&CanonicalField>,
+    operands: &impl CanonicalFields,
+    name: &str,
+    units: &str,
+) -> Result<Option<(ArrayD<f64>, Vec<String>, Vec<String>)>> {
+    let mut resolved: Vec<&CanonicalField> = Vec::with_capacity(HYPSOMETRIC_OPERANDS.len());
+    for (operand, unit) in HYPSOMETRIC_OPERANDS {
+        let Some(field) = operands.get_field(operand) else {
+            return Ok(None);
+        };
+        if field.units != unit {
+            return Err(frame_invalid(format!(
+                "{name} is derived hydrostatically from {operand} in {unit}; \
+                 this frame carries it in {}",
+                field.units
+            )));
+        }
+        resolved.push(field);
+    }
+    let &[temperature, humidity, pressure, surface_pressure, terrain] = resolved.as_slice() else {
+        unreachable!("five operands resolved");
+    };
+    if units != "m" {
+        return Err(frame_invalid(format!(
+            "{name} is completed in metres; the mapping declares {units}"
+        )));
+    }
+    let column_axes = ["vertical", "y", "x"];
+    for field in [temperature, humidity, pressure].into_iter().chain(seed) {
+        if field.axes != column_axes {
+            return Err(frame_invalid(format!(
+                "{name} is derived hydrostatically on ('vertical', 'y', 'x') \
+                 axes; {} has {:?}",
+                field.name, field.axes
+            )));
+        }
+    }
+    for field in [surface_pressure, terrain] {
+        if field.axes != ["y", "x"] {
+            return Err(frame_invalid(format!(
+                "{name} is derived hydrostatically from {} on ('y', 'x') \
+                 axes; it has {:?}",
+                field.name, field.axes
+            )));
+        }
+    }
+    let shape = temperature.values.shape().to_vec();
+    let plane = shape[1] * shape[2];
+    let levels = shape[0];
+    for field in [humidity, pressure].into_iter().chain(seed) {
+        if field.values.shape() != shape.as_slice() {
+            return Err(frame_invalid(format!(
+                "{name} hydrostatic operands disagree in shape: {} is {:?}, \
+                 air_temperature is {shape:?}",
+                field.name,
+                field.values.shape()
+            )));
+        }
+    }
+    for field in [surface_pressure, terrain] {
+        if field.values.shape() != &shape[1..] {
+            return Err(frame_invalid(format!(
+                "{name} hydrostatic operands disagree in shape: {} is {:?}, \
+                 the column plane is {:?}",
+                field.name,
+                field.values.shape(),
+                &shape[1..]
+            )));
+        }
+    }
+    let pressure_flat = array::contiguous(&pressure.values);
+    let mut level_pressure = Vec::with_capacity(levels);
+    for level in 0..levels {
+        let row = &pressure_flat[level * plane..(level + 1) * plane];
+        let first = row[0];
+        if !first.is_finite() || first <= 0.0 || row.iter().any(|value| *value != first) {
+            return Err(frame_invalid(format!(
+                "{name} is derived hydrostatically on a pressure ladder with \
+                 one positive pressure per level; air_pressure level {level} \
+                 is not one"
+            )));
+        }
+        level_pressure.push(first);
+    }
+    // Bottom first: the highest pressure is the lowest level.
+    let mut order: Vec<usize> = (0..levels).collect();
+    order.sort_by(|left, right| level_pressure[*right].total_cmp(&level_pressure[*left]));
+    let log_pressure: Vec<f64> = order.iter().map(|level| level_pressure[*level].ln()).collect();
+    // For each position, the other positions nearest in ln(p) first, the
+    // lower one first on a tie.  One ladder, so one list per position.
+    let candidates: Vec<Vec<usize>> = (0..levels)
+        .map(|position| {
+            let mut others: Vec<usize> = (0..levels).filter(|other| *other != position).collect();
+            others.sort_by(|left, right| {
+                (log_pressure[position] - log_pressure[*left])
+                    .abs()
+                    .total_cmp(&(log_pressure[position] - log_pressure[*right]).abs())
+                    .then(left.cmp(right))
+            });
+            others
+        })
+        .collect();
+    let temperature_flat = array::contiguous(&temperature.values);
+    let humidity_flat = array::contiguous(&humidity.values);
+    let surface_flat = array::contiguous(&surface_pressure.values);
+    let terrain_flat = array::contiguous(&terrain.values);
+    let mut values: Vec<f64> = match seed {
+        Some(field) => array::contiguous(&field.values).into_owned(),
+        None => vec![f64::NAN; levels * plane],
+    };
+    let factor = HYDROSTATIC_RD / STANDARD_GRAVITY;
+    let mut virtual_temperature = vec![0.0f64; levels];
+    let mut thickness = vec![0.0f64; levels];
+    let mut known = vec![false; levels];
+    let mut completed = 0usize;
+    for cell in 0..plane {
+        for position in 0..levels {
+            known[position] = values[order[position] * plane + cell].is_finite();
+        }
+        if known.iter().all(|flag| *flag) {
+            continue;
+        }
+        for position in 0..levels {
+            let index = order[position] * plane + cell;
+            let value = temperature_flat[index] * (1.0 + HYDROSTATIC_VIRTUAL * humidity_flat[index]);
+            if !value.is_finite() || value <= 0.0 {
+                return Err(frame_invalid(format!(
+                    "{name} is derived hydrostatically where the source leaves \
+                     it out, which needs finite positive virtual temperature; \
+                     air_temperature and specific_humidity give {} at \
+                     column {cell}",
+                    crate::refusal::python_float_repr(value)
+                )));
+            }
+            virtual_temperature[position] = value;
+        }
+        let surface = surface_flat[cell];
+        let height = terrain_flat[cell];
+        if !surface.is_finite() || surface <= 0.0 || !height.is_finite() {
+            return Err(frame_invalid(format!(
+                "{name} is derived hydrostatically where the source leaves it \
+                 out, which needs finite positive surface_pressure and finite \
+                 terrain_height; column {cell} has {} Pa and {} m",
+                crate::refusal::python_float_repr(surface),
+                crate::refusal::python_float_repr(height)
+            )));
+        }
+        thickness[0] = 0.0;
+        for position in 1..levels {
+            thickness[position] = thickness[position - 1]
+                + 0.5
+                    * (virtual_temperature[position - 1] + virtual_temperature[position])
+                    * (log_pressure[position - 1] - log_pressure[position]);
+        }
+        let log_surface = surface.ln();
+        let top = levels - 1;
+        let surface_thickness = if log_surface >= log_pressure[0] {
+            thickness[0] - virtual_temperature[0] * (log_surface - log_pressure[0])
+        } else if log_surface <= log_pressure[top] {
+            thickness[top] + virtual_temperature[top] * (log_pressure[top] - log_surface)
+        } else {
+            let below = (0..top)
+                .find(|position| {
+                    log_pressure[*position] >= log_surface
+                        && log_surface > log_pressure[position + 1]
+                })
+                .expect("an interior surface lies between two levels");
+            let weight = (log_pressure[below] - log_surface)
+                / (log_pressure[below] - log_pressure[below + 1]);
+            let at_surface = virtual_temperature[below]
+                + weight * (virtual_temperature[below + 1] - virtual_temperature[below]);
+            thickness[below]
+                + 0.5 * (virtual_temperature[below] + at_surface) * (log_pressure[below] - log_surface)
+        };
+        for position in 0..levels {
+            if known[position] {
+                continue;
+            }
+            let anchor = candidates[position].iter().copied().find(|other| known[*other]);
+            let value = match anchor {
+                Some(other) => {
+                    values[order[other] * plane + cell]
+                        + factor * (thickness[position] - thickness[other])
+                }
+                None => height + factor * (thickness[position] - surface_thickness),
+            };
+            values[order[position] * plane + cell] = value;
+            completed += 1;
+        }
+    }
+    let mut references = vec![format!("{HYPSOMETRIC_COMPLETION_REFERENCE}:{completed}")];
+    for field in seed.into_iter().chain([temperature, humidity, pressure, surface_pressure, terrain]) {
+        for reference in &field.source_references {
+            if !references.contains(reference) {
+                references.push(reference.clone());
+            }
+        }
+    }
+    Ok(Some((
+        ArrayD::from_shape_vec(IxDyn(&shape), values).expect("column shape is exact"),
+        column_axes.iter().map(|axis| (*axis).to_owned()).collect(),
+        references,
+    )))
+}
+
+/// The pressure-level fields a frame of this mapping completes.
+///
+/// Empty on every other vertical kind: a hybrid or model-level source
+/// declares its own hydrostatic derivation, and the completion integrates
+/// between pressure levels.
+pub fn completed_fields(
+    vertical_kind: &str,
+    required: &std::collections::BTreeSet<String>,
+) -> Vec<&'static str> {
+    if vertical_kind != "pressure" {
+        return Vec::new();
+    }
+    PRESSURE_COMPLETED_FIELDS
+        .iter()
+        .copied()
+        .filter(|name| required.contains(*name))
+        .collect()
+}
+
 /// `mapped_source._hybrid_half_level_pressure`: the (count, y, x)
 /// ladder p = A + B * ps, gated strictly increasing top-first.
 fn hybrid_half_level_pressure(
@@ -155,7 +424,7 @@ pub fn derivation_dependencies(operation: &Node, vertical: &Node, name: &str) ->
     let kind = operation.get("operation").and_then(Node::as_str)
         .ok_or_else(|| mapping_invalid(format!("derivation for {name} has no operation")))?;
     let labels: &[&str] = match kind {
-        "copy" | "soil_surface_node_from_shallowest" => &["source"],
+        "copy" | "soil_surface_node_from_shallowest" | "height_from_interfaces" | "mass_fraction_rebase" => &["source"],
         "wind_speed" => &["u", "v"],
         "geopotential_height" => &["geopotential"],
         "pressure_from_vertical_coordinate" => &[],
@@ -165,12 +434,20 @@ pub fn derivation_dependencies(operation: &Node, vertical: &Node, name: &str) ->
         "specific_humidity_from_rh" => &["temperature", "pressure", "relative_humidity"],
         "specific_humidity_from_dewpoint" => &["temperature", "pressure", "dewpoint"],
         "volumetric_soil_moisture_from_layer_mass" => &["layer_mass"],
+        "surface_pressure_from_sea_level" =>
+            &["sea_level_pressure", "level_height", "pressure", "surface_height"],
         other => return Err(mapping_invalid(format!("unsupported derivation operation '{other}'"))),
     };
     let mut dependencies = Vec::with_capacity(labels.len() + 1);
     for label in labels {
         let Some(name) = operation.get(label).and_then(Node::as_str) else { return Ok(None); };
         dependencies.push(name.to_owned());
+    }
+    if kind == "mass_fraction_rebase" {
+        for value in operation.get("exclude").map(Node::items).unwrap_or_default() {
+            let dependency = value.as_str().ok_or_else(|| mapping_invalid("mass_fraction_rebase.exclude must name fields"))?;
+            dependencies.push(dependency.to_owned());
+        }
     }
     if kind == "geopotential_height_hydrostatic" || (kind == "pressure_from_vertical_coordinate"
         && vertical.get("kind").and_then(Node::as_str) == Some("hybrid_sigma_pressure")) {
@@ -182,6 +459,31 @@ pub fn derivation_dependencies(operation: &Node, vertical: &Node, name: &str) ->
     dependencies.sort();
     dependencies.dedup();
     Ok(Some(dependencies))
+}
+
+/// The operand whose shape a derivation's result keeps, as
+/// `evaluate_derivation` builds it, and whether the result carries one
+/// soil layer more than that operand (the surface node stacked above the
+/// shallowest layer).  `None` for a derivation built on the frame's own
+/// grid and ladder instead of an operand's shape (pressure from the
+/// vertical coordinate, hydrostatic height).
+///
+/// The frame writer sizes its stream from this before it derives a
+/// value.  Sizing every derived soil field on the first soil column
+/// instead gave ICON's layer-mass moisture the nine layers of its soil
+/// temperature, not the eight it writes, so the up-front disk figure
+/// disagreed with the stream the writer then wrote.
+pub fn derivation_shape_operand(operation: &Node) -> Option<(&'static str, bool)> {
+    match operation.get("operation").and_then(Node::as_str)? {
+        "copy" => Some(("source", false)),
+        "soil_surface_node_from_shallowest" => Some(("source", true)),
+        "wind_speed" => Some(("u", false)),
+        "geopotential_height" => Some(("geopotential", false)),
+        "relative_humidity_from_dewpoint" => Some(("dewpoint", false)),
+        "specific_humidity_from_rh" | "specific_humidity_from_dewpoint" => Some(("temperature", false)),
+        "volumetric_soil_moisture_from_layer_mass" => Some(("layer_mass", false)),
+        _ => None,
+    }
 }
 
 /// `gpuwm.ingest.real._surface_relative_humidity` — ungrib's 2 m RH from
@@ -219,6 +521,100 @@ pub fn saturation_mixing_ratio(
             }
         })
         .collect()
+}
+
+/// Below this surface height WRF reduces sea-level pressure along the
+/// lowest layer's pressure gradient instead of interpolating.
+const SEA_LEVEL_SHALLOW_M: f64 = 50.0;
+
+/// `mapped_source._surface_pressure_from_sea_level`: WRF real's
+/// `sfcprs3` relation in f64, one column at a time.
+///
+/// `level_height` and `pressure` are level-major `(levels, plane)`
+/// arrays in the source's own level order; the levels are ordered by
+/// the first column's pressure, highest first, and every column must
+/// keep that order strictly.  A surface under 50 m takes sea-level
+/// pressure plus the lowest layer's gradient times its height; a
+/// higher one is interpolated in log pressure between the two levels
+/// whose heights bracket it, or, when it lies below every level,
+/// between sea level and the second level (WRF's own choice) or the
+/// first level under the sea-level pressure.  The loop bounds keep
+/// WRF's excluded top levels.
+pub fn surface_pressure_from_sea_level(
+    sea_level_pressure: &[f64],
+    level_height: &[f64],
+    pressure: &[f64],
+    surface_height: &[f64],
+    columns: usize,
+    name: &str,
+) -> Result<Vec<f64>> {
+    let plane = surface_height.len();
+    if plane == 0 || sea_level_pressure.len() != plane {
+        return Err(frame_invalid(format!(
+            "{name} requires sea-level pressure and surface height on the same plane"
+        )));
+    }
+    let levels = pressure.len() / plane;
+    if levels < 2 || pressure.len() != levels * plane || level_height.len() != pressure.len() {
+        return Err(frame_invalid(format!(
+            "{name} requires level heights and pressures on at least two \
+             common levels"
+        )));
+    }
+    let mut order: Vec<usize> = (0..levels).collect();
+    order.sort_by(|left, right| {
+        pressure[right * plane]
+            .partial_cmp(&pressure[left * plane])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut values = Vec::with_capacity(plane);
+    for cell in 0..plane {
+        let z = |k: usize| level_height[order[k] * plane + cell];
+        let p = |k: usize| pressure[order[k] * plane + cell];
+        let zm = surface_height[cell];
+        let slp = sea_level_pressure[cell];
+        let refuse = |reason: &str| {
+            frame_invalid(format!(
+                "{name} cannot reduce sea-level pressure at row {}, column {}: {reason}",
+                cell / columns.max(1),
+                cell % columns.max(1)
+            ))
+        };
+        if !zm.is_finite() || !slp.is_finite() || slp <= 0.0 {
+            return Err(refuse("the sea-level pressure or surface height is not finite and positive"));
+        }
+        for k in 0..levels {
+            if !z(k).is_finite() || !p(k).is_finite() || p(k) <= 0.0 {
+                return Err(refuse("a level height or pressure is not finite and positive"));
+            }
+            if k > 0 && p(k - 1) <= p(k) {
+                return Err(refuse("the level pressures do not keep one strict order"));
+            }
+        }
+        let interpolate = |zl: f64, zu: f64, pl: f64, pu: f64| {
+            ((pl.ln() * (zm - zu) + pu.ln() * (zl - zm)) / (zl - zu)).exp()
+        };
+        let result = if zm < SEA_LEVEL_SHALLOW_M {
+            slp + (p(0) - p(1)) / (z(0) - z(1)) * zm
+        } else if let Some(k) =
+            (0..levels.saturating_sub(2)).find(|&k| z(k) <= zm && z(k + 1) > zm)
+        {
+            interpolate(z(k), z(k + 1), p(k), p(k + 1))
+        } else if slp >= p(0) {
+            interpolate(0.0, z(1), slp, p(1))
+        } else if let Some(k) =
+            (0..levels.saturating_sub(3)).find(|&k| slp >= p(k + 1) && slp < p(k))
+        {
+            interpolate(0.0, z(k + 1), slp, p(k + 1))
+        } else {
+            return Err(refuse("no level brackets the surface height or the sea-level pressure"));
+        };
+        if !result.is_finite() || result <= 0.0 {
+            return Err(refuse("the reduced pressure is not finite and positive"));
+        }
+        values.push(result);
+    }
+    Ok(values)
 }
 
 /// `mapped_source._specific_humidity_from_rh`.
@@ -301,6 +697,61 @@ pub fn evaluate_derivation(
                 source.axes.clone(),
                 source.source_references.clone(),
             )
+        }
+        "mass_fraction_rebase" => {
+            let Some(source) = dependency(operation, "source", available) else { return Ok(None); };
+            let names = operation.get("exclude").map(Node::items).unwrap_or_default();
+            if names.is_empty() {
+                return Err(mapping_invalid("mass_fraction_rebase requires excluded mass-fraction fields"));
+            }
+            let mut excluded = Vec::new();
+            for key in names {
+                let key = key.as_str().ok_or_else(|| mapping_invalid("mass_fraction_rebase.exclude must name fields"))?;
+                let Some(value) = available.get_field(key) else { return Ok(None); };
+                excluded.push(value);
+            }
+            for fraction in std::iter::once(source).chain(excluded.iter().copied()) {
+                if fraction.units != "kg kg-1" || fraction.axes != source.axes
+                    || fraction.values.shape() != source.values.shape()
+                    || fraction.values.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                    return Err(frame_invalid(format!("{name} requires finite nonnegative mass fractions on identical axes")));
+                }
+            }
+            let mut denominator = ArrayD::from_elem(source.values.raw_dim(), 1.0);
+            let mut references = source.source_references.clone();
+            for fraction in excluded {
+                denominator -= &fraction.values;
+                references.extend(fraction.source_references.clone());
+            }
+            if denominator.iter().any(|v| *v <= 0.0) {
+                return Err(frame_invalid(format!("{name} excluded mass fractions leave no positive reference mass")));
+            }
+            (&source.values / &denominator, source.axes.clone(), references)
+        }
+        "height_from_interfaces" => {
+            let Some(source) = dependency(operation, "source", available) else { return Ok(None); };
+            if source.axes != ["half_level", "y", "x"] || source.units != "m" {
+                return Err(frame_invalid(format!("{name} requires interface heights in m on half_level,y,x axes")));
+            }
+            let heights = array::contiguous(&source.values);
+            let nz = collection.vertical_values.len();
+            let plane = collection.latitude.len() * collection.longitude.len();
+            if source.values.shape() != [nz + 1, collection.latitude.len(), collection.longitude.len()]
+                || heights.iter().any(|v| !v.is_finite()) {
+                return Err(frame_invalid(format!("{name} requires N+1 finite interface heights")));
+            }
+            let ascending = heights[plane] > heights[0];
+            let mut values = Vec::with_capacity(nz * plane);
+            for i in 0..nz * plane {
+                let delta = heights[i + plane] - heights[i];
+                if delta == 0.0 || (delta > 0.0) != ascending {
+                    return Err(frame_invalid(format!("{name} interface heights must be strictly ordered without crossing layers")));
+                }
+                values.push(0.5 * (heights[i] + heights[i + plane]));
+            }
+            (ArrayD::from_shape_vec(vec![nz, collection.latitude.len(), collection.longitude.len()], values)
+                .map_err(|e| frame_invalid(e.to_string()))?,
+             vec!["vertical".into(), "y".into(), "x".into()], source.source_references.clone())
         }
         "wind_speed" => {
             let (Some(u), Some(v)) = (
@@ -650,6 +1101,53 @@ pub fn evaluate_derivation(
                 layer_mass.source_references.clone(),
             )
         }
+        "surface_pressure_from_sea_level" => {
+            let (Some(sea_level), Some(height), Some(pressure), Some(surface)) = (
+                dependency(operation, "sea_level_pressure", available),
+                dependency(operation, "level_height", available),
+                dependency(operation, "pressure", available),
+                dependency(operation, "surface_height", available),
+            ) else {
+                return Ok(None);
+            };
+            if sea_level.axes != ["y", "x"] || surface.axes != ["y", "x"] {
+                return Err(frame_invalid(format!(
+                    "{name} requires sea-level pressure and surface height on \
+                     ('y', 'x') axes"
+                )));
+            }
+            if height.axes != ["vertical", "y", "x"]
+                || pressure.axes != height.axes
+                || pressure.values.shape() != height.values.shape()
+                || height.values.shape()[1..] != *surface.values.shape()
+                || sea_level.values.shape() != surface.values.shape()
+            {
+                return Err(frame_invalid(format!(
+                    "{name} requires level heights and pressures on one \
+                     ('vertical', 'y', 'x') grid over the surface plane"
+                )));
+            }
+            let columns = surface.values.shape()[1];
+            let values = surface_pressure_from_sea_level(
+                &array::contiguous(&sea_level.values),
+                &array::contiguous(&height.values),
+                &array::contiguous(&pressure.values),
+                &array::contiguous(&surface.values),
+                columns,
+                name,
+            )?;
+            let mut references = vec!["@derived.sea_level_reduction".to_owned()];
+            references.extend(sea_level.source_references.iter().cloned());
+            references.extend(height.source_references.iter().cloned());
+            references.extend(pressure.source_references.iter().cloned());
+            references.extend(surface.source_references.iter().cloned());
+            (
+                ArrayD::from_shape_vec(IxDyn(surface.values.shape()), values)
+                    .expect("one value per surface cell"),
+                surface.axes.clone(),
+                references,
+            )
+        }
         "soil_surface_node_from_shallowest" => {
             let Some(source) = dependency(operation, "source", available) else {
                 return Ok(None);
@@ -705,9 +1203,264 @@ pub fn evaluate_derivation(
     Ok(Some((converted, target_axes, deduplicated)))
 }
 
+/// Standard gravity for the surface-height derivation (m s-2).
+const SURFACE_HEIGHT_GRAVITY: f64 = 9.80665;
+
+/// What [`height_at_surface_pressure`] made, and how, for the receipt.
+#[derive(Debug, Clone)]
+pub struct SurfaceHeight {
+    /// Terrain height (m) on the surface fields' `(y, x)` shape.
+    pub values: ArrayD<f64>,
+    pub cells: usize,
+    /// Cells whose surface lies below the deepest pressure level, where
+    /// the layer mean comes from the 2 m temperature and dewpoint.
+    pub below_ladder: usize,
+    pub minimum: f64,
+    pub maximum: f64,
+}
+
+/// `mapped_source._height_at_surface_pressure`: the height of each
+/// column's surface pressure on its own pressure-level geopotential
+/// height, for a source that publishes no surface geopotential.
+///
+/// The hypsometric equation from the first level above the ground down to
+/// the surface pressure, with the layer's mean virtual temperature taken
+/// between that level and the surface.  At the surface the temperature
+/// and humidity are interpolated linearly in log pressure between the two
+/// levels that bracket it; below the deepest level they come from the
+/// 2 m temperature and the dewpoint's specific humidity, the surface
+/// fields WPS and real extrapolate from.  Measured against the surface
+/// geopotential a current ECMWF open-data analysis does publish (1,038,240
+/// cells on its 13 levels below 10 hPa): bias -0.35 m, RMS 1.7 m, 99th
+/// percentile 7.5 m, largest 43 m; RMS 4.6 m over terrain above 1500 m.
+///
+/// A surface above the highest level is refused: the column says
+/// nothing about the air below such a surface.
+#[allow(clippy::too_many_arguments)]
+pub fn height_at_surface_pressure(
+    levels_pa: &[f64],
+    geopotential_height: &ArrayD<f64>,
+    temperature: &ArrayD<f64>,
+    specific_humidity: &ArrayD<f64>,
+    surface_pressure: &ArrayD<f64>,
+    surface_temperature: &ArrayD<f64>,
+    surface_dewpoint: &ArrayD<f64>,
+) -> Result<SurfaceHeight> {
+    let surface_shape = surface_pressure.shape().to_vec();
+    if surface_shape.len() != 2 {
+        return Err(frame_invalid(format!(
+            "terrain_height from surface pressure needs (y, x) surface \
+             fields; surface pressure has shape {surface_shape:?}"
+        )));
+    }
+    let cells = surface_shape[0] * surface_shape[1];
+    let column_shape = [levels_pa.len(), surface_shape[0], surface_shape[1]];
+    for (label, field) in [
+        ("geopotential height", geopotential_height),
+        ("temperature", temperature),
+        ("specific humidity", specific_humidity),
+    ] {
+        if field.shape() != column_shape {
+            return Err(frame_invalid(format!(
+                "terrain_height from surface pressure needs {label} on \
+                 the {} declared levels over the surface grid \
+                 {column_shape:?}; got {:?}",
+                levels_pa.len(),
+                field.shape()
+            )));
+        }
+    }
+    for (label, field) in [
+        ("surface temperature", surface_temperature),
+        ("surface dewpoint", surface_dewpoint),
+    ] {
+        if field.shape() != surface_shape.as_slice() {
+            return Err(frame_invalid(format!(
+                "terrain_height from surface pressure needs {label} on the \
+                 surface grid {surface_shape:?}; got {:?}",
+                field.shape()
+            )));
+        }
+    }
+    if levels_pa.is_empty() || levels_pa.iter().any(|level| !(level.is_finite() && *level > 0.0)) {
+        return Err(frame_invalid(
+            "terrain_height from surface pressure needs positive pressure levels",
+        ));
+    }
+    // Deepest (largest pressure) first.
+    let mut order: Vec<usize> = (0..levels_pa.len()).collect();
+    order.sort_by(|left, right| levels_pa[*right].total_cmp(&levels_pa[*left]));
+    let highest = levels_pa[order[order.len() - 1]];
+
+    let heights = array::contiguous(geopotential_height);
+    let heights: &[f64] = &heights;
+    let temperatures = array::contiguous(temperature);
+    let temperatures: &[f64] = &temperatures;
+    let humidities = array::contiguous(specific_humidity);
+    let humidities: &[f64] = &humidities;
+    let pressures = array::contiguous(surface_pressure);
+    let surface_temperatures = array::contiguous(surface_temperature);
+    let dewpoints = array::contiguous(surface_dewpoint);
+    let scale = HYDROSTATIC_RD / SURFACE_HEIGHT_GRAVITY;
+
+    let mut values = Vec::with_capacity(cells);
+    let mut below_ladder = 0usize;
+    let mut above_ladder = 0usize;
+    let mut unreadable = 0usize;
+    for cell in 0..cells {
+        let pressure = pressures[cell];
+        if !(pressure.is_finite() && pressure > 0.0) {
+            unreadable += 1;
+            values.push(f64::NAN);
+            continue;
+        }
+        // The first level above the ground: the deepest with p < ps.
+        let Some(position) = order.iter().position(|level| levels_pa[*level] < pressure) else {
+            above_ladder += 1;
+            values.push(f64::NAN);
+            continue;
+        };
+        let above = order[position];
+        let at = |field: &[f64], level: usize| field[level * cells + cell];
+        let (surface_t, surface_q) = if position == 0 {
+            below_ladder += 1;
+            let dewpoint = dewpoints[cell];
+            let vapour_hpa =
+                (10.0 * SVP1) * (SVP2 * (dewpoint - SVPT0) / (dewpoint - SVP3)).exp();
+            let humidity = 0.622 * vapour_hpa / (pressure / 100.0 - 0.378 * vapour_hpa);
+            (surface_temperatures[cell], humidity)
+        } else {
+            let below = order[position - 1];
+            let weight = (pressure.ln() - levels_pa[above].ln())
+                / (levels_pa[below].ln() - levels_pa[above].ln());
+            let t_above = at(temperatures, above);
+            let q_above = at(humidities, above);
+            (
+                t_above + (at(temperatures, below) - t_above) * weight,
+                q_above + (at(humidities, below) - q_above) * weight,
+            )
+        };
+        let virtual_above =
+            at(temperatures, above) * (1.0 + HYDROSTATIC_VIRTUAL * at(humidities, above));
+        let virtual_surface = surface_t * (1.0 + HYDROSTATIC_VIRTUAL * surface_q);
+        let height = at(heights, above)
+            - scale * (0.5 * (virtual_above + virtual_surface)) * (pressure / levels_pa[above]).ln();
+        if !height.is_finite() {
+            unreadable += 1;
+        }
+        values.push(height);
+    }
+    if above_ladder > 0 {
+        return Err(frame_invalid(format!(
+            "terrain_height from surface pressure: {above_ladder} of {cells} \
+             cells have a surface pressure at or above the highest level \
+             ({highest} Pa), so the column says nothing about the air below \
+             their surface"
+        )));
+    }
+    if unreadable > 0 {
+        return Err(frame_invalid(format!(
+            "terrain_height from surface pressure: {unreadable} of {cells} \
+             cells have no finite surface pressure or column to derive from"
+        )));
+    }
+    let minimum = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let maximum = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    Ok(SurfaceHeight {
+        values: ArrayD::from_shape_vec(IxDyn(&surface_shape), values)
+            .expect("one value per surface cell"),
+        cells,
+        below_ladder,
+        minimum,
+        maximum,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dry isothermal column: z(p) = (Rd/g) T ln(p0/p) exactly, so the
+    /// hypsometric surface height is exact inside and below the ladder.
+    fn isothermal_column(levels: &[f64], cells: usize, t: f64) -> (ArrayD<f64>, ArrayD<f64>, ArrayD<f64>) {
+        let scale = HYDROSTATIC_RD / SURFACE_HEIGHT_GRAVITY;
+        let mut heights = Vec::new();
+        for level in levels {
+            heights.extend(std::iter::repeat_n(scale * t * (100_000.0 / level).ln(), cells));
+        }
+        let shape = [levels.len(), 1, cells];
+        (
+            ArrayD::from_shape_vec(IxDyn(&shape), heights).unwrap(),
+            ArrayD::from_elem(IxDyn(&shape), t),
+            ArrayD::from_elem(IxDyn(&shape), 0.0),
+        )
+    }
+
+    #[test]
+    fn surface_height_is_the_column_height_at_the_surface_pressure() {
+        // Declared out of order on purpose: the ladder is sorted, not trusted.
+        let levels = [5000.0, 100_000.0, 85_000.0, 50_000.0, 92_500.0, 70_000.0];
+        let t = 250.0;
+        let (heights, temperature, humidity) = isothermal_column(&levels, 3, t);
+        // Inside the ladder, between two levels, and below the deepest.
+        let pressure = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![80_000.0, 92_500.0, 103_000.0]).unwrap();
+        let surface_t = ArrayD::from_elem(IxDyn(&[1, 3]), t);
+        // A dewpoint this cold carries no measurable vapour.
+        let dewpoint = ArrayD::from_elem(IxDyn(&[1, 3]), 100.0);
+        let derived = height_at_surface_pressure(
+            &levels, &heights, &temperature, &humidity, &pressure, &surface_t, &dewpoint,
+        )
+        .unwrap();
+        let scale = HYDROSTATIC_RD / SURFACE_HEIGHT_GRAVITY;
+        for (cell, surface) in [80_000.0f64, 92_500.0, 103_000.0].iter().enumerate() {
+            let expected = scale * t * (100_000.0 / surface).ln();
+            let got = derived.values[[0, cell]];
+            assert!((got - expected).abs() < 1e-6, "cell {cell}: {got} vs {expected}");
+        }
+        assert_eq!(derived.cells, 3);
+        assert_eq!(derived.below_ladder, 1);
+        assert!(derived.minimum < 0.0 && derived.maximum > 1500.0);
+    }
+
+    #[test]
+    fn a_surface_above_the_highest_level_is_refused_by_count() {
+        let levels = [85_000.0, 100_000.0];
+        let (heights, temperature, humidity) = isothermal_column(&levels, 2, 280.0);
+        let pressure = ArrayD::from_shape_vec(IxDyn(&[1, 2]), vec![90_000.0, 60_000.0]).unwrap();
+        let surface_t = ArrayD::from_elem(IxDyn(&[1, 2]), 280.0);
+        let dewpoint = ArrayD::from_elem(IxDyn(&[1, 2]), 270.0);
+        let refusal = height_at_surface_pressure(
+            &levels, &heights, &temperature, &humidity, &pressure, &surface_t, &dewpoint,
+        )
+        .unwrap_err();
+        assert!(refusal.message.contains("1 of 2 cells"), "{}", refusal.message);
+        assert!(refusal.message.contains("85000 Pa"), "{}", refusal.message);
+    }
+
+    #[test]
+    fn humid_air_below_the_ladder_is_thicker_than_dry_air() {
+        let levels = [85_000.0, 100_000.0];
+        let (heights, temperature, humidity) = isothermal_column(&levels, 1, 290.0);
+        let pressure = ArrayD::from_elem(IxDyn(&[1, 1]), 102_000.0);
+        let surface_t = ArrayD::from_elem(IxDyn(&[1, 1]), 290.0);
+        let height = |dewpoint: f64| {
+            height_at_surface_pressure(
+                &levels,
+                &heights,
+                &temperature,
+                &humidity,
+                &pressure,
+                &surface_t,
+                &ArrayD::from_elem(IxDyn(&[1, 1]), dewpoint),
+            )
+            .unwrap()
+            .values[[0, 0]]
+        };
+        // Below the 1000 hPa level the surface is lower; moist air makes
+        // the layer thicker, so the surface lies further down still.
+        assert!(height(288.0) < height(100.0));
+        assert!(height(100.0) < 0.0);
+    }
 
     #[test]
     fn layer_mass_uses_declared_thickness_without_a_magnitude_guess_or_clip() {
@@ -731,6 +1484,148 @@ mod tests {
         ).unwrap().unwrap();
         assert_eq!(array::contiguous(&values), vec![0.5, 0.75, 0.25, 2.0]);
         assert_eq!(axes, vec!["soil", "y", "x"]);
+    }
+
+    /// One column on five isobaric levels, listed top first as a
+    /// pressure-level source declares them: 500 to 1000 hPa.
+    const SLP_LEVELS_PA: [f64; 5] = [50_000.0, 70_000.0, 85_000.0, 92_500.0, 100_000.0];
+    const SLP_HEIGHTS_M: [f64; 5] = [5_600.0, 3_000.0, 1_500.0, 800.0, 100.0];
+
+    fn sea_level_column(slp: f64, terrain: f64) -> Vec<f64> {
+        surface_pressure_from_sea_level(
+            &[slp], &SLP_HEIGHTS_M, &SLP_LEVELS_PA, &[terrain], 1, "surface_pressure",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_low_surface_takes_sea_level_pressure_along_the_lowest_gradient() {
+        // (1000 - 925 hPa) over (100 - 800 m), times 30 m, added to MSLP.
+        let expected = 101_300.0 + (100_000.0 - 92_500.0) / (100.0 - 800.0) * 30.0;
+        assert_eq!(sea_level_column(101_300.0, 30.0), vec![expected]);
+        assert_eq!(sea_level_column(101_300.0, 0.0), vec![101_300.0]);
+    }
+
+    #[test]
+    fn a_bracketed_surface_is_interpolated_in_log_pressure() {
+        let zm = 1_200.0;
+        let expected = ((92_500.0f64.ln() * (zm - 1_500.0) + 85_000.0f64.ln() * (800.0 - zm))
+            / (800.0 - 1_500.0))
+            .exp();
+        let got = sea_level_column(101_300.0, zm);
+        assert_eq!(got, vec![expected]);
+        assert!(got[0] < 92_500.0 && got[0] > 85_000.0, "{}", got[0]);
+    }
+
+    #[test]
+    fn a_surface_under_every_level_interpolates_from_sea_level_to_the_second() {
+        // 60 m sits below the 1000 hPa height (100 m) and MSLP is above
+        // 1000 hPa, so WRF interpolates between sea level and 925 hPa.
+        let zm = 60.0;
+        let expected = ((101_300.0f64.ln() * (zm - 800.0) + 92_500.0f64.ln() * (0.0 - zm))
+            / (0.0 - 800.0))
+            .exp();
+        assert_eq!(sea_level_column(101_300.0, zm), vec![expected]);
+    }
+
+    #[test]
+    fn the_source_level_order_does_not_change_the_answer() {
+        let reversed_heights: Vec<f64> = SLP_HEIGHTS_M.iter().rev().copied().collect();
+        let reversed_levels: Vec<f64> = SLP_LEVELS_PA.iter().rev().copied().collect();
+        for terrain in [0.0, 30.0, 60.0, 1_200.0] {
+            let reversed = surface_pressure_from_sea_level(
+                &[101_300.0], &reversed_heights, &reversed_levels, &[terrain], 1, "surface_pressure",
+            )
+            .unwrap();
+            assert_eq!(reversed, sea_level_column(101_300.0, terrain));
+        }
+    }
+
+    #[test]
+    fn a_column_out_of_the_first_columns_order_refuses_by_position() {
+        // Two cells; the second column's pressures run the other way.
+        let pressure = [85_000.0, 100_000.0, 92_500.0, 92_500.0, 100_000.0, 85_000.0];
+        let height = [1_500.0, 100.0, 800.0, 800.0, 100.0, 1_500.0];
+        let refusal = surface_pressure_from_sea_level(
+            &[101_300.0, 101_300.0], &height, &pressure, &[10.0, 10.0], 2, "surface_pressure",
+        )
+        .unwrap_err();
+        assert!(refusal.message.contains("row 0, column 1"), "{}", refusal.message);
+        assert!(refusal.message.contains("strict order"), "{}", refusal.message);
+    }
+
+    #[test]
+    fn the_sea_level_derivation_reads_its_four_declared_operands() {
+        let collection = DecodedCollection {
+            latitude: vec![40.0],
+            longitude: vec![-100.0, -99.75],
+            vertical_values: SLP_LEVELS_PA.to_vec(),
+            direct: std::collections::BTreeMap::new(),
+            source_cycles: std::collections::BTreeMap::new(),
+            grid_fingerprint: "fixture-grid".to_owned(),
+            hybrid_a: Vec::new(),
+            hybrid_b: Vec::new(),
+        };
+        let mut available = std::collections::BTreeMap::new();
+        let mut slp = constant_field("air_pressure_at_mean_sea_level", &["y", "x"], &[1, 2], 101_300.0);
+        slp.location = "surface".to_owned();
+        let mut terrain = constant_field("terrain_height", &["y", "x"], &[1, 2], 0.0);
+        terrain.values = ArrayD::from_shape_vec(IxDyn(&[1, 2]), vec![30.0, 1_200.0]).unwrap();
+        let mut height = constant_field("geopotential_height", &["vertical", "y", "x"], &[5, 1, 2], 0.0);
+        height.values = ArrayD::from_shape_vec(
+            IxDyn(&[5, 1, 2]),
+            SLP_HEIGHTS_M.iter().flat_map(|value| [*value, *value]).collect(),
+        )
+        .unwrap();
+        let mut pressure = constant_field("air_pressure", &["vertical", "y", "x"], &[5, 1, 2], 0.0);
+        pressure.values = ArrayD::from_shape_vec(
+            IxDyn(&[5, 1, 2]),
+            SLP_LEVELS_PA.iter().flat_map(|value| [*value, *value]).collect(),
+        )
+        .unwrap();
+        let operation = parse_node(
+            r#"{"name": "psfc", "operation": "surface_pressure_from_sea_level",
+                "sea_level_pressure": "air_pressure_at_mean_sea_level",
+                "level_height": "geopotential_height",
+                "pressure": "air_pressure",
+                "surface_height": "terrain_height"}"#,
+        );
+        let field_node = parse_node(
+            r#"{"source_axes": ["y", "x"], "target_axes": ["y", "x"],
+                "units": {"source": "Pa", "target": "Pa"},
+                "location": "surface", "missing": {"kind": "reject"}}"#,
+        );
+        let field = FieldSpec { name: "surface_pressure".to_owned(), raw: &field_node };
+        let vertical = parse_node(r#"{"kind": "pressure", "units": "Pa", "positive": "down"}"#);
+        available.insert(slp.name.clone(), slp);
+        available.insert(height.name.clone(), height);
+        available.insert(pressure.name.clone(), pressure);
+        // Terrain is borrowed in a composed frame and may arrive last:
+        // until it does the derivation waits rather than refusing.
+        assert!(evaluate_derivation(
+            &operation, &available, &collection, &field, "surface_pressure", &vertical,
+        )
+        .unwrap()
+        .is_none());
+        available.insert(terrain.name.clone(), terrain);
+        let (values, axes, references) = evaluate_derivation(
+            &operation, &available, &collection, &field, "surface_pressure", &vertical,
+        )
+        .unwrap()
+        .expect("every operand is present");
+        assert_eq!(axes, vec!["y", "x"]);
+        let flat = array::contiguous(&values);
+        assert_eq!(flat[0], sea_level_column(101_300.0, 30.0)[0]);
+        assert_eq!(flat[1], sea_level_column(101_300.0, 1_200.0)[0]);
+        assert_eq!(references[0], "@derived.sea_level_reduction");
+        assert!(references.contains(&"@test.terrain_height".to_owned()));
+        let dependencies = derivation_dependencies(&operation, &vertical, "surface_pressure")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            dependencies,
+            vec!["air_pressure", "air_pressure_at_mean_sea_level", "geopotential_height", "terrain_height"]
+        );
     }
 
     #[test]
@@ -835,6 +1730,32 @@ mod tests {
                 "units": {"source": "Pa", "target": "Pa"},
                 "location": "mass", "missing": {"kind": "reject"}}"#,
         )
+    }
+
+    #[test]
+    fn height_interfaces_preserve_columns_and_reject_crossings() {
+        let collection = hybrid_collection();
+        let mut source = constant_field("coordinate_height", &["half_level", "y", "x"], &[4, 2, 2], 0.0);
+        source.units = "m".to_owned();
+        source.values = ArrayD::from_shape_vec(IxDyn(&[4, 2, 2]),
+            [23000.0, 19000.0, 3000.0, 0.0].iter()
+                .flat_map(|height| (0..4).map(move |cell| height + cell as f64)).collect()).unwrap();
+        let mut available = std::collections::BTreeMap::new();
+        available.insert("coordinate_height".to_owned(), source);
+        let operation = parse_node(r#"{"operation":"height_from_interfaces","source":"coordinate_height"}"#);
+        let field_node = parse_node(r#"{"source_axes":["vertical","y","x"],"target_axes":["vertical","y","x"],"units":{"source":"m","target":"m"}}"#);
+        let field = FieldSpec { name: "geopotential_height".to_owned(), raw: &field_node };
+        let vertical = parse_node(r#"{"kind":"model_level","units":"1"}"#);
+        let (values, axes, _) = evaluate_derivation(&operation, &available, &collection,
+            &field, "geopotential_height", &vertical).unwrap().unwrap();
+        assert_eq!(axes, ["vertical", "y", "x"]);
+        let expected: Vec<f64> = [21000.0, 11000.0, 1500.0].iter()
+            .flat_map(|height| (0..4).map(move |cell| height + cell as f64)).collect();
+        assert_eq!(array::contiguous(&values), expected);
+        available.get_mut("coordinate_height").unwrap().values[[2, 0, 0]] = 25000.0;
+        let error = evaluate_derivation(&operation, &available, &collection,
+            &field, "geopotential_height", &vertical).unwrap_err();
+        assert!(error.message.contains("crossing layers"));
     }
 
     fn vertical_node() -> Node {
@@ -981,5 +1902,115 @@ mod tests {
         )
         .unwrap_err();
         assert!(refusal.message.contains("interface"), "{}", refusal.message);
+    }
+
+    // ---- complete_geopotential_height: the isothermal answers pinned in
+    // tests/test_pressure_height_completion.py ----
+
+    const COLUMN_PRESSURE: [f64; 3] = [100_000.0, 85_000.0, 50_000.0];
+    const COLUMN_TEMPERATURE: f64 = 250.0;
+    const COLUMN_HUMIDITY: f64 = 0.004;
+    const COLUMN_SURFACE_PRESSURE: f64 = 95_000.0;
+    const COLUMN_TERRAIN: f64 = 500.0;
+
+    fn isothermal_height(pressure: f64) -> f64 {
+        let virtual_temperature =
+            COLUMN_TEMPERATURE * (1.0 + HYDROSTATIC_VIRTUAL * COLUMN_HUMIDITY);
+        COLUMN_TERRAIN
+            + HYDROSTATIC_RD / STANDARD_GRAVITY
+                * virtual_temperature
+                * (COLUMN_SURFACE_PRESSURE / pressure).ln()
+    }
+
+    fn isothermal_operands() -> std::collections::BTreeMap<String, CanonicalField> {
+        let column = ["vertical", "y", "x"];
+        let mut pressure = constant_field("air_pressure", &column, &[3, 1, 2], 0.0);
+        pressure.values = ArrayD::from_shape_vec(
+            IxDyn(&[3, 1, 2]),
+            COLUMN_PRESSURE.iter().flat_map(|level| [*level, *level]).collect(),
+        )
+        .unwrap();
+        let mut operands = std::collections::BTreeMap::new();
+        for (name, units, axes, shape, value) in [
+            ("air_temperature", "K", &column[..], &[3, 1, 2][..], COLUMN_TEMPERATURE),
+            ("specific_humidity", "kg kg-1", &column[..], &[3, 1, 2][..], COLUMN_HUMIDITY),
+            ("surface_pressure", "Pa", &["y", "x"][..], &[1, 2][..], COLUMN_SURFACE_PRESSURE),
+            ("terrain_height", "m", &["y", "x"][..], &[1, 2][..], COLUMN_TERRAIN),
+        ] {
+            let mut field = constant_field(name, axes, shape, value);
+            field.units = units.to_owned();
+            operands.insert(name.to_owned(), field);
+        }
+        pressure.units = "Pa".to_owned();
+        operands.insert("air_pressure".to_owned(), pressure);
+        operands
+    }
+
+    #[test]
+    fn a_column_with_no_height_is_integrated_from_the_surface() {
+        let operands = isothermal_operands();
+        let (values, axes, references) =
+            complete_geopotential_height(None, &operands, "geopotential_height", "m")
+                .unwrap()
+                .unwrap();
+        assert_eq!(axes, vec!["vertical", "y", "x"]);
+        assert_eq!(references[0], "@completed.hypsometric:6");
+        let values = array::contiguous(&values);
+        for (level, pressure) in COLUMN_PRESSURE.iter().enumerate() {
+            for cell in 0..2 {
+                let observed = values[level * 2 + cell];
+                assert!(
+                    (observed - isothermal_height(*pressure)).abs() < 1e-9,
+                    "level {level}: {observed} against {}",
+                    isothermal_height(*pressure)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn published_heights_are_kept_and_anchor_the_missing_levels() {
+        let operands = isothermal_operands();
+        let published = 5600.0;
+        let mut seed = constant_field("geopotential_height", &["vertical", "y", "x"], &[3, 1, 2], f64::NAN);
+        seed.units = "m".to_owned();
+        seed.values = ArrayD::from_shape_vec(
+            IxDyn(&[3, 1, 2]),
+            vec![f64::NAN, f64::NAN, f64::NAN, f64::NAN, published, published],
+        )
+        .unwrap();
+        seed.missing_count = 4;
+        let (values, _axes, references) =
+            complete_geopotential_height(Some(&seed), &operands, "geopotential_height", "m")
+                .unwrap()
+                .unwrap();
+        assert_eq!(references[0], "@completed.hypsometric:4");
+        assert!(references.contains(&"@test.geopotential_height".to_owned()));
+        let values = array::contiguous(&values);
+        assert_eq!(values[4], published);
+        assert_eq!(values[5], published);
+        let offset = published - isothermal_height(COLUMN_PRESSURE[2]);
+        for level in 0..2 {
+            let expected = isothermal_height(COLUMN_PRESSURE[level]) + offset;
+            assert!((values[level * 2] - expected).abs() < 1e-9, "{}", values[level * 2]);
+        }
+    }
+
+    #[test]
+    fn a_frame_without_surface_pressure_has_nothing_to_integrate() {
+        let mut operands = isothermal_operands();
+        operands.remove("surface_pressure");
+        assert!(complete_geopotential_height(None, &operands, "geopotential_height", "m")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn completion_is_limited_to_pressure_levels_that_require_height() {
+        let required: std::collections::BTreeSet<String> =
+            ["geopotential_height".to_owned()].into_iter().collect();
+        assert_eq!(completed_fields("pressure", &required), vec!["geopotential_height"]);
+        assert!(completed_fields("hybrid", &required).is_empty());
+        assert!(completed_fields("pressure", &std::collections::BTreeSet::new()).is_empty());
     }
 }

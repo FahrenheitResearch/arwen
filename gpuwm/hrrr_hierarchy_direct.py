@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -13,9 +13,12 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 import time
 import tomllib
 from types import SimpleNamespace
+
+import numpy as np
 
 from gpuwm import runtime_manifest
 from gpuwm.aerosol_source_receipt import (
@@ -36,6 +39,7 @@ from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
 from gpuwm.ingest.source_coverage import owns_source_coverage_refusal
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.prepared_cache import (
+    PREPARATION_INERT_RUN_FIELDS,
     PreparedCacheReader,
     compare_prepared_domain_config,
     effective_prepared_domain_config,
@@ -46,7 +50,10 @@ from gpuwm.ingest.prepared_cache import (
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.namelist_import import import_namelists, parse_namelist
 from gpuwm.namelist_seal import validated_namelist_extension_invariant
-from gpuwm.native_domain_artifacts import _atomic_staging_sibling
+from gpuwm.native_domain_artifacts import (
+    _atomic_staging_sibling,
+    published_path_refusal,
+)
 from gpuwm.native_hierarchy import initialize_and_export_native_hierarchy
 from gpuwm.native_wrf_contract import validate_native_lambert_contracts
 from gpuwm.static.corridor import (
@@ -61,6 +68,12 @@ from gpuwm.core.microphysics_transition import resolve_microphysics_transition
 SCHEMA = "gpuwm-native-hrrr-hierarchy-direct-v1"
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
+    # The Grell-Freitas closure and shallow-arm selectors ride with
+    # cu_physics: the importer writes them only on a domain whose
+    # cu_physics is 3, so a Grell-Freitas root with clos_choice = 1 has a
+    # cumulus-off child holding 0.  Preparation reads neither
+    # (gpuwm.ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS).
+    "clos_choice", "ishallow",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
     # Per-domain history cadence.  This is the ladder's whole point -- a
@@ -110,7 +123,17 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     # until now only one of the two did.
     "inflow_perturbation", "inflow_perturbation_seed",
     "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
-})
+}) | frozenset(
+    # Every run field the prepared-cache comparison already rules
+    # preparation-inert, read from that one table instead of copied into
+    # this one a field at a time.  Copying is how this check fell behind:
+    # the inflow keys above were inert there and a drift here until they
+    # were copied, and the adaptive clock's per-domain targets and clamps
+    # (a 1 km parent at max_step_increase_pct 5 beside a 500 m nest at
+    # 51) were the same again, so a two-level adaptive tree was refused
+    # by this stage after its root had been prepared.
+    path.partition(".")[2] for path in PREPARATION_INERT_RUN_FIELDS
+    if path.startswith("run."))
 _MAX_PUBLIC_DOMAINS = 21
 
 
@@ -558,8 +581,10 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
             f"{_MAX_PUBLIC_DOMAINS} domains")
     from gpuwm.wps_domain_ids import validated_domain_order
     validated_domain_order(exp.domains)
-    if exp.feedback != 0 or exp.smooth_option != 0:
-        raise ValueError("the public HRRR hierarchy gate is one-way only")
+    # Two-way trees are admitted: feedback and its smoother are a runtime
+    # coupling the tree executor runs, not a property of anything this
+    # stage prepares, so a one-way refusal here only turned away every
+    # two-way layout after its root had been fetched and prepared.
     horizon = sealed_forcing_horizon_seconds(forcing_hours)
     if not 0.0 < exp.run_seconds <= horizon:
         raise ValueError(
@@ -846,6 +871,75 @@ def _root_paths(root: Path) -> dict[str, Path]:
     }
 
 
+def _highres_cache_sibling(output_root: Path) -> Path:
+    """The fetch folder a join uses when it cannot write the recorded one.
+
+    It sits beside the output root, outside the bundle, so publication and
+    later rebuilds keep it without adding fetched tiles to artifact reuse
+    hashing.  Its name is the output folder's first ten characters, a
+    six-character hash of the whole name and ``.highres``: at most 25
+    characters whatever the output is called.  Repeating the whole output
+    name put the receipts written inside it past Windows' 259-character
+    path limit under a deep output root (295 characters for a 125-character
+    parent and a 92-character name), where writing them fails.  The hash
+    is of the case-folded name, so a rebuild of the same output root finds
+    the same folder, and reuses its tiles, however a case-insensitive file
+    system is asked for it.
+    """
+    output_root = Path(output_root).absolute()
+    name = output_root.name
+    digest = hashlib.sha256(
+        name.casefold().encode("utf-8", "surrogatepass")).hexdigest()[:6]
+    return output_root.with_name(f"{name[:10]}-{digest}.highres")
+
+
+def _local_highres_cache(config, *, recorded_cache_root, output_root):
+    """Resolve a writable fetch folder without writing into a foreign path.
+
+    When the join fetches into the sibling beside ``output_root``
+    (:func:`_highres_cache_sibling`), the receipts it writes there are
+    measured with the bundle first, by the same refusal the stage makes
+    at its door, and a folder too deep for them is refused before the
+    sibling is created: past Windows' path limit a receipt write fails
+    partway through the join.
+    """
+    if config is None or not config.enabled:
+        return config, None
+
+    def writable(path):
+        path.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=path):
+            pass
+
+    cache_root = config.cache_root
+    substituted = not Path(recorded_cache_root).is_absolute()
+    if not substituted:
+        try:
+            writable(cache_root)
+        except OSError:
+            substituted = True
+    if substituted:
+        cache_root = _highres_cache_sibling(output_root)
+        from gpuwm.static.highres_production import deepest_receipt_path
+        refusal = published_path_refusal(
+            output_root, also=(deepest_receipt_path(
+                cache_root, config.terrain_source,
+                config.landcover_source),))
+        if refusal is not None:
+            raise ValueError(refusal)
+        try:
+            writable(cache_root)
+        except OSError as error:
+            raise ValueError(
+                "cannot prepare high-resolution child and corridor statics: "
+                f"the fetch cache is not writable at {cache_root}") from error
+    return replace(config, cache_root=cache_root), {
+        "recorded_cache_root": recorded_cache_root,
+        "cache_root": str(cache_root),
+        "substituted": substituted,
+    }
+
+
 def prepare_hrrr_hierarchy(
         *, root_preparation: Path, root_domain_spec: Path,
         wps_namelist: Path, namelist_input: Path,
@@ -858,7 +952,7 @@ def prepare_hrrr_hierarchy(
     """Verify one root preparation and publish generic stock-WRF inputs.
 
     ``statics_corridor`` opts this stage into sealing child-resolution
-    statics over each child's whole parent extent
+    statics over the ground each child can reach
     (:mod:`gpuwm.static.corridor`): ``None`` emits nothing and leaves
     the bundle byte-for-byte unchanged, ``"all"`` covers every child
     domain, and a sequence of grid ids covers exactly those children.
@@ -880,6 +974,9 @@ def prepare_hrrr_hierarchy(
     output_root = Path(output_root)
     if output_root.exists():
         raise FileExistsError(f"refusing existing output root {output_root}")
+    refusal = published_path_refusal(output_root)
+    if refusal is not None:
+        raise ValueError(refusal)
     cpu_bridge = resolve_cpu_bridge(cpu_bridge)
     paths = _root_paths(Path(root_preparation))
     required = (
@@ -999,92 +1096,107 @@ def prepare_hrrr_hierarchy(
     reader = PreparedCacheReader(
         paths["prepared_cache"], expected_identity=expected_identity)
     reader.verify_all()
-    preflight_seconds = time.perf_counter() - started
-
-    restore_started = time.perf_counter()
-    restored = restore_prepared_cache(
-        paths["prepared_cache"], expected_identity=expected_identity,
-        cfg=native_exp.root.run, static=static_fields)
-    root_soil = _surface_state(
-        restored, static_fields,
-        sf_surface_physics=native_exp.root.run.sf_surface_physics,
-        num_soil_layers=native_exp.root.run.num_soil_layers)
-    restore_seconds = time.perf_counter() - restore_started
-
-    snapshots_started = time.perf_counter()
-    snapshots = load_hrrr_native_series(
-        paths["bridge"], sealed_source_leads(identity, forcing_hours)[:1],
-        expected_manifest_sha256=bridge_sha)
-    from gpuwm.ingest.water_overlay import (
-        load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
-    water_overlay, water_binding = load_bound_water_overlay(
-        case_policy.get("water_temperature_overlay"))
-    sealed_water_binding = identity.get("source_identity", {}).get("water_temperature_overlay")
-    if water_binding != sealed_water_binding:
-        raise ValueError("water overlay differs from the sealed root preparation")
-    snapshots = overlay_snapshot_sequence(snapshots, water_overlay, binding=water_binding)
-    static_catalog, catalog_receipt = verified_static_catalog(
-        Path(wps_namelist), Path(geog_root),
-        [domain.grid_id for domain in native_exp.domains])
-    if catalog_receipt["selections"]["d01"] != static_receipt.get(
-            "geog_selection"):
-        raise ValueError(
-            "WPS d01 GEOG selection differs from the sealed root static "
-            "selection")
-    catalog = NestedInputCatalog(
-        snapshots=snapshots, static_catalog=static_catalog,
-        water_temperature_policy=case_policy["water_temperature_policy"],
-        files=tuple(static_catalog.files), static_highres=static_highres,
-        provenance={
-            "adapter": "native-HRRR-hierarchy-direct-v1",
-            "bridge_manifest_sha256": bridge_sha,
-            "static_catalog_receipt": catalog_receipt,
-            "surface_fallback_radius_cells": (
-                target.surface_fallback_radius_cells),
-        })
-    snapshot_seconds = time.perf_counter() - snapshots_started
-
-    grids = tuple(grids_from_projection_config(native_exp))
-    root = ParentInitView(
-        cfg=native_exp.root, grid=grids[0], state=restored.initial_result.state)
-    hierarchy_identity = _source_identity(cpu_bridge)
-    provenance = {
-        "source_manifest_sha256": observed_source_sha,
-        "bridge_manifest_sha256": bridge_sha,
-        "root_static_receipt_sha256": sha256_file(paths["static_receipt"]),
-        "root_prepared_content_sha256": restored.receipt["content_sha256"],
-        "root_preparation_namelist_sha256": root_namelist_sha,
-        "wps_namelist_sha256": sha256_file(Path(wps_namelist)),
-        "native_namelist_input_sha256": namelist_sha,
-        "stock_wrf_namelist_input_sha256": sha256_file(
-            Path(stock_wrf_namelist_input)),
-        "native_resolved_experiment_sha256": hashlib.sha256(
-            native_resolved.encode("utf-8")).hexdigest(),
-        "native_translation_report": asdict(native_report),
-        "stock_runtime_delta": stock_runtime_delta,
-        "wps_runtime_contract": wps_runtime_contract,
-        "static_catalog": catalog_receipt,
-        "surface_fallback_radius_cells": (
-            target.surface_fallback_radius_cells),
-        "hierarchy_source_identity": hierarchy_identity,
-    }
-
-    hierarchy_source_identity = {
-        "root_preparation": identity["source_identity"],
-        "hierarchy": hierarchy_identity,
-        "static_catalog": catalog_receipt,
-        "wps_namelist_sha256": provenance["wps_namelist_sha256"],
-        "native_namelist_input_sha256": namelist_sha,
-        "stock_wrf_namelist_input_sha256": provenance[
-            "stock_wrf_namelist_input_sha256"],
-    }
-
+    # Before the staging folder exists: a fetch folder beside the output
+    # root too deep for its receipts is refused here with nothing written.
+    static_highres, highres_cache = _local_highres_cache(
+        static_highres,
+        recorded_cache_root=(declared_highres or {}).get("cache_root"),
+        output_root=output_root)
+    cache_provenance = ({"static_highres_cache": highres_cache}
+                        if highres_cache is not None else {})
     output_root.parent.mkdir(parents=True, exist_ok=True)
     staging = _atomic_staging_sibling(output_root)
     if staging.exists():
         raise FileExistsError(staging)
     staging.mkdir()
     try:
+        preflight_seconds = time.perf_counter() - started
+
+        restore_started = time.perf_counter()
+        # A host state: this stage prepares on the CPU (see
+        # preprocess_backend="cpu" below) and never integrates the root,
+        # so it must not need CUDA to read the root it builds from.
+        restored = restore_prepared_cache(
+            paths["prepared_cache"], expected_identity=expected_identity,
+            cfg=native_exp.root.run, static=static_fields,
+            array_module=np)
+        root_soil = _surface_state(
+            restored, static_fields,
+            sf_surface_physics=native_exp.root.run.sf_surface_physics,
+            num_soil_layers=native_exp.root.run.num_soil_layers)
+        restore_seconds = time.perf_counter() - restore_started
+
+        snapshots_started = time.perf_counter()
+        snapshots = load_hrrr_native_series(
+            paths["bridge"], sealed_source_leads(identity, forcing_hours)[:1],
+            expected_manifest_sha256=bridge_sha)
+        from gpuwm.ingest.water_overlay import (
+            load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
+        water_overlay, water_binding = load_bound_water_overlay(
+            case_policy.get("water_temperature_overlay"))
+        sealed_water_binding = identity.get("source_identity", {}).get("water_temperature_overlay")
+        if water_binding != sealed_water_binding:
+            raise ValueError("water overlay differs from the sealed root preparation")
+        snapshots = overlay_snapshot_sequence(
+            snapshots, water_overlay, binding=water_binding, workers=workers)
+        static_catalog, catalog_receipt = verified_static_catalog(
+            Path(wps_namelist), Path(geog_root),
+            [domain.grid_id for domain in native_exp.domains])
+        if catalog_receipt["selections"]["d01"] != static_receipt.get(
+                "geog_selection"):
+            raise ValueError(
+                "WPS d01 GEOG selection differs from the sealed root static "
+                "selection")
+        catalog = NestedInputCatalog(
+            snapshots=snapshots, static_catalog=static_catalog,
+            water_temperature_policy=case_policy["water_temperature_policy"],
+            files=tuple(static_catalog.files), static_highres=static_highres,
+            provenance={
+                "adapter": "native-HRRR-hierarchy-direct-v1",
+                "bridge_manifest_sha256": bridge_sha,
+                "static_catalog_receipt": catalog_receipt,
+                **cache_provenance,
+                "surface_fallback_radius_cells": (
+                    target.surface_fallback_radius_cells),
+            })
+        snapshot_seconds = time.perf_counter() - snapshots_started
+
+        grids = tuple(grids_from_projection_config(native_exp))
+        root = ParentInitView(
+            cfg=native_exp.root, grid=grids[0], state=restored.initial_result.state)
+        hierarchy_identity = _source_identity(cpu_bridge)
+        provenance = {
+            "source_manifest_sha256": observed_source_sha,
+            "bridge_manifest_sha256": bridge_sha,
+            "root_static_receipt_sha256": sha256_file(paths["static_receipt"]),
+            "root_prepared_content_sha256": restored.receipt["content_sha256"],
+            "root_preparation_namelist_sha256": root_namelist_sha,
+            "wps_namelist_sha256": sha256_file(Path(wps_namelist)),
+            "native_namelist_input_sha256": namelist_sha,
+            "stock_wrf_namelist_input_sha256": sha256_file(
+                Path(stock_wrf_namelist_input)),
+            "native_resolved_experiment_sha256": hashlib.sha256(
+                native_resolved.encode("utf-8")).hexdigest(),
+            "native_translation_report": asdict(native_report),
+            "stock_runtime_delta": stock_runtime_delta,
+            "wps_runtime_contract": wps_runtime_contract,
+            "static_catalog": catalog_receipt,
+            **cache_provenance,
+            "surface_fallback_radius_cells": (
+                target.surface_fallback_radius_cells),
+            "hierarchy_source_identity": hierarchy_identity,
+        }
+
+        hierarchy_source_identity = {
+            "root_preparation": identity["source_identity"],
+            "hierarchy": hierarchy_identity,
+            "static_catalog": catalog_receipt,
+            "wps_namelist_sha256": provenance["wps_namelist_sha256"],
+            "native_namelist_input_sha256": namelist_sha,
+            "stock_wrf_namelist_input_sha256": provenance[
+                "stock_wrf_namelist_input_sha256"],
+        }
+
         hierarchy_started = time.perf_counter()
         result = initialize_and_export_native_hierarchy(
             exp=native_exp, root_node=root, catalog=catalog,
@@ -1243,8 +1355,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--statics-corridor", nargs="?", const="all", default=None,
         metavar="GRID_IDS",
-        help="also seal child-resolution statics over each child's whole "
-             "parent extent (the moving-nest corridor); bare flag covers "
+        help="also seal child-resolution statics over the ground each "
+             "child can reach (the moving-nest corridor); bare flag covers "
              "every child domain, or pass comma-separated child grid ids "
              "(e.g. 2,3).  Required before the prepared tree runner will "
              "honor a [relocation] follow source; omitted, the bundle is "
@@ -1327,18 +1439,12 @@ def main(argv=None) -> int:
     }, indent=2, sort_keys=True, allow_nan=False))
     corridor = payload.get("statics_corridor")
     if isinstance(corridor, dict):
-        # Size accuracy at the door, in the GFS door's own words: the
-        # corridor is parent-extent at child resolution, and its cost is
-        # stated where it is paid.
+        # Size accuracy at the door, in the GFS door's own words (one
+        # line, written once): the corridor's cost and the ground it
+        # covers are stated where they are paid.
+        from gpuwm.static.corridor import corridor_summary_line
         for label, entry in sorted(corridor.get("domains", {}).items()):
-            print(
-                f"  statics corridor {label}: "
-                f"{entry['corridor_nx']}x{entry['corridor_ny']} child "
-                f"cells over the whole d{int(entry['parent_id']):02d} "
-                f"extent, {entry['cache']['bytes'] / 1.0e6:.1f} MB on "
-                f"disk, {entry['host_bytes'] / 1.0e6:.1f} MB host when "
-                "loaded by a relocating run (no GPU residency)",
-                file=sys.stderr)
+            print(corridor_summary_line(label, entry), file=sys.stderr)
     return 0
 
 

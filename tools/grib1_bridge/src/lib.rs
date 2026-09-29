@@ -18,6 +18,24 @@ pub mod surface_pressure;
 // global-source bilinear the seam of a cyclic lat/lon grid needs.
 pub mod wif_ffi;
 pub mod wps_intermediate;
+// WPS metgrid's masked-field chain (soil, snow, skin, sea ice) in float64,
+// byte-identical to the NumPy transcription it replaced.
+pub mod wps_masked;
+// The native HRRR route's land-only bilinear stencil for soil, built in
+// float64 and applied in float32, byte-identical to the NumPy builder.
+pub mod masked_stencil;
+// The lake skin search and the water-temperature blends in float64,
+// byte-identical to the NumPy code they replaced.
+pub mod water_blend;
+// The water-temperature box repairs and the per-body assembly in float64,
+// byte-identical to the NumPy code they replaced.
+pub mod water_repair;
+// Which water body owns each source cell, byte-identical to the NumPy
+// code it replaced.
+pub mod water_owner;
+// The bounded surface-nearest search of the CPU backend in float32,
+// byte-identical to the NumPy code it replaced.
+pub mod surface_nearest;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};

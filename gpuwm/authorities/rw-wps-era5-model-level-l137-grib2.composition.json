@@ -7,7 +7,7 @@
     "physical_analysis_surface": {
       "source_id": "ecmwf-era5-pressure-level-surface-donor-grib1-native",
       "mapping_role": "physical_analysis_surface_mapping",
-      "mapping_sha256": "38bb519c8cad40afd422f3f9b03c0bedcac8512df43b386758c18a64334fe060",
+      "mapping_sha256": "a16c6a9b615d5999030051aa3fb2170de7993467580c4f44840eebd0f1ec5e69",
       "data_role": "physical_analysis_surface_data",
       "provenance_role": "physical_analysis_surface_provenance",
       "fields": [
@@ -20,7 +20,13 @@
         "northward_wind_10m",
         "land_fraction",
         "soil_temperature",
-        "volumetric_soil_moisture"
+        "volumetric_soil_moisture",
+        "sea_surface_temperature",
+        "sea_ice_fraction",
+        "lake_water_temperature",
+        "lake_ice_temperature",
+        "lake_ice_depth",
+        "snow_water_equivalent"
       ],
       "grid_alignment": "exact_coordinate_subset",
       "time_alignment": "valid_time_exact"

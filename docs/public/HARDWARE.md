@@ -185,8 +185,8 @@ is no in-process `--device` switch that could run after a CUDA context already
 exists.
 
 Before launching children, the orchestrator creates the summary parent and
-probes that its filesystem supports the same atomic create-only hard-link
-publication used for the final JSON. A summary that appears during a later
+probes the atomic create-only publication used for the final JSON (a hard link,
+or on exFAT and FAT32 a rename that refuses a file). A summary that appears during a later
 race is preserved and the orchestrator refuses to overwrite it. The receipt
 contains the raw plan SHA-256, SHA-256 for every declared file input and
 config, and an explicit delegated-to-runner-receipt marker for directory
@@ -318,7 +318,7 @@ Example (24 GiB tier, printed by the wizard on Windows, where the measured WDDM 
   peak envelope: estimate 11.31 + non-pool 2.42 (CUDA context + local-memory backing store) + 0.50 unmodelled + 5% of the estimate x 3 nest(s) + 20% of the estimate WDDM pool slack = 18.19 GiB
     envelope basis: windows; measured, RTX 3080 10 GiB / Windows 11 WDDM, six whole bare-default forecasts machine-wide at 0.25 s over a 2.5x span of itemized estimate, rte-rrtmgp + legacy-RRTMG suites
   ingest (preprocessing): root 3 forcing times x 0.42 GiB each, 1 resident at a time + 3 nest initial state(s) 4.72 GiB, all resident for the single export transaction = 5.19 GiB resident; peak envelope 9.25 GiB
-    ingest envelope basis: measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context
+    ingest envelope basis: itemized analysis, model state and vertical setup, x1.10 setup residual and x1.20 pool headroom, measured on four CUDA preparations (1792x1024x55 to a 3:1 nest, H100, 2026-09-28), + CUDA context
   BINDING PHASE: the forecast is the memory-binding phase at 18.19 GiB peak envelope (forecast 18.19 GiB, ingest 9.25 GiB); it fits the 19.30 GiB budget with 1.12 GiB to spare
   budget 19.30 GiB (24 GiB card presents about 22.56 GiB free, minus this suite's 3.26 GiB reserve); headroom 1.12 GiB
 ```
@@ -654,6 +654,38 @@ reading `preparing:build-domain-tree`, is the decode, and only a
 smaller forcing file fixes it. Surviving at 3600 s and dying at full
 length is not the decode; that is a forecast problem, and
 `--outdir/worker-01.stderr.log` has the traceback.
+
+### A tiled GFS preparation holds its grid in RAM as well
+
+A config with `[tiles]` prepares GFS forcing on the CPU, so that phase
+holds no card memory and everything it builds is host RAM: the start
+time's analysis and state, every nest's initial state, the
+lateral-boundary tables, series and frames for every forcing time, and
+the setup temporaries. Unlike the decode above, this term grows with
+the target grid, the vertical levels and the forecast length, so those
+are its levers, with a machine that has more RAM.
+
+Two figures describe it, and `gpuwm check --json` reports both. The
+estimated peak (`ingest_host_preparation_bytes`) is what `gpuwm domain`
+sizes a tiled domain against, keeping the same 5% headroom off the RAM
+that it keeps off the card. The floor
+(`ingest_host_preparation_floor_bytes`) counts only the arrays the
+preparation holds at once, with no temporaries; `gpuwm go` and `gpuwm
+check` refuse a configuration whose floor is more than all of this
+machine's RAM, before the download (`gpuwm check` exits 5;
+`--no-host-memory-gate` skips it there), and warn when only the
+estimated peak is. Against real preparations from 6 h to 72 h forecasts
+and 49 to 96 levels, the floor came to 0.74 to 0.89 of the measured peak
+and the estimate to 1.01 to 1.11 of it. For nested trees of 2 and 3 domains
+the floor came to 0.68 to 0.94 of the measured peak and the estimate to
+1.01 to 1.12 of it. Every one of those preparations ran eight worker
+threads, and a CPU preparation starts no more than eight on its own,
+however many CPUs the machine has, because its peak grows with its
+thread count: on a 64-vCPU machine the 744x594x49 6 h preparation peaked
+at 7.10 GiB with eight threads and at 7.79 GiB with 64, past its
+7.50 GiB estimate, and on a shared 64-vCPU machine the eight-thread preparation was no slower.
+`--preprocess-workers` starts more when you name them; the estimate does
+not price that.
 
 ## Windows / WDDM notes
 

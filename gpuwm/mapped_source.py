@@ -39,12 +39,18 @@ from gpuwm import netcdf_bridge
 from gpuwm.explain import warn
 from gpuwm.ingest.grib import Era5Snapshot, build_rust_bridge, inspect_grib1_envelopes
 from gpuwm.ingest.quantization import admit_bounded
-from gpuwm.ingest.source_coverage import ForcingSeriesRefusal
+from gpuwm.ingest.source_coverage import (
+    ForcingSeriesRefusal, ScratchDiskRefusal, scratch_disk_refusal)
 from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_MOISTURE,
     MAPPED_SOIL_TEMPERATURE,
 )
+from gpuwm.source_authorities import (
+    BOUNDARY_MULTIPLES_KEY,
+    boundary_interval_refusal,
+)
 from gpuwm.source_frame import (
+    COMPLETED_FIELD_REFERENCE_PREFIX,
     PORTABLE_HEADER_RULE,
     FieldDescriptor,
     GridDescriptor,
@@ -69,7 +75,7 @@ _GRIB2_AUTHORITY_KEYS = (
 )
 
 _FORMATS = {"grib1", "grib2", "netcdf"}
-_AXES = {"time", "member", "vertical", "y", "x", "soil"}
+_AXES = {"time", "member", "vertical", "half_level", "y", "x", "soil"}
 _LOCATIONS = {"mass", "u_face", "v_face", "surface", "soil"}
 _STAGGERING = {"none", "x", "y", "z"}
 _VERTICAL_KINDS = {
@@ -89,6 +95,8 @@ _POLICY_FIELDS = {
 }
 _DERIVATION_ARGUMENTS = {
     "copy": ({"source"}, set()),
+    "height_from_interfaces": ({"source"}, set()),
+    "mass_fraction_rebase": ({"source"}, {"exclude"}),
     "wind_speed": ({"u", "v"}, set()),
     "specific_humidity_from_rh": (
         {"relative_humidity", "temperature", "pressure"}, set()
@@ -125,7 +133,31 @@ _DERIVATION_ARGUMENTS = {
         {"temperature", "specific_humidity", "surface_geopotential_height"},
         {"gravity_m_s2"},
     ),
+    # Surface pressure at the declared surface height from mean-sea-level
+    # pressure and the source's own level heights and pressures: WRF
+    # real's sfcprs3 relation, for a source that publishes MSLP and no
+    # surface pressure.  Every valid time reduces its own bytes, so the
+    # column mass follows the forecast lead by lead.
+    "surface_pressure_from_sea_level": (
+        {"sea_level_pressure", "level_height", "pressure", "surface_height"},
+        set(),
+    ),
 }
+#: Surface fields a mapping may carry with their source's missing mask
+#: intact (``preserve_mask``), besides the soil column: the water state.
+#: Each is read only by a consumer that takes water values from water
+#: cells -- the water-temperature assembly (gpuwm/ingest/
+#: water_temperature.py) reads the sea surface analysis from its own
+#: water component, the masked water chain maps sea ice from water
+#: sources only, and the lake mapping (gpuwm/ingest/lake_temperature.py)
+#: declines any cell a missing donor touches -- so a land cell the source
+#: leaves missing never reaches the initial state.  The pressure-level
+#: route decodes the same records with the same masks.
+MASKED_WATER_STATE_FIELDS = frozenset({
+    "sea_surface_temperature", "sea_ice_fraction",
+    "lake_water_temperature", "lake_ice_temperature", "lake_ice_depth",
+})
+
 _CANONICAL_REQUIREMENTS = {
     "air_temperature": (("vertical", "y", "x"), "mass", "K"),
     "specific_humidity": (("vertical", "y", "x"), "mass", "kg kg-1"),
@@ -403,7 +435,7 @@ def _validate_selector(selector: object, expected_format: str, label: str) -> di
             "level_value", "second_level_type", "second_level_value",
             "discipline", "category", "member", "name", "standard_name",
             "layer_dimension", "layer_value", "layer_units", "attributes",
-            "pdt",
+            "pdt", "scale",
         },
         required={"format"},
     )
@@ -415,7 +447,7 @@ def _validate_selector(selector: object, expected_format: str, label: str) -> di
     allowed_by_format = {
         "grib1": {
             "format", "parameter", "table_version", "center", "level_type",
-            "level_value",
+            "level_value", "scale",
         },
         "grib2": {
             # ``pdt`` binds the product-definition template as identity, so
@@ -424,7 +456,7 @@ def _validate_selector(selector: object, expected_format: str, label: str) -> di
             # records to a selector rather than a duplicate-message error.
             "format", "discipline", "category", "parameter", "level_type",
             "level_value", "second_level_type", "second_level_value", "member",
-            "pdt", *_GRIB2_AUTHORITY_KEYS,
+            "pdt", "scale", *_GRIB2_AUTHORITY_KEYS,
         },
         "netcdf": {
             "format", "name", "standard_name", "attributes",
@@ -476,6 +508,14 @@ def _validate_selector(selector: object, expected_format: str, label: str) -> di
                 raise ValueError(f"{label}.{key} must not be null")
         if value.get("level_value") is not None:
             _number(value["level_value"], f"{label}.level_value")
+        if "scale" in value:
+            # The factor that takes this selector's records to the
+            # field's source units, for a field that lists a second
+            # publication of the same quantity (geopotential beside
+            # geopotential height) as a fallback selector.
+            scale = _number(value["scale"], f"{label}.scale")
+            if scale == 0.0:
+                raise ValueError(f"{label}.scale must be finite and nonzero")
         second_keys = {
             key for key in ("second_level_type", "second_level_value")
             if value.get(key) is not None
@@ -685,10 +725,14 @@ def _grib_selectors_overlap(
     )
     if any(left[key] != right[key] for key in required):
         return False
+    # A GRIB2 record carries exactly one product definition template, so
+    # two selectors pinning different templates can never both match it;
+    # that is what lets a field rank a PDT 1 selector above a PDT 0 form
+    # of the same record (both engines already match ``pdt`` exactly).
     optional_exact = (
         ("table_version", "center", "level_type")
         if source_format == "grib1"
-        else ("level_type", "member", *_GRIB2_AUTHORITY_KEYS)
+        else ("level_type", "member", "pdt", *_GRIB2_AUTHORITY_KEYS)
     )
     if any(
         not _optional_exact_overlap(left, right, key) for key in optional_exact
@@ -712,6 +756,491 @@ def _grib_selectors_overlap(
     )
 
 
+def _validate_era_ladders(
+    raw: object, levels: Sequence[float], source_format: object,
+) -> None:
+    """``vertical.era_ladders``: the ladders other publications carry.
+
+    A publisher adds or drops pressure levels between releases of one
+    product while every other byte of its files keeps the same shape, so
+    a file from the other side of such a change lacks a level
+    ``vertical.levels`` names.  Each entry here is the whole ladder one
+    such publication carries, drawn from ``levels``; the GRIB decoders
+    build the column from the largest declared ladder the records carry
+    in full (:func:`_carried_ladder`), and a file missing a level that
+    no declared ladder omits still refuses at that level.
+    """
+
+    if not levels:
+        raise ValueError(
+            "vertical.era_ladders needs vertical.levels: without declared "
+            "levels the decoder already takes the ladder the file offers, "
+            "so the era ladders would never be read")
+    if source_format == "netcdf":
+        raise ValueError(
+            "vertical.era_ladders is read by the GRIB decoders only; the "
+            "NetCDF decoder selects vertical.levels by coordinate value, so "
+            "a file carrying one of these ladders would still refuse at its "
+            "first absent level")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("vertical.era_ladders must be a non-empty list of level lists")
+    declared = set(levels)
+    for index, ladder in enumerate(raw):
+        label = f"vertical.era_ladders[{index}]"
+        if not isinstance(ladder, list) or not ladder:
+            raise ValueError(f"{label} must be a non-empty numeric list")
+        values = [
+            _number(value, f"{label}[{position}]")
+            for position, value in enumerate(ladder)
+        ]
+        if len(set(values)) != len(values):
+            raise ValueError(f"{label} must be a unique numeric list")
+        stray = [value for value in values if value not in declared]
+        if stray:
+            raise ValueError(
+                f"{label} names levels {stray} that vertical.levels does not "
+                "declare; an era ladder is drawn from the declared levels, "
+                "which are the only ones the decoder admits")
+
+
+def _carried_ladder(
+    mapping: Mapping[str, object],
+    declared: Sequence[float],
+    level_sets: Iterable[set[float]],
+) -> tuple[float, ...]:
+    """The declared ladder a decode stacks: the largest one carried in full.
+
+    ``level_sets`` holds, per stacked vertical field and valid time, the
+    declared levels its records carry.  ``vertical.levels`` wins when
+    every set holds it; otherwise the largest ``vertical.era_ladders``
+    entry every set holds, in the declared order.  When none fits, the
+    declared ladder is returned and the coverage check names what is
+    missing from it, exactly as it did before era ladders existed.
+    """
+
+    declared = tuple(float(value) for value in declared)
+    raw = mapping["coordinates"]["vertical"].get("era_ladders") or ()
+    carried = [set(values) for values in level_sets]
+    if not raw or not carried:
+        return declared
+
+    def fits(ladder: Sequence[float]) -> bool:
+        return all(level in values for values in carried for level in ladder)
+
+    if fits(declared):
+        return declared
+    best: tuple[float, ...] | None = None
+    for entry in raw:
+        members = {float(value) for value in entry}
+        ladder = tuple(level for level in declared if level in members)
+        if fits(ladder) and (best is None or len(ladder) > len(best)):
+            best = ladder
+    return declared if best is None else best
+
+
+class NothingMatched(ValueError):
+    """A GRIB2 decode whose files carry no record any selector reads.
+
+    A ``ValueError`` like every other mapping-versus-bytes refusal; its
+    own type lets a caller with a declared answer for an absent field
+    (``fields.terrain_height.when_absent``) take that answer for exactly
+    this case and no other.
+    """
+
+
+#: Standard gravity for the surface-height derivation (m s-2).
+_SURFACE_HEIGHT_GRAVITY = 9.80665
+
+
+def _height_at_surface_pressure(
+    levels_pa: Sequence[float],
+    geopotential_height: np.ndarray,
+    temperature: np.ndarray,
+    specific_humidity: np.ndarray,
+    surface_pressure: np.ndarray,
+    surface_temperature: np.ndarray,
+    surface_dewpoint: np.ndarray,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Each column's height at its surface pressure, and how it was made.
+
+    The hypsometric equation from the first level above the ground down
+    to the surface pressure, with the layer's mean virtual temperature
+    taken between that level and the surface.  At the surface the
+    temperature and humidity are interpolated linearly in log pressure
+    between the two levels that bracket it; below the deepest level they
+    come from the 2 m temperature and the dewpoint's specific humidity,
+    the surface fields WPS and real extrapolate from.  A surface above
+    the highest level is refused: the column says nothing about the air
+    below it.  The mapped engine's ``derive::height_at_surface_pressure``
+    is the same arithmetic.
+    """
+
+    pressure = np.asarray(surface_pressure, dtype=np.float64)
+    if pressure.ndim != 2:
+        raise ValueError(
+            "terrain_height from surface pressure needs (y, x) surface "
+            f"fields; surface pressure has shape {pressure.shape}")
+    levels = np.asarray(levels_pa, dtype=np.float64)
+    column_shape = (levels.size, *pressure.shape)
+    columns = {}
+    for label, field in (("geopotential height", geopotential_height),
+                         ("temperature", temperature),
+                         ("specific humidity", specific_humidity)):
+        array = np.asarray(field, dtype=np.float64)
+        if array.shape != column_shape:
+            raise ValueError(
+                f"terrain_height from surface pressure needs {label} on the "
+                f"{levels.size} declared levels over the surface grid "
+                f"{column_shape}; got {array.shape}")
+        columns[label] = array
+    surface = {}
+    for label, field in (("surface temperature", surface_temperature),
+                         ("surface dewpoint", surface_dewpoint)):
+        array = np.asarray(field, dtype=np.float64)
+        if array.shape != pressure.shape:
+            raise ValueError(
+                f"terrain_height from surface pressure needs {label} on the "
+                f"surface grid {pressure.shape}; got {array.shape}")
+        surface[label] = array
+    if not levels.size or not np.all(np.isfinite(levels) & (levels > 0.0)):
+        raise ValueError(
+            "terrain_height from surface pressure needs positive pressure levels")
+    order = np.argsort(-levels, kind="stable")          # deepest first
+    ladder = levels[order]
+    heights = columns["geopotential height"][order]
+    temperatures = columns["temperature"][order]
+    humidities = columns["specific humidity"][order]
+    cells = pressure.size
+    unreadable = ~(np.isfinite(pressure) & (pressure > 0.0))
+    safe = np.where(unreadable, ladder[0], pressure)
+    above_any = ladder[None, None, :] < safe[..., None]   # (y, x, level)
+    has_level = above_any.any(axis=-1)
+    above_ladder = int(np.count_nonzero(~has_level & ~unreadable))
+    if above_ladder:
+        raise ValueError(
+            f"terrain_height from surface pressure: {above_ladder} of {cells} "
+            f"cells have a surface pressure at or above the highest level "
+            f"({ladder[-1]:g} Pa), so the column says nothing about the air "
+            "below their surface")
+    position = np.argmax(above_any, axis=-1)            # first level above ground
+    rows, cols = np.indices(pressure.shape)
+    at = lambda field, level: field[level, rows, cols]  # noqa: E731
+    t_above = at(temperatures, position)
+    q_above = at(humidities, position)
+    z_above = at(heights, position)
+    p_above = ladder[position]
+    below = np.maximum(position - 1, 0)
+    p_below = ladder[below]
+    beneath = position == 0
+    weight = np.where(
+        beneath, 0.0,
+        (np.log(safe) - np.log(p_above))
+        / np.where(beneath, 1.0, np.log(p_below) - np.log(p_above)))
+    t_level = t_above + (at(temperatures, below) - t_above) * weight
+    q_level = q_above + (at(humidities, below) - q_above) * weight
+    dewpoint = surface["surface dewpoint"]
+    vapour_hpa = (10.0 * 0.6112) * np.exp(
+        17.67 * (dewpoint - 273.15) / (dewpoint - 29.65))
+    q_surface = 0.622 * vapour_hpa / (safe / 100.0 - 0.378 * vapour_hpa)
+    surface_t = np.where(beneath, surface["surface temperature"], t_level)
+    surface_q = np.where(beneath, q_surface, q_level)
+    virtual_above = t_above * (1.0 + _HYDROSTATIC_VIRTUAL * q_above)
+    virtual_surface = surface_t * (1.0 + _HYDROSTATIC_VIRTUAL * surface_q)
+    scale = _HYDROSTATIC_RD / _SURFACE_HEIGHT_GRAVITY
+    height = z_above - scale * (0.5 * (virtual_above + virtual_surface)) \
+        * np.log(safe / p_above)
+    bad = int(np.count_nonzero(unreadable | ~np.isfinite(height)))
+    if bad:
+        raise ValueError(
+            f"terrain_height from surface pressure: {bad} of {cells} cells "
+            "have no finite surface pressure or column to derive from")
+    return height, {
+        "cells": int(cells),
+        "cells_below_lowest_level": int(np.count_nonzero(beneath)),
+        "minimum_m": float(height.min()),
+        "maximum_m": float(height.max()),
+    }
+
+
+#: The identity keys a ``record_aliases`` entry compares (``record``) and
+#: writes (``reads_as``).  ``pdt`` identifies a record but is never
+#: rewritten: an alias renames a record, it does not change what kind of
+#: product the record is.
+_ALIAS_RECORD_KEYS = frozenset({
+    "discipline", "category", "parameter", "level_type", "level_value",
+    "second_level_type", "second_level_value", "pdt",
+})
+_ALIAS_READS_AS_KEYS = _ALIAS_RECORD_KEYS - {"pdt"}
+_ALIAS_INTEGER_KEYS = (
+    ("discipline", 0, 255), ("category", 0, 255), ("parameter", 0, 255),
+    ("level_type", 0, 255), ("second_level_type", 0, 255), ("pdt", 0, 65535),
+)
+
+
+def _alias_part(raw: object, label: str, allowed: frozenset[str]) -> dict[str, object]:
+    value = _object(
+        raw, label, allowed=set(allowed),
+        required={"discipline", "category", "parameter"},
+    )
+    for key, minimum, maximum in _ALIAS_INTEGER_KEYS:
+        if key in value:
+            _integer(value[key], f"{label}.{key}", minimum=minimum, maximum=maximum)
+    for key in ("level_value", "second_level_value"):
+        if key in value:
+            _number(value[key], f"{label}.{key}")
+    return value
+
+
+def _alias_names(pattern: Mapping[str, object], record: "_GribRecord") -> bool:
+    """Whether an alias's ``record`` names this record.
+
+    Only the keys the alias declares are compared: a spelling is named by
+    what distinguishes it, and a key it leaves out (the deepest soil
+    layer's bottom, written as the all-ones missing value) is not.
+    """
+
+    def same(key: str, observed: object) -> bool:
+        if key not in pattern:
+            return True
+        if observed is None:
+            return False
+        if key in {"level_value", "second_level_value"}:
+            return math.isclose(float(observed), float(pattern[key]), abs_tol=1e-9)
+        return int(observed) == int(pattern[key])
+
+    return (
+        same("discipline", record.discipline)
+        and same("category", record.category)
+        and same("parameter", record.parameter)
+        and same("level_type", record.level_type)
+        and same("level_value", record.level_value)
+        and same("second_level_type", record.second_level_type)
+        and same("second_level_value", record.second_level_value)
+        and same("pdt", record.time_semantics[0] if record.time_semantics else None)
+    )
+
+
+def _alias_record(
+    record: "_GribRecord", aliases: Sequence[Mapping[str, object]],
+) -> tuple["_GribRecord", bool]:
+    """The record under the spelling the mapping's selectors read.
+
+    ``mapping.record_aliases`` names records an earlier publication of
+    the product spelled differently; the first (and, by validation, the
+    only) alias naming ``record`` rewrites the keys its ``reads_as``
+    declares.  A ``reads_as`` without a second surface reads as a record
+    that has none.  The mapped engine's ``grib::alias_identities`` makes
+    the same rewrite.
+    """
+
+    for alias in aliases:
+        if not _alias_names(alias["record"], record):
+            continue
+        reads_as = alias["reads_as"]
+        changes: dict[str, object] = {
+            key: int(reads_as[key])
+            for key in ("discipline", "category", "parameter", "level_type")
+            if key in reads_as
+        }
+        if "level_value" in reads_as:
+            changes["level_value"] = float(reads_as["level_value"])
+        if "second_level_type" in reads_as:
+            changes["second_level_type"] = int(reads_as["second_level_type"])
+            changes["second_level_value"] = float(reads_as["second_level_value"])
+        else:
+            changes["second_level_type"] = 255
+        from dataclasses import replace
+
+        return replace(record, **changes), True
+    return record, False
+
+
+def _alias_probe(values: Mapping[str, object]) -> "_GribRecord":
+    """A data-less record carrying ``values``' identity, for validation."""
+
+    return _GribRecord(
+        source=Path("."), index=0,
+        reference_time=datetime.min, valid_time=datetime.min, member=None,
+        parameter=int(values["parameter"]),
+        level_type=int(values.get("level_type", 255)),
+        level_value=float(values.get("level_value", 0.0)),
+        table_version=None, center=None, subcenter=None,
+        master_table_version=None, local_table_version=None,
+        discipline=int(values["discipline"]), category=int(values["category"]),
+        second_level_type=int(values.get("second_level_type", 255)),
+        second_level_value=float(values.get("second_level_value", 0.0)),
+        process_identity=None, time_semantics=(int(values.get("pdt", 0)),),
+        values=np.empty((0, 0)), latitude=np.empty(0), longitude=np.empty(0),
+        grid_fingerprint="",
+    )
+
+
+def _alias_patterns_overlap(
+    left: Mapping[str, object], right: Mapping[str, object],
+) -> bool:
+    """Whether one record could be named by both declared patterns."""
+
+    for key in _ALIAS_RECORD_KEYS:
+        if key not in left or key not in right:
+            continue
+        if key in {"level_value", "second_level_value"}:
+            if not math.isclose(float(left[key]), float(right[key]), abs_tol=1e-9):
+                return False
+        elif int(left[key]) != int(right[key]):
+            return False
+    return True
+
+
+def _selector_as_alias_pattern(selector: Mapping[str, object]) -> dict[str, object]:
+    """A GRIB2 selector's identity in alias-pattern terms.
+
+    A selector that declares no second surface reads only records that
+    have none (code 255), so that is what it names here.
+    """
+
+    pattern = {
+        key: selector[key] for key in _ALIAS_RECORD_KEYS if key in selector
+    }
+    pattern.setdefault("second_level_type", 255)
+    return pattern
+
+
+def _validate_record_aliases(
+    raw: object,
+    fields: Mapping[str, Mapping[str, object]],
+    source_format: str,
+) -> None:
+    """``mapping.record_aliases``: records another publication spells apart.
+
+    Each entry names one earlier spelling (``record``) and the spelling
+    the mapping's selectors read (``reads_as``).  Refused, each for the
+    breakage it would cause: an alias on a format whose decoder does not
+    read it (it would never apply); a ``record`` a selector already reads
+    as spelled (the alias would change what a file the mapping already
+    decodes decodes to); two aliases that can name one record (which one
+    applies would be an accident of order); and a ``reads_as`` that no
+    selector, or more than one field, reads (the renamed record would be
+    dropped or claimed twice).
+    """
+
+    if source_format != "grib2":
+        raise ValueError(
+            "mapping.record_aliases is read by the GRIB2 decoders only; on "
+            f"a {source_format} mapping it would never rename a record")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("mapping.record_aliases must be a non-empty list")
+    parsed: list[tuple[dict[str, object], dict[str, object]]] = []
+    for index, entry in enumerate(raw):
+        label = f"record_aliases[{index}]"
+        alias = _object(entry, label, allowed={"record", "reads_as"},
+                        required={"record", "reads_as"})
+        record = _alias_part(alias["record"], f"{label}.record", _ALIAS_RECORD_KEYS)
+        reads_as = _alias_part(
+            alias["reads_as"], f"{label}.reads_as", _ALIAS_READS_AS_KEYS)
+        if ("second_level_type" in reads_as) != ("second_level_value" in reads_as):
+            raise ValueError(
+                f"{label}.reads_as must declare second_level_type and "
+                "second_level_value together, or neither for a record "
+                "with no second surface")
+        for previous_index, (previous, _reads) in enumerate(parsed):
+            if _alias_patterns_overlap(previous, record):
+                raise ValueError(
+                    f"{label}.record and record_aliases[{previous_index}].record "
+                    "can name the same record; which alias applied would "
+                    "depend on their order")
+        for field_name, field in fields.items():
+            for position, selector in enumerate(field.get("selectors", [])):
+                if _alias_patterns_overlap(
+                        _selector_as_alias_pattern(selector), record):
+                    raise ValueError(
+                        f"{label}.record is read as spelled by "
+                        f"fields.{field_name}.selectors[{position}]; an alias "
+                        "names a spelling no selector reads, or it would "
+                        "change what a file the mapping already decodes "
+                        "decodes to")
+        identity = {**record, **reads_as}
+        if "second_level_type" not in reads_as:
+            identity.pop("second_level_value", None)
+            identity["second_level_type"] = 255
+        probe = _alias_probe(identity)
+        readers = sorted({
+            field_name for field_name, field in fields.items()
+            if any(_selector_matches_record(selector, probe, "grib2")
+                   for selector in field.get("selectors", []))
+        })
+        if len(readers) != 1:
+            raise ValueError(
+                f"{label}.reads_as is read by {len(readers)} mapped fields "
+                f"{readers}; a renamed record must answer exactly one field")
+        parsed.append((record, reads_as))
+
+
+#: Operations ``fields.terrain_height.when_absent`` may name, and the
+#: fields each reads: three column fields, then three surface fields.
+_WHEN_ABSENT_OPERATIONS = {
+    "height_at_surface_pressure": (
+        "geopotential_height", "temperature", "specific_humidity",
+        "surface_pressure", "surface_temperature", "surface_dewpoint",
+    ),
+}
+
+
+def _validate_when_absent(
+    name: str,
+    field: Mapping[str, object],
+    fields: Mapping[str, Mapping[str, object]],
+    vertical: Mapping[str, object],
+    source_format: str,
+) -> None:
+    """``fields.<name>.when_absent``: the field derived when files lack it.
+
+    Read for ``terrain_height`` supplied through a composition's terrain
+    supplement, where the derived value is broadcast like a published
+    analysis terrain; anywhere else nothing would read it, so it is
+    refused rather than left to do nothing.
+    """
+
+    label = f"fields.{name}.when_absent"
+    if name != "terrain_height":
+        raise ValueError(
+            f"{label} is read only for terrain_height, which a composition's "
+            "terrain supplement derives when its files carry none")
+    if source_format != "grib2":
+        raise ValueError(
+            f"{label} is read by the GRIB2 composition only; on a "
+            f"{source_format} mapping it would never run")
+    if not field.get("selectors"):
+        raise ValueError(
+            f"{label} is the answer when the selectors match nothing, so "
+            "the field must also declare selectors")
+    operation = field["when_absent"]
+    kind = operation.get("operation") if isinstance(operation, dict) else None
+    reads = _WHEN_ABSENT_OPERATIONS.get(kind) if isinstance(kind, str) else None
+    if reads is None:
+        raise ValueError(
+            f"{label}.operation must be one of {sorted(_WHEN_ABSENT_OPERATIONS)}")
+    value = _object(operation, label, allowed={"operation", *reads},
+                    required={"operation", *reads})
+    if vertical["kind"] != "pressure" or str(vertical["units"]) not in {"Pa", "hPa"}:
+        raise ValueError(
+            f"{label} ({kind}) reads a pressure ladder in Pa or hPa; the "
+            f"mapping's vertical is {vertical['kind']!r} in "
+            f"{vertical['units']!r}")
+    for position, key in enumerate(reads):
+        target = _string(value[key], f"{label}.{key}")
+        mapped = fields.get(target)
+        if mapped is None or not mapped.get("selectors"):
+            raise ValueError(
+                f"{label}.{key} names {target!r}, which is not a directly "
+                "decoded field of this mapping; the derivation reads the "
+                "primary's decoded records")
+        axes = ("vertical", "y", "x") if position < 3 else ("y", "x")
+        if tuple(mapped["target_axes"]) != axes:
+            raise ValueError(
+                f"{label}.{key} names {target!r}, whose axes "
+                f"{tuple(mapped['target_axes'])} are not {axes}")
+
+
 def load_mapping(
     path: str | Path,
     *,
@@ -733,7 +1262,10 @@ def load_mapping(
     mapping = _object(
         raw,
         "mapping",
-        allowed={"schema", "name", "format", "coordinates", "fields", "derivations", "target", "grid"},
+        allowed={
+            "schema", "name", "format", "coordinates", "fields", "derivations",
+            "target", "grid", "record_aliases",
+        },
         required={"schema", "name", "format", "coordinates", "fields", "target"},
     )
     if mapping["schema"] != MAPPING_SCHEMA:
@@ -775,8 +1307,8 @@ def load_mapping(
         coordinates["vertical"],
         "mapping.coordinates.vertical",
         allowed={
-            "kind", "selector", "units", "positive", "levels",
-            "hybrid_a", "hybrid_b",
+            "kind", "selector", "units", "positive", "levels", "era_ladders",
+            "hybrid_a", "hybrid_b", "interface_levels",
             "hybrid_a_field", "hybrid_b_field", "surface_pressure_field",
         },
         required={"kind", "units"},
@@ -799,6 +1331,22 @@ def load_mapping(
     ]
     if len(set(numeric_levels)) != len(numeric_levels):
         raise ValueError("vertical.levels must be a unique numeric list")
+    if vertical.get("era_ladders") is not None:
+        _validate_era_ladders(
+            vertical["era_ladders"], numeric_levels, source_format)
+    interfaces = vertical.get("interface_levels")
+    if interfaces is not None:
+        if vertical.get("era_ladders") is not None:
+            raise ValueError(
+                "era_ladders cannot be combined with interface_levels: an era ladder can shorten "
+                "the mass column while the fixed N+1 interfaces still bound the declared ladder")
+        if source_format not in {"grib1", "grib2"} or vertical["kind"] != "model_level":
+            raise ValueError("interface_levels requires a GRIB model_level coordinate")
+        if not isinstance(interfaces, list) or len(interfaces) != len(levels) + 1:
+            raise ValueError("interface_levels must bound every mass level with N+1 interfaces")
+        values = [_number(value, "vertical.interface_levels") for value in interfaces]
+        if len(set(values)) != len(values) or not all(b > a for a, b in zip(values, values[1:])):
+            raise ValueError("interface_levels must be unique and increasing in column order")
     if vertical["kind"] == "hybrid_sigma_pressure":
         # The coefficient channels are the GRIB pv coordinate octets
         # (primary, read from the bytes at decode) and inline
@@ -925,10 +1473,14 @@ def load_mapping(
             allowed={
                 "selectors", "derivation", "units", "source_axes", "target_axes",
                 "location", "staggering", "missing", "selector_stack_axis",
-                "time_binding", "provider",
+                "time_binding", "provider", "when_absent", "dependency_only",
             },
             required={"units", "source_axes", "target_axes", "location", "missing"},
         )
+        # ``dependency_only``: the field is decoded for a derivation to
+        # read and is not published on the frame (``_published_fields``).
+        if not isinstance(field.get("dependency_only", False), bool):
+            raise ValueError(f"fields.{name}.dependency_only must be true or false")
         selectors = field.get("selectors", [])
         if not isinstance(selectors, list):
             raise TypeError(f"fields.{name}.selectors must be a list")
@@ -987,16 +1539,25 @@ def load_mapping(
                         "has no cycle-invariant broadcast, so declaring it "
                         "there would silently do nothing"
                     )
-                if not direct or field["location"] != "surface":
+                coordinate_height = (
+                    field["source_axes"] == ["half_level", "y", "x"]
+                    and field["target_axes"] == ["half_level", "y", "x"]
+                    and field["units"].get("target") == "m"
+                    and interfaces is not None
+                )
+                if not direct or (field["location"] != "surface" and not coordinate_height):
                     raise ValueError(
                         f"fields.{name}.time_binding='cycle_invariant' is "
-                        "restricted to directly selected surface fields: a "
+                        "restricted to directly selected surface fields or interface heights: a "
                         "derived field takes its time from its dependencies, "
                         "and a 3-D or soil state declared invariant would "
                         "silently freeze prognostic state across the cycle"
                     )
         for index, selector in enumerate(selectors):
             _validate_selector(selector, source_format, f"fields.{name}.selectors[{index}]")
+        if "half_level" in field["source_axes"] or "half_level" in field["target_axes"]:
+            if interfaces is None or not direct:
+                raise ValueError(f"fields.{name} half_level requires direct GRIB data and interface_levels")
         selector_stack_axis = field.get("selector_stack_axis")
         if selector_stack_axis is not None:
             if source_format != "netcdf" or not direct:
@@ -1048,10 +1609,13 @@ def load_mapping(
                 f"fields.{name} value missing policy",
             )
         elif missing["kind"] == "preserve_mask":
-            if field["location"] != "soil":
+            if (field["location"] != "soil"
+                    and name not in MASKED_WATER_STATE_FIELDS):
                 raise ValueError(
                     f"fields.{name} preserve_mask is currently restricted to "
-                    "soil fields repaired by the land/water-aware initializer"
+                    "soil fields repaired by the land/water-aware initializer "
+                    "and the water-state fields read over water only ("
+                    + ", ".join(sorted(MASKED_WATER_STATE_FIELDS)) + ")"
                 )
         elif missing["kind"] == "landmask_water":
             # Some providers publish soil state with WATER CELLS carrying
@@ -1117,6 +1681,14 @@ def load_mapping(
                     )
                 netcdf_selectors[identity] = (field_name, index)
 
+    if mapping.get("record_aliases") is not None:
+        _validate_record_aliases(
+            mapping["record_aliases"], fields, str(source_format))
+    for field_name, field in fields.items():
+        if field.get("when_absent") is not None:
+            _validate_when_absent(
+                field_name, field, fields, vertical, str(source_format))
+
     if vertical["kind"] == "hybrid_sigma_pressure":
         pressure_field = str(vertical["surface_pressure_field"])
         if pressure_field not in fields:
@@ -1145,7 +1717,8 @@ def load_mapping(
                 "name", "operation", "source", "u", "v", "relative_humidity",
                 "temperature", "pressure", "dewpoint", "geopotential", "gravity_m_s2",
                 "layer_mass", "layer_bounds_m", "water_density_kg_m3",
-                "specific_humidity", "surface_geopotential_height",
+                "specific_humidity", "surface_geopotential_height", "exclude",
+                "sea_level_pressure", "level_height", "surface_height",
             },
             required={"name", "operation"},
         )
@@ -1178,6 +1751,11 @@ def load_mapping(
                 derivation[argument], f"derivations[{index}].{argument}"
             )
             dependencies.append(dependency)
+        if operation == "mass_fraction_rebase":
+            excluded = derivation.get("exclude")
+            if not isinstance(excluded, list) or not excluded or len(set(excluded)) != len(excluded):
+                raise ValueError("mass_fraction_rebase requires unique excluded mass-fraction fields")
+            dependencies.extend(_string(value, "mass_fraction_rebase.exclude") for value in excluded)
         if "gravity_m_s2" in derivation:
             gravity = derivation["gravity_m_s2"]
             try:
@@ -1293,6 +1871,7 @@ def load_mapping(
         allowed={
             "name", "physics_suite", "max_dom", "require_lateral_boundaries",
             "target_vertical_levels", "soil_layer_count", "boundary_interval_seconds",
+            BOUNDARY_MULTIPLES_KEY,
             "required_fields", "pressure_requirement", "policy_controlled_fields",
             "initialization_policies", "pending_composition_requirements",
         },
@@ -1378,6 +1957,14 @@ def load_mapping(
         _integer(
             boundary_interval, "target.boundary_interval_seconds", minimum=1
         )
+    multiples = target.get(BOUNDARY_MULTIPLES_KEY, False)
+    if not isinstance(multiples, bool):
+        raise ValueError(f"target.{BOUNDARY_MULTIPLES_KEY} must be boolean")
+    if multiples and boundary_interval is None:
+        raise ValueError(
+            f"target.{BOUNDARY_MULTIPLES_KEY} needs "
+            "target.boundary_interval_seconds: the multiples it accepts are "
+            "multiples of that declared spacing")
     requirements = target["required_fields"]
     if not isinstance(requirements, list):
         raise TypeError("target.required_fields must be a list")
@@ -1415,6 +2002,16 @@ def load_mapping(
             raise ValueError(f"target location disagrees for {field_name}")
         if requirement["target_units"] != mapped["units"]["target"]:
             raise ValueError(f"target units disagree for {field_name}")
+    # A required field held off the stream would be written nowhere while
+    # every check that it was derived still passed, so the reader would
+    # meet a frame without it.
+    withheld_required = sorted(
+        requirement_names - set(_published_fields(mapping)))
+    if withheld_required:
+        raise ValueError(
+            f"fields {withheld_required} are required by the target and "
+            "marked dependency_only; a frame must publish every required "
+            "field")
     pending_required = sorted(pending & requirement_names)
     if pending_required:
         raise ValueError(
@@ -1569,6 +2166,8 @@ def _validate_mapped_field_shape(name, axes, dimensions, ny, nx, nz):
     shape = dict(zip(axes, dimensions))
     if shape.get("y") != ny or shape.get("x") != nx:
         raise ValueError(f"{name} does not share the source horizontal grid")
+    if "half_level" in shape and shape["half_level"] != nz + 1:
+        raise ValueError(f"{name} does not bound the vertical coordinate")
     if "vertical" in shape and shape["vertical"] != nz:
         raise ValueError(f"{name} does not share the vertical coordinate")
 
@@ -1651,6 +2250,9 @@ class _DecodedCollection:
     #: the atmosphere first.  None on every other vertical kind.
     hybrid_a: np.ndarray | None = None
     hybrid_b: np.ndarray | None = None
+    #: Selected records read through ``mapping.record_aliases``, counted
+    #: per field they answer; ``None`` when none were.
+    record_aliases: Mapping[str, int] | None = None
 
 
 #: How a selector was satisfied.  Reported, never inferred silently.
@@ -3438,6 +4040,23 @@ def _regular_latlon_frame(
         latitude = float(row["lat1"]) - np.arange(ny, dtype=np.float64) * dy
     longitude_raw = float(row["lon1"]) + np.arange(nx, dtype=np.float64) * float(row["dx"])
     longitude_wrapped = (longitude_raw + 180.0) % 360.0 - 180.0
+    spacing = abs(float(row["dx"]))
+    if (nx + 0.5) * spacing < 360.0:
+        # A regional crop across the antimeridian (the GDT-101 remap writes
+        # one whenever the domain crosses it) is continuous in its own
+        # column order.  Wrapping and sorting it put a jump of nearly a
+        # full turn inside the axis, and every such domain was refused as
+        # "not a regular axis".  Carrying the columns past the seam one
+        # turn on keeps the crop continuous, which is the axis the target
+        # pairing expects (horiz._regular_coordinates); a crop clear of
+        # the seam has no descending step and is untouched.  A grid within
+        # half a cell of the full circle is a whole ring whose spacing was
+        # rounded to the octets' micro-degrees (a 1/12-degree ring stores
+        # 4320 x 0.083333), and it keeps the -180 origin it always had.
+        seam = np.flatnonzero(np.diff(longitude_wrapped) < 0.0)
+        if seam.size == 1:
+            longitude_wrapped = longitude_wrapped.copy()
+            longitude_wrapped[seam[0] + 1:] += 360.0
     longitude_order = np.argsort(longitude_wrapped)
     longitude = longitude_wrapped[longitude_order]
     values = raw.reshape(ny, nx)[:, longitude_order]
@@ -3710,9 +4329,11 @@ def _declared_vertical_admits(
     source axis are unaffected.
     """
 
-    if "vertical" not in tuple(field.get("source_axes", ())):
+    axes = tuple(field.get("source_axes", ()))
+    if not {"vertical", "half_level"}.intersection(axes):
         return True
-    declared = mapping["coordinates"]["vertical"].get("levels", [])
+    key = "interface_levels" if "half_level" in axes else "levels"
+    declared = mapping["coordinates"]["vertical"].get(key, [])
     if not declared:
         return True
     return any(
@@ -3724,6 +4345,7 @@ def _declared_vertical_admits(
 def _grib2_wanted_indices(
     mapping: Mapping[str, object], rows: Sequence[Mapping[str, str]]
 ) -> set[int]:
+    aliases = tuple(mapping.get("record_aliases") or ())
     wanted = set()
     for row in rows:
         # Lightweight selector record; data/coordinates are irrelevant here.
@@ -3743,6 +4365,7 @@ def _grib2_wanted_indices(
             values=np.empty((0, 0)),
             latitude=np.empty(0), longitude=np.empty(0), grid_fingerprint="",
         )
+        record, _aliased = _alias_record(record, aliases)
         for field in mapping["fields"].values():
             if any(_selector_matches_record(selector, record, "grib2")
                    for selector in field.get("selectors", [])) \
@@ -3921,12 +4544,42 @@ def _assemble_grib(
             + repr(unsupported_time_semantics[:8])
         )
 
+    # Fields a pressure-level frame completes where the source leaves
+    # them out: their levels may be a subset of the ladder.
+    completed = set(_completed_fields(mapping))
     explicit = tuple(float(value) for value in mapping["coordinates"]["vertical"].get("levels", []))
     if explicit:
-        vertical_values = np.asarray(explicit, dtype=np.float64)
+        stacked = [
+            key for key in matched
+            if "vertical" in tuple(mapping["fields"][key[2]].get("source_axes", ()))
+        ]
+        ladder = _carried_ladder(
+            mapping, explicit,
+            ({record.level_value for record in matched[key]} for key in stacked),
+        )
+        # Records on a declared level the chosen era ladder omits are
+        # not stacked: a publication that carries that level for some
+        # fields and not others is read on the ladder all of them share.
+        omitted = set(explicit) - set(ladder)
+        if omitted:
+            for key in stacked:
+                matched[key] = [
+                    record for record in matched[key]
+                    if record.level_value not in omitted
+                ]
+        vertical_values = np.asarray(ladder, dtype=np.float64)
     else:
         level_sets = []
+        # The ladder is read off the fields the source must publish whole;
+        # a completed field states it only when nothing else does.
+        ladder_from_completed = all(
+            field_name in completed
+            or "vertical" not in mapping["fields"][field_name]["target_axes"]
+            for (_time, _member, field_name) in matched
+        )
         for (_time, _member, field_name), group in matched.items():
+            if field_name in completed and not ladder_from_completed:
+                continue
             if "vertical" in mapping["fields"][field_name]["target_axes"]:
                 level_sets.append(tuple(sorted({record.level_value for record in group})))
         if not level_sets or len(set(level_sets)) != 1:
@@ -3972,6 +4625,9 @@ def _assemble_grib(
         if "vertical" in source_axes:
             stacking_axis = "vertical"
             stacking_values = vertical_values
+        elif "half_level" in source_axes:
+            stacking_axis = "half_level"
+            stacking_values = mapping["coordinates"]["vertical"]["interface_levels"]
         elif "soil" in source_axes:
             stacking_axis = "soil"
             if mapping["target"].get("soil_layer_count") is None:
@@ -3994,19 +4650,55 @@ def _assemble_grib(
                 )
             stacking_values = tuple(range(len(group)))
 
+        # Each record answers the FIRST of the field's selectors it
+        # matches: a field lists its selectors in the order it prefers
+        # them, so a record of a later selector stands in only where no
+        # earlier one was published.  With one selector every record has
+        # rank 0 and nothing here changes.
+        field_selectors = field.get("selectors", [])
+        policy = field["missing"]
+
+        def rank_of(record: _GribRecord) -> int:
+            for index, selector in enumerate(field_selectors):
+                if _selector_matches_record(selector, record, source_format):
+                    return index
+            return 0
+
+        def scaled(record: _GribRecord, rank: int) -> np.ndarray:
+            # The record's values in the field's source units: a selector
+            # may declare the factor that takes its record there.
+            if rank < len(field_selectors) and "scale" in field_selectors[rank]:
+                return record.values * float(field_selectors[rank]["scale"])
+            return record.values
+
+        used: list[_GribRecord] = list(group)
+        absent_levels = 0
         if stacking_axis is None:
-            if len(group) != 1:
+            ranks = [rank_of(record) for record in group]
+            best = min(ranks)
+            chosen = [record for record, rank in zip(group, ranks) if rank == best]
+            if len(chosen) != 1:
                 raise ValueError(f"duplicate GRIB messages for scalar field {field_name} at {valid_time}")
-            values = group[0].values
+            used = chosen
+            values = scaled(chosen[0], best)
             materialized_axes = source_axes
-        elif stacking_axis == "vertical":
+        elif stacking_axis in {"vertical", "half_level"}:
+            ranks = [rank_of(record) for record in group]
+            best_rank: dict[float, int] = {}
+            for record, rank in zip(group, ranks):
+                best_rank[record.level_value] = min(
+                    rank, best_rank.get(record.level_value, rank))
             by_level: dict[float, _GribRecord] = {}
-            for record in group:
+            level_rank: dict[float, int] = {}
+            for record, rank in zip(group, ranks):
+                if best_rank[record.level_value] != rank:
+                    continue
                 if record.level_value in by_level:
                     raise ValueError(
                         f"duplicate {field_name} GRIB level {record.level_value} at {valid_time}"
                     )
                 by_level[record.level_value] = record
+                level_rank[record.level_value] = rank
             # float(), not the raw numpy scalars: ``stacking_values`` is a
             # numpy array, so its elements repr as ``np.float64(100.0)``
             # under numpy 2 and as ``100.0`` under numpy 1.  That put the
@@ -4018,11 +4710,29 @@ def _assemble_grib(
                        if level not in by_level]
             extra = [float(level) for level in by_level
                      if level not in set(stacking_values)]
-            if missing or extra:
+            # A field the frame completes may leave levels out; it is
+            # derived there from the frame's own state.  Only under the
+            # reject policy, whose NaN can mean nothing but "absent".
+            completes = field_name in completed and policy["kind"] == "reject"
+            if (missing and not completes) or extra:
                 raise ValueError(
                     f"{field_name} vertical coverage mismatch; missing={missing}, extra={extra}"
                 )
-            ordered = [by_level[level].values for level in stacking_values]
+            absent_levels = len(missing)
+            plane = next(iter(by_level.values())).values.shape
+            used = []
+            ordered = []
+            for level in stacking_values:
+                record = by_level.get(level)
+                if record is None:
+                    ordered.append(np.full(plane, np.nan))
+                    continue
+                level_values = scaled(record, level_rank[level])
+                if absent_levels and not np.isfinite(level_values).all():
+                    raise ValueError(
+                        f"{field_name} contains missing/non-finite GRIB data")
+                used.append(record)
+                ordered.append(level_values)
             axis = source_axes.index(stacking_axis)
             values = np.stack(ordered, axis=axis)
             materialized_axes = source_axes
@@ -4051,14 +4761,17 @@ def _assemble_grib(
                 raise ValueError(
                     f"{field_name} is missing GRIB soil selectors {missing_selectors}"
                 )
-            ordered = [by_selector[index].values for index in range(len(selectors))]
+            ordered = [
+                scaled(by_selector[index], index) for index in range(len(selectors))
+            ]
             axis = source_axes.index(stacking_axis)
             values = np.stack(ordered, axis=axis)
             materialized_axes = source_axes
 
         missing_mask = ~np.isfinite(values)
-        policy = field["missing"]
-        if policy["kind"] == "reject" and missing_mask.any():
+        # A field with absent levels had each published level checked as
+        # it was stacked, and its NaN planes are exactly the absent ones.
+        if policy["kind"] == "reject" and not absent_levels and missing_mask.any():
             raise ValueError(f"{field_name} contains missing/non-finite GRIB data")
         values = np.asarray(values, dtype=np.float64).copy()
         if policy["kind"] == "value":
@@ -4070,9 +4783,9 @@ def _assemble_grib(
         target_axes = _axes(field["target_axes"], f"fields.{field_name}.target_axes")
         values = _transpose_to_target(values, materialized_axes, target_axes, field_name)
         references = tuple(
-            f"{record.source}:{record.index}" for record in sorted(group, key=lambda item: item.index)
+            f"{record.source}:{record.index}" for record in sorted(used, key=lambda item: item.index)
         )
-        cycles_for_group = {record.reference_time for record in group}
+        cycles_for_group = {record.reference_time for record in used}
         if len(cycles_for_group) != 1:
             raise ValueError(f"{field_name} GRIB records mix source cycles at {valid_time}")
         cycle = cycles_for_group.pop()
@@ -4319,6 +5032,7 @@ def _decode_grib(
     from gpuwm.ingest.codec import staged_decoded_object
 
     records: list[_GribRecord] = []
+    aliased_records: list[_GribRecord] = []
     # Acquisition codec staging: an agency object wrapped in a registered
     # byte-level compression (DWD open data wraps every GRIB in bzip2)
     # decodes through a plainly staged twin whose lifetime is this decode;
@@ -4354,25 +5068,43 @@ def _decode_grib(
                 if not executable.is_file():
                     raise FileNotFoundError(executable)
             declaration = _mapping_grid_declaration(mapping)
+            aliases = tuple(mapping.get("record_aliases") or ())
             inventoried_rows: list[Mapping[str, str]] = []
             for source, payload in payloads:
                 rows = _grib2_inventory(payload, inventory_executable)
                 inventoried_rows.extend(rows)
                 wanted = _grib2_wanted_indices(mapping, rows)
-                records.extend(_grib2_records(
+                for record in _grib2_records(
                     payload, inventory_executable, dump_executable, wanted,
                     grid_declaration=declaration,
                     source_label=source,
-                ))
+                ):
+                    record, aliased = _alias_record(record, aliases)
+                    records.append(record)
+                    if aliased:
+                        aliased_records.append(record)
             if not records:
                 # A total miss earns the identity diagnosis: the case of
                 # two products under one filename, separable only by the
                 # section-1 octets, must refuse by naming them.
-                raise ValueError(_selector_identity_refusal(
+                raise NothingMatched(_selector_identity_refusal(
                     mapping, inventoried_rows,
                     [source for source, _payload in payloads],
                 ))
-    return _assemble_grib(mapping, records)
+    collection = _assemble_grib(mapping, records)
+    if aliased_records:
+        from dataclasses import replace
+
+        counts: dict[str, int] = {}
+        for record in aliased_records:
+            for name, field in mapping["fields"].items():
+                if any(_selector_matches_record(selector, record, "grib2")
+                       for selector in field.get("selectors", [])) \
+                        and _declared_vertical_admits(mapping, field, record):
+                    counts[name] = counts.get(name, 0) + 1
+                    break
+        collection = replace(collection, record_aliases=counts)
+    return collection
 
 
 def _resolve_direct_decoder_paths(
@@ -4454,6 +5186,275 @@ _HYDROSTATIC_VIRTUAL = 0.609133
 #: top full level integrates against 0.1 Pa with alpha = ln 2.
 _HYDROSTATIC_TOP_PA = 0.1
 
+#: Canonical 3-D fields a pressure-level frame completes from its own
+#: state when the source leaves them out, at some levels or at all of
+#: them.  Keyed on canonical names, so every pressure-level source is
+#: served without a line of per-source code: a source that publishes the
+#: field keeps every value it publishes, and only the levels it does not
+#: publish are derived.  ``mapped-engine``'s ``PRESSURE_COMPLETED_FIELDS``.
+PRESSURE_COMPLETED_FIELDS = ("geopotential_height",)
+
+#: What the hypsometric completion reads, by canonical name and unit.
+HYPSOMETRIC_OPERANDS = (
+    ("air_temperature", "K"),
+    ("specific_humidity", "kg kg-1"),
+    ("air_pressure", "Pa"),
+    ("surface_pressure", "Pa"),
+    ("terrain_height", "m"),
+)
+
+#: The first reference of a completed field, as
+#: ``@completed.hypsometric:<values derived>``.  The preparation receipt
+#: counts the derived values from it.
+HYPSOMETRIC_COMPLETION_REFERENCE = COMPLETED_FIELD_REFERENCE_PREFIX + "hypsometric"
+
+#: Standard gravity, the constant geopotential height is defined by.
+_STANDARD_GRAVITY = 9.80665
+
+
+def _completed_fields(mapping: Mapping[str, object]) -> tuple[str, ...]:
+    """The pressure-level fields a frame of this mapping completes.
+
+    Empty on every other vertical kind: a hybrid or model-level source
+    declares its own hydrostatic derivation, and the completion integrates
+    between pressure levels.
+    """
+
+    if str(mapping["coordinates"]["vertical"].get("kind")) != "pressure":
+        return ()
+    required = {
+        str(item["name"])
+        for item in mapping.get("target", {}).get("required_fields", [])
+    }
+    return tuple(name for name in PRESSURE_COMPLETED_FIELDS if name in required)
+
+
+def _complete_geopotential_height(
+    seed: CanonicalField | None,
+    operands: Mapping[str, CanonicalField],
+    name: str,
+    units: str,
+) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]] | None:
+    """Geopotential height where a pressure-level source leaves it out.
+
+    ``seed`` is the source's own field, NaN on the levels (or cells) the
+    source did not publish, or ``None`` when it published none of it.
+    Every finite seed value is kept as it is.  Each missing value is
+    placed by the hypsometric equation, dz = -(Rd / g) Tv dln(p), with
+    virtual temperature taken linear in ln(p) between the published
+    levels: from the nearest level of the same column that carries the
+    source's own height (the level below on a tie), or from the surface
+    when there is none, with the source's surface pressure and terrain
+    height as the anchor and the virtual temperature at the surface
+    interpolated between the levels that bracket it (held at the nearest
+    level when the surface lies outside the ladder).
+
+    The arithmetic is ``mapped-engine``'s ``complete_geopotential_height``
+    operation for operation, and every logarithm is the C library's
+    scalar ``log`` in both, so the two engines agree to the bit.
+    ``None`` means an operand is absent and the frame keeps its
+    missing-field refusal.
+    """
+
+    resolved = []
+    for operand, unit in HYPSOMETRIC_OPERANDS:
+        field = operands.get(operand)
+        if field is None:
+            return None
+        if field.units != unit:
+            raise ValueError(
+                f"{name} is derived hydrostatically from {operand} in {unit}; "
+                f"this frame carries it in {field.units}"
+            )
+        resolved.append(field)
+    temperature, humidity, pressure, surface_pressure, terrain = resolved
+    if units != "m":
+        raise ValueError(
+            f"{name} is completed in metres; the mapping declares {units}")
+    column_axes = ("vertical", "y", "x")
+    for field in (temperature, humidity, pressure, *(() if seed is None else (seed,))):
+        if tuple(field.axes) != column_axes:
+            raise ValueError(
+                f"{name} is derived hydrostatically on ('vertical', 'y', 'x') "
+                f"axes; {field.name} has {list(field.axes)}"
+            )
+    for field in (surface_pressure, terrain):
+        if tuple(field.axes) != ("y", "x"):
+            raise ValueError(
+                f"{name} is derived hydrostatically from {field.name} on "
+                f"('y', 'x') axes; it has {list(field.axes)}"
+            )
+    shape = temperature.values.shape
+    levels = shape[0]
+    for field in (humidity, pressure, *(() if seed is None else (seed,))):
+        if field.values.shape != shape:
+            raise ValueError(
+                f"{name} hydrostatic operands disagree in shape: "
+                f"{field.name} is {list(field.values.shape)}, "
+                f"air_temperature is {list(shape)}"
+            )
+    for field in (surface_pressure, terrain):
+        if field.values.shape != shape[1:]:
+            raise ValueError(
+                f"{name} hydrostatic operands disagree in shape: "
+                f"{field.name} is {list(field.values.shape)}, the column "
+                f"plane is {list(shape[1:])}"
+            )
+    plane = int(shape[1] * shape[2])
+    pressure_rows = np.asarray(pressure.values, dtype=np.float64).reshape(levels, plane)
+    level_pressure = []
+    for level in range(levels):
+        row = pressure_rows[level]
+        first = float(row[0])
+        if not math.isfinite(first) or first <= 0.0 or bool((row != first).any()):
+            raise ValueError(
+                f"{name} is derived hydrostatically on a pressure ladder with "
+                f"one positive pressure per level; air_pressure level {level} "
+                "is not one"
+            )
+        level_pressure.append(first)
+    # Bottom first: the highest pressure is the lowest level.  Both sorts
+    # are stable, the engine's too, so a tie keeps index order.
+    order = sorted(range(levels), key=lambda level: -level_pressure[level])
+    log_pressure = [math.log(level_pressure[level]) for level in order]
+    candidates = [
+        sorted(
+            (other for other in range(levels) if other != position),
+            key=lambda other, position=position: (
+                abs(log_pressure[position] - log_pressure[other]), other),
+        )
+        for position in range(levels)
+    ]
+    temperature_rows = np.asarray(temperature.values, dtype=np.float64).reshape(levels, plane)
+    humidity_rows = np.asarray(humidity.values, dtype=np.float64).reshape(levels, plane)
+    surface_flat = np.asarray(surface_pressure.values, dtype=np.float64).reshape(plane)
+    terrain_flat = np.asarray(terrain.values, dtype=np.float64).reshape(plane)
+    if seed is None:
+        values = np.full((levels, plane), np.nan)
+    else:
+        values = np.asarray(seed.values, dtype=np.float64).reshape(levels, plane).copy()
+    known = np.isfinite(values[order])
+    columns = np.flatnonzero(~known.all(axis=0))
+    factor = _HYDROSTATIC_RD / _STANDARD_GRAVITY
+    completed = 0
+    if columns.size:
+        known = known[:, columns]
+        virtual = temperature_rows[order][:, columns] * (
+            1.0 + _HYDROSTATIC_VIRTUAL * humidity_rows[order][:, columns])
+        # The first failing column is refused, and within one column the
+        # virtual temperature is checked before the surface, as the engine
+        # walks them.
+        bad_virtual = ~np.isfinite(virtual) | (virtual <= 0.0)
+        surface = surface_flat[columns]
+        height = terrain_flat[columns]
+        bad_surface = ~np.isfinite(surface) | (surface <= 0.0) | ~np.isfinite(height)
+        virtual_cells = np.flatnonzero(bad_virtual.any(axis=0))
+        surface_cells = np.flatnonzero(bad_surface)
+        first_virtual = int(virtual_cells[0]) if virtual_cells.size else columns.size
+        first_surface = int(surface_cells[0]) if surface_cells.size else columns.size
+        if first_virtual < columns.size and first_virtual <= first_surface:
+            position = int(np.flatnonzero(bad_virtual[:, first_virtual])[0])
+            raise ValueError(
+                f"{name} is derived hydrostatically where the source leaves "
+                "it out, which needs finite positive virtual temperature; "
+                "air_temperature and specific_humidity give "
+                f"{float(virtual[position, first_virtual])} at column "
+                f"{int(columns[first_virtual])}"
+            )
+        if first_surface < columns.size:
+            raise ValueError(
+                f"{name} is derived hydrostatically where the source leaves "
+                "it out, which needs finite positive surface_pressure and "
+                f"finite terrain_height; column {int(columns[first_surface])} "
+                f"has {float(surface[first_surface])} Pa and "
+                f"{float(height[first_surface])} m"
+            )
+        thickness = np.empty_like(virtual)
+        thickness[0] = 0.0
+        for position in range(1, levels):
+            thickness[position] = thickness[position - 1] + 0.5 * (
+                virtual[position - 1] + virtual[position]
+            ) * (log_pressure[position - 1] - log_pressure[position])
+        log_surface = np.fromiter(
+            (math.log(value) for value in surface.tolist()),
+            dtype=np.float64, count=surface.size,
+        )
+        top = levels - 1
+        surface_thickness = np.empty_like(log_surface)
+        below_ladder = log_surface >= log_pressure[0]
+        above_ladder = ~below_ladder & (log_surface <= log_pressure[top])
+        surface_thickness[below_ladder] = (
+            thickness[0][below_ladder]
+            - virtual[0][below_ladder] * (log_surface[below_ladder] - log_pressure[0])
+        )
+        surface_thickness[above_ladder] = (
+            thickness[top][above_ladder]
+            + virtual[top][above_ladder] * (log_pressure[top] - log_surface[above_ladder])
+        )
+        inside = ~below_ladder & ~above_ladder
+        for below in range(top):
+            bracket = inside & (log_pressure[below] >= log_surface) & (
+                log_surface > log_pressure[below + 1])
+            if not bracket.any():
+                continue
+            weight = (log_pressure[below] - log_surface[bracket]) / (
+                log_pressure[below] - log_pressure[below + 1])
+            at_surface = virtual[below][bracket] + weight * (
+                virtual[below + 1][bracket] - virtual[below][bracket])
+            surface_thickness[bracket] = thickness[below][bracket] + 0.5 * (
+                virtual[below][bracket] + at_surface
+            ) * (log_pressure[below] - log_surface[bracket])
+        for position in range(levels):
+            wanted = ~known[position]
+            if not wanted.any():
+                continue
+            placed = np.zeros(wanted.shape, dtype=bool)
+            result = np.empty(wanted.shape, dtype=np.float64)
+            for other in candidates[position]:
+                take = wanted & ~placed & known[other]
+                if not take.any():
+                    continue
+                result[take] = values[order[other]][columns[take]] + factor * (
+                    thickness[position][take] - thickness[other][take])
+                placed |= take
+            rest = wanted & ~placed
+            result[rest] = height[rest] + factor * (
+                thickness[position][rest] - surface_thickness[rest])
+            values[order[position], columns[wanted]] = result[wanted]
+            completed += int(wanted.sum())
+    references = [f"{HYPSOMETRIC_COMPLETION_REFERENCE}:{completed}"]
+    for field in (*(() if seed is None else (seed,)), temperature, humidity,
+                  pressure, surface_pressure, terrain):
+        references.extend(field.source_references)
+    return (
+        values.reshape(shape),
+        column_axes,
+        tuple(dict.fromkeys(references)),
+    )
+
+
+def _complete_field(
+    name: str,
+    field: Mapping[str, object],
+    seed: CanonicalField | None,
+    operands: Mapping[str, CanonicalField],
+) -> CanonicalField | None:
+    """One completed field as a canonical field; ``None`` while an operand
+    of its completion is absent."""
+
+    units = str(field["units"]["target"])
+    if name != "geopotential_height":
+        raise AssertionError(f"{name} has no completion")
+    completed = _complete_geopotential_height(seed, operands, name, units)
+    if completed is None:
+        return None
+    values, axes, references = completed
+    return CanonicalField(
+        name=name, units=units, axes=axes, location=str(field["location"]),
+        staggering=str(field.get("staggering", "none")), values=values,
+        missing_count=int(np.isnan(values).sum()), source_references=references,
+    )
+
 
 def _hybrid_half_level_pressure(
     collection: _DecodedCollection,
@@ -4483,6 +5484,157 @@ def _hybrid_half_level_pressure(
             "declared levels)"
         )
     return ladder
+
+
+def _libm_log(values: np.ndarray) -> np.ndarray:
+    """The C library's scalar ``log`` over ``values``, one value at a time.
+
+    The mapped engine's ``f64::ln`` is that same call, so the two engines
+    agree to the bit; numpy's vectorized logarithm may round a last bit
+    differently on some machines.
+    """
+
+    def one(value: float) -> float:
+        if value > 0.0:
+            return math.log(value)
+        return -math.inf if value == 0.0 else math.nan
+
+    return np.fromiter((one(value) for value in values.tolist()),
+                       dtype=np.float64, count=values.size)
+
+
+def _libm_exp(values: np.ndarray) -> np.ndarray:
+    """The C library's scalar ``exp`` over ``values``; see _libm_log."""
+
+    def one(value: float) -> float:
+        try:
+            return math.exp(value)
+        except OverflowError:
+            return math.inf
+
+    return np.fromiter((one(value) for value in values.tolist()),
+                       dtype=np.float64, count=values.size)
+
+
+#: Below this surface height WRF reduces sea-level pressure along the
+#: lowest layer's pressure gradient instead of interpolating.
+_SEA_LEVEL_SHALLOW_M = 50.0
+
+
+def _surface_pressure_from_sea_level(
+    sea_level_pressure: np.ndarray,
+    level_height: np.ndarray,
+    pressure: np.ndarray,
+    surface_height: np.ndarray,
+    name: str,
+) -> np.ndarray:
+    """WRF real's ``sfcprs3`` relation in float64, every column at once.
+
+    The mapped engine's ``derive::surface_pressure_from_sea_level``,
+    operation for operation, so both engines publish the same bytes.
+    Levels are ordered by the first column's pressure, highest first,
+    and every column must keep that order strictly.  A surface under
+    50 m takes sea-level pressure plus the lowest layer's gradient times
+    its height; a higher one is interpolated in log pressure between the
+    two levels whose heights bracket it, or, when it lies below every
+    level, between sea level and the second level (WRF's own choice) or
+    the first level under the sea-level pressure.  The search bounds
+    keep WRF's excluded top levels.  The first column that cannot be
+    reduced refuses by its row and column.
+    """
+
+    slp = np.asarray(sea_level_pressure, dtype=np.float64)
+    zm = np.asarray(surface_height, dtype=np.float64)
+    heights = np.asarray(level_height, dtype=np.float64)
+    pressures = np.asarray(pressure, dtype=np.float64)
+    if zm.ndim != 2 or zm.size == 0 or slp.shape != zm.shape:
+        raise ValueError(
+            f"{name} requires sea-level pressure and surface height on the "
+            "same plane")
+    if pressures.ndim != 3 or pressures.shape[0] < 2 \
+            or heights.shape != pressures.shape \
+            or pressures.shape[1:] != zm.shape:
+        raise ValueError(
+            f"{name} requires level heights and pressures on at least two "
+            "common levels")
+    levels = pressures.shape[0]
+    order = np.argsort(-pressures[:, 0, 0], kind="stable")
+    z = heights[order]
+    p = pressures[order]
+    with np.errstate(all="ignore"):
+        surface_bad = ~(np.isfinite(zm) & np.isfinite(slp) & (slp > 0.0))
+        level_bad = ~(np.isfinite(z) & np.isfinite(p) & (p > 0.0))
+        order_bad = np.concatenate(
+            [np.zeros((1, *zm.shape), dtype=bool), p[:-1] <= p[1:]])
+        # Per column, the first level that fails either check decides
+        # which sentence it earns, as the column walk does.
+        first_level = np.where(level_bad.any(axis=0),
+                               level_bad.argmax(axis=0), levels)
+        first_order = np.where(order_bad.any(axis=0),
+                               order_bad.argmax(axis=0), levels)
+
+        # The lowest qualifying level wins, as the column walk's first
+        # match does, so each search runs top down and the last write
+        # is the lowest k.
+        bracket = np.full(zm.shape, -1, dtype=np.int64)
+        for k in range(levels - 3, -1, -1):
+            bracket = np.where((z[k] <= zm) & (z[k + 1] > zm), k, bracket)
+        fallback = np.full(zm.shape, -1, dtype=np.int64)
+        for k in range(levels - 4, -1, -1):
+            fallback = np.where((slp >= p[k + 1]) & (slp < p[k]), k, fallback)
+        branch = np.select(
+            [zm < _SEA_LEVEL_SHALLOW_M, bracket >= 0, slp >= p[0],
+             fallback >= 0],
+            [0, 1, 2, 3], default=-1)
+        valid = ~surface_bad & (first_level >= levels) \
+            & (first_order >= levels)
+        values = np.full(zm.shape, np.nan)
+        shallow = valid & (branch == 0)
+        values[shallow] = (slp + (p[0] - p[1]) / (z[0] - z[1]) * zm)[shallow]
+        # Log-pressure interpolation between (zl, pl) and (zu, pu): the
+        # bracketing levels, or sea level and the second level, or sea
+        # level and the first level under the sea-level pressure.
+        low = np.clip(bracket, 0, max(levels - 2, 0))[None]
+        up = np.clip(fallback + 1, 0, levels - 1)[None]
+        zl = np.where(branch == 1, np.take_along_axis(z, low, 0)[0], 0.0)
+        pl = np.where(branch == 1, np.take_along_axis(p, low, 0)[0], slp)
+        zu = np.select(
+            [branch == 1, branch == 2],
+            [np.take_along_axis(z, low + 1, 0)[0], z[1]],
+            default=np.take_along_axis(z, up, 0)[0])
+        pu = np.select(
+            [branch == 1, branch == 2],
+            [np.take_along_axis(p, low + 1, 0)[0], p[1]],
+            default=np.take_along_axis(p, up, 0)[0])
+        cells = valid & (branch > 0)
+        zl, zu, pl, pu, zc = (value[cells] for value in (zl, zu, pl, pu, zm))
+        values[cells] = _libm_exp(
+            (_libm_log(pl) * (zc - zu) + _libm_log(pu) * (zl - zc))
+            / (zl - zu))
+        unbracketed = valid & (branch == -1)
+        result_bad = valid & ~(np.isfinite(values) & (values > 0.0))
+    column_bad = surface_bad | (first_level < levels) \
+        | (first_order < levels) | unbracketed | result_bad
+    if column_bad.any():
+        cell = int(np.flatnonzero(column_bad.ravel())[0])
+        row, column = divmod(cell, zm.shape[1])
+        if surface_bad.ravel()[cell]:
+            reason = ("the sea-level pressure or surface height is not "
+                      "finite and positive")
+        elif first_level.ravel()[cell] < levels \
+                and first_level.ravel()[cell] <= first_order.ravel()[cell]:
+            reason = "a level height or pressure is not finite and positive"
+        elif first_order.ravel()[cell] < levels:
+            reason = "the level pressures do not keep one strict order"
+        elif unbracketed.ravel()[cell]:
+            reason = ("no level brackets the surface height or the "
+                      "sea-level pressure")
+        else:
+            reason = "the reduced pressure is not finite and positive"
+        raise ValueError(
+            f"{name} cannot reduce sea-level pressure at row {row}, column "
+            f"{column}: {reason}")
+    return values
 
 
 def _evaluate_derivation(
@@ -4542,6 +5694,36 @@ def _evaluate_derivation(
         raw = geopotential.values / gravity
         axes = geopotential.axes
         references = geopotential.source_references
+    elif kind == "mass_fraction_rebase":
+        source = dependency("source")
+        excluded = [available[str(key)] for key in operation["exclude"]]
+        denominator = np.ones_like(source.values)
+        references = list(source.source_references)
+        for fraction in [source, *excluded]:
+            if (fraction.units != "kg kg-1" or fraction.axes != source.axes
+                    or fraction.values.shape != source.values.shape
+                    or not np.isfinite(fraction.values).all() or np.any(fraction.values < 0)):
+                raise ValueError(f"{name} requires finite nonnegative mass fractions on identical axes")
+        for fraction in excluded:
+            denominator -= fraction.values
+            references.extend(fraction.source_references)
+        if np.any(denominator <= 0):
+            raise ValueError(f"{name} excluded mass fractions leave no positive reference mass")
+        raw = source.values / denominator
+        axes = source.axes
+    elif kind == "height_from_interfaces":
+        source = dependency("source")
+        if source.axes != ("half_level", "y", "x") or source.units != "m":
+            raise ValueError(f"{name} requires interface heights in m on half_level,y,x axes")
+        heights = source.values
+        if heights.shape[0] != collection.vertical_values.size + 1 or not np.isfinite(heights).all():
+            raise ValueError(f"{name} requires N+1 finite interface heights")
+        thickness = np.diff(heights, axis=0)
+        if not (np.all(thickness > 0) or np.all(thickness < 0)):
+            raise ValueError(f"{name} interface heights must be strictly ordered without crossing layers")
+        raw = 0.5 * (heights[:-1] + heights[1:])
+        axes = ("vertical", "y", "x")
+        references = source.source_references
     elif kind == "pressure_from_vertical_coordinate":
         axes = _axes(field["source_axes"], f"fields.{name}.source_axes")
         if axes != ("vertical", "y", "x"):
@@ -4637,6 +5819,35 @@ def _evaluate_derivation(
         ).reshape(thickness_shape)
         raw = layer_mass.values / (density * thickness)
         references = layer_mass.source_references
+    elif kind == "surface_pressure_from_sea_level":
+        sea_level = dependency("sea_level_pressure")
+        height = dependency("level_height")
+        pressure = dependency("pressure")
+        surface = dependency("surface_height")
+        if tuple(sea_level.axes) != ("y", "x") \
+                or tuple(surface.axes) != ("y", "x"):
+            raise ValueError(
+                f"{name} requires sea-level pressure and surface height on "
+                "('y', 'x') axes")
+        if tuple(height.axes) != ("vertical", "y", "x") \
+                or tuple(pressure.axes) != tuple(height.axes) \
+                or pressure.values.shape != height.values.shape \
+                or height.values.shape[1:] != surface.values.shape \
+                or sea_level.values.shape != surface.values.shape:
+            raise ValueError(
+                f"{name} requires level heights and pressures on one "
+                "('vertical', 'y', 'x') grid over the surface plane")
+        raw = _surface_pressure_from_sea_level(
+            sea_level.values, height.values, pressure.values, surface.values,
+            name)
+        axes = surface.axes
+        references = (
+            "@derived.sea_level_reduction",
+            *sea_level.source_references,
+            *height.source_references,
+            *pressure.source_references,
+            *surface.source_references,
+        )
     elif kind == "soil_surface_node_from_shallowest":
         source = dependency("source")
         axes = source.axes
@@ -4850,6 +6061,23 @@ def _frame_header(
     )
 
 
+def _published_fields(mapping: Mapping[str, object]) -> tuple[str, ...]:
+    """The fields a frame publishes, in the mapping's declared order.
+
+    Every declared field but those marked ``dependency_only``, which are
+    decoded for a derivation to read and then left off the frame; the
+    Rust engine's ``frames::plan_frames`` reads the same key.  Named
+    breakage: ICON-D2's six raw mass fractions were written beside the
+    mixing ratios rebased from them, 390 of 1,217 layers per valid time
+    and about 16 GB of the 50 GB a 48 h 1 km run stages, read by nothing.
+    """
+
+    return tuple(
+        name for name, field in mapping["fields"].items()
+        if field.get("dependency_only") is not True
+    )
+
+
 def _materialize_frames(
     mapping: Mapping[str, object],
     collection: _DecodedCollection,
@@ -4875,10 +6103,12 @@ def _materialize_frames(
     if len(members) != 1:
         raise ValueError("mapped WRF initialization requires exactly one member")
     derivations = _derivation_table(mapping)
+    published = _published_fields(mapping)
     frames = []
     required_names = {
         str(item["name"]) for item in mapping["target"]["required_fields"]
     }
+    completed_names = _completed_fields(mapping)
     finite_required = required_names - {
         "soil_temperature", "volumetric_soil_moisture",
     }
@@ -4906,7 +6136,17 @@ def _materialize_frames(
             name for name, field in mapping["fields"].items()
             if field.get("derivation") is not None
         }
-        while pending:
+        # A field the frame completes, which the source published at only
+        # some of its values or at none, is held back from every
+        # derivation until it is whole; ``seeds`` keeps the values the
+        # source did publish.
+        seeds: dict[str, CanonicalField | None] = {}
+        for name in completed_names:
+            present = available.get(name)
+            if name in pending or (present is not None and present.missing_count == 0):
+                continue
+            seeds[name] = available.pop(name, None)
+        while pending or seeds:
             progress = False
             for name in sorted(tuple(pending)):
                 field = mapping["fields"][name]
@@ -4930,21 +6170,54 @@ def _materialize_frames(
                 )
                 pending.remove(name)
                 progress = True
+            # A completion reads the final value of each operand, so it
+            # waits while a derivation still has one to produce.
+            for name in completed_names:
+                if name not in seeds or any(
+                        operand in pending for operand, _unit in HYPSOMETRIC_OPERANDS):
+                    continue
+                completed = _complete_field(
+                    name, mapping["fields"][name], seeds[name], available)
+                if completed is not None:
+                    available[name] = completed
+                    del seeds[name]
+                    progress = True
             if not progress:
-                raise ValueError(
-                    "derived fields have missing dependencies or a cycle: "
-                    + ", ".join(sorted(pending))
-                )
+                # A completed field whose own derivation cannot run is
+                # derived hydrostatically instead, and the loop goes on for
+                # anything that reads it.
+                for name in completed_names:
+                    if name not in pending or any(
+                            operand in pending
+                            for operand, _unit in HYPSOMETRIC_OPERANDS):
+                        continue
+                    completed = _complete_field(
+                        name, mapping["fields"][name], None, available)
+                    if completed is not None:
+                        available[name] = completed
+                        pending.remove(name)
+                        progress = True
+            if not progress:
+                if pending:
+                    raise ValueError(
+                        "derived fields have missing dependencies or a cycle: "
+                        + ", ".join(sorted(pending))
+                    )
+                # What is left is a completion whose operands this source
+                # does not carry: the frame lacks that field, and says so
+                # by name below.
+                break
         # State the frame's fields in the mapping's own declared order.
         # Assembly order above is decode order, which is a property of the
         # PRODUCER's record layout -- and a broadcast invariant lands after
         # the per-time records, so two frames with identical field SETS
         # could otherwise disagree about sequence, which both the
         # inventory-drift check below and the frame header would read as a
-        # difference that is not one.
+        # difference that is not one.  A dependency-only input has been
+        # read by its derivations above and is not published.
         available = {
             name: available[name]
-            for name in mapping["fields"] if name in available
+            for name in published if name in available
         }
         missing = sorted(required_names - set(available))
         if missing:
@@ -5002,12 +6275,9 @@ def _materialize_frames(
         }
         if len(deltas) != 1 or next(iter(deltas)) <= 0:
             raise ValueError("mapped forcing cadence must be positive and uniform")
-        declared = target.get("boundary_interval_seconds")
-        if declared is None or int(declared) != next(iter(deltas)):
-            raise ValueError(
-                f"mapped cadence {next(iter(deltas))} seconds differs from "
-                f"target contract {declared!r}"
-            )
+        refusal = boundary_interval_refusal(target, next(iter(deltas)))
+        if refusal is not None:
+            raise ValueError(refusal)
     # Tuple comparison is deliberate: every frame's fields were re-stated
     # in mapping-declared order above, so both SET and ORDER drift between
     # valid times refuse here.
@@ -5255,17 +6525,20 @@ def _decode_through_engine(
     # directory -- f64 frames, a few GB for a 0.25-degree analysis --
     # before it is read back, so its placement is the compose scratch's
     # (see :func:`_engine_scratch_directory`), not the bare system temp.
+    scratch = _engine_scratch_directory()
     with tempfile.TemporaryDirectory(
-            prefix="gpuwm-mapped-engine-",
-            dir=_engine_scratch_directory()) as work:
-        mapped_engine_bridge.run_engine(
-            "decode",
-            mapping=mapping_path,
-            files=sources,
-            output=Path(work) / "frameset",
-            input_manifest=input_manifest,
-            input_manifest_sha256=input_manifest_sha256,
-        )
+            prefix="gpuwm-mapped-engine-", dir=scratch) as work:
+        try:
+            mapped_engine_bridge.run_engine(
+                "decode",
+                mapping=mapping_path,
+                files=sources,
+                output=Path(work) / "frameset",
+                input_manifest=input_manifest,
+                input_manifest_sha256=input_manifest_sha256,
+            )
+        except ScratchDiskRefusal as refusal:
+            raise scratch_disk_refusal(refusal, scratch) from refusal
         frames = mapped_engine_bridge.read_frameset(
             Path(work) / "frameset")
 
@@ -5810,10 +7083,11 @@ def _nearest_soil_column_repair(
     and moisture together -- from the nearest cell with a fully defined
     column, searching chebyshev rings out to ``maximum_cells`` and breaking
     ties by squared index distance then (di, dj) order, so the result is
-    deterministic.  A land cell with no donor inside the radius still
-    refuses, with the counts named.  On a full longitude ring the search
-    wraps in x, because a coastal gap beside the seam is no farther from
-    its neighbour than any other.
+    deterministic.  A land cell with no donor inside the radius stays
+    missing, as it would with no declared repair, and
+    :func:`_admit_source_land_soil_gaps` counts it.  On a full longitude
+    ring the search wraps in x, because a coastal gap beside the seam is no
+    farther from its neighbour than any other.
     """
 
     gap = terrestrial & ~(
@@ -5829,7 +7103,6 @@ def _nearest_soil_column_repair(
     ) < 1e-6
     soil_t = soil_t.copy()
     soil_m = soil_m.copy()
-    unfilled = 0
     for y, x in zip(*np.nonzero(gap)):
         best = None
         for radius in range(1, int(maximum_cells) + 1):
@@ -5853,19 +7126,64 @@ def _nearest_soil_column_repair(
             if best is not None:
                 break
         if best is None:
-            unfilled += 1
             continue
         _key, yy, xx = best
         soil_t[:, y, x] = soil_t[:, yy, xx]
         soil_m[:, y, x] = soil_m[:, yy, xx]
-    if unfilled:
-        raise ValueError(
-            f"declared nearest-column soil repair left {unfilled} land "
-            f"cell(s) of {int(gap.sum())} without a donor inside "
-            f"{int(maximum_cells)} cell(s); the source's soil tiling and "
-            "its land-cover field disagree beyond the declared bound"
-        )
     return soil_t, soil_m
+
+
+#: Source soil gaps already announced, keyed on their counts, so a forcing
+#: series whose every time carries the same gaps says it once.
+_SOURCE_SOIL_GAPS_ANNOUNCED: set = set()
+
+
+def _admit_source_land_soil_gaps(soil_t, soil_m, terrestrial):
+    """Count source land cells with no soil value; refuse only no field.
+
+    A producer computes soil on its own surface tiling, and that tiling can
+    disagree with its published land cover: a land cell with no soil value
+    beside a reservoir, a river mouth or a coast.  Refusing the whole
+    preparation for it refused every domain that source reaches.  The
+    masked horizontal mapping (gpuwm/ingest/horiz.py) treats a missing
+    value exactly as metgrid does: it is not a donor, and the target land
+    near it takes the chain's answer from the source land around it, the
+    WPS search's nearest value when none is near.  So a gap is counted and
+    said, and left missing for that mapping.
+
+    What no mapping can answer is a source that carries the field on NONE
+    of its land cells: it has no soil field to initialize the land surface
+    from.  That alone refuses, by name.
+    """
+    land_cells = int(np.count_nonzero(terrestrial))
+    if land_cells == 0:
+        return
+    gaps = []
+    for label, values in (("soil temperature", soil_t),
+                          ("soil moisture", soil_m)):
+        finite = np.isfinite(values[:, terrestrial])
+        if not finite.any():
+            raise ValueError(
+                f"mapped {label} carries no value on any of the source's "
+                f"{land_cells} land cell(s): the source has no {label} "
+                "field to initialize the land surface from"
+            )
+        missing = int(np.count_nonzero(~finite))
+        if missing:
+            gaps.append(f"{missing} {label}")
+    if not gaps:
+        return
+    signature = (land_cells, tuple(gaps))
+    if signature in _SOURCE_SOIL_GAPS_ANNOUNCED:
+        return
+    _SOURCE_SOIL_GAPS_ANNOUNCED.add(signature)
+    print(
+        "mapped soil: " + " and ".join(gaps) + " source land value(s) of "
+        f"{land_cells} land cell(s) carry no value (the source's soil "
+        "tiling and its land cover disagree there); they are not donors, "
+        "and target land near them takes the masked mapping's answer from "
+        "the source land around them",
+        file=sys.stderr)
 
 
 #: The five canonical hydrometeors and the legacy names the regular-source
@@ -5965,6 +7283,17 @@ def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
         "snow_water_equivalent": "SNOW",
         "snow_depth": "SNOWH",
         "sea_ice_fraction": "SEAICE",
+        # The water state the horizontal mapping assembles the water
+        # temperature from (gpuwm/ingest/water_temperature.py): the
+        # analysis over the sea, and the lake model's own water and ice
+        # (gpuwm/ingest/lake_temperature.py) where the analysis has no
+        # water of a lake's.  Without them a mapped source gave every
+        # lake its coherent skin temperature while a direct route reading
+        # the same file gave it the lake water.
+        "sea_surface_temperature": "SST",
+        "lake_water_temperature": "LAKE_WATER_TEMP",
+        "lake_ice_temperature": "LAKE_ICE_TEMP",
+        "lake_ice_depth": "LAKE_ICE_DEPTH",
     }
     for name, legacy in legacy_names.items():
         if name not in canonical:
@@ -6012,14 +7341,7 @@ def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
             soil_t, soil_m, terrestrial, frame.longitude,
             int(soil_land_repair["maximum_cells"]),
         )
-    if not np.isfinite(soil_t[:, terrestrial]).all():
-        raise ValueError(
-            "mapped soil temperature contains missing source-land values"
-        )
-    if not np.isfinite(soil_m[:, terrestrial]).all():
-        raise ValueError(
-            "mapped soil moisture contains missing source-land values"
-        )
+    _admit_source_land_soil_gaps(soil_t, soil_m, terrestrial)
     yield MAPPED_SOIL_TEMPERATURE, soil_t
     yield MAPPED_SOIL_MOISTURE, soil_m
     del soil_t, soil_m, source_land, terrestrial
@@ -6059,8 +7381,10 @@ def mapped_frames_to_regular_snapshots(
     initialization. Soil arrays retain canonical names; the independently
     validated composition contract supplies their depth/remapping semantics.
     ``soil_land_repair`` is the composition's declared missing.land policy
-    when it is a bounded repair object rather than ``"reject"``; absent, the
-    historical strict gate is unchanged.
+    when it is a bounded repair object rather than ``"reject"``.  Either
+    way a source land cell still missing its soil value is not refused: it
+    is counted and left missing, so the masked horizontal mapping does not
+    take it as a donor (see :func:`_admit_source_land_soil_gaps`).
 
     Hydrometeors are packed per field.  A frame that CARRIES one of the five
     canonical hydrometeors has that decoded plane packed under its legacy
@@ -6153,6 +7477,73 @@ def mapped_frames_to_regular_snapshots(
         if validate_remaining is not None:
             validate_remaining()
     return tuple(result)
+
+
+def _frame_headers(frames) -> list[object]:
+    """Each frame's header, from frames in hand or from a frameset read
+    lazily, without reading a single array."""
+
+    header = getattr(frames, "header", None)
+    if callable(header):
+        return [header(index) for index in range(len(frames))]
+    return [frame.header for frame in frames]
+
+
+def completed_field_summary(frames) -> dict[str, dict[str, object]]:
+    """What the frames completed where the source left a field out.
+
+    Read from each field's ``source_field``, whose first reference names
+    the completion and the number of values it derived.  One entry per
+    completed field: the method, how many frames carried a derived value,
+    and the derived and total value counts over the frames.  Empty when
+    the source published every value itself.
+    """
+
+    summary: dict[str, dict[str, object]] = {}
+    headers = _frame_headers(frames)
+    for header in headers:
+        document = header.to_dict() if hasattr(header, "to_dict") else dict(header)
+        for descriptor in document.get("fields", ()):
+            first = str(descriptor.get("source_field", "")).split(";", 1)[0]
+            if not first.startswith(COMPLETED_FIELD_REFERENCE_PREFIX):
+                continue
+            method, _, count = first[len(COMPLETED_FIELD_REFERENCE_PREFIX):].partition(":")
+            derived = int(count)
+            total = int(np.prod([int(size) for size in descriptor.get("shape", ())]))
+            entry = summary.setdefault(str(descriptor["canonical_name"]), {
+                "method": method, "frames": 0, "frame_count": len(headers),
+                "values_derived": 0, "values_total": 0,
+            })
+            entry["frames"] = int(entry["frames"]) + (1 if derived else 0)
+            entry["values_derived"] = int(entry["values_derived"]) + derived
+            entry["values_total"] = int(entry["values_total"]) + total
+    return {
+        name: entry for name, entry in sorted(summary.items())
+        if int(entry["values_derived"])
+    }
+
+
+def warn_completed_fields(summary: Mapping[str, Mapping[str, object]], *,
+                          subject: str) -> None:
+    """Say once, plainly, which values the source did not carry."""
+
+    for name, entry in summary.items():
+        warn(
+            f"{subject} did not carry {name.replace('_', ' ')} for "
+            f"{int(entry['values_derived']):,} of {int(entry['values_total']):,} "
+            f"values ({entry['frames']} of {entry['frame_count']} times); "
+            "those values were derived hydrostatically from its own "
+            "temperature, humidity, surface pressure and terrain height, and "
+            "the preparation receipt counts them",
+            why=("Initialization needs geopotential height on every level. "
+                 "Where the source publishes none, each missing value is "
+                 "integrated with the hypsometric equation from the nearest "
+                 "level of the same column that has the source's own height, "
+                 "or from the surface when no level has one.  Against a "
+                 "source that publishes height, the derived values agree to "
+                 "a few metres through the troposphere."),
+            once=True,
+        )
 
 
 def mapped_frame_receipt(
@@ -6263,6 +7654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "CanonicalField", "FRAME_EVIDENCE_SCHEMA", "INPUT_MANIFEST_SCHEMA",
     "INSPECTION_SCHEMA", "MAPPING_SCHEMA", "MappedSourceFrame",
+    "completed_field_summary", "warn_completed_fields",
     "decode_mapped_source", "inspect_mapped_source", "load_mapping",
     "mapped_frame_receipt", "mapped_frames_to_regular_snapshots",
 ]

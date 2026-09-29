@@ -86,7 +86,7 @@ the georeference was proved without re-running anything.
 
 The upstream decoder in `rustwx-io` inverts this projection spherically
 (`opera_laea_latlon_grid`, `inverse_spherical_laea`) and maps both sentinels
-to NaN. **Question 1 for Drew** is below; nothing in BowEcho was changed.
+to NaN. **Open question 1** is below; nothing in BowEcho was changed.
 
 ### Part of the field is extrapolated, not observed
 
@@ -255,14 +255,14 @@ observations silently. The authoritative filter remains the station-level
 
 ## 4. Japanese radar: assessed, not built
 
-Raw data and decoded receipts exist on this box from an earlier session
-(`Documents/Codex/2026-05-31/https-pawr-nict-go-jp-jmadata/work/`): 20 JMA
+Raw data and decoded receipts exist on the development workstation from an earlier session
+(an earlier session's working tree): 20 JMA
 sites, 655 sweeps, 512 radials, 500 m gates, elevations 0.7 to 25.0 deg,
 including `Pvr` radial velocity. That is a genuine volumetric dataset and it
 is better suited to DA than the European composite.
 
 There is **no decoder for it in the Rust stack on this box**. A bounded
-search over the whole Codex tree for `JMAGPV` in `*.rs` returned zero hits;
+search over the development trees for `JMAGPV` in `*.rs` returned zero hits;
 the volumes were served through a local bridge masquerading as NEXRAD.
 
 Nothing was built on it, per the directive. The provenance question is below.
@@ -323,7 +323,7 @@ Smaller: a station frozen into the table that returns no rows disappears from
 the decoded record without entering either drop list. The count went 9 to 8
 with no explanation in the receipt.
 
-## Questions for Drew
+## Open questions
 
 **Q1. The upstream OPERA decoder disagrees with this front door, twice.**
 `rustwx-io`'s `extract_eumetnet_opera_dbzh_from_odim_h5` maps both sentinels

@@ -303,7 +303,16 @@ def test_the_policy_set_excludes_the_feature_flag():
     """Flipping adaptive off leaves the carried controller state meaningless."""
     from gpuwm.core.model import ADAPTIVE_POLICY_RUN_FIELDS
     assert "use_adaptive_time_step" not in ADAPTIVE_POLICY_RUN_FIELDS
-    assert len(ADAPTIVE_POLICY_RUN_FIELDS) == 11
+    # Named, not counted: min_time_step_sound, the substep floor the
+    # steep-terrain rules set, is the twelfth, and a count alone would
+    # pass with any field swapped for another.
+    assert ADAPTIVE_POLICY_RUN_FIELDS == {
+        "step_to_output_time", "adaptation_domain",
+        "target_cfl", "target_hcfl", "max_step_increase_pct",
+        "starting_time_step", "starting_time_step_den",
+        "max_time_step", "max_time_step_den",
+        "min_time_step", "min_time_step_den",
+        "min_time_step_sound"}
 
 
 # ------------------------------- the third gate: the physics fingerprint

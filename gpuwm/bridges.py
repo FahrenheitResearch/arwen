@@ -104,7 +104,14 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 BRIDGE_ABI_MARKERS = {
     "rw_netcdf": b"dtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery",
     "gdt101_remap": b"arwen.gdt101-regional-remap.v1",
-    "rw_zarr": b"arwen.regular-forcing-record.v1",
+    # The reader's newest behaviour, not its record schema: two fixes
+    # changed what it accepts without changing the record it prints.  A
+    # parenthesised unit (ARCO ERA5 publishes its level axis as
+    # "Hectopascal(hPa)") refused every request before the first chunk,
+    # and a 30 s whole-request timeout cut every 80 MB chunk off on a slow
+    # link.  A build older than both still carried the schema literal and
+    # passed; this literal arrived with the later of the two fixes.
+    "rw_zarr": b"http transfer failed after ",
     "arwen-tui": b"Usage: arwen-tui [--config FILE] [--python EXECUTABLE]",
     "grib1_bridge": b"usage: grib1_bridge INPUT.grb OUTPUT_DIR",
     "gfs_grib2_bridge": (
@@ -137,6 +144,21 @@ BRIDGE_ABI_MARKERS = {
     # inside the first refined solve -- which is exactly the class of
     # stale build this table exists to catch statically.
     "region_global_dealias": b"bw_dealias_rift_v1",
+    # The parallel CPU preprocessing library.  A library, so the literal
+    # is an exported symbol name, and it names the newest entry the land
+    # surface depends on under BOTH backends: the native HRRR route's soil
+    # stencil, built in the same change set as the masked surface chain
+    # (soil moisture and temperature, snow, skin temperature, sea ice)
+    # every other source maps its land through, then the water entries
+    # (the lake skin search, the water-temperature blends, the water-body
+    # labelling, the water repairs, the per-body assembly and the source
+    # owner of each body), and newest of all the CPU backend's bounded
+    # surface-nearest search.  A build predating them loads cleanly,
+    # answers the ABI probe with 1 and maps every other field, and then
+    # cannot map the land surface or assemble a water temperature at all.
+    # Spelled to match gpuwm.ingest.cpu_backend.MASKED_NEAREST_ENTRY; a
+    # test binds the two.
+    "gpuwm_preprocess_cpu": b"gpuwm_masked_nearest_f32",
     # The NetCDF writer cdylib behind the DEFAULT wrfout engine AND the
     # DEFAULT wrfinput/wrfbdy export.  A library, so the literal is an
     # exported symbol name, and it names the newest capability a default
@@ -166,7 +188,7 @@ BRIDGE_ABI_MARKERS = {
     # mapped_engine::ABI_CONTRACT; tests bind all three.
     "gpuwm_mapped_engine": (
         b"gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 "
-        b"grib2-drt=0,2,3,4,40,41,42,50,51,61,200"),
+        b"height-interfaces=1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200"),
     # The static-field builder cdylib (tools/rustwx/crates/static-fields),
     # the default engine for the WPS-geogrid-equivalent statics from the
     # static-rust-port lanes on.  A library, so the literal is an
@@ -174,7 +196,7 @@ BRIDGE_ABI_MARKERS = {
     # probe but predates the field build cannot produce a single static
     # field.  Spelled to match gpuwm.static.rust_bridge.ABI_MARKER; a
     # test binds the two.
-    "static_fields": b"gpuwm_static_build_fields",
+    "static_fields": b"gpuwm_static_sampling_portable_v1",
     # The observation remap cdylib (tools/rustwx/crates/obs-regrid),
     # behind the DEFAULT plan build of the observation battery.  A
     # library, so the literal is an exported symbol name: a build that
@@ -302,11 +324,90 @@ def cargo_build_one_liner(crate_relative: str = CRATE_RELATIVE) -> str:
             f"cd {_parent_hops(crate_relative)}")
 
 
-#: The one-liner that builds every bridge, run from a source checkout's
-#: own root.  ``--offline`` works because the crate vendors its
-#: dependencies (``tools/grib1_bridge/vendor/crates-io`` plus that
-#: workspace's ``.cargo/config.toml``): no network, no registry.
-CARGO_BUILD_HINT = cargo_build_one_liner(CRATE_RELATIVE)
+def run_if_first_succeeds(first: str, then: str) -> str:
+    """``first``, then ``then`` only when ``first`` succeeded -- one line.
+
+    For a remedy whose second command must not run after the first one
+    failed, such as ``gpuwm check X`` before ``gpuwm run X``.  A POSIX
+    shell spells that ``&&``.  Windows PowerShell 5.1 has no ``&&`` (the
+    pipeline chain operators arrived in PowerShell 7) and rejects a line
+    carrying it with a parser error, and the bare ``;`` the cargo build
+    line uses would start ``then`` even after ``first`` refused -- a run
+    the check had just said does not fit.  After a native command ``$?``
+    is false when it exited non-zero, so ``first; if ($?) { then }`` is
+    the same meaning in that shell.
+    """
+
+    if WINDOWS_SHELL:
+        return f"{first}; if ($?) {{ {then} }}"
+    return f"{first} && {then}"
+
+
+def shell_line(*words) -> str:
+    """``words`` as one command, quoted for the shell the remedy targets.
+
+    A remedy that interpolates a path bare breaks on the first folder
+    with a space in it: ``gpuwm check C:\\my runs\\case.toml`` reaches
+    the program as two arguments in either shell.  Each word is quoted
+    only where that shell needs it, by the same rule
+    :func:`gpuwm.prep_output.shell_command` prints forecast lines with,
+    chosen from :data:`WINDOWS_SHELL`.
+    """
+
+    from gpuwm.prep_output import shell_command
+
+    return shell_command(words,
+                         shell="powershell" if WINDOWS_SHELL else "posix")
+
+
+def lazy_build_hints(module: str, **hints: str):
+    """A module ``__getattr__`` that spells each build hint when it is read.
+
+    ``hints`` maps an attribute name to the crate it builds, and reading
+    that attribute returns :func:`cargo_build_one_liner` of the crate
+    under the shell rule in force at that moment.
+
+    THE BREAKAGE: every module that prints a cargo build line kept it as
+    a constant computed at import, so the line was spelled by whatever
+    :data:`WINDOWS_SHELL` said when the module was first imported and a
+    test forcing the other shell could not move it.  The PowerShell
+    spelling of the renderer, fetch, observation and mesh remedies was
+    then never checked on a POSIX runner, nor the POSIX one on Windows:
+    a forced-shell test compared the host's frozen line against the
+    other shell's rules, which is how ``&&`` reached a PowerShell check
+    on the ubuntu publish runner.  Read through this, the attribute
+    keeps its name for every caller and cannot go stale.
+    """
+
+    def __getattr__(name: str) -> str:
+        crate = hints.get(name)
+        if crate is None:
+            raise AttributeError(
+                f"module {module!r} has no attribute {name!r}")
+        return cargo_build_one_liner(crate)
+
+    return __getattr__
+
+
+def rustwx_build_hint() -> str:
+    """The one-liner that builds the renderer workspace, spelled now.
+
+    ``tools/rustwx`` builds the renderer, the fetch backbone, the
+    observation front doors, the static builder and the mesh tools, so
+    every one of their remedies prints this line and reads the shell
+    rule when it prints, not when its module was imported.
+    """
+
+    return cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+
+
+#: ``CARGO_BUILD_HINT`` is the one-liner that builds every bridge, run
+#: from a source checkout's own root, spelled when it is read
+#: (:func:`lazy_build_hints`).  ``--offline`` works because the crate
+#: vendors its dependencies (``tools/grib1_bridge/vendor/crates-io``
+#: plus that workspace's ``.cargo/config.toml``): no network, no
+#: registry.
+__getattr__ = lazy_build_hints(__name__, CARGO_BUILD_HINT=CRATE_RELATIVE)
 
 #: Where a pip user gets the sources the wheel does not carry.  Same URL
 #: and same clone directory as README's install section, so the two
@@ -1245,6 +1346,50 @@ def _newest_build_input(roots: tuple[Path, ...]) -> tuple[Path | None, float]:
     return newest, newest_at
 
 
+def _dep_info_inputs(binary: Path) -> tuple[Path, ...] | None:
+    """The checkout files cargo recorded as ``binary``'s inputs, or None.
+
+    Cargo writes ``<artifact>.d`` beside every artifact it links, naming
+    each source file that artifact was compiled from.  A crate can hold
+    a source only one of its artifacts reads (a module one binary
+    includes by ``#[path]``); when that file moves, cargo relinks that
+    binary alone, so judged against the whole crate every other artifact
+    stayed condemned however often the remedy's build was run.  Files
+    outside this checkout (the registry, the toolchain) and anything
+    under a ``target`` directory are not sources this tree moves.  None
+    when there is no record, when it names no file here, or when a file
+    it names is gone: the crate walk then decides, as it always did.
+    """
+
+    record = binary.with_name(binary.stem + ".d")
+    try:
+        text = record.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    _targets, separator, body = text.partition(": ")
+    if not separator:
+        return None
+    # One rule; a long one may be continued with a backslash-newline, and
+    # a space inside a path is written as a backslash-space.
+    body = body.split("\n\n", 1)[0].replace("\\\n", " ")
+    root = _package_parent().resolve()
+    inputs: list[Path] = []
+    for token in re.split(r"(?<!\\)\s+", body.strip()):
+        if not token:
+            continue
+        try:
+            path = Path(token.replace("\\ ", " ")).resolve()
+            relative = path.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if "target" in relative.parts:
+            continue
+        if not path.is_file():
+            return None
+        inputs.append(path)
+    return tuple(inputs) or None
+
+
 class CheckoutBuildStatus:
     """One checkout-built artifact, measured against its own sources."""
 
@@ -1385,12 +1530,20 @@ def checkout_build_status(path: Path) -> CheckoutBuildStatus | None:
     # The workspace manifest and its lock price every crate under them,
     # and a dependency bump moves the lock and nothing else.
     roots = tuple(workspace / name for name in ("Cargo.toml", "Cargo.lock"))
-    roots += tuple(_path_dependency_roots(crate, workspace)) if crate else ()
-    if len(roots) == 2:
-        # No manifest claims this name, so nothing narrows the question:
-        # measure the whole workspace rather than answering "current"
-        # about a binary whose sources were not located.
-        roots = (workspace,)
+    recorded = _dep_info_inputs(binary)
+    if recorded is not None:
+        # Cargo's own record of the files this artifact was compiled
+        # from, beside every crate manifest it names.
+        dependencies = _path_dependency_roots(crate, workspace) if crate else ()
+        roots += tuple(root / "Cargo.toml" for root in dependencies)
+        roots += recorded
+    else:
+        roots += tuple(_path_dependency_roots(crate, workspace)) if crate else ()
+        if len(roots) == 2:
+            # No manifest claims this name, so nothing narrows the
+            # question: measure the whole workspace rather than answering
+            # "current" about a binary whose sources were not located.
+            roots = (workspace,)
     newest_source, newest_at = _newest_build_input(roots)
     return CheckoutBuildStatus(artifact, binary, workspace, built_at,
                                newest_source, newest_at)
@@ -1750,7 +1903,7 @@ def resolve_source_decoder(source: str) -> Path:
             return found
         raise DecoderContractError(
             f"the {source} route's decoder at {found} {evidence}.\n"
-            + install_aware_build_hint(CARGO_BUILD_HINT))
+            + install_aware_build_hint(cargo_build_one_liner(CRATE_RELATIVE)))
     raise FileNotFoundError(
         f"the {source} route's decoder ({executable_name(name)}) is not "
         "installed here.  Searched, in order: "
@@ -2027,7 +2180,8 @@ __all__ = [
     "StaleBridgeError", "accept_resolved", "inspection_only",
     "require_release_pin",
     "install_aware_build_hint", "install_into_default_bridge_dir",
-    "rust_toolchain_install_command",
+    "lazy_build_hints", "run_if_first_succeeds", "rustwx_build_hint",
+    "rust_toolchain_install_command", "shell_line",
     "install_aware_one_line_hint",
     "prebuilt_bundle_offer",
     "sources_present",

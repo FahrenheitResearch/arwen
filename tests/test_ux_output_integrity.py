@@ -356,13 +356,14 @@ def _staged_bridge(home: Path, name: str) -> Path:
     return path
 
 
-def _gfs_prep_argv(*extra: str) -> list[str]:
+def _gfs_prep_argv(*extra: str,
+                   experiment: str = "experiment.toml") -> list[str]:
     return [
         "prep", "--source", "gfs",
         "--gfs-series", "series.tsv",
         "--cycle", "2026-07-29_06:00:00",
         "--wps-namelist", "namelist.wps",
-        "--experiment-config", "experiment.toml",
+        "--experiment-config", experiment,
         "--source-manifest", "manifest.json",
         "--source-manifest-sha256", "a" * 64,
         "--output-root", "prep-out",
@@ -370,6 +371,15 @@ def _gfs_prep_argv(*extra: str) -> list[str]:
         *extra,
         "--dry-run",
     ]
+
+
+def _experiment_config(directory: Path) -> str:
+    """A readable experiment file: prep reads its preprocessing choice
+    before it resolves the bridge, even on a dry run."""
+
+    path = directory / "experiment.toml"
+    path.write_text('[experiment]\nname = "ux"\n', encoding="utf-8")
+    return str(path)
 
 
 def _ladder_answer(name: str, home: Path) -> Path:
@@ -404,7 +414,8 @@ def test_prep_gfs_resolves_the_staged_bridge_without_the_flag(tmp_path):
     home = tmp_path / "home"
     _staged_bridge(home, "gfs_grib2_bridge")
     expected = _ladder_answer("gfs_grib2_bridge", home)
-    done = _door(_gfs_prep_argv(), env=_clean_env(home))
+    done = _door(_gfs_prep_argv(experiment=_experiment_config(tmp_path)),
+                 env=_clean_env(home))
     assert "invalid or missing run arguments" not in done.stderr, done.stderr
     assert done.returncode == 0, done.stderr
     # The composed command normalizes separators; compare in kind.
@@ -460,7 +471,8 @@ def test_prep_gfs_an_explicit_bridge_still_overrides_the_ladder(tmp_path):
     chosen = tmp_path / "my-own-bridge.exe"
     chosen.write_bytes(
         b"MZ\0\0" + bridges.BRIDGE_ABI_MARKERS["gfs_grib2_bridge"])
-    done = _door(_gfs_prep_argv("--bridge", str(chosen)),
+    done = _door(_gfs_prep_argv("--bridge", str(chosen),
+                                experiment=_experiment_config(tmp_path)),
                  env=_clean_env(home))
     assert done.returncode == 0, done.stderr
     assert str(chosen).replace("\\", "/") in done.stdout.replace("\\", "/")
@@ -491,13 +503,15 @@ def test_version_names_the_ahead_of_pypi_case(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(version_cli, "install_shape",
                         lambda: _wheel_shape(tmp_path, "2.5.0"))
     monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.4.1")
-    assert cli_main(["version"]) == 0
+    assert cli_main(["version", "--check-pypi"]) == 0
     out = capsys.readouterr().out
     # Each version number once: the first spelling of this sentence
     # named the index's version twice (the N16 residue the polish lane
     # closed), which reads as an unsubstituted template.
     assert "ahead of it" in out, out
-    assert "source or pre-release install" in out, out
+    # The kind of ahead is read off the install: a release wheel is a
+    # release install newer than the index, not a source install.
+    assert "a release install newer than the index lists" in out, out
     assert "this install is current" not in out, out
     assert "pip install --upgrade" not in out, (
         "the upgrade advice still prints on an install that is ahead "
@@ -511,7 +525,7 @@ def test_version_keeps_the_advice_when_the_install_is_behind(
     monkeypatch.setattr(version_cli, "install_shape",
                         lambda: _wheel_shape(tmp_path, "2.4.1"))
     monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.5.0")
-    assert cli_main(["version"]) == 0
+    assert cli_main(["version", "--check-pypi"]) == 0
     out = capsys.readouterr().out
     assert "behind" in out, out
     assert "pip install --upgrade" in out, out
@@ -547,6 +561,6 @@ def test_version_still_calls_a_current_wheel_current(
     monkeypatch.setattr(version_cli, "install_shape",
                         lambda: _wheel_shape(tmp_path, "2.5.0"))
     monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.5.0")
-    assert cli_main(["version"]) == 0
+    assert cli_main(["version", "--check-pypi"]) == 0
     out = capsys.readouterr().out
     assert "this install is current" in out, out

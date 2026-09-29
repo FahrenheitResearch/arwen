@@ -21,6 +21,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import requires_case_inputs
+
 from gpuwm import runtime
 from gpuwm.case_data import load_experiment_case
 from gpuwm.experiment import VerticalConfig
@@ -28,6 +30,12 @@ from gpuwm.experiment import VerticalConfig
 from test_case_data import make_case_toml
 
 REPO = Path(__file__).resolve().parents[1]
+
+#: These tests load configs/real74_4dom.toml with its declared inputs
+#: required, so they run only where the WRF 1974 reference bundle its
+#: [case_data] names is on disk, and skip naming the absent file elsewhere.
+requires_4dom_inputs = requires_case_inputs(
+    Path(__file__).resolve().parents[1] / "configs" / "real74_4dom.toml")
 BUNDLE = Path(os.environ.get("GPUWM_TEST_WRF74_BUNDLE",
                     "gpuwm-fixture-unset/wrf74-bundle"))
 MAY99 = Path(os.environ.get("GPUWM_TEST_MAY99_DATA",
@@ -391,6 +399,7 @@ def test_resolved_config_report_enumerates_every_path_time_policy(
 # Single-domain scope, keyed decode cache, trace-gas hook surface, CLI.
 # ---------------------------------------------------------------------------
 
+@requires_4dom_inputs
 def test_multi_domain_experiment_is_rejected_with_task14_pointer():
     exp = load_experiment_case(REPO / "configs" / "real74_4dom.toml")[0]
     with pytest.raises(NotImplementedError, match="Task 14"):
@@ -712,7 +721,7 @@ def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
         def __init__(self, **_kwargs):
             pass
 
-        def add_state(self, state):
+        def add_state(self, state, index=None):
             pass
 
         def build(self, _times):
@@ -875,6 +884,7 @@ def test_run_experiment_threads_experiment_timing_authority(
         wrfout_paths: tuple = ()
         trajectory_digest: object = None
         frame_records: tuple | None = None
+        moisture_floor_receipts: object = None
 
     summary = _StubSummary()
 
@@ -884,7 +894,12 @@ def test_run_experiment_threads_experiment_timing_authority(
 
     monkeypatch.setattr(runtime, "integrate_prepared_case", integrate)
     result = runtime.run_experiment(authoritative, data, tmp_path / "out")
-    assert result == replace(summary, frame_records=())
+    # The run also states, per domain, whether its initialization floored
+    # vapour; the stand-in case records that it cannot say.
+    floors = result.moisture_floor_receipts["moisture_floors_by_domain"]
+    assert set(floors) == {"d01"} and floors["d01"]["recorded"] is False
+    assert (replace(result, moisture_floor_receipts=None)
+            == replace(summary, frame_records=()))
     assert captured["run_seconds"] == authoritative.run_seconds
     assert (captured["history_interval_s"]
             == authoritative_domain.history_interval_s)

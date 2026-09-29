@@ -1,4 +1,8 @@
 use std::error::Error;
+use std::mem::{size_of, size_of_val};
+
+#[cfg(test)]
+mod cache_tests;
 
 use crate::MapExtent;
 use crate::features::{
@@ -13,6 +17,9 @@ use crate::request::{
 };
 
 const DEFAULT_BASEMAP_GRATICULE: bool = false;
+
+/// Maximum retained coordinate and basemap storage shared by product renders.
+pub const PROJECTED_MAP_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedMap {
@@ -423,6 +430,89 @@ pub fn build_projected_domain(
 }
 
 pub fn build_projected_map_with_options(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    options: &ProjectedMapBuildOptions,
+) -> Result<ProjectedMap, Box<dyn Error>> {
+    // Batch products build separate requests for the same mesh. Share only
+    // geometry, never weather values, and bound retained memory across grids.
+    static CACHE: std::sync::Mutex<ProjectedMapCache> =
+        std::sync::Mutex::new(ProjectedMapCache { entries: Vec::new(), bytes: 0 });
+    CACHE.lock().unwrap_or_else(|error| error.into_inner()).get_or_build(
+        lat_deg, lon_deg, options, PROJECTED_MAP_CACHE_BYTES as usize,
+        || build_projected_map_uncached(lat_deg, lon_deg, options),
+    )
+}
+
+struct CachedMap {
+    lat: Vec<f32>,
+    lon: Vec<f32>,
+    options: String,
+    map: ProjectedMap,
+    bytes: usize,
+}
+
+struct ProjectedMapCache {
+    entries: Vec<CachedMap>,
+    bytes: usize,
+}
+
+impl ProjectedMapCache {
+    fn get_or_build(
+        &mut self,
+        lat: &[f32],
+        lon: &[f32],
+        options: &ProjectedMapBuildOptions,
+        byte_limit: usize,
+        build: impl FnOnce() -> Result<ProjectedMap, Box<dyn Error>>,
+    ) -> Result<ProjectedMap, Box<dyn Error>> {
+        // Debug's float spelling retains signed zero and every finite bit.
+        // Comparing the entire request avoids reusing geometry across crops,
+        // projections, aspect ratios, basemap styles or moving meshes.
+        let options = format!("{options:?}");
+        let same_bits = |a: &[f32], b: &[f32]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+        };
+        if let Some(index) = self.entries.iter().position(|entry| {
+            entry.options == options && same_bits(&entry.lat, lat) && same_bits(&entry.lon, lon)
+        }) {
+            let entry = self.entries.remove(index);
+            let map = entry.map.clone();
+            self.entries.push(entry);
+            return Ok(map);
+        }
+        let map = build()?;
+        let mut bytes = (lat.len() + lon.len()).saturating_mul(size_of::<f32>())
+            .saturating_add((map.projected_x.len() + map.projected_y.len()).saturating_mul(size_of::<f64>()))
+            .saturating_add(options.len());
+        for line in &map.lines {
+            bytes = bytes.saturating_add(size_of_val(line))
+                .saturating_add(line.points.len().saturating_mul(size_of::<(f64, f64)>()));
+        }
+        for polygon in &map.polygons {
+            bytes = bytes.saturating_add(size_of_val(polygon));
+            for ring in &polygon.rings {
+                bytes = bytes.saturating_add(size_of_val(ring))
+                    .saturating_add(ring.len().saturating_mul(size_of::<(f64, f64)>()));
+            }
+        }
+        // Large grids still render normally; keeping another full copy could
+        // otherwise crowd the forecast's host working set out of memory.
+        if bytes <= byte_limit {
+            while !self.entries.is_empty()
+                && (self.entries.len() >= 4 || self.bytes.saturating_add(bytes) > byte_limit) {
+                self.bytes -= self.entries.remove(0).bytes;
+            }
+            self.entries.push(CachedMap {
+                lat: lat.to_vec(), lon: lon.to_vec(), options, map: map.clone(), bytes,
+            });
+            self.bytes += bytes;
+        }
+        Ok(map)
+    }
+}
+
+fn build_projected_map_uncached(
     lat_deg: &[f32],
     lon_deg: &[f32],
     options: &ProjectedMapBuildOptions,

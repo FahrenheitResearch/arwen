@@ -6,6 +6,7 @@ import tomllib
 
 import pytest
 
+from conftest import requires_cupy
 from gpuwm.local_da import Card, Request, configuration, derive_rung, build_plan, publish
 
 
@@ -52,6 +53,7 @@ def test_saved_selection_does_not_resolve_a_later_latest_cycle(tmp_path, monkeyp
     assert loaded['background']['selection'] == plan['background']['selection']
 
 
+@requires_cupy
 def test_staged_prepare_only_retains_output_and_never_calls_forecast(tmp_path, monkeypatch):
     from gpuwm import runplan
     from test_runplan import _executed_staged_chain

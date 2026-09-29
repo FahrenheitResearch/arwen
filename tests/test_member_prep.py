@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+from pathlib import Path
 
 import pytest
 
@@ -392,3 +393,127 @@ def _grammar_document():
             },
         },
     }
+
+# ---------------------------------------------------------------------------
+# Declared rewrites: another writer's copy of the same members
+# ---------------------------------------------------------------------------
+
+_WITHOUT_OCTETS = {
+    "name": "rewrite-without-ensemble-octets",
+    "writer": {"center": [74, 7], "subcenter": 0,
+               "master_table_version": 4, "local_table_version": 0},
+    "product_definition_templates": [0, 8],
+    "perturbation_number": "path",
+    "type_of_generating_process": 255,
+    "forecast_generating_process_id": 255,
+}
+_WITHOUT_PROCESS = {
+    "name": "rewrite-without-generating-process",
+    "writer": {"center": 7, "subcenter": 0,
+               "master_table_version": 4, "local_table_version": 0},
+    "product_definition_templates": [1, 11],
+    "type_of_ensemble_forecast": 3,
+    "perturbation_number": "ordinal",
+    "ensemble_size": 3,
+    "type_of_generating_process": 255,
+    "forecast_generating_process_id": 255,
+}
+
+
+def _rewritten_grammar() -> MemberGrammar:
+    document = _grammar_document()
+    for declaration in document["classes"].values():
+        declaration["rewrites"] = [_WITHOUT_OCTETS, _WITHOUT_PROCESS]
+    return MemberGrammar(document, source="synthetic-rewritten")
+
+
+def _written(row, *, center="74", subcenter="0", master="4", local="0"):
+    return dict(row, center=center, subcenter=subcenter,
+                master_table_version=master, local_table_version=local)
+
+
+def _octetless(index=0, *, pdt=0, center="74", master="4"):
+    return _written(_row(index, pdt=pdt, member="-", ensemble_type="-",
+                         size="-", generating="255", process="255"),
+                    center=center, master=master)
+
+
+def _verify_rewritten(member_id, rows, path):
+    grammar = _rewritten_grammar()
+    return verify_member_rows(
+        grammar, grammar.member(member_id), rows, source_label=str(path),
+        source_path=path)
+
+
+def test_a_rewrite_without_ensemble_octets_verifies_by_its_member_path():
+    """The bytes carry no member octets at all; the member path component
+    is the identity that is left, and the evidence says so by name."""
+
+    path = Path("cycle.20260120") / "00" / "xp02" / "f000"
+    evidence = _verify_rewritten(
+        "p02", [_octetless(0), _octetless(1, center="7"),
+                _octetless(2, pdt=8, center="7")], path)
+    assert evidence.encoding == "rewrite-without-ensemble-octets"
+    assert evidence.member_identity == "path"
+    assert evidence.perturbation_number == 2
+    assert evidence.type_of_ensemble_forecast is None
+    assert evidence.product_definition_templates == (0, 8)
+    assert evidence.to_dict()["encoding"] == "rewrite-without-ensemble-octets"
+
+
+def test_octetless_bytes_under_another_members_path_refuse():
+    path = Path("cycle.20260120") / "00" / "xp01" / "f000"
+    with pytest.raises(MemberIdentityRefusal) as caught:
+        _verify_rewritten("p02", [_octetless(0)], path)
+    message = str(caught.value)
+    assert "rewrite-without-ensemble-octets" in message
+    assert "'xp02'" in message and "path component" in message
+
+
+def test_octetless_bytes_without_a_path_refuse():
+    grammar = _rewritten_grammar()
+    with pytest.raises(MemberIdentityRefusal, match="path component"):
+        verify_member_rows(grammar, grammar.member("p02"), [_octetless(0)],
+                           source_label="synthetic")
+
+
+def test_a_deterministic_writer_keeps_the_producers_refusal():
+    """Master table 2 and local table 1 is how the deterministic products
+    are stamped; no rewrite declares that writer, so the refusal is the
+    producer contract's own, word for word."""
+
+    rows = [_octetless(0, center="7", master="2")]
+    rows[0]["local_table_version"] = "1"
+    with pytest.raises(MemberIdentityRefusal) as caught:
+        _verify_rewritten("p02", rows, Path("xp02") / "f000")
+    assert "no ensemble identity octets at all" in str(caught.value)
+    assert "rewrite" not in str(caught.value)
+
+
+def test_a_statistic_under_a_rewrite_writer_still_refuses():
+    rows = [_written(_row(0, pdt=2, member="-", ensemble_type="-", size="3",
+                          derived="0", generating="255", process="255"))]
+    with pytest.raises(MemberIdentityRefusal, match="STATISTIC"):
+        _verify_rewritten("p02", rows, Path("xp02") / "f000")
+
+
+def test_a_rewrite_that_kept_its_octets_still_verifies_the_ordinal():
+    rows = [_written(_row(0, member="2", generating="255", process="255"),
+                     center="7"),
+            _written(_row(1, pdt=11, member="2", generating="255",
+                          process="255"), center="7")]
+    evidence = _verify_rewritten("p02", rows, Path("elsewhere") / "f006")
+    assert evidence.encoding == "rewrite-without-generating-process"
+    assert evidence.member_identity == "ordinal"
+    assert evidence.type_of_ensemble_forecast == 3
+    with pytest.raises(MemberIdentityRefusal,
+                       match="perturbationNumber 2"):
+        _verify_rewritten("p01", rows, Path("xp01") / "f006")
+
+
+def test_the_producers_own_bytes_carry_no_encoding_in_the_evidence():
+    grammar = _rewritten_grammar()
+    evidence = verify_member_rows(
+        grammar, grammar.member("p01"), [_row(0)], source_label="synthetic")
+    assert evidence.encoding is None
+    assert "encoding" not in evidence.to_dict()

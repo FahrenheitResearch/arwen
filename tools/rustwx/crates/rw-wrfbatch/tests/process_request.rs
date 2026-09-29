@@ -177,6 +177,72 @@ fn viewer_profile_preserves_exact_time_and_selected_science_without_volume_stora
     assert_eq!(sha256_file(&request.path).unwrap(), request.source_sha256);
 }
 
+/// The Python door takes `var:<stored 2-D variable>` for the compact
+/// viewer, and the viewer refused every one of them with `Unknown or
+/// non-2-D viewer product`, so no stored field could be asked for by name.
+#[test]
+fn viewer_stored_field_selection_is_drawn_from_the_stored_plane() {
+    use rw_wrfbatch::process_request::VIEWER_REQUEST_SCHEMA;
+    let scratch = Scratch::new();
+    let mut request = request(&scratch);
+    let full = process(&request, |_| {}).unwrap();
+    request.schema = VIEWER_REQUEST_SCHEMA.into();
+    request.profile = Some("viewer-2d-v1".into());
+    // A core plane a named product also draws, a chart-level plane, a raw
+    // WRF field, a field a user added to their own Registry, and a name
+    // this frame does not store.
+    let stored = [
+        "temperature_2m",
+        "geopotential_height_850hpa",
+        "wrf_tsk",
+        stored_plane_fixture::USER_PLANE_STORE_NAME,
+    ];
+    request.products = stored
+        .iter()
+        .map(|name| format!("var:{name}"))
+        .chain(["var:no_such_field".to_string()])
+        .collect();
+    let viewer = process(&request, |_| {}).unwrap();
+    let status = |slug: &str| {
+        viewer
+            .products
+            .iter()
+            .find(|row| row.slug == slug)
+            .unwrap_or_else(|| panic!("no status for {slug}: {:?}", viewer.products))
+    };
+    let full_reader = rw_store::reader::HourReader::open(&full.frame.hour_path).unwrap();
+    let reader = rw_store::reader::HourReader::open(&viewer.frame.hour_path).unwrap();
+    let bits = |values: Vec<f32>| values.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+    for name in stored {
+        let row = status(&format!("var:{name}"));
+        assert!(row.available, "{row:?}");
+        assert_eq!(row.source_fields, [name]);
+        assert_eq!(
+            bits(reader.read_full_2d(name).unwrap()),
+            bits(full_reader.read_full_2d(name).unwrap()),
+            "{name} differs from the full-science store"
+        );
+    }
+    let missing = status("var:no_such_field");
+    assert!(!missing.available);
+    assert_eq!(
+        missing.missing_reasons,
+        ["This frame stores no 2-D field named no_such_field"]
+    );
+    // Only the named fields and the terrain plane are processed.
+    let mut variables = viewer.frame.variables.clone();
+    variables.sort();
+    let mut expected: Vec<String> = stored
+        .iter()
+        .map(|name| name.to_string())
+        .chain(["orography".to_string()])
+        .collect();
+    expected.sort();
+    assert_eq!(variables, expected);
+    assert!(viewer.frame.levels_hpa.is_empty());
+    assert!(process(&request, |_| {}).unwrap().cache_hit);
+}
+
 #[test]
 fn viewer_request_requires_explicit_version_and_does_not_override_the_full_profile() {
     use rw_wrfbatch::process_request::VIEWER_REQUEST_SCHEMA;

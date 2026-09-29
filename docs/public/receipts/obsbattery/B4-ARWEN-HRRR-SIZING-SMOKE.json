@@ -76,7 +76,7 @@
       "status": "INFO"
     },
     {
-      "authority": "evidence\\grounding-3km-conus-run-report.json",
+      "authority": "docs/public/receipts/obsbattery/grounding-3km-conus-run-report.json",
       "detail": "1.4838 s/sim-min -> 0.025 h wall, 1.29 GiB of wrfout",
       "gate": "arwen.wall_clock_projection",
       "status": "INFO"
@@ -89,7 +89,7 @@
     }
   ],
   "projection": {
-    "anchor": "evidence/grounding-3km-conus-run-report.json",
+    "anchor": "docs/public/receipts/obsbattery/grounding-3km-conus-run-report.json",
     "anchor_bytes_per_frame": 1823148192,
     "anchor_cells": 24806544,
     "anchor_seconds_per_sim_minute": 3.9124,
@@ -111,7 +111,7 @@
     "alloc_estimate_gib": 7.243,
     "cells": 9408000,
     "envelope_family": "windows",
-    "fit_source": "evidence/grounding-3km-conus-sizing.md",
+    "fit_source": "docs/public/receipts/obsbattery/grounding-3km-conus-sizing.md",
     "independent_fit_gib": {
       "slope_0.75_kib_per_cell_intercept_2.9_gib": 9.629,
       "slope_0.75_kib_per_cell_intercept_3.4_gib": 10.129,

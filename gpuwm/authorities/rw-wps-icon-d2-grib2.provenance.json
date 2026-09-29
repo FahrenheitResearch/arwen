@@ -1,0 +1,20 @@
+{
+ "schema": "gpuwm-icon-d2-invariant-surface-provenance-v1",
+ "source": "DWD ICON-D2 R19B07 (nominal 2.2 km, 542,040 cells), GDT 101, normalized by gdt101_remap",
+ "field": "terrain_height",
+ "selector": {
+  "format": "grib2",
+  "discipline": 0,
+  "category": 3,
+  "parameter": 6,
+  "level_type": 1,
+  "level_value": 0,
+  "second_level_type": 101,
+  "second_level_value": 0
+ },
+ "time_policy": "HSURF is published at cycle time; the normalized invariant is broadcast under the existing composition contract",
+ "member_policy": "ICON-D2 deterministic product only; ensemble and statistical products are refused",
+ "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1",
+ "normalization_policy": "The native normalization stage carries this declaration through and adds one key, 'normalization': the raw input, native converter, plan, target and normalized-output SHA-256 inventory. No raw-source provenance is discarded, and the forecast checks that the bound document is exactly this one plus that key",
+ "qualification": "Implementation route, not a live-cycle or unchanged-stock-WRF certification"
+}

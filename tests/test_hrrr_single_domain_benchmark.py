@@ -31,6 +31,8 @@ from gpuwm.physics_compat import (
     RUC_PROFILE_ID,
     route_physics_profiles,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+    THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
@@ -85,7 +87,9 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
         P3_LEGACY_RRTMG_PROFILE_ID,
         MYNN_PROFILE_ID, MYNN_RTE_RRTMGP_PROFILE_ID,
         RUC_PROFILE_ID,
-        MYNN_RUC_PROFILE_ID, MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+        MYNN_RUC_PROFILE_ID, THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+        MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
         NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
         MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID]
     assert payload["report_schema"] == "gpuwm-native-hrrr-benchmark-v2"
@@ -225,12 +229,236 @@ def test_native_hrrr_cpu_preprocess_selector_is_retained():
     assert args.cpu_preprocess_bridge.name == "libgpuwm_preprocess_cpu.so"
 
 
-def test_native_hrrr_rejects_cuda_workers():
-    with pytest.raises(SystemExit):
-        _parse_args(_required_args() + [
-            "--preprocess-backend", "cuda",
-            "--preprocess-workers", "8",
-        ])
+def test_native_hrrr_accepts_cuda_host_workers():
+    """--preprocess-workers under CUDA sets the host steps' threads.
+
+    The CUDA backend runs the masked surface fields in the Rust library
+    on the host, so the count has a meaning there; it used to be refused
+    late, after the front door had accepted and forwarded it.
+    """
+    args = _parse_args(_required_args() + [
+        "--preprocess-backend", "cuda",
+        "--preprocess-workers", "8",
+    ])
+    assert args.preprocess_backend == "cuda"
+    assert args.preprocess_workers == 8
+
+
+def test_cuda_preprocess_budget_records_its_host_step_workers():
+    budget = _PreprocessWorkerBudget(
+        backend="cuda", requested_total=6, effective_total=None,
+        requested_job_slots=3, future_job_count=3, clock_origin=0.0,
+        host_workers=6)
+    receipt = budget.receipt()
+    assert receipt["applicable"] is False
+    assert receipt["requested_total_native_workers"] == 6
+    assert receipt["host_step_native_workers"] == 6
+    assert receipt["peak_active_native_workers"] == 6
+    assert receipt["effective_allocation_per_job"] == []
+    # Without the count the receipt would say the host steps took none.
+    for missing in (None, 0, True):
+        with pytest.raises(ValueError, match="host steps"):
+            _PreprocessWorkerBudget(
+                backend="cuda", requested_total=None, effective_total=None,
+                requested_job_slots=1, future_job_count=1,
+                clock_origin=0.0, host_workers=missing)
+    # The CPU receipt is unchanged: its slots already cover the host steps.
+    cpu = _PreprocessWorkerBudget(
+        backend="cpu", requested_total=2, effective_total=2,
+        requested_job_slots=1, future_job_count=0, clock_origin=0.0)
+    assert "host_step_native_workers" not in cpu.receipt()
+
+
+@pytest.mark.parametrize(("backend", "slot_workers", "host_workers", "seen"), (
+    ("cuda", None, 5, 5),
+    ("cuda", None, None, None),
+    ("cpu", 3, None, 3),
+))
+def test_boundary_pool_worker_takes_the_cuda_host_workers(
+        monkeypatch, backend, slot_workers, host_workers, seen):
+    """A spawned boundary worker resolves the controller's host workers.
+
+    Its backend's receipt must equal the controller's, whose masked
+    chain names the host-step count under CUDA.
+    """
+    import tools.hrrr_single_domain_benchmark as runner
+
+    observed = []
+
+    def initialize(*args, **kwargs):
+        observed.append(kwargs["preprocess_workers"])
+        return {}, {}, {}, {}
+
+    monkeypatch.setattr(runner, "_initialize_boundary_sides", initialize)
+    monkeypatch.setattr(runner, "_PREPARE_WORKER_CONTEXT", None)
+    runner._prepare_worker_init(
+        object(), {}, [1.0, 0.0], 5000.0, 5, backend, None, True,
+        host_workers)
+    result = runner._prepare_boundary_hour(1, {}, slot_workers, 0)
+    assert observed == [seen]
+    assert result["effective_native_workers"] == slot_workers
+
+
+def test_a_boundary_pool_worker_carries_the_controllers_selection(
+        monkeypatch):
+    """A spawned boundary worker's backend records the controller's choice.
+
+    It resolves its backend again by name, which recorded a backend auto
+    chose as one "named by the caller", and its receipt was then refused
+    against the controller's.
+    """
+    import tools.hrrr_single_domain_benchmark as runner
+
+    chosen = {"requested": "auto", "backend": "cpu",
+              "reason": "no CUDA device is visible here"}
+    observed = []
+
+    def initialize(*args, **kwargs):
+        observed.append(kwargs["preprocess_selection"])
+        return {}, {}, {}, {}
+
+    monkeypatch.setattr(runner, "_initialize_boundary_sides", initialize)
+    monkeypatch.setattr(runner, "_PREPARE_WORKER_CONTEXT", None)
+    runner._prepare_worker_init(
+        object(), {}, [1.0, 0.0], 5000.0, 5, "cpu", None, True, None, chosen)
+    runner._prepare_boundary_hour(1, {}, 2, 0)
+    assert observed == [chosen]
+    assert observed[0] is not chosen
+
+
+def _vertical_columns(source_levels=6):
+    levels = np.linspace(95000.0, 20000.0, source_levels, dtype=np.float32)
+    source = np.broadcast_to(
+        levels[:, None, None], (source_levels, 2, 3)).copy()
+    target = np.broadcast_to(
+        np.linspace(94000.0, 25000.0, 4, dtype=np.float32)[:, None, None],
+        (4, 2, 3)).copy()
+    return source, np.full((2, 3), 100000.0, np.float32), target
+
+
+@pytest.mark.parametrize("requested", ("auto", "cpu"))
+def test_a_slot_receipt_is_the_controllers_but_for_its_worker_counts(
+        requested):
+    """Every slot of a CPU budget passes the check on its own share.
+
+    The controller's backend ran f00 on the whole budget, so its route
+    record holds a vertical route, and a slot runs on its share.  A slot
+    resolved again by name was refused at the first boundary hour of
+    every CPU preparation with two or more boundary hours: its masked
+    surface chain named the share, its route record was empty, and a
+    CPU auto chose came back as one "named by the caller".
+    """
+    from gpuwm.ingest import preprocess_backend as backends
+
+    reason = ("no CUDA device is visible here" if requested == "auto"
+              else backends.NAMED_BY_CALLER)
+    controller = backends._selection(
+        requested, backends.ParallelCpuPreprocessBackend(workers=4), reason)
+    controller.prepare_wrf_vertical(*_vertical_columns())
+    expected = controller.receipt()
+    assert expected["masked_surface_chain"]["workers"] == 4
+    assert expected["vertical_interpolation"]
+
+    slot = controller.at_workers(2)
+    assert slot.workers == 2
+    receipt = slot.receipt()
+    assert receipt["masked_surface_chain"]["workers"] == 2
+    assert receipt["selection"] == expected["selection"]
+    hrrr_runner._require_preprocess_receipt(
+        expected, receipt, "f01 west mapping", expected_native_workers=2)
+    # A route the slot prepares is on the controller's record too.
+    slot.prepare_wrf_vertical(*_vertical_columns(source_levels=7))
+    assert [route["source_levels"] for route in
+            controller.receipt()["vertical_interpolation"]] == [6, 7]
+
+    resolved = backends.resolve_preprocess_backend("cpu", workers=2)
+    if requested == "auto":
+        # auto resolved again by name records a CPU nobody named.
+        with pytest.raises(RuntimeError, match="differs from the resolved"):
+            hrrr_runner._require_preprocess_receipt(
+                expected, resolved.receipt(), "f01 west mapping",
+                expected_native_workers=2)
+    else:
+        # A named cpu resolved again carries the controller's selection:
+        # that is a spawned boundary worker, whose own route record starts
+        # empty and is not a difference (A75).  A route at a depth the
+        # controller met that differs from the controller's still is.
+        hrrr_runner._require_preprocess_receipt(
+            expected, resolved.receipt(), "f01 west mapping",
+            expected_native_workers=2)
+        stray = copy.deepcopy(resolved.receipt())
+        stray["vertical_interpolation"] = [
+            dict(expected["vertical_interpolation"][0], backend="cuda")]
+        with pytest.raises(RuntimeError, match="differs from the resolved"):
+            hrrr_runner._require_preprocess_receipt(
+                expected, stray, "f01 west mapping",
+                expected_native_workers=2)
+
+
+def test_a_spawned_worker_at_another_source_depth_passes_and_is_recorded():
+    """A spawned boundary worker keeps its own vertical route record.
+
+    The controller's record names the depth f00 had; a worker process
+    that prepared a boundary hour with another source level count was
+    refused on that difference in ``vertical_interpolation``, although
+    it routed that depth exactly as the controller would.  The worker's
+    new route passes and lands on the controller's record; a route that
+    differs from the controller's at the same depth is still refused.
+    """
+    from gpuwm.ingest import preprocess_backend as backends
+
+    reason = "no CUDA device is visible here"
+    controller = backends._selection(
+        "auto", backends.ParallelCpuPreprocessBackend(workers=4), reason)
+    controller.prepare_wrf_vertical(*_vertical_columns(source_levels=6))
+    expected = controller.receipt()
+
+    # A spawned worker builds its own backend with the controller's
+    # selection, so its route record starts empty (not at_workers).
+    worker = backends._selection(
+        "auto", backends.ParallelCpuPreprocessBackend(workers=2), reason)
+    worker.prepare_wrf_vertical(*_vertical_columns(source_levels=6))
+    worker.prepare_wrf_vertical(*_vertical_columns(source_levels=7))
+    hrrr_runner._require_preprocess_receipt(
+        expected, copy.deepcopy(worker.receipt()),
+        "f01 boundary initialization", expected_native_workers=2)
+    assert [route["source_levels"] for route in
+            controller.receipt()["vertical_interpolation"]] == [6, 7]
+
+    stray = copy.deepcopy(worker.receipt())
+    stray["vertical_interpolation"][0]["backend"] = "cuda"
+    with pytest.raises(RuntimeError, match="in vertical_interpolation"):
+        hrrr_runner._require_preprocess_receipt(
+            expected, stray, "f02 boundary initialization",
+            expected_native_workers=2)
+
+
+def test_the_receipt_check_holds_each_worker_count_to_the_allocation():
+    """The counts left out of the comparison are checked, not dropped."""
+    from gpuwm.ingest import preprocess_backend as backends
+
+    controller = backends._selection(
+        "cpu", backends.ParallelCpuPreprocessBackend(workers=4),
+        backends.NAMED_BY_CALLER)
+    expected = controller.receipt()
+    slot = controller.at_workers(2).receipt()
+    with pytest.raises(RuntimeError, match="used 2 native workers; expected 3"):
+        hrrr_runner._require_preprocess_receipt(
+            expected, slot, "f01 west mapping", expected_native_workers=3)
+    stray = copy.deepcopy(slot)
+    stray["masked_surface_chain"]["workers"] = 3
+    with pytest.raises(RuntimeError,
+                       match="masked surface fields on 3 native workers"):
+        hrrr_runner._require_preprocess_receipt(
+            expected, stray, "f01 west mapping", expected_native_workers=2)
+    other = copy.deepcopy(slot)
+    other["masked_surface_chain"]["entry"] = "another_entry"
+    with pytest.raises(RuntimeError, match="in masked_surface_chain"):
+        hrrr_runner._require_preprocess_receipt(
+            expected, other, "f01 west mapping", expected_native_workers=2)
+    # The controller's own receipt is left as it was.
+    assert expected["masked_surface_chain"]["workers"] == 4
+    assert expected["workers"] == 4
 
 
 def test_native_preprocess_budget_is_partitioned_not_multiplied_per_job():
@@ -511,6 +739,7 @@ def test_boundary_mapping_targets_are_bitwise_full_grid_slices():
         assert target_landmask.flags.c_contiguous
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
     observed = []
 
@@ -1597,20 +1826,113 @@ def test_native_hrrr_mp_off_refuses_unfaithful_analyzed_cloud_state():
         _decoded_native_hrrr_initialization(0)
 
 
-def test_hrrr_thompson_initialization_requires_mass_and_exact_zero_numbers():
+def test_hrrr_thompson_initialization_holds_numbers_to_the_real_exe_seed():
+    """nr and ni follow real.exe's cold start, not "exact zero everywhere".
+
+    A99 ported make_RainNumber and make_IceNumber
+    (module_initialize_real.F:4840-4852), so an analysed rain or ice cell
+    starts with a number; the old exact-zero check then refused every
+    native Thompson preparation with rain or ice in it (A110).  The rule
+    the receipt now holds: exact FP32 zero where the paired mass is zero,
+    finite and above zero where it is above zero, and exactly the seeded
+    cell count the cold-start closure's seed receipt records.
+    """
     result = _decoded_native_hrrr_initialization(8)
     state = result.state
+    initialization = result.hydrometeor_initialization
+    closure = initialization["cold_start_moment_closure"]
     receipt = _initial_hrrr_microphysics_receipt(
-        state, THOMPSON_PROFILE_ID, result.hydrometeor_initialization)
-    assert receipt["state_number_fields"] == {
-        "ni": {"all_exact_zero": True},
-        "nr": {"all_exact_zero": True},
-    }
-    state.nr.flat[0] = np.float32(1.0)
-    with pytest.raises(ValueError, match="number moment nr must initialize"):
-        _initial_hrrr_microphysics_receipt(
-            state, THOMPSON_PROFILE_ID,
-            result.hydrometeor_initialization)
+        state, THOMPSON_PROFILE_ID, initialization)
+    for number, mass, seed_key in (("nr", "qr", "rain_number_seed"),
+                                   ("ni", "qi", "ice_number_seed")):
+        mass_value = getattr(state, mass)
+        number_value = getattr(state, number)
+        seeded = int(np.count_nonzero(mass_value > 0))
+        # The fixture carries analysed rain and ice: the seeded half of
+        # the rule is exercised (the massless half below).
+        assert seeded > 0
+        assert closure[seed_key]["seeded_cells"] == seeded
+        assert np.all(number_value[mass_value == 0] == 0)
+        assert np.all(number_value[mass_value > 0] > 0)
+        assert receipt["state_number_fields"][number] == {
+            "all_exact_zero_where_mass_is_zero": True,
+            "paired_mass_field": mass,
+            "seed_receipt": seed_key,
+            "seeded_cells": seeded,
+        }
+        assert receipt["state_source_absent_fields"][number] == {
+            "expected_float32": 0.0,
+            "expected_uint32_bits": 0,
+            "all_exact_expected_where_mass_is_zero": True,
+            "paired_mass_field": mass,
+            "seed_receipt": seed_key,
+            "seeded_cells": seeded,
+            "seeded_all_finite_above_zero": True,
+        }
+    assert set(receipt["state_number_fields"]) == {"nr", "ni"}
+    assert "make_RainNumber" in receipt["source_absent_number_policy"]
+
+    def refused(match, *, field=None, index=None, value=None,
+                mutate_receipt=None, run=result):
+        broken = copy.deepcopy(run.hydrometeor_initialization)
+        if mutate_receipt is not None:
+            mutate_receipt(broken)
+        target = None if field is None else getattr(run.state, field)
+        kept = None if target is None else target[index].copy()
+        if target is not None:
+            target[index] = np.float32(value)
+        try:
+            with pytest.raises(ValueError, match=match):
+                _initial_hrrr_microphysics_receipt(
+                    run.state, THOMPSON_PROFILE_ID, broken)
+        finally:
+            if target is not None:
+                target[index] = kept
+
+    def first(mask):
+        return tuple(int(i) for i in np.argwhere(mask)[0])
+
+    rainy = first(state.qr > 0)
+    icy = first(state.qi > 0)
+
+    # Mass with no number: exactly the cell real.exe fills.
+    refused("number moment ni must be finite and above zero where qi",
+            field="ni", index=icy, value=0.0)
+    for bad in (np.nan, np.inf, -1.0):
+        refused("number moment nr must be finite and above zero where qr",
+                field="nr", index=rainy, value=bad)
+
+    # The state and the closure's seed receipt must agree cell for cell.
+    def miscounted(i):
+        i["cold_start_moment_closure"]["rain_number_seed"][
+            "seeded_cells"] += 1
+    refused("closure's rain_number_seed records", mutate_receipt=miscounted)
+
+    def no_closure(i):
+        del i["cold_start_moment_closure"]
+    refused("closure's (rain|ice)_number_seed records None",
+            mutate_receipt=no_closure)
+
+    def other_scheme(i):
+        i["cold_start_moment_closure"]["mp_physics"] = 28
+    refused("cold-start closure", mutate_receipt=other_scheme)
+
+    # The untouched state still passes after every restore.
+    assert _initial_hrrr_microphysics_receipt(
+        state, THOMPSON_PROFILE_ID, initialization) == receipt
+
+    # An analysis with rain and no ice: ni is the massless half of the
+    # rule, exact zero everywhere, and a number there is refused.
+    rain_only = _decoded_native_hrrr_initialization(
+        8, analyzed_species=("QC", "QR"))
+    assert not np.any(rain_only.state.qi > 0)
+    dry = _initial_hrrr_microphysics_receipt(
+        rain_only.state, THOMPSON_PROFILE_ID,
+        rain_only.hydrometeor_initialization)
+    assert dry["state_number_fields"]["ni"]["seeded_cells"] == 0
+    assert np.all(rain_only.state.ni == 0)
+    refused("number moment ni must be exact FP32 0.0 where qi is zero",
+            field="ni", index=(0, 0, 0), value=1.0, run=rain_only)
 
 
 def test_hrrr_morrison_initialization_receipts_every_source_absent_moment():
@@ -2039,3 +2361,28 @@ def test_battery_composition_namelist_passes_the_profile_contract(tmp_path):
     assert contract["source_absent_fields"] == ["QNICE", "QNRAIN"]
     assert contract["source_absent_state_defaults_fp32"] == {
         "ni": 0.0, "nr": 0.0}
+
+
+def test_a_prepare_only_run_says_its_steps_and_a_forecast_run_does_not(capsys):
+    """A --prepare-only run is a preparer program whose parent reads its step lines.
+
+    The breakage: the single-domain HRRR preparation wrote no step
+    record, so the run page had nothing to show while it built the
+    start state and the boundary times.  A forecast run's stderr is a
+    person's terminal, so it writes none.
+    """
+
+    from gpuwm.prep_progress import step_record
+
+    with hrrr_runner._prep_step(SimpleNamespace(prepare_only=True), "root_initialize",
+                                label="Initialize the start state"):
+        pass
+    said = [step_record(line) for line in capsys.readouterr().err.splitlines()]
+    assert [(record["stage"], record["label"], record["event"]) for record in said] == [
+        ("root_initialize", "Initialize the start state", "started"),
+        ("root_initialize", "Initialize the start state", "finished")]
+
+    with hrrr_runner._prep_step(SimpleNamespace(prepare_only=False), "root_initialize",
+                                label="Initialize the start state"):
+        pass
+    assert "GPUWM_PREP_EVENT" not in capsys.readouterr().err

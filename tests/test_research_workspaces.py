@@ -49,7 +49,7 @@ def test_profiles_keep_duration_cadence_minimum_and_controlled_comparison(hardwa
 def test_class_does_not_declare_capacity_and_auto_uses_one_measured_budget(monkeypatch, tmp_path, known_products):
     budget = wizard.SizingBudget(32, int(8.5 * 2**30), None, "test measured free", measured=True)
     calls = []
-    def resolve(card, capacity):
+    def resolve(card, capacity, **_options):
         calls.append((card, capacity))
         return budget
     monkeypatch.setattr(wizard, "resolve_sizing_budget", resolve)
@@ -101,7 +101,7 @@ def test_measured_5070ti_profile_survives_native_postcreation_check(monkeypatch,
     budget = wizard.SizingBudget(15.5084228515625, 16409559040, profile,
                                  "observed physical 5070 Ti", measured=True)
     calls = []
-    def resolve(card, capacity):
+    def resolve(card, capacity, **_options):
         calls.append((card, capacity))
         return budget
     def repeated_probe(*args, **kwargs):
@@ -238,7 +238,7 @@ def test_existing_configuration_is_preserved_before_any_probe(tmp_path, monkeypa
     config = tmp_path / "new.toml"
     original = b"# user settings\n"
     config.write_bytes(original)
-    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args: pytest.fail("should not probe"))
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args, **kwargs: pytest.fail("should not probe"))
     with pytest.raises(FileExistsError, match="preserves existing"):
         research.create_workspace(_args(tmp_path))
     assert config.read_bytes() == original
@@ -286,7 +286,7 @@ def test_unknown_scenario_field_cannot_be_silently_dropped(known_products):
 def test_required_existing_state_refuses_without_probing(method, tmp_path, monkeypatch, known_products):
     recipe = next(row for row in research.catalog_document()["configurations"]
                   if row["method"] == method and row["requires_existing_state"])
-    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args: pytest.fail("should not probe"))
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args, **kwargs: pytest.fail("should not probe"))
     with pytest.raises(ValueError, match="requires"):
         research.create_workspace(_args(tmp_path, recipe["id"]))
     assert not list(tmp_path.iterdir())
@@ -368,7 +368,7 @@ def test_native_sources_preserve_companions_and_labels_are_not_data_paths(tmp_pa
 
 @pytest.mark.parametrize("source", ["era5", "gdas", "hrrr"])
 def test_unadmitted_controlled_source_refuses_before_probe(tmp_path, known_products, monkeypatch, source):
-    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args: pytest.fail("should not probe"))
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args, **kwargs: pytest.fail("should not probe"))
     with pytest.raises(ValueError, match="Controlled-scenario creation"):
         research.create_workspace(_args(tmp_path, "scenario-convection.gentle", f"--source={source}"))
     assert not list(tmp_path.iterdir())
@@ -417,7 +417,7 @@ def test_help_explanation_flag_works_at_nested_research_boundary(tmp_path):
 def test_attribute_discovery_exposes_native_registry_without_probing_or_creating(monkeypatch, capsys):
     from gpuwm.cli import build_parser
     from gpuwm.core.attribute_tracking import ATTRIBUTE_UNITS, ATTRIBUTE_EXTREMA, ATTRIBUTE_REDUCTIONS
-    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args: pytest.fail("discovery must not probe GPU"))
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args, **kwargs: pytest.fail("discovery must not probe GPU"))
     monkeypatch.setattr(research, "create_workspace", lambda *args: pytest.fail("discovery must not create files"))
     args = build_parser().parse_args(["research", "attributes", "--json"])
     assert args.func(args) == 0

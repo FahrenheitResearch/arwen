@@ -59,51 +59,72 @@ import os
 import sys
 from pathlib import Path
 
-from gpuwm import capabilities
-from gpuwm import data_assets
-from gpuwm.adapt import register_cli as adapt_register_cli
-from gpuwm.branch import register_cli as branch_register_cli
-from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
-from gpuwm.certify.cli import register_cli as certify_register_cli
+from gpuwm import capabilities, data_assets, domain_interactive
 from gpuwm.config import load_config
 from gpuwm.configuration_recovery import MemoryAdmissionError, error_document as configuration_error_document
-from gpuwm.core.preflight import check_main
-from gpuwm.core.preflight import register_cli as preflight_register_cli
-from gpuwm.da.enprod import register_cli as enprod_register_cli
-from gpuwm.cycle.cli import register_cli as cycle_register_cli
-from gpuwm.doctor import register_cli as doctor_register_cli
-from gpuwm.domain_wizard import register_cli as domain_register_cli
-from gpuwm.cyclone_setup import register_cli as cyclone_setup_register_cli
-from gpuwm.downscale import register_cli as downscale_register_cli
-from gpuwm import domain_interactive
-from gpuwm.experiment import (is_experiment_toml,  # noqa: F401 - API compat
-                              is_experiment_toml_bytes)
 from gpuwm.explain import (add_explain_flag, explain_enabled, layered,
                            render, warn)
-from gpuwm.fetch import register_cli as fetch_register_cli
-from gpuwm.geog_assets import register_cli as geog_register_cli
-from gpuwm.go_cli import register_cli as go_register_cli
-from gpuwm.speedrun_cli import register_cli as speedrun_register_cli
-from gpuwm.ingest.preflight import register_cli as ingest_register_cli
-from gpuwm.mpas_mesh import register_cli as mesh_register_cli
-from gpuwm.multi_run import register_cli as multi_run_register_cli
-from gpuwm.obs.cli import register_cli as obs_register_cli
-from gpuwm.render import register_cli as render_register_cli
-from gpuwm.remote_cli import register_cli as remote_register_cli
-from gpuwm.report_bundle import register_cli as report_register_cli
-from gpuwm.runplan import register_cli as run_plan_register_cli
-from gpuwm.setup_cli import register_cli as setup_register_cli
-from gpuwm.sources_cli import register_cli as sources_register_cli
-from gpuwm.spectral_ops.cli import register_cli as spectral_op_register_cli
-from gpuwm.stage_cli import register_cli as stage_register_cli
-from gpuwm.stream import register_cli as stream_register_cli
-from gpuwm.table_assets import register_cli as table_assets_register_cli
-from gpuwm.tui_cli import register_cli as tui_register_cli
-from gpuwm.update_cli import register_cli as update_register_cli
-from gpuwm.version_cli import register_cli as version_register_cli
 from gpuwm.verify import cases
-from gpuwm.verify.spectral_cli import register_cli as spectral_register_cli
-from gpuwm.cells.cli import register_cli as cells_register_cli
+
+
+def _lazy_register(module):
+    """Load command modules when their parser is requested."""
+    def register(*args, **kwargs):
+        from importlib import import_module
+        return import_module(module).register_cli(*args, **kwargs)
+    return register
+
+
+def check_main(args):
+    from gpuwm.core.preflight import check_main as run
+    return run(args)
+
+
+def is_experiment_toml(path):
+    from gpuwm.experiment import is_experiment_toml as check
+    return check(path)
+
+
+def is_experiment_toml_bytes(payload):
+    from gpuwm.experiment import is_experiment_toml_bytes as check
+    return check(payload)
+
+
+adapt_register_cli = _lazy_register("gpuwm.adapt")
+branch_register_cli = _lazy_register("gpuwm.branch")
+bridge_assets_register_cli = _lazy_register("gpuwm.bridge_assets")
+certify_register_cli = _lazy_register("gpuwm.certify.cli")
+preflight_register_cli = _lazy_register("gpuwm.core.preflight")
+enprod_register_cli = _lazy_register("gpuwm.da.enprod")
+cycle_register_cli = _lazy_register("gpuwm.cycle.cli")
+doctor_register_cli = _lazy_register("gpuwm.doctor")
+domain_register_cli = _lazy_register("gpuwm.domain_wizard")
+cyclone_setup_register_cli = _lazy_register("gpuwm.cyclone_setup")
+downscale_register_cli = _lazy_register("gpuwm.downscale")
+fetch_register_cli = _lazy_register("gpuwm.fetch")
+geog_register_cli = _lazy_register("gpuwm.geog_assets")
+go_register_cli = _lazy_register("gpuwm.go_cli")
+speedrun_register_cli = _lazy_register("gpuwm.speedrun_cli")
+ingest_register_cli = _lazy_register("gpuwm.ingest.preflight")
+mesh_register_cli = _lazy_register("gpuwm.mpas_mesh")
+multi_run_register_cli = _lazy_register("gpuwm.multi_run")
+obs_register_cli = _lazy_register("gpuwm.obs.cli")
+render_register_cli = _lazy_register("gpuwm.render")
+remote_register_cli = _lazy_register("gpuwm.remote_cli")
+report_register_cli = _lazy_register("gpuwm.report_bundle")
+run_plan_register_cli = _lazy_register("gpuwm.runplan")
+setup_register_cli = _lazy_register("gpuwm.setup_cli")
+sources_register_cli = _lazy_register("gpuwm.sources_cli")
+spectral_op_register_cli = _lazy_register("gpuwm.spectral_ops.cli")
+stage_register_cli = _lazy_register("gpuwm.stage_cli")
+stream_register_cli = _lazy_register("gpuwm.stream")
+table_assets_register_cli = _lazy_register("gpuwm.table_assets")
+tui_register_cli = _lazy_register("gpuwm.tui_cli")
+update_register_cli = _lazy_register("gpuwm.update_cli")
+version_register_cli = _lazy_register("gpuwm.version_cli")
+warm_kernels_register_cli = _lazy_register("gpuwm.warm_kernels")
+spectral_register_cli = _lazy_register("gpuwm.verify.spectral_cli")
+cells_register_cli = _lazy_register("gpuwm.cells.cli")
 
 #: Discovered verification cases: name -> case module exposing
 #: ``run(outdir) -> dict`` and ``GATES``.  Membership comes from the
@@ -174,6 +195,23 @@ def _join_negative_coordinates(argv: list[str]) -> list[str]:
     return joined
 
 
+def parse_fetch_arguments(arguments) -> argparse.Namespace:
+    """``gpuwm fetch``'s own parse of an argv list, read as the command line reads it.
+
+    Every door that hands a stored argv to the fetch parser (a run plan's
+    ``fetch.args``, the ``[fetch]`` table ``gpuwm go`` downloads from, the
+    download budget) comes through here, so it gets the same coordinate
+    join :func:`main` gives a typed command.  Named breakage: those doors
+    called the parser directly, so ``gpuwm go`` stopped at the fetch
+    stage with ``argument --area: expected one argument`` for every
+    configuration south of the equator, whose ``[fetch].area`` leads with
+    a minus.
+    """
+
+    return build_parser().parse_args(
+        ["fetch", *_join_negative_coordinates(list(arguments))])
+
+
 #: The spelling every other command-line tool answers to.  `gpuwm
 #: version` is the door and always has been; typing `gpuwm --version`
 #: got an argparse usage error at exit 2, on all three persona walks
@@ -230,7 +268,7 @@ _LONG_RUNNING_COMMANDS = frozenset({
     # The unbundled stages run for exactly as long as the welded ones
     # they were split out of: preprocessing is minutes of static build,
     # the forecast is the forecast.
-    "prep", "sim",
+    "prep", "sim", "warm-kernels",
 })
 
 
@@ -336,7 +374,7 @@ def _run_description() -> str:
         "workaround.")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     """The whole gpuwm command surface, assembled.
 
     Split out of :func:`main` so the parser can be inspected without
@@ -354,6 +392,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--help-all", nargs=0, action=AllCommandsHelp,
                         help="show every command")
     sub = parser.add_subparsers(prog=parser.prog, dest="command", metavar="COMMAND", required=True)
+    if render_only:
+        # A live frame needs this parser and the common dispatch checks, not
+        # imports and registration for every forecast and preparation door.
+        render_register_cli(sub)
+        add_explain_flag(parser)
+        add_explain_flag(sub.choices["render"])
+        return parser
     preflight_register_cli(sub)
     ingest_register_cli(sub)
     # Combined check policy (T3 handoff): the cheap CPU input/static/table
@@ -363,25 +408,25 @@ def build_parser() -> argparse.ArgumentParser:
         func=lambda args: args.ingest_preflight_handler(args)
         or check_main(args))
     fetch_register_cli(sub)
-    from gpuwm.cds_credentials import register_cli as cds_credentials_register_cli
+    cds_credentials_register_cli = _lazy_register("gpuwm.cds_credentials")
     cds_credentials_register_cli(sub)
-    from gpuwm.companion_query import register_cli as companion_query_register_cli
+    companion_query_register_cli = _lazy_register("gpuwm.companion_query")
     companion_query_register_cli(sub)
-    from gpuwm.companion_domains import register_cli as companion_domains_register_cli
+    companion_domains_register_cli = _lazy_register("gpuwm.companion_domains")
     companion_domains_register_cli(sub)
-    from gpuwm.companion_forcing import register_cli as companion_forcing_register_cli
+    companion_forcing_register_cli = _lazy_register("gpuwm.companion_forcing")
     companion_forcing_register_cli(sub)
-    from gpuwm.companion_setups import register_cli as companion_setups_register_cli
+    companion_setups_register_cli = _lazy_register("gpuwm.companion_setups")
     companion_setups_register_cli(sub)
     stream_register_cli(sub)
     geog_register_cli(sub)
     domain_register_cli(sub)
     cyclone_setup_register_cli(sub)
-    from gpuwm.local_da import register_cli as local_da_register_cli
+    local_da_register_cli = _lazy_register("gpuwm.local_da")
     local_da_register_cli(sub)
-    from gpuwm.research_workspaces import register_cli as research_register_cli
+    research_register_cli = _lazy_register("gpuwm.research_workspaces")
     research_register_cli(sub)
-    from gpuwm.case_catalog import register_cli as case_catalog_register_cli
+    case_catalog_register_cli = _lazy_register("gpuwm.case_catalog")
     case_catalog_register_cli(sub)
     render_register_cli(sub)
     enprod_register_cli(sub)
@@ -414,6 +459,22 @@ def build_parser() -> argparse.ArgumentParser:
     multi_run_register_cli(sub)
     report_register_cli(sub)
     run_plan_register_cli(sub)
+    # Every physics scheme and suite with its plain meaning, and the check
+    # a combination passes before a run: the one answer the browser door
+    # and an assistant read.
+    physics_catalog_register_cli = _lazy_register("gpuwm.physics_catalog")
+    physics_catalog_register_cli(sub)
+    # The browser door drives run-plan and its query modes, so it is
+    # registered beside them.  Imported here, not at module top: the page
+    # server is standard library only and no other command pays for it.
+    gui_register_cli = _lazy_register("gpuwm.gui.server")
+    gui_register_cli(sub)
+    # The page's Machines list, from a terminal; `follow` is what the page
+    # starts in the background for a forecast on another machine.
+    machines_register_cli = _lazy_register("gpuwm.gui.machines_cli")
+    machines_register_cli(sub)
+    assistant_register_cli = _lazy_register("gpuwm.gui.assistant.cli")
+    assistant_register_cli(sub)
     # The human view of the same registry `run-plan --sources` serves as
     # JSON.  Registered beside it so the two doors read as one pair in
     # the help listing, and because every no-route refusal in
@@ -422,6 +483,8 @@ def build_parser() -> argparse.ArgumentParser:
     cycle_register_cli(sub)
     update_register_cli(sub)
     version_register_cli(sub)
+    # The first forecast's GPU kernel compile, paid ahead of time.
+    warm_kernels_register_cli(sub)
     spectral_register_cli(sub)
     cells_register_cli(sub)
     lst = sub.add_parser(
@@ -502,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "directory (default out/run)")
     # Compose with the existing memory-preflight registrar above; Task 15
     # owns only the run parser's supervision flags and dispatch helper.
-    from gpuwm.supervisor import register_cli as supervisor_register_cli
+    supervisor_register_cli = _lazy_register("gpuwm.supervisor")
     supervisor_register_cli(sub)
     # resume continues a supervised run, so it carries run's exact
     # supervision surface; the checkpoint is resolved below and dispatch
@@ -590,9 +653,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch_argv(argv: list[str] | None = None) -> int:
-    parser = build_parser()
     tokens = _rewrite_version_alias(
         list(sys.argv[1:] if argv is None else argv))
+    parser = (build_parser(render_only=True)
+              if tokens and tokens[0] == "render" else build_parser())
     if not tokens:
         parser.print_help()
         return 0
@@ -644,6 +708,17 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     # print the reader's own line with --explain appended instead of a
     # bare command name that is itself a usage error (UX finding N8).
     set_invocation(tokens)
+    # The render stage hands a long forecast's frames over in a file it
+    # removes when the stage ends.  Read before the provenance gate and
+    # the capability preflight below, so their refusal lines name the
+    # frames, not a file that will be gone.
+    if getattr(args, "inputs_from", None) is not None:
+        from gpuwm.render import _fold_render_inputs
+
+        refusal = _fold_render_inputs(args)
+        if refusal is not None:
+            print(f"render: {refusal}", file=sys.stderr)
+            return 2
 
     _warn_if_interrupt_is_ignored(args.command)
 
@@ -810,6 +885,19 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             print(f"gpuwm {args.command}: "
                   + _layer(error, args), file=sys.stderr)
             return 2
+        # `gpuwm cycle`'s refusals are a RuntimeError by design -- each
+        # one is required to carry what it observed -- and every one of
+        # them left through the bare `raise` below as a traceback at
+        # exit 1: a bad --cycles, a child step that does not divide the
+        # parent's, a placement with no parent geography.  They are
+        # refusals, so they get the refusal boundary.  Imported here, as
+        # StreamingRefused is, only once a RuntimeError has been raised.
+        from gpuwm.cycle.contracts import CycleRefusal
+
+        if isinstance(error, CycleRefusal):
+            print(f"gpuwm {args.command}: "
+                  + _layer(error, args), file=sys.stderr)
+            return 2
         if args.command in ("fetch", "stream", "fetch-geog", "fetch-tables",
                             "fetch-bridges", "obs", "report"):
             # fetch-family RuntimeErrors are operational outcomes
@@ -860,6 +948,23 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
                 traceback.print_exception(error, file=sys.stderr)
             return 1
         raise
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError,
+            PermissionError) as error:
+        # A path the reader typed that is not there (or is a folder where
+        # a file belongs) is their input to correct, whichever handler
+        # happened to open it: one sentence naming the option, exit 2.
+        # A path the program chose for itself keeps its traceback, because
+        # a file this program should have written and did not is a defect.
+        from gpuwm.cli_paths import supplied_path_refusal
+
+        refusal = supplied_path_refusal(error, args, parser=parser, tokens=tokens)
+        if refusal is None:
+            raise
+        print(f"gpuwm {args.command}: {refusal}", file=sys.stderr)
+        if explain_enabled(args):
+            import traceback
+            traceback.print_exception(error, file=sys.stderr)
+        return 2
 
 
 def case_door(record: dict) -> str:

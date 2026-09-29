@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -82,6 +83,167 @@ def test_registry_extension_reaches_go_without_adding_a_source_name(
     assert main(["go", str(config), "--dry-run"]) == 0
     assert f"go: {name}" in capsys.readouterr().out
     assert runplan.prepared_chain_for_source(name) == "prepared:staged"
+
+
+def _recentre(config: Path, lat: float, lon: float) -> None:
+    """Move an emitted config's root to LAT, LON, leaving every other key."""
+
+    text = config.read_text(encoding="utf-8")
+    for key, value in (("ref_lat", lat), ("ref_lon", lon),
+                       ("stand_lon", lon)):
+        text, count = re.subn(rf"(?m)^{key} = .*$", f"{key} = {value}", text)
+        assert count == 1, key
+    config.write_text(text, encoding="utf-8")
+
+
+def test_plan_review_refuses_a_root_the_source_grid_does_not_reach(
+        tmp_path, capsys):
+    """A root outside the [fetch] source's coverage is refused at review.
+
+    Breakage it prevents: such a domain was refused only at the root
+    forcing stage of the preparation, after the whole cycle had been
+    downloaded and decoded.  The refusal names the coverage the source's
+    row declares, read here from that row rather than written down.
+    """
+    config = emit(tmp_path)
+    capsys.readouterr()
+    assert main(["go", str(config), "--outdir", str(tmp_path / "inside"),
+                 "--dry-run"]) == 0
+    _recentre(config, 44.6, -67.9)
+    out = tmp_path / "uncreated"
+    capsys.readouterr()
+    assert main(["go", str(config), "--outdir", str(out), "--dry-run"]) == 2
+    error = capsys.readouterr().err
+    window = source_adapters.get_source_adapter("icon-eu").coverage_window
+    assert "[fetch] source icon-eu does not cover this domain" in error
+    assert f"(lon {window.west:g}..{window.east:g})" in error
+    assert f"(lat {window.south:g}..{window.north:g})" in error
+    assert "downloaded and decoded" in error
+    assert not out.exists()
+
+
+def test_any_row_that_declares_a_coverage_is_reviewed_on_the_go_chain(
+        tmp_path, monkeypatch):
+    """The review reads the row, not a source name.
+
+    A row on the rw-wps ``gpuwm go`` chain is given a regional window, and
+    a root outside that window is refused before the chain names a fetch.
+    ``[fetch] area`` is dropped so only the root is judged; the area has
+    its own gate (:func:`gpuwm.fetch.validate_fetch_area`).
+    """
+    config = emit(tmp_path, source="gfs")
+    assert runplan.prepared_chain_for_source("gfs") == "prepared:go"
+    donor = source_adapters.get_source_adapter("gfs")
+    window = source_adapters.get_source_adapter("icon-eu").coverage_window
+    graft = dataclasses.replace(donor, coverage_window=window)
+    monkeypatch.setattr(source_adapters, "_ADAPTERS", tuple(
+        graft if row is donor else row
+        for row in source_adapters.source_adapters()))
+    monkeypatch.setattr(source_adapters, "_ALIASES", {
+        name: graft if row is donor else row
+        for name, row in source_adapters._ALIASES.items()})
+    text, count = re.subn(r"(?m)^area = .*\n", "",
+                          config.read_text(encoding="utf-8"))
+    assert count == 1
+    config.write_text(text, encoding="utf-8")
+    _recentre(config, 44.6, -67.9)
+    with pytest.raises(go_cli.GoRefusal) as refused:
+        go_cli.plan_from_config(config, outdir=tmp_path / "uncreated")
+    message = str(refused.value)
+    assert "[fetch] source gfs does not cover this domain" in message
+    assert f"(lon {window.west:g}..{window.east:g})" in message
+    assert not (tmp_path / "uncreated").exists()
+
+
+def test_registered_plan_review_reads_products_with_the_engine_tokenizer(
+        tmp_path, monkeypatch, capsys):
+    """The registered route admits a section term whole and names a typo.
+
+    ``0.1/wa`` closes the level list of ``xsec:QCLOUD=0.01,0.1/wa``; it is
+    not a product, and a misspelled product is refused by name before the
+    run folder exists.
+    """
+    config = emit(tmp_path)
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"}],
+        "group_keywords": ["direct", "derived", "windowed"]})
+    for spec in ("composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa",
+                 "xsec:wa=1,2,5@5"):
+        capsys.readouterr()
+        assert main(["go", str(config), "--dry-run", "--products", spec,
+                     "--section=50.0,8.5,50.2,8.9"]) == 0, spec
+        assert "-> render" in capsys.readouterr().out, spec
+    out = tmp_path / "uncreated"
+    assert main(["go", str(config), "--outdir", str(out), "--dry-run",
+                 "--products", "xsec:QCLOUD=0.01,0.1/wa,compsite_reflectivity",
+                 "--section=50.0,8.5,50.2,8.9"]) == 2
+    error = capsys.readouterr().err
+    assert "'compsite_reflectivity'" in error and "'0.1/wa'" not in error
+    assert "catalog does not carry" in error
+    assert not out.exists()
+
+
+def test_registered_go_records_its_section_line_and_refuses_one_missing(
+        tmp_path, monkeypatch, capsys):
+    """The registered route takes ``--section`` and the plan carries it.
+
+    The line is a run option of the plan this route builds and runs, so
+    every render the run draws reads it from there; the printed re-run
+    command keeps it.  An ``xsec:`` term with no line is refused by name
+    before the run folder exists.
+    """
+    config = emit(tmp_path)
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"}],
+        "group_keywords": ["direct", "derived", "windowed"]})
+    spec = "composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa"
+    line = "50.0,8.5,50.2,8.9"
+    built = []
+    real_build = runplan.build_plan
+
+    def record(raw, **kwargs):
+        plan = real_build(raw, **kwargs)
+        built.append(plan)
+        return plan
+
+    monkeypatch.setattr(runplan, "build_plan", record)
+    assert main(["go", str(config), "--dry-run", "--products", spec,
+                 f"--section={line}"]) == 0
+    printed = capsys.readouterr().out
+    rerun = next(row.removeprefix("Run: ") for row in printed.splitlines()
+                 if row.startswith("Run: "))
+    assert f"--section={line}" in shlex.split(rerun)
+    assert built and all(plan.run_options["render_section"] == line
+                         for plan in built)
+    monkeypatch.setattr(runplan, "build_plan", real_build)
+    out = tmp_path / "uncreated"
+    for refused in ("xsec:QCLOUD=0.01,0.1/wa", spec):
+        assert main(["go", str(config), "--outdir", str(out), "--dry-run",
+                     "--products", refused]) == 2
+        error = capsys.readouterr().err
+        assert "'xsec:QCLOUD=0.01,0.1/wa'" in error
+        assert "--section" in error
+        assert not out.exists()
+    # The plan document itself refuses the same request.
+    def plan_of(options):
+        return runplan.build_plan({
+            "schema": runplan.PLAN_SCHEMA, "name": "p", "route": "prepared",
+            "config": {"path": str(config)}, "run_options": options,
+            "output_root": str(tmp_path / "plan-run")},
+            source="test", base_dir=tmp_path, sha256="0" * 64)
+
+    with pytest.raises(runplan.PlanError, match="render_section"):
+        plan_of({"render_products": spec})
+    with pytest.raises(runplan.PlanError, match="less than 1 km apart"):
+        plan_of({"render_products": spec,
+                 "render_section": "50.0,8.5,50.0,8.5"})
+    plan = plan_of({"render_products": spec, "render_section": line})
+    assert plan.run_options["render_section"] == line
+    assert runplan._chain_render_plan(
+        plan, forecast_dir=tmp_path / "f",
+        run_dir=tmp_path)["render_section"] == line
 
 
 def test_unsupported_source_refuses_before_creating_output(
@@ -325,6 +487,94 @@ def test_unpriced_source_still_checks_forecast_memory(tmp_path, monkeypatch):
     assert gate["phases"].forecast_envelope_bytes > gate["free_bytes"]
     assert not gate["phases"].ingest_priced
     assert "NOT PRICED" in gate["verdict"]
+
+
+_ADVISORY = ("warning: clos_choice=1 runs Grell-Freitas on closure member 1 "
+             "alone; implemented, not yet verified against WRF.")
+
+
+def _advising_stage(label):
+    """A real stage process that says the configuration's warning."""
+    script = f"import sys; print({_ADVISORY!r}, file=sys.stderr)"
+    go_cli.run_stage(label, [sys.executable, "-c", script], explain=False,
+                     heartbeat_seconds=60.0)
+
+
+def test_each_stage_says_the_configuration_warning_and_the_terminal_shows_it_once(
+        capsys):
+    """Every stage is its own process and loads the configuration again.
+
+    So a configuration warning printed once per stage showed five or more
+    identical copies on one `gpuwm go`.  Inside a launch the terminal
+    shows it once; a warning the launch printed itself counts as shown.
+    Outside a launch nothing is held back.
+    """
+    from gpuwm.explain import warn
+
+    with go_cli._each_advisory_once():
+        _advising_stage("fetch")
+        _advising_stage("prepare")
+    assert capsys.readouterr().out.count(_ADVISORY) == 1
+
+    with go_cli._each_advisory_once():
+        warn(_ADVISORY.removeprefix("warning: "))
+        _advising_stage("prepare")
+    printed = capsys.readouterr()
+    assert (printed.out + printed.err).count(_ADVISORY) == 1
+
+    _advising_stage("fetch")
+    _advising_stage("prepare")
+    assert capsys.readouterr().out.count(_ADVISORY) == 2
+
+
+def test_a_launch_relays_a_warning_every_stage_repeats_once(
+        tmp_path, monkeypatch, capsys):
+    """The whole door: two stages say one warning, the terminal shows it
+    once, and the launch log keeps both copies."""
+    from gpuwm import stage_cli
+
+    allow_launch_resources(monkeypatch)
+    config = emit(tmp_path)
+    data = tmp_path / "data"
+    geog = tmp_path / "GEOG"
+    geog.mkdir()
+    out = tmp_path / "forecast"
+    handoff = ["--source", "icon-eu", "--input-list", str(data / "inputs.txt")]
+
+    def fetch(argv, run_dir, **kwargs):
+        _advising_stage("fetch")
+        data.mkdir()
+        (data / fetch_routes.PREP_ARGUMENTS_NAME).write_text(json.dumps({
+            "schema": fetch_routes.PREP_ARGUMENTS_SCHEMA,
+            "source": "icon-eu", "prep_source": "icon-eu", "argv": handoff,
+            "unbound_supplement_roles": [], "member": None,
+            "member_set": None}))
+        return {}
+
+    def prep(argv):
+        _advising_stage("prepare")
+        root = Path(argv[argv.index("--output-root") + 1])
+        root.mkdir(parents=True)
+        (root / "proof.json").write_text("{}")
+
+    monkeypatch.setattr(runplan, "_run_fetch", fetch)
+    monkeypatch.setattr(runplan, "_run_prep", prep)
+    monkeypatch.setattr(runplan, "_staged_forecast",
+                        lambda argv, *, layout, observer: None)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "document": Path(root) / "proof.json", "schema": "probe",
+        "source": "icon-eu", "layout": "single", "domains": 1,
+        "payload": {}})
+    monkeypatch.setattr(stage_cli, "sim_command", lambda receipt, **o: [
+        sys.executable, "-m", "runner"])
+    monkeypatch.setattr(go_cli, "_render_stage", lambda plan, **kw: None)
+    capsys.readouterr()
+    assert main(["go", str(config), "--outdir", str(out), "--run-stamp", "off",
+                 "--data-dir", str(data), "--geog-root", str(geog),
+                 "--products", "none"]) == 0
+    terminal = capsys.readouterr()
+    assert (terminal.out + terminal.err).count(_ADVISORY) == 1
+    assert (out / "launch.log").read_text().count(_ADVISORY) >= 2
 
 
 def test_go_log_failure_keeps_the_adapter_single_execution(tmp_path, monkeypatch, capsys):

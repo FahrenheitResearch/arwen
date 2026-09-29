@@ -84,48 +84,34 @@ def _read_int(path: Path) -> int | None:
 def cgroup_memory_limit() -> tuple[int | None, str]:
     """Smallest memory limit binding on THIS process, in bytes.
 
-    cgroup v2: read /proc/self/cgroup for the relative path, then check
-    memory.max at every level from that path up to the mount root, taking
-    the minimum -- a limit set on an ancestor binds us just as hard as one
-    set on our own leaf.  cgroup v1: memory.limit_in_bytes, where an
-    "unlimited" cgroup reports a huge sentinel (~2^63-1 rounded to page
-    size) rather than the string "max", so anything at or above the
-    sentinel threshold is treated as absent.
+    Read through the planner's walk
+    (``tilestream.autoplan._cgroup_memory_walk``): every level from the
+    process's own cgroup up to the mount, on cgroup v2 (``memory.max``) and
+    on cgroup v1's memory controller (``memory.limit_in_bytes``, whose
+    "unlimited" sentinel near 2^63 is no limit), taking the minimum -- a
+    limit set on an ancestor binds us just as hard as one set on our own
+    leaf.  The same limit the tile planner and the host store size against.
+
+    THE BREAKAGE: this probe kept its own walk, which read cgroup v1 only
+    at the mount root and never once a v2 limit was found, so a v1 limit
+    on the process's own cgroup (a systemd unit's ``MemoryLimit=`` on a v1
+    host) read as no limit, and on a host with both hierarchies a tighter
+    v1 limit lost to the v2 one, while the planner capped at it.
     """
-    root = Path("/sys/fs/cgroup")
-    rel = ""
     try:
-        for line in Path("/proc/self/cgroup").read_text().splitlines():
-            parts = line.split(":", 2)
-            if len(parts) == 3 and parts[1] == "":          # v2 line: "0::/path"
-                rel = parts[2].strip().lstrip("/")
-                break
-    except OSError:
-        pass
+        from tilestream import autoplan
+    except ImportError as error:
+        # A fresh node may have no numpy yet (autoplan needs it); the probe
+        # fails soft there, as every probe here does.
+        return None, f"not read: {error}"
 
-    limits: list[tuple[int, str]] = []
-    node = root / rel if rel else root
-    seen = 0
-    while True:
-        value = _read_int(node / "memory.max")
-        if value is not None:
-            limits.append((value, str(node / "memory.max")))
-        if node == root or seen > 64:
-            break
-        node = node.parent
-        seen += 1
-
-    if limits:
-        value, where = min(limits)
-        return value, f"cgroup v2 {where}"
-
-    # cgroup v1
-    SENTINEL = 1 << 62
-    for candidate in (root / "memory" / "memory.limit_in_bytes",
-                      root / "memory.limit_in_bytes"):
-        value = _read_int(candidate)
-        if value is not None and value < SENTINEL:
-            return value, f"cgroup v1 {candidate}"
+    bound = [level for level in autoplan._cgroup_memory_walk()
+             if level.limit is not None]
+    if bound:
+        tightest = min(bound, key=lambda level: level.limit)
+        version = ("v2" if tightest.limit_file.endswith("memory.max")
+                   else "v1")
+        return tightest.limit, f"cgroup {version} {tightest.limit_file}"
 
     return None, ("no cgroup memory limit binds this process "
                   "(bare host, or the limit is on an ancestor outside the "

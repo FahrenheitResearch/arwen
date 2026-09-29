@@ -39,7 +39,6 @@ pub fn draw_colorbar(
     presentation: ColorbarPresentation,
 ) {
     let legend_levels = cmap.legend_levels_for_display();
-    let legend_colors = cmap.legend_colors_for_display();
 
     let n_intervals = if legend_levels.len() > 1 {
         legend_levels.len() - 1
@@ -49,10 +48,7 @@ pub fn draw_colorbar(
 
     for px in x..x.saturating_add(width).min(img.width()) {
         let rel = ((px - x) as f64 + 0.5) / width.max(1) as f64;
-        let color = match mode {
-            LegendMode::Stepped => stepped_color_at_rel(legend_levels, legend_colors, rel),
-            LegendMode::SmoothRamp => smooth_color_at_rel(legend_levels, legend_colors, rel),
-        };
+        let color = legend_color_at_rel(cmap, mode, rel);
         for py in y..y.saturating_add(height).min(img.height()) {
             img.put_pixel(px, py, color.to_image_rgba());
         }
@@ -68,7 +64,7 @@ pub fn draw_colorbar(
     } else {
         presentation.divider_color
     };
-    if matches!(mode, LegendMode::Stepped) {
+    if matches!(mode, LegendMode::Stepped | LegendMode::Categories) {
         for i in 1..n_intervals {
             let Some(frac) = level_fraction(legend_levels, legend_levels[i]) else {
                 continue;
@@ -127,7 +123,6 @@ pub fn draw_vertical_colorbar(
     presentation: ColorbarPresentation,
 ) {
     let legend_levels = cmap.legend_levels_for_display();
-    let legend_colors = cmap.legend_colors_for_display();
 
     let n_intervals = if legend_levels.len() > 1 {
         legend_levels.len() - 1
@@ -139,10 +134,7 @@ pub fn draw_vertical_colorbar(
     let y_end = y.saturating_add(height).min(img.height());
     for py in y..y_end {
         let rel = 1.0 - ((py - y) as f64 + 0.5) / height.max(1) as f64;
-        let color = match mode {
-            LegendMode::Stepped => stepped_color_at_rel(legend_levels, legend_colors, rel),
-            LegendMode::SmoothRamp => smooth_color_at_rel(legend_levels, legend_colors, rel),
-        };
+        let color = legend_color_at_rel(cmap, mode, rel);
         for px in x..x_end {
             img.put_pixel(px, py, color.to_image_rgba());
         }
@@ -153,7 +145,7 @@ pub fn draw_vertical_colorbar(
     } else {
         presentation.divider_color
     };
-    if matches!(mode, LegendMode::Stepped) {
+    if matches!(mode, LegendMode::Stepped | LegendMode::Categories) {
         for i in 1..n_intervals {
             let Some(frac) = level_fraction(legend_levels, legend_levels[i]) else {
                 continue;
@@ -210,11 +202,24 @@ pub fn draw_vertical_colorbar(
 /// lowest legend level, 1 = the highest) — exactly the per-pixel sampling
 /// [`draw_colorbar`]/[`draw_vertical_colorbar`] paint, exposed so external
 /// legend widgets reproduce the production colorbar's colors bit-for-bit.
+///
+/// A smooth ramp is drawn from the FILL's levels and colours, not from the
+/// legend swatches. The swatches carry one colour per legend interval,
+/// taken at the interval's lower edge, so a ramp through them stops one
+/// interval short of the top of the palette: a generic nine-band ramp
+/// topped out green while the map drew its maximum in yellow. The fill's
+/// dense list is what the map is painted from, so the ramp through it
+/// shows the map's own colour at every fill level, top included.
 pub fn legend_color_at_rel(cmap: &LeveledColormap, mode: LegendMode, rel: f64) -> Rgba {
     let legend_levels = cmap.legend_levels_for_display();
     let legend_colors = cmap.legend_colors_for_display();
     match mode {
-        LegendMode::Stepped => stepped_color_at_rel(legend_levels, legend_colors, rel),
+        LegendMode::Stepped | LegendMode::Categories => {
+            stepped_color_at_rel(legend_levels, legend_colors, rel)
+        }
+        LegendMode::SmoothRamp if cmap.levels.len() > 1 && !cmap.colors.is_empty() => {
+            smooth_color_at_rel(&cmap.levels, &cmap.colors, rel)
+        }
         LegendMode::SmoothRamp => smooth_color_at_rel(legend_levels, legend_colors, rel),
     }
 }
@@ -400,6 +405,7 @@ mod tests {
             under_color: None,
             over_color: None,
             mask_below: None,
+            categories: false,
         };
         let mut img = RgbaImage::new(200, 8);
 
@@ -432,6 +438,7 @@ mod tests {
             under_color: None,
             over_color: None,
             mask_below: None,
+            categories: false,
         };
         let mut img = RgbaImage::new(12, 120);
 
@@ -467,5 +474,90 @@ mod tests {
         assert!(green.g > green.r && green.g >= green.b);
         assert!(blue.b > blue.r && blue.b >= blue.g);
         assert!(pink.r > trace.r && pink.b > trace.b);
+    }
+
+    /// The generic nine-band ramp as the default plot style builds it: the
+    /// fill densified sixteenfold, the legend left on its nine bands.
+    fn densified_generic_ramp() -> LeveledColormap {
+        use crate::colormap::{ColormapBuildOptions, LegendControls, LevelDensity};
+        use crate::colormap::RenderDensity;
+        let anchors = [
+            color(68, 1, 84),
+            color(72, 40, 120),
+            color(62, 74, 137),
+            color(49, 104, 142),
+            color(38, 130, 142),
+            color(31, 158, 137),
+            color(53, 183, 121),
+            color(109, 205, 89),
+            color(253, 231, 37),
+        ];
+        let levels: Vec<f64> = (0..=9).map(|band| band as f64 / 9.0).collect();
+        LeveledColormap::from_palette_with_options(
+            &anchors,
+            &levels,
+            Extend::Neither,
+            None,
+            ColormapBuildOptions {
+                render_density: RenderDensity {
+                    fill: LevelDensity {
+                        multiplier: 16,
+                        min_source_level_count: 5,
+                    },
+                    palette_multiplier: 16,
+                },
+                legend: LegendControls {
+                    density: LevelDensity::default(),
+                    mode: LegendMode::SmoothRamp,
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn smooth_ramp_shows_the_colour_the_fill_draws_at_every_fill_level() {
+        let cmap = densified_generic_ramp();
+        let top = cmap.map(1.0);
+        // The field's maximum is drawn yellow; the bar must end there.
+        assert!(top.r > 240 && top.g > 200 && top.b < 60, "{top:?}");
+        assert_eq!(legend_color_at_rel(&cmap, LegendMode::SmoothRamp, 1.0), top);
+        for &level in &cmap.levels[..cmap.levels.len() - 1] {
+            assert_eq!(
+                legend_color_at_rel(&cmap, LegendMode::SmoothRamp, level),
+                cmap.map(level),
+                "bar and fill disagree at {level}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_smooth_bar_orientations_end_on_the_fill_maximum_colour() {
+        let cmap = densified_generic_ramp();
+        let top = cmap.map(1.0).to_image_rgba().0;
+        let mut horizontal = RgbaImage::new(1000, 10);
+        let mut vertical = RgbaImage::new(10, 1000);
+        draw_colorbar(
+            &mut horizontal,
+            &cmap,
+            0,
+            0,
+            1000,
+            10,
+            LegendMode::SmoothRamp,
+            test_presentation(),
+        );
+        draw_vertical_colorbar(
+            &mut vertical,
+            &cmap,
+            0,
+            0,
+            10,
+            1000,
+            LegendMode::SmoothRamp,
+            test_presentation(),
+        );
+        // One pixel inside the frame at the high end of each bar.
+        assert_eq!(horizontal.get_pixel(998, 5).0, top);
+        assert_eq!(vertical.get_pixel(5, 1).0, top);
     }
 }

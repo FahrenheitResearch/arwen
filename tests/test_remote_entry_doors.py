@@ -53,6 +53,56 @@ def test_every_command_comes_from_a_declared_door_row():
         sys.executable, "-I", "-u", "-m", "gpuwm.cli", "run-plan", "/node/plan.json"]
 
 
+def test_remote_go_door_carries_the_section_line():
+    argv = rw.compose_argv({"door": "go", "document": "/node/config.toml",
+                            "flags": [("--products", "xsec:wa"),
+                                      ("--section", "40,-100,41,-99")]})
+    assert argv[-4:] == ["--products", "xsec:wa", "--section", "40,-100,41,-99"]
+
+
+def test_remote_go_door_passes_a_signed_line_as_one_argument():
+    from gpuwm.cli import build_parser
+    section = "-40,100,-41,99"
+    argv = rw.compose_argv({"door": "go", "document": "/node/config.toml",
+                            "flags": [("--products", "xsec:wa"), ("--section", section)]})
+    parsed = build_parser().parse_args(argv[5:])
+    assert parsed.render_section == section
+
+
+def test_remote_go_review_carries_and_records_the_section_line(tmp_path, monkeypatch):
+    source = config(tmp_path)
+    request = {"schema": "gpuwm.remote.request.v1", "action": "start", "workspace": str(tmp_path),
+               "config": str(source), "outdir": str(tmp_path / "new output"),
+               "products": "xsec:wa", "section": "40,-100,41,-99", "dry_run": True}
+    monkeypatch.setattr(rw, "_ownership_provider", lambda: {})
+    review = rw.dispatch(request)["review"]
+    assert review["section"] == request["section"]
+    assert review["argv"][-2:] == ["--section", request["section"]]
+    assert not (tmp_path / "new output").exists()
+
+
+@pytest.mark.parametrize("section", [None, "", "40,-100,40,-100", "91,0,45,1"])
+def test_remote_go_review_refuses_sections_it_cannot_draw(tmp_path, section):
+    source = config(tmp_path)
+    request = {"action": "start", "config": str(source), "outdir": str(tmp_path / "new output"),
+               "products": "xsec:wa", "section": section}
+    with pytest.raises(ValueError) as failure:
+        rw._review(request, tmp_path)
+    assert "after the whole forecast" in str(failure.value)
+    assert "--section" in str(failure.value)
+    assert not (tmp_path / "new output").exists()
+
+
+def test_remote_go_section_file_is_resolved_against_the_config(tmp_path):
+    source = config(tmp_path)
+    line = tmp_path / "line.json"
+    line.write_text('{"start":[40,-100],"end":[41,-99]}', encoding="utf-8")
+    review, _sources, _snapshots = rw._review({"action": "start", "config": str(source),
+        "outdir": str(tmp_path / "new output"), "products": "xsec:wa", "section": "line.json"}, tmp_path)
+    assert review["section"] == str(line)
+    assert review["argv"][-2:] == ["--section", str(line)]
+
+
 def test_an_unregistered_door_is_refused_by_name_with_the_registered_set():
     with pytest.raises(ValueError) as failure:
         rw.compose_argv({"door": "nope", "document": "/node/x", "flags": []})
@@ -227,6 +277,22 @@ def test_resume_of_a_staged_plan_job_keeps_its_render_selection(staged_parent):
     assert "--products" not in review["argv"]
 
 
+@pytest.mark.parametrize("override", [None, "41,-101,42,-100"])
+def test_remote_resume_plan_keeps_or_overrides_the_section_line(staged_parent, override):
+    tmp_path, _source, plan, _output, _checkpoint, _old = staged_parent
+    document = json.loads(plan.read_text(encoding="utf-8"))
+    document["run_options"].update(render_products="xsec:wa", render_section="40,-100,41,-99")
+    plan.write_text(json.dumps(document), encoding="utf-8")
+    request = {"action": "resume", "job": "old-job", "outdir": str(tmp_path / "new output")}
+    if override is not None:
+        request["section"] = override
+    review, _sources, snapshots = rw._review(request, tmp_path)
+    expected = override or "40,-100,41,-99"
+    assert json.loads(snapshots["plan.json"])["run_options"]["render_section"] == expected
+    assert review["section"] == expected
+    assert "--section" not in review["argv"]
+
+
 def test_a_parent_plan_without_a_render_selection_does_not_gain_one(staged_parent):
     tmp_path, source, plan, output, checkpoint, _old = staged_parent
     plan.write_text(json.dumps({"schema": "gpuwm.run-plan.v1", "name": "reviewed-map",
@@ -240,7 +306,8 @@ def test_a_parent_plan_without_a_render_selection_does_not_gain_one(staged_paren
     assert "--products" not in review["argv"]
 
 
-def test_a_configuration_parent_still_resumes_through_the_go_door(tmp_path, monkeypatch):
+@pytest.mark.parametrize("section", [None, "40,-100,41,-99"])
+def test_a_configuration_parent_still_resumes_through_the_go_door(tmp_path, monkeypatch, section):
     from gpuwm.toml_document import emit_experiment_toml
     source = config(tmp_path)
     raw = tomllib.loads(source.read_text(encoding="utf-8"))
@@ -255,6 +322,8 @@ def test_a_configuration_parent_still_resumes_through_the_go_door(tmp_path, monk
     checkpoint = restart(output / "gpuwmrst_d01_2026-09-05_01_00_00.npz")
     old = {"id": "old-job", "action": "start", "snapshot_config": str(source), "snapshot_plan": None,
            "outdir": str(output), "cwd": str(tmp_path), "products": "t2"}
+    if section is not None:
+        old.update(products="xsec:wa", section=section)
     monkeypatch.setattr(rw, "_directory", lambda workspace, job: tmp_path)
     monkeypatch.setattr(rw, "_record", lambda directory: old)
     monkeypatch.setattr(rw, "_status", lambda directory: {"state": "stopped"})
@@ -263,7 +332,11 @@ def test_a_configuration_parent_still_resumes_through_the_go_door(tmp_path, monk
     review = rw._launch(request, tmp_path)["review"]
     assert review["entry"]["door"] == "go"
     assert review["argv"][-2:] == ["--restart", str(checkpoint)]
-    assert review["products"] == "t2"
+    assert review["products"] == old["products"]
+    if section is not None:
+        assert review["section"] == section
+        index = review["argv"].index("--section")
+        assert review["argv"][index + 1] == section
     assert review["route"] == "node_config"
 
 
@@ -287,7 +360,8 @@ def test_the_staged_plan_door_takes_its_command_and_selection_from_the_review(tm
     directory = tmp_path / "bundle"
     directory.mkdir()
     entry = {"door": "run-plan", "document": str(directory / "plan.json"), "flags": []}
-    review = {"entry": entry, "render_products": "t2,wind10", "memory": {"measured": True, "refuse": False},
+    review = {"entry": entry, "render_products": "xsec:wa", "render_section": "40,-100,41,-99",
+              "memory": {"measured": True, "refuse": False},
               "plan_sha256": "a", "config_sha256": "b", "input_sha256": "c", "geog_root": None}
     monkeypatch.setattr(rp, "review", lambda *_: (dict(review), {"files": [], "geog_root": None}, directory))
     observed = []
@@ -299,7 +373,8 @@ def test_the_staged_plan_door_takes_its_command_and_selection_from_the_review(tm
     assert launched["argv"][4:6] == ["gpuwm.cli", "run-plan"]
     # The record carries the plan's own render selection instead of a None the
     # status door and a later resume would both read as "no selection".
-    assert launched["products"] == "t2,wind10"
+    assert launched["products"] == "xsec:wa"
+    assert launched["section"] == "40,-100,41,-99"
 
 
 @pytest.fixture

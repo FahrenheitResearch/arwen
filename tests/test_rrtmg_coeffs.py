@@ -119,8 +119,8 @@ def _read_dump(path: Path):
 def _oracle_build_dir() -> Path | None:
     env = os.environ.get("RRTMG_ORACLE_BUILD_DIR")
     candidates = [Path(env)] if env else []
-    candidates.append(Path.home() / ".claude" / "jobs" / "fea7a141" /
-                      "tmp" / "rrtmg_foundation" / "build")
+    candidates.append(Path.home() / ".gpuwm" / "oracle" / "rrtmg_foundation"
+                      / "build")
     for candidate in candidates:
         if (candidate / "rrtmg-coeffs-lw.dump").exists():
             return candidate

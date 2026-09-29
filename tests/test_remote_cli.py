@@ -294,6 +294,25 @@ def test_cli_forwards_binding_and_paths_only_as_request_data(monkeypatch, capsys
     assert len(capsys.readouterr().out.splitlines()) == 1
 
 
+@pytest.mark.parametrize("action", ["start", "resume"])
+@pytest.mark.parametrize("section", ["40,-100,41,-99", "-40,100,-41,99"])
+def test_section_line_reaches_the_remote_request(action, section, monkeypatch, capsys):
+    from gpuwm.cli import build_parser
+    identity = ["--config", "/srv/config.toml"] if action == "start" else ["--job", "old-job"]
+    options = build_parser().parse_args([
+        "remote", action, "--host", "node", "--python", "/opt/python",
+        "--workspace", "/work", "--outdir", "/new-output", *identity,
+        "--products", "xsec:wa", "--section=" + section, "--json"])
+    seen = []
+    monkeypatch.setattr(rc, "ssh_command", lambda options: ["ssh-fixture"])
+    monkeypatch.setattr(rc, "_transport", lambda command, request, **kwargs:
+                        seen.append(request) or rc.result(action))
+    assert rc.remote_main(options) == 0
+    assert seen[0]["section"] == section
+    assert seen[0]["products"] == "xsec:wa"
+    capsys.readouterr()
+
+
 def test_public_parser_has_review_and_reconnect_options():
     from gpuwm.cli import build_parser
     parser = build_parser()

@@ -48,13 +48,16 @@ import numpy as np
 from gpuwm import physics_mode as physics_mode_module
 from gpuwm.core import streaming as streaming_module
 from gpuwm.io import history_selection as history_selection_module
+from gpuwm.config_keys import KeyRow, key_rows
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
-                          MIX_ISOTROPIC_AUTO, RunConfig,
+                          GRELL_FAMILY_DEFAULTS, GRELL_FREITAS_CU_PHYSICS,
+                          MIX_ISOTROPIC_AUTO, SASE_FAIL_CLOSED_DEFAULTS,
+                          SASE_PBL_SCHEME, RunConfig,
                           anisotropic_w_mixing_ratio,
                           auto_mix_isotropic_selection, radiation_enabled,
                           validate_run_config, warn_anisotropic_w_mixing)
-from gpuwm.explain import layered, warn
+from gpuwm.explain import layered, warn, warn_once
 from gpuwm.static.projection import footprint_contains_pole
 
 #: Relative tolerance for cross-checking hand-typed child dx/dt against the
@@ -98,8 +101,17 @@ _MOVING_NEST_KEYS = frozenset({
 _RELOCATION_KEYS = frozenset({
     "enabled", "grid_id", "mode", "max_move_parent_cells",
     "min_overlap_fraction", "cadence_seconds", "follow", "move",
-    "containment", "track",
+    "containment", "track", "reach_speed_m_s",
 })
+
+#: Rows for the [relocation] keys no typed field declares
+#: (:mod:`gpuwm.config_keys`).
+_RELOCATION_KEY_ROWS = key_rows(
+    KeyRow("track", "table", None,
+           "a single table, not an array of tables, naming the one file "
+           "the tracked vortex is written to (path, interval_seconds, "
+           "output_level); absent writes none"),
+)
 
 #: Keys accepted in ``[relocation.containment]`` -- the ancestor that
 #: slides to keep the tracked mover contained (see
@@ -121,22 +133,36 @@ DISCRETE_RELOCATION_MODE = "discrete-cycle-boundary"
 
 #: Nesting guard keys accepted in [shared] with their WRF Registry
 #: defaults; any OTHER value is rejected loudly (only the default
-#: machinery is implemented).
-_GUARD_DEFAULTS = {
+#: machinery is implemented).  Declared as rows (:mod:`gpuwm.config_keys`)
+#: so a front end reads each one's type and default.
+_GUARD_KEY_ROWS = key_rows(
     # Registry.EM_COMMON:2301: default 2 = SINT, the only implemented
     # horizontal nest interpolator (bilinear/NN/quadratic rejected).
-    "interp_method_type": 2,
+    KeyRow("interp_method_type", "integer", 2,
+           "nest horizontal interpolator; only 2 (SINT) is implemented"),
     # Registry.EM_COMMON:2300: 0 = standard eta-level interpolation;
     # 1 = isobaric re-interpolation, not implemented.
-    "nest_interp_coord": 0,
+    KeyRow("nest_interp_coord", "integer", 0,
+           "nest vertical coordinate; only 0 (eta levels) is implemented"),
     # Vertical nest refinement: rejected (identical vertical grid on all
     # domains; WRF only calls init_domain_vert_nesting when e_vert
     # differs, share/mediation_integrate.F:666).
-    "vert_refine_method": 0,
+    KeyRow("vert_refine_method", "integer", 0,
+           "vertical nest refinement; only 0 (none) is implemented"),
     # High-resolution child terrain ingest: rejected (children SINT the
     # parent terrain and blend it, dyn_em/nest_init_utils.F).
-    "input_from_hires": False,
-}
+    KeyRow("input_from_hires", "boolean", False,
+           "high-resolution nest terrain input; only false is implemented"),
+)
+_GUARD_DEFAULTS = {name: row.default for name, row in _GUARD_KEY_ROWS.items()}
+
+#: Rows for the [shared] keys that are not RunConfig fields
+#: (:mod:`gpuwm.config_keys`); ``eta_levels`` and ``p_top`` are fields.
+_SHARED_KEY_ROWS = key_rows(
+    KeyRow("e_vert", "integer", None,
+           "WRF's full-level count, nz + 1; give nz, e_vert or eta_levels"),
+    *_GUARD_KEY_ROWS.values(),
+)
 
 _EXPERIMENT_KEYS = frozenset({
     "name", "start_time", "run_seconds", "feedback", "smooth_option",
@@ -148,6 +174,22 @@ _EXPERIMENT_KEYS = frozenset({
     # the axis is that one run is one arm.
     "physics_mode", "patchset", "patches",
 })
+
+#: Rows for the [experiment] keys no typed field declares
+#: (:mod:`gpuwm.config_keys`): the fidelity axis is resolved into a
+#: :class:`gpuwm.physics_mode.PhysicsModeResolution`, not stored by name.
+_EXPERIMENT_KEY_ROWS = key_rows(
+    KeyRow("physics_mode", "string", None,
+           "the physics-fidelity axis, 'wrf-faithful' or 'arwen-patched'; "
+           "absent leaves every physics key as the config writes it"),
+    KeyRow("patchset", "string", physics_mode_module.DEFAULT_PATCHSET,
+           "the frozen patch-set version the fidelity axis resolves; "
+           "needs physics_mode"),
+    KeyRow("patches", "array", None,
+           "divergence-ledger entry ids to apply instead of the whole "
+           "patch set; needs physics_mode", items="string"),
+)
+
 _EXPERIMENT_REQUIRED = ("name", "start_time", "run_seconds",
                         "restart_interval_s")
 
@@ -164,11 +206,24 @@ _BUBBLE_KEYS = frozenset({
 })
 _BUBBLE_REQUIRED = ("center_lat", "center_lon", "center_height_m",
                     "radius_km", "depth_m", "amplitude_k")
-#: The largest admissible peak theta perturbation.  WRF's own idealized
-#: warm bubbles run 3 K (em_quarter_ss); an order of magnitude above that
-#: is no longer an initiation nudge but a rewrite of the analysis, so it
-#: is refused with the value named rather than integrated in silence.
-MAX_BUBBLE_AMPLITUDE_K = 10.0
+#: WRF's own idealized warm bubble peak (em_quarter_ss,
+#: module_initialize_ideal.F): the reference a large amplitude is named
+#: against.
+WRF_IDEALIZED_BUBBLE_AMPLITUDE_K = 3.0
+#: Above this peak theta perturbation a bubble is past an initiation
+#: nudge and rewrites the analysis near its center.  That is a choice,
+#: not a breakage, so it runs: the amplitude is named in a warning and
+#: recorded in the perturbation receipt.  The amplitude itself carries
+#: no upper refusal.  What a large bubble can break depends on the
+#: analysis under it, so it is refused where that analysis is seen, per
+#: domain and before integration (gpuwm.ingest.init_perturbation): a
+#: layer heated past the top of the radiation's temperature table, and
+#: rh_preserve building more water vapour than a forecast was measured
+#: to survive.  Both application points keep the initial state
+#: hydrostatic at the analysed pressure: initialize_real writes the
+#: bubble before the specific volume and geopotential are formed, and
+#: the prepared domain-tree runner re-integrates the geopotential after.
+BUBBLE_AMPLITUDE_WARNING_K = 10.0
 
 #: RunConfig keys that may NOT appear in [shared]: they are per-domain
 #: (derived or [[domain]]-owned), experiment-owned, or retired in the
@@ -223,7 +278,9 @@ _SHARED_FORBIDDEN = {
 _DOMAIN_RUN_OVERRIDES = (
     # clos_choice/ishallow ride with cu_physics: per-domain because the
     # scheme they configure is, and inert (validated zero) on any domain
-    # that does not select cu_physics = 3.
+    # that does not select cu_physics = 3.  On a tree that mixes
+    # Grell-Freitas with another cumulus choice a [shared] value reaches
+    # the Grell-Freitas domains only (see tree_runs_grell below).
     "cu_physics", "cudt_minutes", "clos_choice", "ishallow",
     "radt", "radt_minutes", "bldt",
     # Every domain owns its radiation driver. Spectrum composition, CAM
@@ -266,9 +323,10 @@ _DOMAIN_RUN_OVERRIDES = (
     # Output-only, and per domain because its cost scales with the grid:
     # four extra (nz+1, ny, nx) planes per frame, so the finest domains
     # of a tree can be left off while the domains whose subgrid fluxes
-    # are being read carry it.  The two SASE PHYSICS selectors are
-    # deliberately absent: a nest whose domains ran different closures
-    # could not be compared across its own boundary.
+    # are being read carry it.  The two SASE PHYSICS selectors stay
+    # [shared], so every SASE domain of a tree runs one variant; on a
+    # tree that mixes SASE with another PBL scheme the loader applies
+    # them to the SASE domains only (see tree_runs_sase below).
     "sase_flux_diag",
     # Output-only on the same terms: two extra (nz, ny, nx) planes per
     # frame, so a tree can carry the horizontal viscosity on the domain
@@ -298,6 +356,9 @@ _DOMAIN_RUN_OVERRIDES = (
     "starting_time_step", "starting_time_step_den",
     "max_time_step", "max_time_step_den",
     "min_time_step", "min_time_step_den",
+    # Per domain for the reason the steep-terrain rules set it: one
+    # domain's ground needs six substeps and its neighbour's does not.
+    "min_time_step_sound",
 )
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -305,6 +366,18 @@ _DOMAIN_RUN_OVERRIDES = (
 #: vertical nesting is impossible by construction).
 _DOMAIN_VERTICAL_KEYS = ("nz", "e_vert", "eta_levels", "p_top", "ztop",
                          "hybrid_opt", "etac")
+
+#: Rows for the [[domain]] keys no typed field declares
+#: (:mod:`gpuwm.config_keys`).
+_DOMAIN_KEY_ROWS = key_rows(
+    KeyRow("start_time", "datetime", None,
+           "when this nest starts, an offset-free TOML date-time inside "
+           "the run; absent starts it with [experiment].start_time"),
+    KeyRow("e_we", "integer", None,
+           "WRF's staggered west-east point count, nx + 1; give e_we or nx"),
+    KeyRow("e_sn", "integer", None,
+           "WRF's staggered south-north point count, ny + 1; give e_sn or ny"),
+)
 
 _DOMAIN_KEYS = frozenset({
     "grid_id", "parent_id", "i_parent_start", "j_parent_start",
@@ -571,20 +644,34 @@ class BubbleConfig:
                     f"{name} = {getattr(self, name)!r} must be positive; "
                     "a nonpositive bubble is a no-op wearing the name of "
                     "a perturbation")
-        if self.amplitude_k > MAX_BUBBLE_AMPLITUDE_K:
-            raise ValueError(
-                f"amplitude_k = {self.amplitude_k!r} exceeds the "
-                f"{MAX_BUBBLE_AMPLITUDE_K:g} K sanity bound: that is no "
-                "longer an initiation nudge but a rewrite of the "
-                "analysis. Lower the amplitude, or lift the bound with "
-                "evidence.")
         if not isinstance(self.rh_preserve, bool):
             raise ValueError(
                 f"rh_preserve must be a boolean, got {self.rh_preserve!r}")
+        note = self.amplitude_warning()
+        if note is not None:
+            warn(note, once=True)
+
+    def amplitude_warning(self) -> str | None:
+        """The warning a peak above the nudge level carries, or ``None``."""
+        if self.amplitude_k <= BUBBLE_AMPLITUDE_WARNING_K:
+            return None
+        return (
+            f"perturbation bubble amplitude_k = {self.amplitude_k:g} K is "
+            f"above {BUBBLE_AMPLITUDE_WARNING_K:g} K and "
+            f"{self.amplitude_k / WRF_IDEALIZED_BUBBLE_AMPLITUDE_K:.1f} "
+            "times WRF's idealized warm bubble "
+            f"({WRF_IDEALIZED_BUBBLE_AMPLITUDE_K:g} K, em_quarter_ss): it "
+            "replaces the analysis near its center rather than nudging "
+            "it. It runs as configured, and this warning is recorded in "
+            "the perturbation receipt.")
 
     def receipt(self) -> dict:
-        """Every accepted value, echoed in the shape it resolved to."""
-        return {
+        """Every accepted value, echoed in the shape it resolved to.
+
+        A bubble above the nudge level also carries its ``warning``; one
+        at or below it carries no such key, so its receipt is unchanged.
+        """
+        receipt = {
             "center_lat": float(self.center_lat),
             "center_lon": float(self.center_lon),
             "center_height_m": float(self.center_height_m),
@@ -593,6 +680,10 @@ class BubbleConfig:
             "amplitude_k": float(self.amplitude_k),
             "rh_preserve": bool(self.rh_preserve),
         }
+        note = self.amplitude_warning()
+        if note is not None:
+            receipt["warning"] = note
+        return receipt
 
 
 @dataclass(frozen=True)
@@ -917,6 +1008,12 @@ class RelocationConfig:
     #: means no track file and a byte-identical forecast.  ONE file,
     #: because a run has one vortex.
     track: "object | None" = None
+    #: How fast, on average since the start, the tracked nest may travel
+    #: (m/s); ``None`` takes :data:`gpuwm.core.nest_reach
+    #: .DEFAULT_REACH_SPEED_M_S`.  The runner clamps a move that would
+    #: pass it, and the statics corridor is sized to it
+    #: (:mod:`gpuwm.core.nest_reach`).
+    reach_speed_m_s: float | None = None
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -942,6 +1039,11 @@ class RelocationConfig:
                     "[relocation.track] on a disabled [relocation] block "
                     "is refused: the track is the TRACKER's answer written "
                     "out, and a disabled block runs no tracker")
+            if self.reach_speed_m_s is not None:
+                raise ValueError(
+                    "reach_speed_m_s on a disabled [relocation] block is "
+                    "refused: it bounds a tracker, and a disabled block "
+                    "runs none")
             return
         if self.mode != DISCRETE_RELOCATION_MODE:
             raise ValueError(
@@ -988,6 +1090,16 @@ class RelocationConfig:
                     "[relocation.containment] grid_id equals the mover's "
                     "own; containment names a STRICT ANCESTOR of the "
                     "tracked mover")
+        from gpuwm.core.nest_reach import validate_reach_speed
+        object.__setattr__(self, "reach_speed_m_s", validate_reach_speed(
+            self.reach_speed_m_s, "[relocation]"))
+        if self.reach_speed_m_s is not None and self.follow is None:
+            raise ValueError(
+                "reach_speed_m_s bounds how far the TRACKER may take the "
+                "nest, and this [relocation] has no [relocation.follow] "
+                "block: a [[relocation.move]] itinerary's rows already say "
+                "exactly where the nest goes, so the key would bound "
+                "nothing.  Delete it, or add a follow block.")
         if self.track is not None and self.follow is None:
             raise ValueError(
                 "[relocation.track] writes the vortex position the "
@@ -1048,6 +1160,10 @@ class RelocationConfig:
                             else self.containment.to_json()),
             "track": (None if self.track is None
                       else self.track.to_json()),
+            # Echoed when set; absent it is the default, which the
+            # corridor receipt and the runner's receipt state as a number.
+            **({"reach_speed_m_s": float(self.reach_speed_m_s)}
+               if self.reach_speed_m_s is not None else {}),
         }
 
 
@@ -1544,6 +1660,72 @@ def build_experiment_from_config_tables(raw: dict, *, source: str,
     return build_experiment(raw, source=source)
 
 
+def drop_unreached_sase_selectors(raw: dict, kept_runs) -> None:
+    """Remove [shared] SASE selectors a cut-down tree has no domain for.
+
+    ``raw`` holds a tree's tables already cut to some of its domains, and
+    ``kept_runs`` are those domains' RunConfigs as the WHOLE tree resolved
+    them.  On a tree that mixes SASE with another PBL scheme the loader
+    applies the [shared] SASE selectors to the SASE domains only, so when
+    none of the kept domains runs SASE the selectors reached none of them:
+    each kept domain ran the defaults.  Left in [shared], the cut-down
+    tree would be refused for a key naming a seam it does not have -- the
+    HRRR root preparation of a YSU root under a SASE nest stopped that
+    way.  With a SASE domain kept, the selectors stay and reach it.
+    """
+    if any(run.bl_pbl_physics == SASE_PBL_SCHEME for run in kept_runs):
+        return
+    shared = raw.get("shared")
+    if isinstance(shared, dict):
+        for key in SASE_FAIL_CLOSED_DEFAULTS:
+            shared.pop(key, None)
+
+
+def drop_unreached_grell_selectors(raw: dict, kept_runs) -> None:
+    """Remove [shared] Grell-family keys a cut-down tree has no domain for.
+
+    The Grell-Freitas twin of :func:`drop_unreached_sase_selectors`: on a
+    tree that mixes Grell-Freitas with another cumulus choice the loader
+    applies a [shared] ``clos_choice`` or ``ishallow`` to the
+    Grell-Freitas domains only, so a cut-down tree keeping none of them
+    ran the Registry defaults, and left in [shared] the keys would refuse
+    it.  With a Grell-Freitas domain kept, they stay and reach it.
+    """
+    if any(run.cu_physics == GRELL_FREITAS_CU_PHYSICS for run in kept_runs):
+        return
+    shared = raw.get("shared")
+    if isinstance(shared, dict):
+        for key in GRELL_FAMILY_DEFAULTS:
+            shared.pop(key, None)
+
+
+def drop_unreached_relocation(raw: dict, kept_grid_ids) -> None:
+    """Remove a [relocation] table whose mover a cut-down tree has no domain for.
+
+    ``raw`` holds a tree's tables already cut to some of its domains, and
+    ``kept_grid_ids`` are the grid ids it kept.  Everything in
+    [relocation] belongs to the one child its ``grid_id`` names: the
+    tracker or itinerary that moves it, the ancestor slide that keeps it
+    contained, the track file of the vortex it follows.  With that child
+    cut away the table has nothing left to drive, and left in place the
+    loader refuses the cut-down tree for a ``grid_id`` it does not have:
+    the HRRR root preparation of every storm-following layout stopped
+    that way.  A disabled [relocation] must be empty, so the table goes
+    whole rather than switched off.  With the mover kept, the table stays
+    and the loader checks it as it checks any tree.
+    """
+    table = raw.get("relocation")
+    if not isinstance(table, dict) or table.get("grid_id") is None:
+        return
+    try:
+        mover = int(table["grid_id"])
+    except (TypeError, ValueError):
+        # Not a grid id at all: the loader refuses it by name.
+        return
+    if mover not in {int(grid_id) for grid_id in kept_grid_ids}:
+        del raw["relocation"]
+
+
 def experiment_from_run_config(cfg: RunConfig,
                                start_time: datetime) -> ExperimentConfig:
     """Wrap a scalar :class:`RunConfig` as a one-domain experiment.
@@ -1692,10 +1874,11 @@ def _build_relocation(raw: dict, source: str, domains,
         except ValueError as err:
             raise ValueError(
                 f"[relocation.containment] of {source}: {err}") from None
-    track = None
-    if "track" in table:
+    track = _RELOCATION_KEY_ROWS["track"].get(
+        table, where=f"[relocation] of {source}")
+    if track is not None:
         from gpuwm.core.storm_track_writer import build_track_config
-        track = build_track_config(table["track"], source)
+        track = build_track_config(track, source)
     try:
         relocation = RelocationConfig(
             enabled=True,
@@ -1713,7 +1896,8 @@ def _build_relocation(raw: dict, source: str, domains,
             follow=follow,
             moves=tuple(moves),
             containment=containment,
-            track=track)
+            track=track,
+            reach_speed_m_s=table.get("reach_speed_m_s"))
     except ValueError as err:
         raise ValueError(f"[relocation] of {source}: {err}") from None
     if containment is not None:
@@ -2259,7 +2443,8 @@ def _mass_dims(dom: dict, grid_id, source: str) -> tuple[int, int]:
     """
     dims = []
     for stag_key, mass_key in (("e_we", "nx"), ("e_sn", "ny")):
-        stag = dom.get(stag_key)
+        stag = _DOMAIN_KEY_ROWS[stag_key].get(
+            dom, where=f"[[domain]] grid_id={grid_id} of {source}")
         mass = dom.get(mass_key)
         if stag is None and mass is None:
             raise ValueError(
@@ -2737,8 +2922,10 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 "is not written. Add physics_mode = "
                 f"{physics_mode_module.PHYSICS_MODE_WRF_FAITHFUL!r} or "
                 f"{physics_mode_module.PHYSICS_MODE_ARWEN_PATCHED!r}.")
+        where = f"[experiment] of {source}"
         physics_mode = physics_mode_module.resolve(
-            exp["physics_mode"], exp.get("patchset"), exp.get("patches"),
+            *(_EXPERIMENT_KEY_ROWS[key].get(exp, where=where)
+              for key in ("physics_mode", "patchset", "patches")),
             source=source)
     else:
         physics_mode = physics_mode_module.UNGOVERNED
@@ -2860,6 +3047,13 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 shared["mix_isotropic"], "[shared]", source))
         del shared["mix_isotropic"]
 
+    # Compared with the one implemented value, not checked against the
+    # row's type.  Every other value is refused just below with the reason
+    # it cannot run, and a spelling of the implemented value
+    # (input_from_hires = 0, interp_method_type = 2.0) runs exactly what
+    # the default runs, so a type refusal of it would name no breakage.
+    # The rows still carry each key's type, default and meaning for a
+    # front end, and the default is read from them (_GUARD_DEFAULTS).
     for key, default in _GUARD_DEFAULTS.items():
         value = shared.pop(key, default)
         if value == default:
@@ -2896,7 +3090,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # profile is injected when the user omits one spelling.
     eta_levels = tuple(float(v) for v in shared.pop("eta_levels", ()))
     supplied_nz = shared.get("nz")
-    supplied_e_vert = shared.pop("e_vert", None)
+    supplied_e_vert = _SHARED_KEY_ROWS["e_vert"].get(
+        shared, where=f"[shared] of {source}")
+    shared.pop("e_vert", None)
     if supplied_nz is None and supplied_e_vert is None and not eta_levels:
         raise ValueError(
             f"[shared] of {source} must carry nz or e_vert, or provide "
@@ -3000,6 +3196,38 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     dt_by_id: dict[int, Fraction] = {}
     dx_by_id: dict[int, Fraction] = {}
     fp32_by_id: dict[int, np.float32] = {}
+    # A tree that mixes SASE with another PBL scheme.  The SASE selectors
+    # are [shared] keys, and validate_run_config refuses a non-default
+    # value on a domain with no SASE closure for it to change.  On such a
+    # tree a [shared] value speaks for the SASE domains: it reaches them
+    # and leaves every other domain on the default.  Without this, no
+    # spelling selected a SASE variant on a mixed tree -- [shared] was
+    # refused on the non-SASE domain and [[domain]] as a misplaced run
+    # key.  A tree with no SASE domain keeps the refusal, as a single
+    # domain does, and a value written into a non-SASE domain's own table
+    # is checked as written.
+    tree_runs_sase = any(
+        physics_mode.settings.get(
+            "bl_pbl_physics",
+            dom.get("bl_pbl_physics",
+                    shared.get("bl_pbl_physics", RunConfig.bl_pbl_physics)))
+        == SASE_PBL_SCHEME
+        for dom in domain_tables)
+    # The same rule for the Grell-family keys.  clos_choice and ishallow
+    # are read only where cu_physics = 3, and the wizard writes them in
+    # [shared]; on a tree whose cumulus-off child sits under a
+    # Grell-Freitas root, [shared] was refused on the child.  On a tree
+    # with a Grell-Freitas domain a [shared] value reaches those domains
+    # and leaves the others on the Registry defaults; a tree with none,
+    # a single domain, and a value written into a non-Grell domain's own
+    # table keep the refusal.
+    tree_runs_grell = any(
+        physics_mode.settings.get(
+            "cu_physics",
+            dom.get("cu_physics",
+                    shared.get("cu_physics", RunConfig.cu_physics)))
+        == GRELL_FREITAS_CU_PHYSICS
+        for dom in domain_tables)
     for index, dom in enumerate(domain_tables):
         _reject_moving_nest_keys("domain", dom, source)
         _reject_domain_vertical_keys(dom, dom.get("grid_id", index + 1),
@@ -3050,7 +3278,10 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 f"(domains must be listed parent-before-child); declared "
                 f"so far: {sorted(by_id)}.")
 
-        domain_start = dom.get("start_time", start_time)
+        domain_start = _DOMAIN_KEY_ROWS["start_time"].get(
+            dom, where=f"[[domain]] grid_id = {grid_id} of {source}")
+        if domain_start is None:
+            domain_start = start_time
         if (not isinstance(domain_start, datetime)
                 or domain_start.tzinfo is not None):
             raise ValueError(
@@ -3456,21 +3687,21 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         # one arm -- a tree whose domains ran different ledger entries
         # could not be compared across its own nest boundary.
         kw.update(physics_mode.settings)
-        # bl_pbl_physics is per-domain for the WRF schemes and PBL-off
-        # (the measured PBL-parent/PBL-off-LES-child trees), but SASE is
-        # run-wide, never per-nest: the closure is measured single-domain
-        # and a tree whose domains ran different closures could not be
-        # compared across its own boundary.  A per-domain 900 that parsed
-        # here would be exactly that tree, so it is refused by name.
-        from gpuwm.config import SASE_PBL_SCHEME
-        if dom.get("bl_pbl_physics") == SASE_PBL_SCHEME:
-            raise ValueError(
-                f"bl_pbl_physics = {SASE_PBL_SCHEME} (SASE) on [[domain]] "
-                f"grid_id={grid_id} of {source} is refused: the SASE "
-                "closure is selected run-wide in [shared], never per "
-                "nest.  A nest whose domains ran different closures "
-                "could not be compared across its own boundary, and no "
-                "nested SASE tree has been run.")
+        if tree_runs_sase and kw.get("bl_pbl_physics") != SASE_PBL_SCHEME:
+            for key, default in SASE_FAIL_CLOSED_DEFAULTS.items():
+                if key not in dom:
+                    kw[key] = default
+        if (tree_runs_grell and kw.get("cu_physics", RunConfig.cu_physics)
+                != GRELL_FREITAS_CU_PHYSICS):
+            for key, default in GRELL_FAMILY_DEFAULTS.items():
+                if key not in dom:
+                    kw[key] = default
+        # bl_pbl_physics is per-domain for every scheme, SASE included:
+        # each domain's PhysicsDriver runs its own closure on its own
+        # state, and SASE's prognostic e_sgs is not a nest-forced field
+        # (gpuwm/core/nest_fields.py), so a SASE domain cold-starts it
+        # whatever its parent runs.  The multi-domain SASE warning below
+        # covers this tree too.
         # Nonzero spec_exp on a NESTED domain is forced to 0 with a
         # warning: WRF's nested lbc_fcx_gcx branch has NO exponential
         # sponge term -- only the specified branch applies spec_exp
@@ -3600,56 +3831,67 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         if note is not None:
             warn(f"domain grid_id = {dc.grid_id}: {note}")
 
-    # km_opt=2 on a nest child: refused only where the nest COUPLING of the
-    # prognostic TKE carrier is actually exercised, which is when the parent
-    # carries one too.
+    # km_opt=2 on a nest child, under any parent.
     #
     # WRF gives tke no ``i`` (nest-interpolation) and no ``f`` (feedback)
     # Registry flag (Registry.EM_COMMON:312), so a child cold-starts its own
-    # TKE and never returns it.  Where the PARENT runs km_opt != 2 it has no
-    # TKE field at all, so there is nothing to interpolate down and nothing
-    # to feed back: the coupling question is void, not unverified, and
-    # cold-starting is the only behaviour available to WRF or to ArWen.
-    # That case has now been RUN -- a 402x402 250 m km_opt=2 PBL-off child
-    # under a km_opt=4 750 m parent, 7 h, status PASS, 31 frames, carrying
-    # 4.8x-9.9x the parent's resolved w variance over the same ground and
-    # developing it FASTER than the km_opt=3 child on the identical tree
-    # (8.34x against 4.17x one hour in), so cold-starting the carrier
-    # demonstrably does not handicap the child
-    # (docs/superpowers/receipts/les/nested-les-km2-2026-08-02.md).
-    #
-    # Where the parent IS km_opt=2 the parent holds a live TKE field that
-    # WRF pointedly does not hand down, and no such tree has been run.  That
-    # is the configuration this refusal now names, and it is the only one.
+    # TKE and never returns it.  gpuwm does exactly that for every parent:
+    # tke is not in gpuwm/core/nest_fields.py's forced-field inventory, so
+    # neither the child's boundary forcing nor the feedback reads or writes
+    # it, and each domain's DomainState allocates its own zero TKE from its
+    # own km_opt.  Under a parent carrying no TKE this tree has been run --
+    # a 402x402 250 m km_opt=2 PBL-off child under a km_opt=4 750 m parent,
+    # 7 h, status PASS (docs/superpowers/receipts/les/
+    # nested-les-km2-2026-08-02.md).  Under a km_opt=2 parent the child
+    # does the same thing; the parent's TKE simply stays on the parent, as
+    # it does in WRF.  That tree is admitted and the run says it is
+    # implemented but not yet verified against a reference.
     for dc in domains[1:]:
         parent = by_id[dc.parent_id].run
         if dc.run.km_opt == 2 and parent.km_opt == 2:
-            raise NotImplementedError(
-                f"km_opt=2 on domain grid_id = {dc.run.grid_id} whose "
-                f"parent grid_id = {parent.grid_id} also runs km_opt=2 is "
-                "refused: the parent then holds a prognostic TKE field "
-                "that WRF's Registry flags do not interpolate to the child "
-                "and do not feed back, and no such tree has been run here. "
-                "A km_opt=2 child under a parent that carries no TKE "
-                "(km_opt 1/3/4) is admitted and measured. Lift with "
-                "evidence, not with a code change alone.")
+            warn_once(
+                f"nested-km2-under-km2-{dc.run.grid_id}-{parent.grid_id}",
+                f"domain grid_id = {dc.run.grid_id} runs km_opt=2 under a "
+                f"km_opt=2 parent (grid_id = {parent.grid_id}): the child "
+                "cold-starts its own TKE and the parent keeps its own, as "
+                "in WRF, which neither interpolates TKE to a nest nor "
+                "feeds it back. Implemented, not yet verified against a "
+                "reference run.",
+                why="Registry.EM_COMMON:312 declares tke with no i and no "
+                    "f flag; gpuwm/core/nest_fields.py carries no tke "
+                    "row. The measured nested km_opt=2 tree had a "
+                    "km_opt=4 parent "
+                    "(docs/superpowers/receipts/les/"
+                    "nested-les-km2-2026-08-02.md).")
 
-    # SASE is not usable at nest width: the closure is measured
-    # single-domain (GABLS1) and no nested SASE tree has been run, so a
-    # multi-domain experiment selecting it anywhere -- even uniformly via
-    # [shared] -- is refused rather than silently integrating an
-    # unmeasured coupling.  (Per-domain 900 is already refused above.)
+    # SASE on a domain tree, uniform or per domain.  Each SASE domain runs
+    # its own closure on its own state: the prognostic subgrid energy
+    # e_sgs is allocated per DomainState and is not a nest-forced field,
+    # so a SASE nest cold-starts it at the realizability floor (as a
+    # single domain does at step 0) and never feeds it back.  Its lateral
+    # edges take the specified-domain boundary policy (e_sgs held at the
+    # floor across spec_bdy_width rows, the same rows excluded from the
+    # dynamic solve; PhysicsDriver._run_sase).  The closure's calibration
+    # is single-domain, so the run says the tree is implemented but not
+    # verified.
     if len(domains) > 1:
-        from gpuwm.config import SASE_PBL_SCHEME
-        for dc in domains:
-            if dc.run.bl_pbl_physics == SASE_PBL_SCHEME:
-                raise NotImplementedError(
-                    f"bl_pbl_physics = {SASE_PBL_SCHEME} (SASE) on domain "
-                    f"grid_id = {dc.run.grid_id} of a {len(domains)}-domain "
-                    "tree is refused: the SASE closure is selectable "
-                    "run-wide on a single domain only; it is not usable at "
-                    "nest width, and no nested SASE tree has been run. "
-                    "Lift with evidence, not with a code change alone.")
+        sase_ids = [dc.grid_id for dc in domains
+                    if dc.run.bl_pbl_physics == SASE_PBL_SCHEME]
+        if sase_ids:
+            listed = ", ".join(str(i) for i in sase_ids)
+            warn_once(
+                f"nested-sase-{listed}-of-{len(domains)}",
+                f"bl_pbl_physics = {SASE_PBL_SCHEME} (SASE) runs on "
+                f"grid_id {listed} of a {len(domains)}-domain tree: each "
+                "SASE nest cold-starts its own subgrid energy e and holds "
+                "it at the floor across its boundary rows, and no domain "
+                "hands e to another. Implemented, not yet verified "
+                "against a reference run.",
+                why="e_sgs is allocated per DomainState "
+                    "(gpuwm/core/state.py) and is not in "
+                    "gpuwm/core/nest_fields.py; the SASE closure's "
+                    "calibration cases (GABLS1 and the real-data "
+                    "confirmation runs) are single-domain.")
 
     # A dormant nest must be a LEAF: a child declared under it would need
     # cascading activation (its parent does not exist until a trigger
@@ -3938,7 +4180,7 @@ def _mixing_layer_depths(experiment: ExperimentConfig) -> tuple[float, str]:
 
 def resolve_auto_mix_isotropic(experiment: ExperimentConfig, auto_ids,
                                source: str) -> ExperimentConfig:
-    """Apply the mixing-length auto-switch (Drew, 2026-08-16) to one tree.
+    """Apply the mixing-length auto-switch (project ruling, 2026-08-16) to one tree.
 
     ``auto_ids`` are the grid_ids whose config left ``mix_isotropic``
     unset (or wrote ``"auto"``).  Each such domain that selects the

@@ -61,7 +61,11 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _fake_bridge(root: Path) -> str:
+_CIMIXR_GATE = ("PASS discipline=0 category=1 parameter=82 "
+                "level_type=105; finite/nonnegative/nonzero")
+
+
+def _fake_bridge(root: Path, *, qice_mapping: str = _CIMIXR_GATE) -> str:
     root.mkdir()
     (root / "gate.txt").write_text(
         "status\tPASS\n"
@@ -71,8 +75,7 @@ def _fake_bridge(root: Path) -> str:
         "soil_selected_per_time\t18\n"
         "window_zero_based_inclusive\ti=10..10 j=20..20\n"
         "window_shape\t1x1\n"
-        "qice_mapping\tPASS discipline=0 category=1 parameter=82 "
-        "level_type=105; finite/nonnegative/nonzero\n"
+        f"qice_mapping\t{qice_mapping}\n"
         "cross_time_inventory\tPASS exact selected keys/levels/grid\n")
     for hour in (0, 1):
         atmosphere = root / f"atmosphere-f{hour:02d}"
@@ -116,6 +119,38 @@ def test_loader_requires_external_manifest_binding_and_exact_shapes(tmp_path):
     with (root / "gate.txt").open("a") as stream:
         stream.write("edited\tverdict\n")
     with pytest.raises(ValueError, match="payload hash mismatch"):
+        load_hrrr_native_window(
+            root, 0, expected_manifest_sha256=manifest_hash)
+
+
+def test_loader_reads_a_bridge_that_bound_cloud_ice_to_cice(tmp_path):
+    """A wrfnat file from before July 2018 publishes cloud ice as CICE.
+
+    The bridge reads 0/6/0 where a file publishes no 0/1/82 and its gate
+    names the code it bound.  The loader refused that gate, so a cycle
+    the bridge had decoded still could not be loaded.
+    """
+    root = tmp_path / "bridge"
+    manifest_hash = _fake_bridge(
+        root, qice_mapping=("PASS discipline=0 category=6 parameter=0 "
+                            "level_type=105; finite/nonnegative/nonzero"))
+    snapshot = load_hrrr_native_window(
+        root, 0, expected_manifest_sha256=manifest_hash)
+    assert snapshot.fields["QI"].shape == (50, 1, 1)
+
+
+@pytest.mark.parametrize("qice_mapping", [
+    # Another cloud-category code, which QI is never read from.
+    "PASS discipline=0 category=6 parameter=29 level_type=105; x",
+    # The right code on the wrong level type.
+    "PASS discipline=0 category=6 parameter=0 level_type=100; x",
+    "FAIL discipline=0 category=1 parameter=82 level_type=105; x",
+])
+def test_loader_refuses_a_gate_binding_cloud_ice_to_any_other_code(
+        tmp_path, qice_mapping):
+    root = tmp_path / "bridge"
+    manifest_hash = _fake_bridge(root, qice_mapping=qice_mapping)
+    with pytest.raises(ValueError, match="none of the cloud-ice codes"):
         load_hrrr_native_window(
             root, 0, expected_manifest_sha256=manifest_hash)
 
@@ -165,6 +200,7 @@ def test_radius_corrected_aligned_d01_maps_to_integer_hrrr_indices():
     np.testing.assert_allclose(y, expected_y, rtol=0.0, atol=3.0e-10)
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_masked_bilinear_is_convex_and_renormalizes_valid_land_only():
     source_land = np.array([[1, 0], [1, 0]], dtype=bool)
     target_land = np.ones((1, 1), dtype=bool)
@@ -181,6 +217,7 @@ def test_masked_bilinear_is_convex_and_renormalizes_valid_land_only():
     assert report["fallback_target_count"] == 0
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_masked_bilinear_uses_bounded_nearest_valid_fallback():
     source_land = np.zeros((5, 5), dtype=bool)
     source_land[0, 0] = True
@@ -203,6 +240,7 @@ def test_masked_bilinear_uses_bounded_nearest_valid_fallback():
             target_land, fallback_radius=1)
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_unresolved_donor_search_reports_the_radius_that_works():
     """The refusal carries the facts remediation must be computed from.
 
@@ -242,6 +280,7 @@ def test_unresolved_donor_search_reports_the_radius_that_works():
     assert hopeless.value.unresolved_targets == ((0, 0),)
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_ohio_like_lake_edge_requires_explicit_radius_ten():
     source_land = np.zeros((12, 12), dtype=bool)
     source_land[0, 0] = True

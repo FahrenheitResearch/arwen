@@ -92,7 +92,7 @@ on exact agreement.  `tests/test_noahmp_frame_provenance.py::test_this_platforms
 
 ### The readings of record
 
-Four rows, one per compile platform, every one read with the instrument above
+Five rows, one per compile platform, every one read with the instrument above
 in a fresh process (fifteen units, 108 exports, zero launches) inside the
 environment whose NVRTC it names.
 
@@ -103,8 +103,8 @@ Three were read on the sm_120 reading machine, an NVIDIA GeForce RTX 5070 Ti
   `[ctk]` extra resolved in the cuda-toolkit 13.3.x window (13.3.1); the same
   compile platform as the standalone recording `SM120_NVRTC_13_3_33`.
 * **sm_120 at NVRTC 13.4.59** (read 2026-09-10) -- the compiler a fresh
-  `pip install gpuwm[gpu-cu13]` has installed since 2026-09-09, when
-  cuda-toolkit 13.4.1 became the `[ctk]` resolution and pinned
+  `pip install gpuwm[gpu-cu13]` installed from 2026-09-09 to 2026-09-16, when
+  cuda-toolkit 13.4.1 was the `[ctk]` resolution and pinned
   `nvidia-cuda-nvrtc 13.4.59`; read with that library first on the loader path.
 * **sm_120 at NVRTC 12.9.86** (read 2026-09-11) -- the compiler a fresh
   `pip install gpuwm[gpu-cu12]` installs, in a venv built from exactly that
@@ -128,11 +128,23 @@ on, which is a CUDA-12 install on a consumer Ampere card:
   sm_120 CUDA-12 receipt is
   `evidence/noahmp-composed-frames/noahmp-frames-sm120-nvrtc-12.9.86.json`.
 
-Every unit identity is the same across all four rows, so all four describe the
+The fifth is the compiler a fresh CUDA-13 install has run since 2026-09-16:
+
+* **sm_120 at NVRTC 13.4.92** (read 2026-09-28) -- cuda-toolkit 13.4.2
+  (uploaded 2026-09-16) became the `[ctk]` resolution and pins
+  `nvidia-cuda-nvrtc 13.4.92`. Read on an NVIDIA GeForce RTX 5090 (170 SMs)
+  and an RTX 5070 Ti (70 SMs), each in its own venv installed from
+  `cupy-cuda13x[ctk]>=14.0` (CuPy 14.2.0, build id CL-38855100). The two cards
+  gave the same frames and unit identities; the row names the RTX 5090. The
+  same sitting read the standalone census on both cards, recorded as
+  `SM120_NVRTC_13_4_92`. Receipts:
+  `evidence/frame-recordings-20260928-nvrtc-13.4.92/`.
+
+Every unit identity is the same across all five rows, so all five describe the
 units this tree holds. The frames are not the same, and the differences are the
 platform's:
 
-| Pricing key | sm_120, 13.3.33 and 13.4.59 | sm_120, 12.9.86 | sm_86, 12.9.86 |
+| Pricing key | sm_120, 13.3.33, 13.4.59 and 13.4.92 | sm_120, 12.9.86 | sm_86, 12.9.86 |
 |---|---:|---:|---:|
 | noahmp_glacier_composed | 456 | 456 | 456 |
 | noahmp_thermal_composed | 368 | 368 | 368 |
@@ -146,8 +158,9 @@ platform's:
 
 Reading that table, which is the calibration the fourth column exists for:
 
-* The 13.3 to 13.4 compiler step moved nothing on sm_120. That is a measured
-  fact about those two builds and licenses nothing about a third.
+* The 13.3 to 13.4 compiler steps moved nothing on sm_120, through 13.4.92.
+  That is a measured fact about those three builds and licenses nothing about
+  a fourth.
 * The CUDA-12 compiler moves `noahmp_leaves` on sm_120, 208 B to 272 B, and
   with it the two units whose maximum IS the leaves frame
   (`noahmp_energy_composed`, `noahmp_libm_slab_composed`).
@@ -162,9 +175,9 @@ Reading that table, which is the calibration the fourth column exists for:
   288 B. Architecture and compiler each move frames, which is why a row is a
   reading of the pair and why neither of these two rows licenses the other.
 
-The widest unit is `noahmp_glacier_composed` at 456 B on all four platforms,
+The widest unit is `noahmp_glacier_composed` at 456 B on all five platforms,
 under the 1,024 B fresh default stack every one of them reports, so Noah-MP
-adds **0 B** to the launch-time local-memory reservation on all four; a Noah-MP
+adds **0 B** to the launch-time local-memory reservation on all five; a Noah-MP
 configuration pays whatever the rest of its kernel set pays, exactly as a Noah
 one does. The refusal that stood since the 1.8.8 sweep was guarding a term that
 costs nothing on any platform yet read.
@@ -178,7 +191,8 @@ wheel carries no CUDA headers, so the package's GPU extras name
 `nvidia-cuda-nvrtc` to one exact build.  Whatever cuda-toolkit release is
 newest on the index the day pip runs is the compiler every fresh install
 compiles on -- the same RTX 5070 Ti machine read NVRTC 13.0.88, 13.3.33 and
-13.4.59 from three venvs.  That is why one row was not enough: with only the 13.3.33 row,
+13.4.59 from three venvs, and cuda-toolkit 13.4.2 moved it again to 13.4.92 on
+2026-09-16.  That is why one row was not enough: with only the 13.3.33 row,
 every install made after 2026-09-09 landed on 13.4.59 and refused Noah-MP on
 every card, including the card class this page names, while the README said
 it admitted.
@@ -189,8 +203,9 @@ So the resolution is declared in the tree and gated:
   per GPU extra, the requirement, the cuda-toolkit release it resolved to, the
   NVRTC build, the date, whether it is the current resolution, and the
   architectures on which this release admits Noah-MP for that build:
-  `gpu-cu13` -> 13.4.59 (current, sm_120), 13.3.33 (the window before it,
-  sm_120); `gpu-cu12` -> 12.9.86 (current, sm_120 and sm_86), which is what
+  `gpu-cu13` -> 13.4.92 (current, sm_120), 13.4.59 (2026-09-09 to
+  2026-09-16, sm_120), 13.3.33 (the window before that, sm_120);
+  `gpu-cu12` -> 12.9.86 (current, sm_120 and sm_86), which is what
   `gpu-cu12` and the `gpu` / `all` aliases install and what the packaged
   desktop runtime carries.  A CUDA-12 card of any other architecture is
   priced from the ceiling over the recorded platforms, with the basis
@@ -239,7 +254,8 @@ subprocess through `profile_from_device_probe`) and answers one of two ways:
   rule every standalone kernel gets on an unrecorded platform
   (`KERNEL_MAX_LOCAL_SIZE_BYTES` is itself that ceiling), and the basis reads
   "Noah-MP local frames priced from the ceiling over the recorded platforms
-  sm_120/13.3.33, sm_120/13.4.59, sm_120/12.9.86, sm_86/12.9.86; not measured
+  sm_120/13.3.33, sm_120/13.4.59, sm_120/12.9.86, sm_86/12.9.86,
+  sm_120/13.4.92; not measured
   on this card (no reading exists for its compile platform sm_89 / NVRTC
   12.9.86; a reading of this card's own platform is `python
   tools/measure_noahmp_frames.py measure --output <receipt.json>` run on it)".

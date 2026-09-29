@@ -779,7 +779,13 @@ fn validate_common(
         )
         .into());
     }
-    if message.bitmap.is_some() != allow_missing {
+    // A field that may have missing cells (soil and snow, undefined over
+    // water) is not required to have any.  The NOMADS subregion crop
+    // drops Section 6's bitmap when every cell of the crop is defined, so
+    // an all-land crop carries these fields with no bitmap at all; the
+    // old equality check refused that valid crop.  Missing cells still
+    // need an explicit bitmap: emit_values refuses any NaN outside one.
+    if message.bitmap.is_some() && !allow_missing {
         return Err(format!(
             "GFS missing-value policy mismatch: bitmap={} expected={allow_missing}",
             message.bitmap.is_some()
@@ -2082,6 +2088,86 @@ mod tests {
         assert!(emit_values_with_surface_support(&values, present.as_deref(), PRESSURE_SPECS[0], 0.0, true, &mut Vec::new()).is_err());
         let mut incorrect = present.unwrap(); incorrect[0] = true;
         assert!(emit_values_with_surface_support(&values, Some(&incorrect), SOIL_SPECS[0], 0.0, true, &mut Vec::new()).is_err());
+    }
+
+    /// A real NOMADS subregion crop over central Nebraska: 2x2 cells, all
+    /// land, so the crop carries no bitmap on any record, soil and snow
+    /// included.  Provenance beside it in tests/fixtures/gfs-all-land.
+    fn all_land_crop_fixture() -> Grib2File {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/gfs-all-land/gfs-20260927t12z-f000-inland-crop.grib2");
+        let bytes = fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(
+            hex_sha256(&bytes),
+            "a7f47bf20d4e5c51e5c65c769285fd4e2ce8b226449229d0a009d7b8e0e1e979"
+        );
+        Grib2File::from_bytes(&bytes).unwrap()
+    }
+
+    #[test]
+    fn a_field_that_may_have_missing_cells_is_admitted_without_a_bitmap() {
+        // Permission for missing cells is not a requirement to have some.
+        validate_common(&valid_message(0), "2026-07-20 00:00:00", 0, 81, true).unwrap();
+        let mut marked = valid_message(0);
+        marked.bitmap = Some(vec![true, false, true, true]);
+        validate_common(&marked, "2026-07-20 00:00:00", 0, 81, true).unwrap();
+        // A field that may not have missing cells still refuses a bitmap.
+        let refusal = validate_common(&marked, "2026-07-20 00:00:00", 0, 81, false)
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("missing-value policy mismatch"), "{refusal}");
+    }
+
+    #[test]
+    fn a_missing_cell_without_a_bitmap_is_still_refused() {
+        // Admitting the bitmap's absence admits no undeclared missing cell.
+        let mut bytes = Vec::new();
+        let refusal = emit_values(
+            &[0.25, f64::NAN, 0.25, 0.25],
+            None,
+            spec_named("GFS_SM000010"),
+            0.0,
+            &mut bytes,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(refusal.contains("NaN outside an explicit missing bitmap cell"), "{refusal}");
+    }
+
+    #[test]
+    fn an_all_land_nomads_crop_decodes_its_soil_and_snow() {
+        let file = all_land_crop_fixture();
+        let levels = observed_pressure_levels(&file).unwrap();
+        let selected = inventory(&file, "2026-09-27 12:00:00", 0, 81, &levels).unwrap();
+        assert!(!source_is_all_water(&file, &selected).unwrap());
+        let mut names = Vec::new();
+        for field in selected.selected.iter().filter(|field| field.spec.allow_missing) {
+            let message = &file.messages[field.index];
+            assert!(message.bitmap.is_none(), "{} carries a bitmap", field.name);
+            let (values, present) = scan_normalized(message).unwrap();
+            let mut bytes = Vec::new();
+            let summary = emit_values_with_surface_support(
+                &values,
+                present.as_deref(),
+                field.spec,
+                field_quantum(message),
+                false,
+                &mut bytes,
+            )
+            .unwrap();
+            assert_eq!((summary.finite, summary.missing), (4, 0), "{}", field.name);
+            assert_eq!(bytes.len(), 4 * 4);
+            names.push(field.name);
+        }
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "GFS_SM000010", "GFS_SM010040", "GFS_SM040100", "GFS_SM100200",
+                "GFS_ST000010", "GFS_ST010040", "GFS_ST040100", "GFS_ST100200",
+                "SNOW", "SNOWH",
+            ]
+        );
     }
 
     #[test]

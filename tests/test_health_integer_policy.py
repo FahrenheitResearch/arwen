@@ -235,6 +235,15 @@ def _bind_host_arrays(monkeypatch):
 
     ``monkeypatch`` undoes all of it, so the ``gpu``-marked test later in the
     same session still gets the real CuPy.
+
+    The sweep picks gpuwm modules by their ``sys.modules`` KEY and touches
+    no other module.  ``cupy.testing`` is an ``importlib.util.LazyLoader``
+    module, and any attribute read on one (``__name__`` included) runs its
+    import; run while the stub stood in for ``cupy``, that bound
+    ``cupy.testing._array`` to the stub for the rest of the process, and
+    the next file in the same worker to call ``cp.testing`` failed inside
+    ``asnumpy`` (tests/test_ruc_runtime.py, whenever xdist scheduled it
+    after this file).
     """
     import sys
 
@@ -246,9 +255,8 @@ def _bind_host_arrays(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", stub)
     monkeypatch.setitem(sys.modules, "cupy.cuda", cuda)
     monkeypatch.setitem(sys.modules, "cupy.cuda.runtime", runtime)
-    for module in list(sys.modules.values()):
-        name = getattr(module, "__name__", "")
-        if not name.startswith("gpuwm."):
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("gpuwm.") or module is None:
             continue
         if getattr(module, "cp", None) is not None:
             monkeypatch.setattr(module, "cp", np, raising=False)
@@ -362,6 +370,38 @@ def test_the_two_policy_kinds_classify_differently():
     # An exclusion is skipped, not checked; None is not 0.
     for name in sorted(GPU_INTEGER_EXCLUSIONS):
         assert gpu_integer_policy(name, np.int32) is None
+
+
+def test_binding_host_arrays_loads_no_lazily_imported_module(
+        monkeypatch, tmp_path):
+    """The host binding reaches gpuwm modules only; a lazy module stays unloaded.
+
+    A LazyLoader module (``cupy.testing`` is one) runs its import on the first
+    attribute read.  If the binding's sweep reads one while the stub stands in
+    for ``cupy``, the module binds the stub for good and a later
+    ``cp.testing`` call in the same process fails.  A lazy stand-in is
+    registered here and must come out of the binding still unloaded.
+    """
+    import importlib.util
+    import sys
+    import types
+
+    probe = tmp_path / "gpuwm_lazy_probe_module.py"
+    probe.write_text("LOADED = True\n", encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "gpuwm_lazy_probe_module", probe)
+    loader = importlib.util.LazyLoader(spec.loader)
+    spec.loader = loader
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "gpuwm_lazy_probe_module", module)
+    lazy = type(module)
+    assert lazy is not types.ModuleType
+    with monkeypatch.context() as patch:
+        _bind_host_arrays(patch)
+    # type() reads the object's class without an attribute lookup, so it
+    # does not trigger the load it is checking for.
+    assert type(module) is lazy, "the binding loaded a lazy module"
 
 
 def test_removing_the_plume_top_policy_restores_the_launch_failure(

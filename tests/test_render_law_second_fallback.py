@@ -1,6 +1,6 @@
 """The render law permits ONE fallback, and `gpuwm render` is not it.
 
-CLAUDE.md, Drew 2026-08-06: "Weather-field product plots come from the
+The render law, 2026-08-06: "Weather-field product plots come from the
 real Rust renderer ``rw_wrfbatch`` driven through ``gpuwm.rustwx`` ...
 ``da_nowcast_render.py`` is a fallback only.  matplotlib, ``wrf.plot``
 and cartopy are not allowed for weather fields".
@@ -160,7 +160,7 @@ def test_the_chain_gate_reports_no_engine_rather_than_matplotlib(monkeypatch):
 
 
 def test_an_explicit_matplotlib_request_announces_itself_as_a_workaround():
-    """Opt-in is not silence: `Fixed means default` (Drew 2026-08-10).
+    """Opt-in is not silence: `Fixed means default` (project ruling, 2026-08-10).
 
     The engine is reachable only by name now, and every run of it says
     so in the project's own workaround voice, so a reader can never

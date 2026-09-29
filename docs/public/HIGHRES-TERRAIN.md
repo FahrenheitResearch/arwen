@@ -1,19 +1,60 @@
-# High-resolution terrain, worldwide
+# High-resolution terrain and land cover, worldwide
 
-The default static geography everywhere is `topo_gmted2010_30s` — GMTED2010
-at 30 arc-seconds, roughly 900 m. That is fine for a 3 km domain and much
-too coarse for a 100 m one, where a whole ridge can fall inside a single
-source cell.
+The baseline static geography is `topo_gmted2010_30s`, GMTED2010 at 30
+arc-seconds (roughly 900 m), with MODIS land use at the same 30
+arc-seconds. That is fine for a 3 km domain and much too coarse for a 100 m
+one, where a whole ridge can fall inside a single source cell and a town
+arrives as a few 1 km squares.
 
-`[static.highres]` replaces it with real high-resolution sources. Until now
-that only worked in the United States. It now works internationally for
-**terrain**.
+`[static.highres]` replaces them with real high-resolution sources:
+terrain, land use and soil, worldwide.
+
+## The default for domains at 1 km or finer
+
+A configuration that declares no `[static.highres]` block still gets
+high-resolution terrain on every domain at 1 km or finer: Copernicus DEM
+GLO-30, terrain only. Coarser domains keep the 30-arc-second baseline, so
+a 2.25 km parent over a 750 m child keeps its terrain and the child takes
+GLO-30. Copernicus is the default source because 3DEP stages no tile over
+the sea or outside the United States, and one source serves every sub-km
+domain of the tree. Land use and soil stay on the baseline; the default
+land-cover file alone is 2.28 GB.
+
+Before it downloads anything the console says what it will fetch:
+
+```
+[static.highres] d02: grid spacing 750 m is at or finer than 1000 m, so its terrain comes from copernicus-dem-glo30; 2 one-degree tile(s), 0 already cached, 2 to download (about 80 MB; all-sea tiles are not published and download nothing); cache ~/.cache/gpuwm/highres-cache.  This is the default for domains at 1000 m or finer; a declared [static.highres] block replaces it: enabled = false keeps the 30-arc-second baseline, and its cache_root moves the cache
+```
+
+Tiles are about 40 MB each and are cached per user
+(`%LOCALAPPDATA%\gpuwm\highres-cache` on Windows,
+`$XDG_CACHE_HOME/gpuwm/highres-cache` or `~/.cache/gpuwm/highres-cache`
+elsewhere), so the next case over the same ground downloads nothing.
+
+The rule is one row of `HIGHRES_DEFAULT_BY_DX` in
+`gpuwm/static/highres_production.py`, keyed on grid spacing. A declared
+block replaces it and is taken as written:
+
+```toml
+[static.highres]
+enabled = false            # keep the 30-arc-second terrain everywhere
+cache_root = "highres-cache"
+```
+
+```toml
+[static.highres]
+enabled = true
+cache_root = "D:/gpuwm-cache/highres"
+max_dx_m = 1000.0          # only domains at or finer than 1 km
+```
 
 The same block is consumed by ordinary runs and prepared GFS, ERA5,
 caller-mapped, and native HRRR inputs. It applies before initialization to
 the root, children, and any sealed moving-domain static corridors. Prepared
 receipts bind the requested settings, date, grid placement, and resulting
-static bytes. A reused preparation must retain that binding; changing an
+static bytes. The fetch folder (`cache_root`) is not part of that binding,
+so a sealed preparation can be joined, extended and run on another machine.
+A reused preparation must retain that binding; changing an
 active overlay requires rebuilding its static preparation. Relative cache
 paths stay relative to the original case file when a prepared bundle writes
 its own configuration. `enabled = false` retains the baseline, and
@@ -26,11 +67,12 @@ its own configuration. `enabled = false` retains the baseline, and
 | Terrain (default abroad) | Copernicus DEM GLO-30 | ~30 m | 90 S to 84 N, all longitudes |
 | Terrain (on request) | SRTM 1 arc-second v3 | ~30 m | 56 S to 60 N, all longitudes |
 | Terrain (default in the US) | USGS 3DEP | ~10 m | conterminous United States |
-| Land cover | Annual NLCD | 30 m | **conterminous United States only** |
-| Soil texture | SoilGrids v2 | 250 m | global, but only wired into the US path today |
+| Land cover (default) | CGLC-MODIS-LCZ | 100 m, 2018 | 60 S to 78 N, all longitudes |
+| Land cover (on request) | Annual NLCD | 30 m, year nearest the case | conterminous United States |
+| Soil texture | SoilGrids v2 | 250 m | global |
 
-Neither Copernicus DEM nor SRTM needs an account, a token or an API key.
-They are fetched by plain anonymous HTTPS. This is deliberate: the program
+None of them needs an account, a token or an API key. They are fetched by
+plain anonymous HTTPS. This is deliberate: the program
 already asks for one set of credentials (ERA5 through CDS) and that single
 requirement is its largest source of user friction. A second one would be a
 worse product.
@@ -76,7 +118,9 @@ names the extra that adds them.
 
 One 40 x 40 km domain at 1 km over the Bernese Alps, terrain from
 Copernicus DEM GLO-30. It costs about 80 MB of tiles (two 1-degree tiles)
-and runs in well under a minute on a warm cache.
+and runs in well under a minute on a warm cache. The example asks for
+terrain alone (`fields = "terrain"`); leave that line out and the same
+domain also takes land use and soil (see *Land cover, worldwide* below).
 
 You need the 30-arc-second baseline first -- high-resolution terrain
 *replaces a field inside* a baseline static build, it does not stand
@@ -164,6 +208,7 @@ output_title = "alps terrain demo"
 [static.highres]
 enabled = true
 cache_root = "highres-cache"
+fields = "terrain"
 ```
 
 Build it:
@@ -176,8 +221,8 @@ You should see the overlay report itself, name its source, and say what it
 left alone:
 
 ```
-[static.highres] d01: APPLIED (terrain only, copernicus-dem-glo30; cells replaced: 1600 of 1600; receipt .../static_highres_..._d01_auto.json)
-[static.highres] d01: land use and soil remain the 30-arc-second baseline (no global land-cover source is wired)
+[static.highres] d01: APPLIED (terrain only, copernicus-dem-glo30; cells replaced: 1600 of 1600; receipt .../static_highres_..._d01_auto_lc-auto.json)
+[static.highres] d01: land use and soil remain the 30-arc-second baseline (fields = "terrain" was requested)
 static alps_terrain_demo: alps_static.npz
 ```
 
@@ -192,46 +237,57 @@ python -c "import numpy; h=numpy.load('alps_static.npz')['HGT_M']; print(h.shape
 Every run writes a receipt under `cache_root/receipts/` naming the source,
 the vertical datum, the tiles fetched and the cell count replaced.
 
-## The accurate limitation: land cover is United States only
+## Land cover, worldwide
 
-There is no global land-cover source wired, so **outside the United States a
-high-resolution run replaces terrain and nothing else**. Land use, soil,
-green fraction, albedo, LAI and deep-soil temperature all remain the
-30-arc-second baseline.
+The default land cover is **CGLC-MODIS-LCZ** (Demuzere, He, Martilli and
+Zonato 2023), the 100 m global land cover WRF and WPS ship from version
+4.5: the Copernicus Global Land Service map of 2018 in WRF's MODIS legend,
+with the urban areas drawn as Local Climate Zones from the global LCZ map.
+It is published from 60 S to 78 N at every longitude.
 
-You are told this three ways and never left to infer it:
+It is one 2.28 GB GeoTIFF. The first preparation with a given
+`cache_root` downloads it (resumable, and it says so on the console);
+every later one reads it from there. The download is checked against the
+published size and MD5 and a pinned SHA-256; a file that fails is removed
+and fetched again next time, never used. Each domain reads only the
+window it covers, one byte per pixel.
 
-- the console line says `APPLIED (terrain only, copernicus-dem-glo30; ...)`
-  followed by an explicit sentence naming what stayed at 30 arc-seconds;
-- the receipt carries `"mode": "terrain"`, a `scope_statement` in plain
-  English, and a `fields_retained_30s` list;
-- `fields = "auto"` resolves to `"terrain"` abroad, and asking for
-  `fields = "all"` abroad refuses by name rather than quietly degrading.
+What the engine does with it:
 
-Terrain alone is still worth having. It is the field that sets where air is
-lifted, where cold pools drain and where a 100 m nest's vertical coordinate
-sits — and it is the field the 900 m baseline damages most.
+- **Categories 1 to 21 are WRF's own** and pass through as they are.
+- **The Local Climate Zones (categories 51 to 61) become WRF's urban
+  category 13.** They are the built zones LCZ 1 to 10 and LCZ E (bare rock
+  or paved), numbered 51 to 61 in WRF since 4.4.2 (31 to 41 before).
+  WRF's Noah and Noah-MP treat them as urban when no urban canopy scheme
+  runs, and the engine runs none, so the zones are folded into category
+  13 before the area fractions are taken. The model
+  therefore keeps its 21 land-use categories, and every table and reader
+  keyed on them (LANDUSE, VEGPARM and SOILPARM, Noah, Noah-MP, RUC, the
+  wrfout attributes) is unchanged. One difference from WRF: WRF picks a
+  cell's dominant class over all 61 categories and maps it to urban
+  afterwards, so a cell whose built area is split over several zones can
+  come out natural there and urban here. Here the zones count together, as
+  NLCD's four developed classes always have.
+- **Water comes from the map itself.** It separates the sea (17) from
+  lakes and rivers (21) at 100 m, so no 30-arc-second split is made. Past
+  its coastal zone the open sea is unclassified (0); those cells, like
+  everything poleward of 78 N or 60 S, take the 30-arc-second baseline
+  (*Where a source stops*).
+- **The map represents 2018.** A case in another year says so in the
+  receipt, in years, as any modern map used for a past date does.
 
-### Why not ESA WorldCover?
+Annual NLCD stays available inside the United States with
+`landcover_source = "annual-nlcd"`: 30 m and matched to the case year
+(1985 to 2024). It has one open-water class, so its water is split
+against the domain's own 30-arc-second water field, sea to category 17
+and inland water to 21, with both counts in the receipt. A domain wholly
+outside the United States asking for it is refused by name.
 
-ESA WorldCover is the obvious global candidate: 10 m, CC-BY-4.0, anonymous
-on AWS Open Data, 60 S to 84 N, and a legend small enough to crosswalk
-(tree cover, shrubland, grassland, cropland, built-up, bare/sparse, snow and
-ice, permanent water bodies, herbaceous wetland, mangroves, moss and lichen).
-
-The obvious blocker used to be class 80, *permanent water bodies*, which,
-exactly like NLCD's class 11, does not distinguish a lake from the sea.
-That is no longer a blocker: the ocean/lake split is decided against the
-domain's own 30-arc-second baseline water field, which is already on the
-model grid and already separates WRF ocean category 17 from inland lakes,
-so a coastal domain runs and the receipt says how many cells took each
-branch. WorldCover would inherit the same rule unchanged.
-
-What remains is ordinary wiring: an AWS Open Data tile enumerator and
-fetcher for the WorldCover grid, a class-80-to-MODIS-21 crosswalk table
-alongside the NLCD one, and the reference-year handling (WorldCover is
-2020/2021, so pre-2020 cases carry the same named anachronism this path
-already records for NLCD).
+The receipt's `landcover` entry names the source and year, the pixel
+count of every raw class in the domain's window, how many pixels were
+folded into the urban category and how many were unclassified, and the
+`coverage` entry says for every field how many cells took the source,
+how many were blended at a coverage edge and how many kept the baseline.
 
 ## Configuration
 
@@ -241,20 +297,63 @@ enabled    = true
 cache_root = "D:/gpuwm-cache/highres"
 
 # Optional. Defaults shown.
-terrain_source = "auto"   # auto | copernicus-dem-glo30 | srtm-gl1 | usgs-3dep-13as
-fields         = "auto"   # auto | all | terrain
-on_refuse      = "error"  # error | fallback-30s
+terrain_source   = "auto"   # auto | copernicus-dem-glo30 | srtm-gl1 | usgs-3dep-13as
+landcover_source = "auto"   # auto | cglc-modis-lcz | annual-nlcd
+fields           = "auto"   # auto | all | terrain
+on_refuse        = "error"  # error | fallback-30s
+max_dx_m         = 1000.0   # absent: every domain; else domains at or finer
 ```
 
 `terrain_source = "auto"` uses 3DEP inside the conterminous United States
-and Copernicus DEM GLO-30 everywhere else. Naming a source pins it, and a
-domain that leaves that source's published coverage refuses with the source
-id, the footprint and how far past the edge it went.
+and Copernicus DEM GLO-30 everywhere else. Naming a source pins it; a
+domain wholly outside that source's published coverage refuses with the
+source id, the footprint and how far past the edge it lies, and a domain
+that only partly leaves it is built, the cells beyond taking the baseline
+terrain.
 
-`fields = "auto"` selects `"all"` inside the United States envelope and
-`"terrain"` outside it. `fields = "terrain"` is also valid inside the United
-States — that is how the two terrain sources are cross-validated against
+`landcover_source = "auto"` uses CGLC-MODIS-LCZ everywhere;
+`"annual-nlcd"` pins the United States collection.
+
+`fields = "auto"` selects `"all"` wherever the land-cover source reaches
+part of the footprint (60 S to 78 N for the default) and `"terrain"` where
+it reaches none of it. `fields = "terrain"` is also valid inside the United
+States: that is how the two terrain sources are cross-validated against
 each other on the same domain.
+
+## Where a source stops
+
+Every source is published over its own area: CGLC-MODIS-LCZ stops at 78 N
+and 60 S and leaves the open sea past its coastal zone unclassified,
+Annual NLCD covers the United States and a strip of near-shore water, 3DEP
+stages no tile over open sea or wholly outside the country, and the global
+DEMs publish no all-water tiles. A cell outside a source's coverage takes the
+30-arc-second baseline for that field, exactly what the engine uses
+without `[static.highres]`: the sea stays the baseline's sea (its own
+land/water mask and land-use index), terrain keeps the baseline's height,
+and soil keeps the baseline's texture.
+
+The hand-over is not a cliff. Over the five cells in from a coverage edge
+the high-resolution value is blended with the baseline the way WRF blends
+a nest's terrain into its parent's: the k-th cell in carries k/6 of the
+high-resolution value. Terrain and land-use fractions therefore step no
+more at the edge than they do anywhere else.
+
+The console says so once; this is a 1 km parent reaching about 110 km out
+to sea, with the default sources:
+
+```
+[static.highres] d01: APPLIED (terrain usgs-3dep-13as, land use cglc-modis-lcz-2018, soil soilgrids-v2; cells replaced: 39072 of 51076; receipt .../static_highres_..._d01_auto_lc-auto.json)
+[static.highres] d01: WARNING: part of this domain lies outside the high-resolution sources and takes the 30-arc-second baseline there: terrain (usgs-3dep-13as) 10035 of 51076 cells, lat 39.68..40.71 lon -74.07..-72.73; soil 0-30 cm (soilgrids-v2) 1792 of 51076 cells, ...
+```
+
+CGLC-MODIS-LCZ classifies the sea over this whole domain, so land use has
+no cell outside it; with `landcover_source = "annual-nlcd"` the same
+domain has 10031 land-use cells past the collection's offshore edge, and
+they keep the baseline's ocean. The receipt's `coverage` entry gives, per
+field, the source, the cells outside its coverage, the cells blended and
+the latitude/longitude bounds of the cells outside, and its `cell_groups`
+say what every cell took. Only a cell that neither the source nor the baseline
+covers is refused, naming the field, the count and where the cells are.
 
 ## Choosing between Copernicus DEM and SRTM
 
@@ -357,14 +456,15 @@ It reads the 30-arc-second baseline from `$WPS_GEOG`, or from
 - **Coverage is per source.** Each dataset declares its own envelope and the
   footprint is checked against the source actually selected, so a refusal
   says which dataset does not reach where — not merely that something was
-  out of bounds.
-- **Unpublished tiles.** Neither global product publishes all-water tiles; a
-  404 is the product saying "this square is sea". That is one source making
-  a claim about another source's land mask, so it is checked: an absent tile
-  is filled with sea level only where the domain's own baseline mask already
-  says water, and otherwise the run refuses naming the tile and the number
-  of land cells underneath it. A footprint where *every* tile is absent is
-  open ocean and refuses.
+  out of bounds. Only a footprint wholly outside a requested source is
+  refused; one partly outside is built on the baseline beyond the edge.
+- **Unpublished tiles.** Neither global product publishes all-water tiles,
+  and 3DEP stages none over open sea or outside the country. An absent
+  tile is not read as sea level: it stays no data in the mosaic, and the
+  cells under it keep the baseline terrain, whether the baseline calls
+  them sea or land. The absent tile ids are listed in the receipt. A
+  footprint where *every* tile is absent runs on the baseline terrain and
+  says so.
 - **Antimeridian.** A domain straddling 180 degrees is a domain, not an
   error. Its footprint is reported as a CONTINUED longitude range (for
   example 179.25 to 180.75 rather than -180 to 180), the one-degree tile
@@ -392,16 +492,20 @@ It reads the 30-arc-second baseline from `$WPS_GEOG`, or from
   until the corners span less than 180 degrees. Both cases keep the second
   way out, which is to leave `[static.highres]` disabled and run on the
   30-arc-second baseline.
-- **Coast safety.** The land-cover crosswalk has one open water class and
-  cannot tell a lake from the sea, so the split is made against the
+- **Coast safety.** Each land-cover source declares its water rule.
+  CGLC-MODIS-LCZ separates the sea (17) from inland water (21) itself and
+  its classification stands. Annual NLCD has one open water class and
+  cannot tell a lake from the sea, so its split is made against the
   domain's own 30-arc-second baseline water field: open water on a cell the
   baseline calls WRF ocean category 17 stays ocean, and everywhere else it
-  becomes lake category 21. The receipt carries both counts and names the
-  discriminating field. Terrain-only runs no land-use rule at all
+  becomes lake category 21. The receipt carries the counts and names the
+  rule. Terrain-only runs no land-use rule at all
   (`LANDMASK`, `LU_INDEX` and `LANDUSEF` pass through from the baseline
   untouched), so the distinction is never made there and nothing is split.
 - **Zero cells replaced is a refusal.** An enabled feature that changed
-  nothing must never read afterwards as a feature that ran.
+  nothing must never read afterwards as a feature that ran. A domain no
+  terrain or land-cover source reaches at all is the one exception: there
+  was nothing to change, and the warning and the receipt state it.
 
 ## Attribution
 
@@ -415,5 +519,9 @@ every receipt.
 - **SRTMGL1 v3** — NASA JPL 2013, doi:10.5067/MEaSUREs/SRTM/SRTMGL1.003;
   distributed by OpenTopography, doi:10.5069/G9445JDF.
 - **USGS 3DEP** — public domain.
+- **CGLC-MODIS-LCZ**: Demuzere M., He C., Martilli A. and Zonato A.
+  (2023), doi:10.5281/zenodo.7670653, CC BY 4.0; built from the Copernicus
+  Global Land Service LC100 v3 (Buchhorn et al. 2020) and the global Local
+  Climate Zone map (Demuzere et al. 2022, Earth Syst. Sci. Data 14, 3835).
 - **Annual NLCD** — public domain (MRLC).
 - **SoilGrids v2** — CC-BY-4.0 (ISRIC).

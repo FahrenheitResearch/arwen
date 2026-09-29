@@ -29,6 +29,10 @@ MAX_RENDER_SELECTIONS = 8
 #: Render options this door carries. Every one of them keys the publication
 #: identity, so two readers asking for two of them never overwrite each other.
 RENDER_OPTIONS = ("profile", "products", "width", "height")
+#: The job's record that the renderer drawing its galleries had no map
+#: assets (:func:`_note_map_gap`), read into every status written after it.
+MAP_GAP = "render-warning.json"
+MAP_GAP_SCHEMA = "arwen.native-plot-render-warning.v1"
 
 
 def _root(workspace, job):
@@ -44,9 +48,15 @@ def render_selection(record, request=None):
     silently taking the one a different request published.
     """
     request = request or {}
-    products = (request["products"] if "products" in request
-                else viewer.selectors(record.get("products")))
-    selection = viewer._selection(request.get("profile", viewer.PROFILE), products)
+    profile = request.get("profile", viewer.PROFILE)
+    if "products" in request:
+        selection = viewer._selection(profile, request["products"])
+    elif profile == viewer.PROFILE:
+        # The run's own set, read as the background preparer reads it, so a
+        # run that asked only for sections gets no gallery of default maps.
+        selection = viewer.job_selection(record)
+    else:
+        selection = viewer._selection(profile, viewer.map_selectors(record.get("products")))
     size = {}
     for name, fallback in (("width", RENDER_WIDTH), ("height", RENDER_HEIGHT)):
         value = fallback if request.get(name) is None else request[name]
@@ -108,8 +118,51 @@ def _published(root, job, event, authority):
     return value
 
 
+def _note_map_gap(plots_root):
+    """Record, before a frame is drawn, that the renderer has no map assets.
+
+    THE BREAKAGE: on a machine whose install lost its map files, every
+    gallery picture comes back with no coastlines, borders or state lines
+    and the job's status says nothing.  A run's own renders report this as
+    a ``render_basemap_missing`` event; this watcher writes no events, so
+    it keeps the same sentence in a record beside its status.  The record
+    is kept once written, because the pictures already drawn still lack
+    their maps.  Never raises: a check about the picture must not stop it.
+    """
+    path = plots_root / MAP_GAP
+    try:
+        if path.is_file():
+            return
+        from gpuwm.render import BASEMAP_MISSING_CODE, renderer_basemap_gap
+        gap = renderer_basemap_gap()
+        if gap is not None:
+            legacy._write(path, {"schema": MAP_GAP_SCHEMA, "code": BASEMAP_MISSING_CODE, "message": gap})
+    except Exception:  # noqa: BLE001 - a status note never fails a gallery
+        return
+
+
+def _map_gap(plots_root):
+    """The status field :func:`_note_map_gap` recorded, or nothing.
+
+    ``render_warning`` is the field a run's own status fills from its
+    ``render_basemap_missing`` event, so a reader shows both the same way.
+    """
+    path = plots_root / MAP_GAP
+    try:
+        if not path.is_file():
+            return {}
+        value, _ = ra._raw(path, 64 * 1024)
+    except (OSError, ValueError):
+        return {}
+    message = value.get("message")
+    if value.get("schema") != MAP_GAP_SCHEMA or not isinstance(message, str) or not message.strip():
+        return {}
+    return {"render_warning": " ".join(message.split())[:1600]}
+
+
 def _render(root, record, bound, event, authority, entry, spacing, selection):
     from gpuwm.render import require_renderer
+    from gpuwm.rustwx import renderer_env
     source = ra._inside(entry["source_path"], bound[0])
     if list(ra._stamp(source)) != entry["source_stamp"]:
         raise ValueError("WRF output changed after compact preparation")
@@ -124,9 +177,12 @@ def _render(root, record, bound, event, authority, entry, spacing, selection):
         "width": selection["width"], "height": selection["height"]}
     legacy._write(request_path, request)
     with (root / f"render-{event['sequence']:012d}.log").open("ab", buffering=0) as log:
+        # renderer_env hands an installed renderer the map files the
+        # gpuwm-data package carries; without it a wheel's renderer finds
+        # none and draws every gallery picture with no coastlines or borders.
         process = subprocess.run([str(require_renderer()), "--render-store-request", str(request_path),
             "--render-store-result", str(result_path)], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-            timeout=1800, check=False)
+            timeout=1800, check=False, env=renderer_env())
     if process.returncode:
         raise ValueError(f"Native plot rendering exited {process.returncode}; see {log.name}")
     result, _ = ra._raw(result_path, viewer.MAX_METADATA_BYTES)
@@ -213,6 +269,19 @@ def work_once(workspace, job, *, render=True, _completion=None, selection=None):
     selection = own if selection is None else selection
     root = _selection_root(plots_root, selection)
     counts = {"committed": len(commits), "ready": 0, "failed": 0, "pending": 0, "panels": 0}
+    if not viewer.has_map_products(selection):
+        # No map to draw and no compact store to ask for: the note is the answer.
+        summary = {"schema": STATUS_SCHEMA, "job_id": job, "simulation_state": state["state"], **counts,
+                   "done": state["state"] in TERMINAL, "state": "no_map_products", "note": selection["note"],
+                   "render_id": selection["render_id"], "selection_products": [],
+                   "width": selection["width"], "height": selection["height"],
+                   "updated_unix_ms": int(time.time() * 1000)}
+        if bound:
+            summary["run_id"] = bound[2]["run_id"]
+        legacy._write(root / "status.json", summary)
+        if selection["render_id"] == own["render_id"]:
+            legacy._write(plots_root / "status.json", summary)
+        return summary
     candidate, wanted = None, None
     for event, authority in reversed(commits):
         published = _published(root, job, event, authority)
@@ -242,12 +311,16 @@ def work_once(workspace, job, *, render=True, _completion=None, selection=None):
         viewer.ensure(workspace, job, [{"profile": selection["profile"], "products": selection["products"],
                                         "selection_id": selection["selection_id"], **wanted}])
     done = state["state"] in TERMINAL and counts["pending"] == 0
+    if candidate and render:
+        # Before the status below is written, so the pass that draws the
+        # first picture with no maps already says so.
+        _note_map_gap(plots_root)
     summary = {"schema": STATUS_SCHEMA, "job_id": job, "simulation_state": state["state"], **counts,
         "done": done, "state": "complete_with_errors" if done and counts["failed"] else "complete" if done
             else "rendering" if candidate else "waiting_for_compact_stores",
         "render_id": selection["render_id"], "selection_products": selection["products"],
         "width": selection["width"], "height": selection["height"],
-        "updated_unix_ms": int(time.time() * 1000)}
+        "updated_unix_ms": int(time.time() * 1000), **_map_gap(plots_root)}
     if bound:
         summary["run_id"] = bound[2]["run_id"]
     if candidate:
@@ -370,7 +443,12 @@ def catalog(request, workspace):
     ensure(workspace, job)
     value = {"schema": SCHEMA, "job_id": job, "domain": domain, "sequence": sequence,
         "waiting": True, "render_id": selection["render_id"], "selection_products": selection["products"],
-        "selection_basis": viewer.selection_basis(selection["profile"], selection["products"]),
+        "selection_basis": (viewer.selection_basis(selection["profile"], selection["products"])
+                            if viewer.has_map_products(selection) else selection["note"]),
+        # False for a run that asked only for sections: its gallery never
+        # publishes, so a reader answers with the basis note instead of
+        # "still being prepared" for as long as it keeps asking.
+        "map_products": viewer.has_map_products(selection),
         "width": selection["width"], "height": selection["height"],
         "progress": status(workspace, job, selection)}
     try:

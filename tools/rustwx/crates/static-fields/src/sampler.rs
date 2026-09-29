@@ -355,7 +355,7 @@ impl<'g> DomainSampler<'g> {
                 let (la32, lo32) = twin.ij_to_latlon32(x as f32, y as f32);
                 lat32.push(la32);
                 lon32.push(lo32);
-                let (la64, lo64) = grid.ij_to_latlon(x, y);
+                let (la64, lo64) = grid.sampling_ij_to_latlon(x, y);
                 lat64.push(la64);
                 lon64.push(lo64);
             }
@@ -368,7 +368,7 @@ impl<'g> DomainSampler<'g> {
                 let x = (0.5 - halo as f64) + i as f64;
                 let (la32, _) = twin.ij_to_latlon32(x as f32, y as f32);
                 lat_c.push(la32);
-                let (_, lo64) = grid.ij_to_latlon(x, y);
+                let (_, lo64) = grid.sampling_ij_to_latlon(x, y);
                 lon_c.push(lo64);
             }
         }
@@ -699,7 +699,7 @@ impl<'g> DomainSampler<'g> {
                         source_x as f64,
                         (win.y0 + j as i64) as f64,
                     );
-                    let (gx, gy) = grid.latlon_to_ij(lat, lon);
+                    let (gx, gy) = grid.sampling_latlon_to_ij(lat, lon);
                     *slot = bin_grid_point(gx, gy, self.nxe, self.nye, self.halo);
                 });
             Arc::new(flat)

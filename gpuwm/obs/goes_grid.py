@@ -234,8 +234,8 @@ def read_goes_grid(path: str | Path, *,
     """Read a goes-grid file back, checking the contract before the data.
 
     Same binding discipline as :func:`gpuwm.obs.radar_grid.read_radar_grid`,
-    and for the same reason: the identity is a digest over four arrays of
-    which the file stores three, at float32, and none of them vertical.
+    and for the same reason: the identity is a digest over arrays the file
+    stores only in part, at float32, and none of them vertical.
     Only a caller holding the grid can reach ``z_w`` -- and here ``z_w`` is
     what ``obs_level`` indexes, so a file bound to the wrong vertical
     structure centres every observation in the wrong layer.
@@ -247,7 +247,8 @@ def read_goes_grid(path: str | Path, *,
     if expected_grid is not None:
         demanded = expected_grid.identity_sha256()
         if (expected_grid_identity is not None
-                and expected_grid_identity != demanded):
+                and not expected_grid.matches_identity(
+                    expected_grid_identity)):
             raise GridMismatchError(
                 f"expected_grid hashes to {demanded} but "
                 f"expected_grid_identity demands {expected_grid_identity}; "
@@ -273,7 +274,9 @@ def read_goes_grid(path: str | Path, *,
                 "observation set without its grid identity cannot be "
                 "assimilated safely")
         if (expected_grid_identity is not None
-                and identity != expected_grid_identity):
+                and not (expected_grid.matches_identity(identity)
+                         if expected_grid is not None
+                         else identity == expected_grid_identity)):
             raise GridMismatchError(
                 f"{path.name} is bound to grid {identity}, the caller "
                 f"requires {expected_grid_identity}")
@@ -282,7 +285,9 @@ def read_goes_grid(path: str | Path, *,
         if expected_grid is not None:
             from gpuwm.obs.radar_grid import _require_grid  # noqa: PLC0415
 
-            _require_grid(path.name, expected_grid, stored)
+            _require_grid(path.name, expected_grid, stored,
+                          {name: np.asarray(dataset.variables[name][:])
+                           for name in ("XLAT", "XLONG")})
 
         nz = getattr(dataset, "nz", None)
         if nz is None:

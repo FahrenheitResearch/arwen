@@ -49,6 +49,7 @@ CONTRACTS HELD HERE (the operator package holds the arithmetic ones):
 
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 #: The capsule ``receipts`` key this seam owns.
@@ -176,6 +177,8 @@ class SpectralSeam:
         self._steps: dict[int, int] = {}
         self._receipts: dict[int, int] = {}
         self._receipt_hash_chain: dict[int, str] = {}
+        #: Step lengths committed since each domain's last cadence call.
+        self._window: dict[int, list[float]] = {}
 
     # -- wiring-time validation -------------------------------------------
 
@@ -228,6 +231,8 @@ class SpectralSeam:
             self.validate_domain(grid_id, run_cfg, streamed=streamed)
         hook = self.hook_for(grid_id, run_cfg)
         self._steps[grid_id] = self._steps.get(grid_id, 0) + 1
+        hook.dt_s = self._window_step(
+            grid_id, float(run_cfg.dt), int(step_count))
         receipt = hook(state, large_step=int(step_count), source={
             "experiment": self.experiment_name,
             "grid_id": grid_id,
@@ -240,6 +245,28 @@ class SpectralSeam:
             self._receipt_hash_chain[grid_id] = canonical_hash(
                 [previous, receipt["receipt_sha256"]])
         return receipt
+
+    def _window_step(self, grid_id: int, dt: float,
+                     step_count: int) -> float:
+        """The step the operator integrates over on this call.
+
+        The operator runs once every ``cadence_steps`` committed steps and
+        integrates ``dt_s * cadence_steps`` seconds.  The hook is built
+        with the domain's step at its first commit, and an adaptive clock
+        moves that step every root step, so the seam hands the hook the
+        mean of the steps committed since the last cadence call: their
+        product with ``cadence_steps`` is the window that actually
+        elapsed.  A window of equal steps, which is every fixed-clock run,
+        hands back that step exactly.
+        """
+        window = self._window.setdefault(grid_id, [])
+        window.append(dt)
+        if step_count % int(self.config.cadence_steps):
+            return dt
+        self._window[grid_id] = []
+        if all(value == window[0] for value in window):
+            return window[0]
+        return math.fsum(window) / len(window)
 
     # -- completion -------------------------------------------------------
 

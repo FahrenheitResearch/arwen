@@ -366,6 +366,247 @@ def ice_number_m3(ice_mass_m3: np.ndarray,
     return np.asarray(ni, dtype=np.float64)
 
 
+#: Source of :func:`make_droplet_number` and of the real-data cold start's
+#: droplet number (``gpuwm.ingest.real``), read on a node from the WRF
+#: v4.7.1 tree.  The entry block above is cited at v4.6.1; the two blocks
+#: are separate routines in separate files.
+MAKE_DROPLET_NUMBER_SOURCE = (
+    "WRF v4.7.1 dyn_em/module_initialize_real.F:4829-4838 (cold-start "
+    "droplet number) and :9119-9158 (make_DropletNumber) "
+    "(commit f52c197ed39d12e087d02c50f412d90d418f6186)")
+
+#: ``g_ratio`` (:9127-9128), ``Gamma(nu_c+4)/Gamma(nu_c+1)`` for
+#: nu_c = 1..15, as the REAL table the function carries.
+DROPLET_G_RATIO = np.array(
+    (24, 60, 120, 210, 336, 504, 720, 990, 1320, 1716, 2184, 2730, 3360,
+     4080, 4896), dtype=np.float32)
+
+
+def make_droplet_number(q_cloud_m3, qnwfa_m3, xland) -> np.ndarray:
+    """``make_DropletNumber(Q_cloud, qnwfa, xland)``, :9119-9158, exactly.
+
+    Per-volume cloud water (kg m^-3) and water-friendly aerosol number
+    (m^-3) in, droplet number (m^-3) out as the REAL the function
+    returns.  With no aerosol (``qnwfa <= 0``) the mean diameter is fixed
+    by the surface: 17 um with ``nu_c = 12`` over water (``xland > 1.5``)
+    and 11 um with ``nu_c = 4`` over land.  With aerosol, the count is
+    held to 99e6..5e10 m^-3, ``nu_c = MAX(2, MIN(NINT(2.5E10/q_nwfa), 15))``
+    and the diameter falls linearly from 30 um at 1e9 m^-3 to 10 um at
+    1e10 m^-3 and beyond.
+
+    Every intermediate carries the Fortran's declared precision: the
+    arguments, ``q_nwfa``, ``x1`` and ``xDc`` are REAL, ``lambda`` and
+    ``qnc`` are DOUBLE, and ``Q_cloud / g_ratio(nu_c)`` is a REAL quotient
+    formed before the left-associative product widens to DOUBLE.
+    """
+    q_cloud = _f32(q_cloud_m3)
+    qnwfa = _f32(qnwfa_m3)
+    xland = _f32(xland)
+    q_cloud, qnwfa, xland = np.broadcast_arrays(q_cloud, qnwfa, xland)
+    # :9125-9126  REAL parameters, folded in REAL.
+    pi = np.float32(3.1415926536)
+    am_r = np.float32(np.float32(pi * np.float32(1000.0)) / np.float32(6.0))
+    # :9146-9147  aerosol-aware branch.  2.5E10/q_nwfa is a REAL
+    # quotient; NINT rounds half away from zero, so floor(x + 0.5) on
+    # the positive quotient widened exactly.
+    q_nwfa = np.maximum(np.float32(99.0e6),
+                        np.minimum(qnwfa, np.float32(5.0e10)))
+    ratio = np.float32(2.5e10) / q_nwfa
+    nu_aero = np.clip(np.floor(ratio.astype(np.float64) + 0.5),
+                      2.0, 15.0).astype(np.int64)
+    # :9149-9150  x1 = MAX(1., MIN(q_nwfa*1.E-9, 10.)) - 1.
+    #             xDc = (30. - x1*20./9.) * 1.E-6
+    x1 = (np.maximum(np.float32(1.0),
+                     np.minimum(q_nwfa * np.float32(1.0e-9),
+                                np.float32(10.0)))
+          - np.float32(1.0)).astype(np.float32)
+    xdc_aero = ((np.float32(30.0)
+                 - (x1 * np.float32(20.0)) / np.float32(9.0))
+                * np.float32(1.0e-6)).astype(np.float32)
+    # :9135-9143  no aerosol: the surface decides.
+    ocean = (xland - np.float32(1.5)) > np.float32(0.0)
+    xdc_surface = np.where(ocean, np.float32(17.0e-6),
+                           np.float32(11.0e-6)).astype(np.float32)
+    nu_surface = np.where(ocean, 12, 4).astype(np.int64)
+    no_aerosol = qnwfa <= np.float32(0.0)
+    xdc = np.where(no_aerosol, xdc_surface, xdc_aero).astype(np.float32)
+    nu_c = np.where(no_aerosol, nu_surface, nu_aero)
+    # :9153  lambda = (4.0D0 + nu_c) / xDc, DOUBLE.
+    lam = (np.float64(4.0) + nu_c.astype(np.float64)) / xdc.astype(
+        np.float64)
+    # :9154  qnc = Q_cloud / g_ratio(nu_c) * lambda*lambda*lambda / am_r
+    per_ratio = (q_cloud / DROPLET_G_RATIO[nu_c - 1]).astype(np.float32)
+    qnc = (per_ratio.astype(np.float64) * lam * lam * lam
+           / np.float64(am_r))
+    # :9155  make_DropletNumber = SNGL(qnc)
+    return qnc.astype(np.float32)
+
+
+#: Source of :func:`make_rain_number`, :func:`make_ice_number` and of the
+#: real-data cold start's rain and ice numbers (``gpuwm.ingest.real``),
+#: read on a node from the same WRF v4.7.1 tree as
+#: :data:`MAKE_DROPLET_NUMBER_SOURCE`.
+MAKE_RAIN_ICE_NUMBER_SOURCE = (
+    "WRF v4.7.1 dyn_em/module_initialize_real.F:4840-4852 (cold-start "
+    "ice and rain number), :9044-9114 (make_IceNumber) and :9163-9194 "
+    "(make_RainNumber) "
+    "(commit f52c197ed39d12e087d02c50f412d90d418f6186)")
+
+#: ``retab`` (:9060-9077), the radiative effective radius of ice in um
+#: from -94 C to 0 C in 1 K steps, as the REAL table ``make_IceNumber``
+#: carries.  Entry 67 (71.2885) is WRF's own value, jump included.
+ICE_RETAB = np.array((
+    5.92779, 6.26422, 6.61973, 6.99539, 7.39234,
+    7.81177, 8.25496, 8.72323, 9.21800, 9.74075, 10.2930,
+    10.8765, 11.4929, 12.1440, 12.8317, 13.5581, 14.2319,
+    15.0351, 15.8799, 16.7674, 17.6986, 18.6744, 19.6955,
+    20.7623, 21.8757, 23.0364, 24.2452, 25.5034, 26.8125,
+    27.7895, 28.6450, 29.4167, 30.1088, 30.7306, 31.2943,
+    31.8151, 32.3077, 32.7870, 33.2657, 33.7540, 34.2601,
+    34.7892, 35.3442, 35.9255, 36.5316, 37.1602, 37.8078,
+    38.4720, 39.1508, 39.8442, 40.5552, 41.2912, 42.0635,
+    42.8876, 43.7863, 44.7853, 45.9170, 47.2165, 48.7221,
+    50.4710, 52.4980, 54.8315, 57.4898, 60.4785, 63.7898,
+    65.5604, 71.2885, 75.4113, 79.7368, 84.2351, 88.8833,
+    93.6658, 98.5739, 103.603, 108.752, 114.025, 119.424,
+    124.954, 130.630, 136.457, 142.446, 148.608, 154.956,
+    161.503, 168.262, 175.248, 182.473, 189.952, 197.699,
+    205.728, 214.055, 222.694, 231.661, 240.971, 250.639),
+    dtype=np.float32)
+
+
+def make_ice_number(q_ice_m3, temperature_k) -> np.ndarray:
+    """``make_IceNumber(Q_ice, temp)``, :9044-9114, exactly.
+
+    Per-volume ice mass (kg m^-3) and temperature (K) in, ice number
+    (m^-3) out as the REAL the function returns.  The crystal size comes
+    from temperature alone: ``retab`` gives the radiative effective
+    radius, twice it is the mean diameter ``3/lambda`` of an inverse
+    exponential, and the number is ``Q_ice lambda**3 / (pi rho_i)``.
+    About 72 um crystals at -50 C and 325 um at -10 C.
+
+    The arguments, ``corr``, ``reice`` and ``deice`` are REAL (:9050),
+    ``lambda`` is DOUBLE (:9051) but is assigned the REAL quotient
+    ``3.0/deice``, and ``PI*Ice_density`` is a product of two REAL
+    parameters.  The index keeps the Fortran's two truncations as
+    written: ``int(temp-179.)`` picks the row and ``temp - int(temp)``
+    the weight, and outside -94..0 C the row is clamped while the weight
+    is not.
+    """
+    q_ice = _f32(q_ice_m3)
+    temp = _f32(temperature_k)
+    q_ice, temp = np.broadcast_arrays(q_ice, temp)
+    # :9047-9048  REAL parameters.
+    ice_density = np.float32(890.0)
+    pi = np.float32(3.1415926536)
+    # :9085-9086  idx_rei = int(temp-179.); min(max(idx_rei,1),94).
+    # INT truncates toward zero; the difference is REAL.
+    idx = np.trunc(np.asarray(temp - np.float32(179.0), dtype=np.float32))
+    idx = np.clip(idx.astype(np.int64), 1, 94)
+    # :9087  corr = temp - int(temp): the INTEGER back to REAL, exactly.
+    corr = np.asarray(temp - np.trunc(temp), dtype=np.float32)
+    # :9088  reice = retab(idx_rei)*(1.-corr) + retab(idx_rei+1)*corr
+    reice = np.asarray(
+        ICE_RETAB[idx - 1] * np.asarray(np.float32(1.0) - corr,
+                                        dtype=np.float32)
+        + ICE_RETAB[idx] * corr, dtype=np.float32)
+    # :9089  deice = 2.*reice * 1.E-6
+    deice = np.asarray(np.asarray(np.float32(2.0) * reice, dtype=np.float32)
+                       * np.float32(1.0e-6), dtype=np.float32)
+    # :9101  lambda = 3.0 / deice, a REAL quotient widened to DOUBLE.
+    lam = np.asarray(np.float32(3.0) / deice,
+                     dtype=np.float32).astype(np.float64)
+    # :9102  make_IceNumber = Q_ice * lambda*lambda*lambda / (PI*Ice_density)
+    number = (q_ice.astype(np.float64) * lam * lam * lam
+              / np.float64(np.float32(pi * ice_density)))
+    return number.astype(np.float32)
+
+
+def make_rain_number(q_rain_m3, temperature_k) -> np.ndarray:
+    """``make_RainNumber(Q_rain, temp)``, :9163-9194, exactly.
+
+    Per-volume rain mass (kg m^-3, positive) and temperature (K) in, rain
+    number (m^-3) out as the REAL the function returns: an exponential
+    with the Marshall-Palmer intercept ``N0 = 8e6 m^-4`` above 0 C,
+    ``8e8`` at or below -2 C, and ``8 * 10**(279.15 - T)`` between, so
+    supercooled rain starts as drizzle-sized drops (about 0.3 mm median
+    volume diameter for 0.1 g m^-3, against 0.9 mm when warm).
+
+    ``lambda``, ``N0`` and ``qnr`` are DOUBLE (:9168), the arguments and
+    ``am_r`` REAL.  ``10**(279.15-temp)`` raises an INTEGER to a REAL
+    power, which Fortran evaluates as a REAL power of 10.0, and ``8. *``
+    it is a REAL product widened on assignment.  ``Q_rain / 6.0`` is a
+    REAL quotient formed before the left-associative product widens.
+    """
+    q_rain = _f32(q_rain_m3)
+    temp = _f32(temperature_k)
+    q_rain, temp = np.broadcast_arrays(q_rain, temp)
+    # :9169-9170  REAL parameters, folded in REAL.
+    pi = np.float32(3.1415926536)
+    am_r = np.float32(np.float32(pi * np.float32(1000.0)) / np.float32(6.0))
+    # :9181-9187  the intercept.
+    cold = temp <= np.float32(271.15)
+    ramp = (~cold) & (temp > np.float32(271.15)) & (temp < np.float32(273.15))
+    # Formed only on the ramp: elsewhere the power would overflow a REAL
+    # for a value the Fortran never computes.
+    exponent = np.where(ramp, np.asarray(np.float32(279.15) - temp,
+                                         dtype=np.float32),
+                        np.float32(0.0)).astype(np.float32)
+    n0_ramp = np.asarray(
+        np.float32(8.0) * np.asarray(np.power(np.float32(10.0), exponent),
+                                     dtype=np.float32),
+        dtype=np.float32).astype(np.float64)
+    n0 = np.where(cold, np.float64(np.float32(8.0e8)),
+                  np.where(ramp, n0_ramp, np.float64(np.float32(8.0e6))))
+    # :9189  lambda = SQRT(SQRT(N0*am_r*6.0/Q_rain)), DOUBLE.
+    lam = np.sqrt(np.sqrt(n0 * np.float64(am_r) * np.float64(6.0)
+                          / q_rain.astype(np.float64)))
+    # :9190  qnr = Q_rain / 6.0 * lambda*lambda*lambda / am_r
+    first = np.asarray(q_rain / np.float32(6.0), dtype=np.float32)
+    qnr = first.astype(np.float64) * lam * lam * lam / np.float64(am_r)
+    # :9191  make_RainNumber = SNGL(qnr)
+    return qnr.astype(np.float32)
+
+
+def rain_median_volume_diameter_m(rain_mass_m3,
+                                  rain_number_m3) -> np.ndarray:
+    """The median volume diameter of an exponential rain population, m.
+
+    ``3.672 / lambda`` with ``lambda = (pi rho_w N / rr)**(1/3)``, the
+    size a reader checks a rain number against.  A diagnostic for
+    receipts and tests, not a scheme quantity.
+    """
+    rr = np.asarray(rain_mass_m3, dtype=np.float64)
+    nr = np.asarray(rain_number_m3, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return MVD_FACTOR / np.cbrt(np.pi * 1000.0 * nr / rr)
+
+
+def ice_mean_diameter_m(ice_mass_m3, ice_number_m3) -> np.ndarray:
+    """The mean diameter ``3/lambda`` of an exponential ice population, m.
+
+    ``lambda = (pi rho_i N / ri)**(1/3)`` with ``rho_i = 890``, the size
+    ``make_IceNumber`` starts from.  A diagnostic for receipts and tests.
+    """
+    ri = np.asarray(ice_mass_m3, dtype=np.float64)
+    ni = np.asarray(ice_number_m3, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 3.0 / np.cbrt(np.pi * 890.0 * ni / ri)
+
+
+def droplet_mean_diameter_m(cloud_mass_m3, cloud_number_m3) -> np.ndarray:
+    """The mean volume diameter of a droplet population, in metres.
+
+    ``(6 rc / (pi rho_w nc))**(1/3)``, the diameter a reader checks a
+    droplet number against: 10 to 20 um is cloud, 50 um and up drizzle.
+    A diagnostic for receipts and tests, not a scheme quantity.
+    """
+    rc = np.asarray(cloud_mass_m3, dtype=np.float64)
+    nc = np.asarray(cloud_number_m3, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.cbrt(6.0 * rc / (np.pi * 1000.0 * nc))
+
+
 #: The per-volume arm for each species this mirror answers for.
 ENTRY_ARMS = {
     "cloud": cloud_number_m3,
@@ -406,15 +647,25 @@ def np_thompson_entry_numbers(species: str, mass_per_kg, number_per_kg,
 
 __all__ = [
     "CUH_SCALARS",
+    "DROPLET_G_RATIO",
     "ENTRY_ARMS",
+    "MAKE_DROPLET_NUMBER_SOURCE",
+    "MAKE_RAIN_ICE_NUMBER_SOURCE",
     "ENTRY_SPECIES",
     "ICE_NUMBER_CEILING_M3",
+    "ICE_RETAB",
     "R1",
     "R2",
     "THOMPSON_ENTRY_AUTHORITY",
     "THOMPSON_ENTRY_SOURCE",
     "cloud_number_m3",
+    "droplet_mean_diameter_m",
+    "ice_mean_diameter_m",
     "ice_number_m3",
+    "make_droplet_number",
+    "make_ice_number",
+    "make_rain_number",
     "np_thompson_entry_numbers",
+    "rain_median_volume_diameter_m",
     "rain_number_m3",
 ]

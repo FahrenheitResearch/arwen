@@ -116,8 +116,12 @@ def test_internal_capability_does_not_move_existing_positional_notes():
     from dataclasses import fields
     from gpuwm.source_adapters import SourceAdapter
     adapter=replace(get_source_adapter("gfs"),notes="existing positional notes")
+    # A keyword-only field cannot move a positional one, so the rebuild passes
+    # every other init field by position.  Naming root_target_interior_axis
+    # alone refused the rebuild once record_kind joined it as keyword-only.
     positional=[getattr(adapter,f.name) for f in fields(SourceAdapter)
-                if f.init and f.name != "root_target_interior_axis"]
+                if f.init and not f.kw_only]
+    assert "root_target_interior_axis" in {f.name for f in fields(SourceAdapter) if f.kw_only}
     rebuilt=SourceAdapter(*positional)
     assert rebuilt.notes=="existing positional notes"
     assert rebuilt.root_target_interior_axis is None

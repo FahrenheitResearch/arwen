@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from tools.da_cycle_plan import _filter_config_problems
 
 
@@ -71,3 +73,38 @@ def test_a_reflectivity_step_is_checked_with_its_arm_on():
 
 def test_the_probe_says_nothing_about_a_configuration_the_filter_accepts():
     assert _filter_config_problems(_step(), "arm/step") == []
+
+
+def test_the_probe_carries_the_steps_dispersion_gate(monkeypatch):
+    """The probe builds the filter's configuration with the step's own
+    dispersion gate, not the gate always on; a step parsed before the
+    flags existed gets the door's defaults."""
+    import argparse
+
+    import gpuwm.da.radar_assimilation as ra
+    from gpuwm.da.velocity_dispersion import (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+        DEFAULT_VELOCITY_DISPERSION_RATIO)
+    from tools.da_cycle_plan import _dispersion_argv, _dispersion_ratio
+
+    seen = []
+    real = ra.RadarAssimilationConfig
+
+    def spy(**kwargs):
+        seen.append((kwargs["velocity_dispersion_ratio"],
+                     kwargs["velocity_dispersion_batch_ratio"]))
+        return real(**kwargs)
+
+    monkeypatch.setattr(ra, "RadarAssimilationConfig", spy)
+    assert _filter_config_problems(
+        _step(velocity_dispersion_gate=None,
+              velocity_dispersion_batch_gate=4.0), "arm/step") == []
+    assert _filter_config_problems(_step(), "arm/step") == []
+    assert seen == [(None, 4.0), (DEFAULT_VELOCITY_DISPERSION_RATIO,
+                                  DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO)]
+    # the plan's flags round-trip through the argv it writes
+    assert _dispersion_ratio("none") is None
+    assert _dispersion_ratio(_dispersion_argv(2.5)) == 2.5
+    assert _dispersion_argv(None) == "none"
+    with pytest.raises(argparse.ArgumentTypeError):
+        _dispersion_ratio("0")

@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
@@ -25,6 +26,84 @@ import gpuwm.cli as cli
 import gpuwm.fetch as fetch
 from tools import download_gfs_native_subset as gfs_transport
 from tools import download_hrrr_native_subset as hrrr_transport
+
+
+#: The morning these fixtures' cycles were written against.  Every test
+#: here names late-July 2026 cycles; the tests that care about a cycle's
+#: age pass their own ``now``, and the rest assume the cycle is still on
+#: the grib-filter host.
+FIXTURE_NOW = datetime(2026, 7, 28, 8)
+
+
+@pytest.fixture(autouse=True)
+def _cycles_keep_their_age(monkeypatch):
+    """A cycle's age is read against :data:`FIXTURE_NOW`, not the wall clock.
+
+    Once those cycles aged past the grib-filter host's retention, a CLI
+    fetch of one switched itself to whole objects from the archive and
+    asked the real S3 index, so the request-identity, resume and
+    front-door tests failed on the calendar instead of on the code.
+    """
+
+    from gpuwm import fetch_endpoints
+
+    real = fetch_endpoints.cycle_age_hours
+
+    def age(cycle, now=None):
+        return real(cycle, FIXTURE_NOW if now is None else now)
+
+    monkeypatch.setattr(fetch_endpoints, "cycle_age_hours", age)
+
+
+def _loopback(address) -> bool:
+    import ipaddress
+
+    host = address[0] if isinstance(address, tuple) else address
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _fixture_hosts_answer_offline(monkeypatch, request):
+    """The fixtures' cycles are published on every host, and no real host is asked.
+
+    The publication and host checks sent live HEAD requests for these
+    late-July cycles, so a test such as a plain fetch into an empty
+    ``--out`` passed with the network up and failed without it, on the
+    network rather than on the code.  Every host now says it holds what
+    these fixtures ask for, as the hosts did when the fixtures were
+    written; a test that needs a host to say no hands in its own probe.
+    Any other connection off this machine fails at once instead of
+    waiting on a real host, so nothing here depends on one.  The opt-in
+    live smoke (``@pytest.mark.network``) keeps the real network.
+    """
+
+    if request.node.get_closest_marker("network"):
+        return
+    import socket
+
+    from gpuwm import fetch_endpoints
+
+    monkeypatch.setattr(fetch_endpoints, "object_available",
+                        lambda url, **kwargs: True)
+    # The publication check's own question, which tells a host not heard
+    # from a no; unpatched, it asked the blocked network and waited out
+    # its retries before calling each cycle unchecked.
+    monkeypatch.setattr(fetch_endpoints, "object_answer",
+                        lambda url, **kwargs: True)
+    real_connect = socket.socket.connect
+
+    def connect(self, address):
+        if (self.family in (socket.AF_INET, socket.AF_INET6)
+                and not _loopback(address)):
+            raise OSError(f"a fetch test tried to reach {address[0]}")
+        return real_connect(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +868,35 @@ def test_fetch_gfs_fullfile_census_mismatch_quarantines(
     assert rejected, "the mismatched payload must be quarantined"
 
 
+def test_fetch_gfs_fullfile_stops_its_progress_ticker_on_every_exit(
+        tmp_path, monkeypatch):
+    """The whole-object route never closed its transfer monitor, so its
+    ticker thread outlived the fetch and kept repeating the finished
+    "2 of 2 files done" line into whatever the process wrote next: an
+    in-process caller's later output, or the next test's captured stderr.
+    Closed after a completed fetch and after a refused one."""
+
+    import threading
+
+    def tickers():
+        return {thread for thread in threading.enumerate()
+                if thread.name == "gpuwm-fetch-progress"}
+
+    before = tickers()
+    _fullfile_env(monkeypatch)
+    fetch.fetch_gfs_fullfile(
+        cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+        out=tmp_path / "done", progress=lambda line: None)
+    assert tickers() <= before
+
+    _fullfile_env(monkeypatch, payload_messages=_FULLFILE_MESSAGES - 1)
+    with pytest.raises(ValueError):
+        fetch.fetch_gfs_fullfile(
+            cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
+            out=tmp_path / "refused", progress=lambda line: None)
+    assert tickers() <= before
+
+
 def test_fetch_gfs_fullfile_resumes_verified_objects(tmp_path, monkeypatch):
     urls = _fullfile_env(monkeypatch)
     kwargs = dict(cycle=datetime(2026, 7, 28, 6), hours=(0, 3), area=None,
@@ -855,7 +963,6 @@ def test_cli_fetch_gfs_mode_and_engine_contracts(tmp_path, capsys):
     base = ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
             "--hours", "3", "--out", str(tmp_path / "out")]
     refused("not a certified GFS route", base + ["--mode", "idx-subset"])
-    refused("not a certified GFS route", base + ["--mode", "auto"])
     refused("belong to '--mode full-file'",
             base + ["--area", "30,-100,40,-90", "--engine", "rust"])
     refused("--area is optional request identity", base)
@@ -1004,15 +1111,25 @@ def test_fetch_gfs_fails_closed_on_record_count_drift(tmp_path, monkeypatch):
 
 def test_fetch_gfs_rejects_a_corrupt_existing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(gfs_transport, "_download", _fake_gfs_download)
+    kwargs = dict(cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
+                  area=fetch.parse_area("30,-100,40,-90"),
+                  progress=lambda line: None)
+    # A file no receipt vouches for is refused before it is even read:
+    # the library door asks the same request question the command does.
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    (loose / "gfs.t06z.pgrb2.0p25.f000.subset.grib2").write_bytes(
+        _grib2_stream(124) + b"junk")
+    with pytest.raises(ValueError, match="carries no readable"):
+        fetch.fetch_gfs(out=loose, **kwargs)
+    # Under a matching receipt the file is read, and a corrupt one fails
+    # its envelope walk rather than being re-blessed.
     out = tmp_path / "gfs"
-    out.mkdir()
+    fetch.fetch_gfs(out=out, **kwargs)
     stale = out / "gfs.t06z.pgrb2.0p25.f000.subset.grib2"
     stale.write_bytes(_grib2_stream(124) + b"junk")
     with pytest.raises(ValueError, match="GRIB indicator"):
-        fetch.fetch_gfs(
-            cycle=datetime(2026, 7, 28, 6), hours=(0, 3),
-            area=fetch.parse_area("30,-100,40,-90"), out=out,
-            progress=lambda line: None)
+        fetch.fetch_gfs(out=out, **kwargs)
 
 
 def test_grib2_message_count_walks_envelopes_exactly(tmp_path):
@@ -1542,6 +1659,58 @@ def test_era5_wsl_path_translation():
     assert fetch.wsl_path(Path(f"/home/{user}/x.json")) == f"/home/{user}/x.json"
 
 
+@pytest.mark.parametrize("requires_retrieve", [False, True])
+@pytest.mark.parametrize("retrieve", [False, True])
+def test_retrieve_gate_and_hints_follow_the_registry(
+        tmp_path, monkeypatch, requires_retrieve, retrieve):
+    from dataclasses import replace
+    from gpuwm import source_adapters
+
+    source = fetch.GFS_CONTAINER_SOURCES[0]
+    original_row = source_adapters.get_source_adapter
+    row = replace(original_row(source), fetch_requires_retrieve=requires_retrieve)
+    monkeypatch.setattr(source_adapters, "get_source_adapter",
+                        lambda name: row if name == source else original_row(name))
+    args = cli.build_parser().parse_args([
+        "fetch", "--source", source, "--cycle", "2026-07-28T06",
+        "--hours", "6", "--area=35,-100,40,-95", "--out", str(tmp_path),
+        *(["--retrieve"] if retrieve else [])])
+    hints = {"source": source, "cycle": args.cycle, "hours": args.hours}
+    if retrieve:
+        hints["retrieve"] = True
+    if retrieve and not requires_retrieve:
+        for call in (lambda: fetch.fetch_main(args),
+                     lambda: fetch.validate_fetch_hints(hints, source="request.toml")):
+            with pytest.raises(ValueError, match="default fetch writes a request template"):
+                call()
+        return
+
+    fetch.validate_fetch_hints(hints, source="request.toml")
+    # A retrieval fact does not enable another transport's provider flags.
+    with pytest.raises(ValueError, match="ERA5 only"):
+        fetch.validate_fetch_hints({**hints, "era5_provider": "cds"}, source="request.toml")
+    seen = {}
+    validate = fetch.validate_fetch_hints
+
+    def record(table, *, source):
+        seen.update(table)
+        return validate(table, source=source)
+
+    class TransportReached(Exception):
+        pass
+
+    def contact(*args, **kwargs):
+        raise TransportReached
+
+    monkeypatch.setattr(fetch, "validate_fetch_hints", record)
+    monkeypatch.setattr(fetch, "require_published_cycle", contact)
+    with pytest.raises(TransportReached):
+        fetch.fetch_main(args)
+    assert ("retrieve" in seen) is requires_retrieve
+    if requires_retrieve:
+        assert seen["retrieve"] is retrieve
+
+
 def test_cli_fetch_argument_contracts(tmp_path, capsys):
     with pytest.raises(SystemExit):  # --source is required with choices
         cli.main(["fetch", "--cycle", "latest"])
@@ -1734,7 +1903,7 @@ def test_gfs_interrupt_manifests_verified_prefix_and_resumes(
     monkeypatch.setattr(gfs_transport, "_download", interrupted_download)
     monkeypatch.setattr(
         fetch, "require_published_cycle",
-        lambda source, cycle, last_hour: None)
+        lambda source, cycle, last_hour, **kwargs: None)
     original_fetch = fetch.fetch_gfs
 
     def no_live_inventory(**kwargs):
@@ -2043,14 +2212,72 @@ def test_cli_fetch_hrrr_prints_the_front_door_handoff(tmp_path,
     # produces fails the moment it is pasted.
     assert "..." not in printed
     lines = printed.splitlines()
-    bound = [line for line in lines if line.strip().startswith("--")]
+    bound = [line for line in lines
+             if line.strip().startswith("gpuwm prep ")]
     assert len(bound) == 1
-    assert f"--source-root {out}" in bound[0]
-    assert f"--source-manifest {out / 'SHA256SUMS'}" in bound[0]
+    assert "--source hrrr" in bound[0]
+    assert f"--source-root {out.resolve()}" in bound[0]
+    assert f"--source-manifest {out.resolve() / 'SHA256SUMS'}" in bound[0]
     comments = " ".join(l for l in lines if l.strip().startswith("#"))
-    for flag in ("--wps-namelist", "--geog-root", "--experiment-config",
-                 "--valid-time", "--output-root"):
+    for flag in ("--domain-spec", "--namelist-input", "--wps-namelist",
+                 "--geog-root", "--experiment-config", "--valid-time",
+                 "--output-root"):
         assert flag in comments, flag
+
+
+def test_the_hrrr_handoff_runs_at_the_door_with_exactly_the_flags_it_names(
+        tmp_path, monkeypatch, capsys):
+    """The printed line, completed with the flags its comment names, runs.
+
+    A world preparation pass built its HRRR argv from this handoff and
+    the door refused every tile: ``invalid or missing run arguments:
+    --namelist-input, --domain-spec (required with --geog-root)``.  The
+    comment named four of the six flags the door needs.  So the check is
+    the door itself: the bound line plus every flag the comment names,
+    valued from the shipped HRRR demo set, through ``gpuwm prep
+    --dry-run``, which validates the whole argument contract and stops
+    before any input is opened.
+    """
+    monkeypatch.setattr(
+        hrrr_transport, "_download_product", _fake_hrrr_product)
+    out = tmp_path / "hrrr"
+    assert cli.main(["fetch", "--source", "hrrr", "--engine", "python",
+                     "--cycle", "2026-07-28T05", "--hours", "1",
+                     "--transport", "s3", "--out", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    bound = [line.strip() for line in lines
+             if line.strip().startswith("gpuwm prep ")]
+    assert len(bound) == 1
+    argv = shlex.split(bound[0])[2:]
+    comments = " ".join(line.strip().lstrip("#").strip() for line in lines
+                        if line.strip().startswith("#"))
+    named = re.search(r"cannot bind the run's own flags: (.*?) are yours",
+                      comments)
+    assert named is not None, comments
+    flags = re.findall(r"--[a-z][a-z-]*", named.group(1))
+    assert flags == list(fetch.HRRR_CALLER_SUPPLIES)
+    demo = Path(__file__).resolve().parent.parent / "configs"
+    values = {
+        "--domain-spec": demo / "hrrr_native_quick_demo.d01-target.json",
+        "--namelist-input": demo / "hrrr_native_quick_demo.namelist.input",
+        "--wps-namelist": demo / "hrrr_native_quick_demo.namelist.wps",
+        "--experiment-config": demo / "hrrr_native_quick_demo.toml",
+        "--geog-root": tmp_path / "geog",
+        "--output-root": tmp_path / "prepared",
+    }
+    completed = argv + [token for flag in flags
+                        for token in (flag, str(values[flag]))]
+    rc = cli.main(["prep", *completed, "--dry-run"])
+    said = capsys.readouterr()
+    assert "invalid or missing run arguments" not in said.err, said.err
+    assert rc == 0, said.err
+    # One flag fewer is refused by name: every named flag is one the
+    # door needs, not decoration.
+    for needed in ("--domain-spec", "--namelist-input"):
+        cut = completed[:completed.index(needed)] + \
+            completed[completed.index(needed) + 2:]
+        assert cli.main(["prep", *cut, "--dry-run"]) != 0
+        assert needed in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

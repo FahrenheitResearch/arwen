@@ -17,9 +17,12 @@ SCHEMA = "gpuwm-hrrr-domain-validation-v1"
 FAILED_DOMAIN_SHA256 = (
     "24cde8e888be9c404b3a2afd56c8af6263ae23470825545aa12a245529a04835"
 )
+# The window the target's own interpolation needs: it reaches row -2, so
+# the target is refused whatever its soil donor search, which stops at
+# HRRR's edge and is not part of the refusal.
 FAILED_COVERAGE_ERROR = (
     "target domain plus required interpolation halo leaves HRRR coverage: "
-    "required zero-based inclusive window i=642..1387, j=-10..504; native "
+    "required zero-based inclusive window i=650..1379, j=-2..496; native "
     "limits are i=0..1798, j=0..1058"
 )
 

@@ -8,8 +8,11 @@ its measurements is under `docs/ntiedtke/`.
 
 ## Selecting it
 
-* `cu_physics = 16`, per domain, on the tree route (`reachability:
-  component-override`, the same posture as Grell-Freitas).
+* `cu_physics = 16`, per domain, on both prepared routes (the domain-tree
+  route and the prepared single-domain route list it among their cumulus
+  options), or through the Milbrandt-Yau suite
+  `milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1`
+  (`reachability: template`).
 * `cudt_minutes = 0` is enforced: the scheme is called every step, as WRF calls it.
 * No PBL scheme is required. `bl_pbl_physics = 0` is admitted with this scheme:
   the port reads no PBL index anywhere, its surface fluxes (`hfx`, `qfx`) come

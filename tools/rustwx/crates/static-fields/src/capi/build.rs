@@ -1,6 +1,6 @@
 //! LANE 2 seam: the static build and field-set access.
 //!
-//! `gpuwm_static_build_fields` is this library's CONTRACT MARKER (see
+//! `gpuwm_static_sampling_portable_v1` is this library's contract marker (see
 //! `BRIDGE_ABI_MARKERS` in `gpuwm/bridges.py`): a build that loads and
 //! answers the version probe but predates the field build cannot
 //! produce a single static field, so the literal to check for is this
@@ -46,6 +46,31 @@ pub unsafe extern "C" fn gpuwm_static_build_fields(
                 if out_handle.is_null() {
                     return set_error("out_handle is null");
                 }
+                unsafe { *out_handle = register_fieldset(fields) };
+                OK
+            }
+        }
+    })
+}
+
+/// Build a terrain-only field set for the vertical survey.
+/// # Safety
+/// The path must be readable UTF-8 and out_handle must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_build_terrain(
+    grid: u64, path: *const u8, path_len: usize, halo: u32, out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let Some(path) = (unsafe { utf8(path, path_len) }) else {
+            return set_error("terrain path pointer/UTF-8 invalid");
+        };
+        let halo = if halo == u32::MAX { HALO } else { halo as usize };
+        match with_grid(grid, |g| crate::fields::build_terrain(g, std::path::Path::new(path), halo)) {
+            None => set_error(format!("unknown grid handle {grid}")),
+            Some(Err(err)) => set_error(err.to_string()),
+            Some(Ok(fields)) => {
+                if out_handle.is_null() { return set_error("out_handle is null"); }
                 unsafe { *out_handle = register_fieldset(fields) };
                 OK
             }

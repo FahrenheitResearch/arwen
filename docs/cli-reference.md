@@ -92,7 +92,7 @@ can run for each trusted row.
 | `rap` | ordered hourly `awip32` GRIB2 files | RAP's 32 km Lambert North-America product through the same packaged-profile route as `hrrr-prs`: complete state in one file per valid time, in-band terrain, nine-node RUC soil, RH-derived humidity; JPEG2000-packed and decoded by the bridge's own codec; not stock-WRF certified |
 | `rrfs` | hourly `prslev` + `2dfld` GRIB2 file PAIRS | RRFS, HRRR's operational successor, through the same packaged-profile route: the 3 km CONUS grid is bit-for-bit HRRR's Lambert; `prslev` carries the 45-level upper air and `2dfld` carries surface/soil/terrain, so both files are passed per valid time; direct SPFH, nine-node RUC soil; not stock-WRF certified |
 | `gem-gdps` | per-valid-time GDPS GRIB2 (Datamart per-variable files, concatenable) plus the analysis terrain record | ECCC's global GDPS through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 33 pressure levels, the single 0-10 cm ISBA soil layer, and the once-per-cycle analysis invariants (orography, land mask, ice) broadcast by the generic invariant grammar; not stock-WRF certified |
-| `ecmwf-open-data` | ordered three-hourly `oper` GRIB2 step files | ECMWF's open-data IFS at 0.25 degrees through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 14 pressure levels, dewpoint-derived 2 m humidity, index-addressed IFS soil and cycle-analysis in-band terrain are table data; 0.25-degree open data (CC-BY-4.0), the 9 km HRES is access-restricted; not stock-WRF certified |
+| `ecmwf-open-data` | ordered three-hourly `oper` GRIB2 step files | ECMWF's open-data IFS at 0.25 degrees through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 14 pressure levels (earlier publications: 13 levels, depth-below-land soil and no surface geopotential, read through the same mapping), dewpoint-derived 2 m humidity, index-addressed IFS soil and cycle-analysis in-band terrain are table data; 0.25-degree open data (CC-BY-4.0), the 9 km HRES is access-restricted; not stock-WRF certified |
 | `gefs` | one verified member's `pgrb2a`+`pgrb2b` pair per valid time (concatenated), staged by `gpuwm-member-prep` | One MEMBER of NCEP's 31-forecast global ensemble through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- the 31-level ladder is the measured exact union of the two products' disjoint isobaric sets, every state selector pins PDT 1 (mean/spread and accumulation twins refuse at the byte level), four Noah soil layers split across the pair; in-band terrain; not stock-WRF certified |
 | `mapped` | mapping, composition, ordered inputs, role bindings, SHA manifest | Generic GRIB1, GRIB2, or NetCDF; new mappings are validated, not certified |
 
@@ -187,6 +187,26 @@ variable was set to avoid, so a missing one refuses by name. The engine
 itself reads no `TMPDIR`; every temporary on the route, the input list
 included, lands under that one directory.
 
+The engine sizes the stream once it has decoded the first valid time
+(its fields, grid and levels times the number of valid times) and
+refuses before writing a byte when the scratch disk has less free space
+than that, naming the folder, the bytes needed and the bytes free. A
+disk that fills anyway partway through, or a quota, gets the same
+refusal. Both are `ScratchDiskRefusal`, printed as `prep: REFUSED:` with
+`GPUWM_COMPOSE_SCRATCH` as the remedy.
+
+`gpuwm go` and `gpuwm run-plan` price the same stream before they
+download anything, from the source's row in
+`gpuwm/data/download-bytes.v1.json` (its grid points, the layers each
+valid time publishes and the bytes per value, times the valid times the
+fetch requests), and measure the disk that holds the scratch folder:
+the folder `GPUWM_COMPOSE_SCRATCH` names, or `chain/` inside the run
+folder. A stream that cannot fit is refused before the download, naming
+the folder, the size and the space free; a regional source whose
+estimate may not fit, where only the layers its atmospheric window
+cannot crop are certain, is a warning. `run-plan --estimate` reports the
+stream as `disk.compose_scratch_bytes`.
+
 ## Source spellings
 
 `--source` takes the id in the tables above or any other spelling in
@@ -203,6 +223,7 @@ test refuses any drift between the two.
 | `gem-gdps` | `gem`, `gdps`, `gem-global` |
 | `icon-global` | `icon`, `icon-13km`, `dwd-icon`, `dwd-icon-global` |
 | `icon-eu` | `dwd-icon-eu`, `icon-eu-regular` |
+| `icon-d2` | `icon-2km`, `dwd-icon-d2` |
 | `hrrr-ak` | `hrrrak`, `hrrr-alaska` |
 | `gfs` | `gfs-0p25`, `gfs-0.25` |
 | `gdas` | `gdas-0p25`, `gdas-0.25` |
@@ -243,6 +264,15 @@ HRRR, ERA5, GFS, both 20CRv3 routes, and mapped routes accept:
 --cpu-preprocess-bridge PATH
 ```
 
+Without `--preprocess-workers` the CPU backend starts one thread per CPU
+this process may use, at most eight: its peak host RAM grows with its
+thread count, and the estimate `gpuwm check` and `gpuwm domain` size RAM
+against was measured at eight. A larger `N` is honoured and peaks above
+that estimate. Under the CUDA backend, `--preprocess-workers N` sets the CPU
+threads of the host steps it runs in the Rust preprocessing library (soil,
+snow, skin temperature and sea ice), which otherwise use every CPU the
+process may use.
+
 An explicit CPU bridge is valid only with the CPU backend. More than one
 hierarchy worker also requires the CPU backend; current CUDA hierarchy setup
 is deterministic with one worker. During HRRR root preparation,
@@ -279,6 +309,10 @@ regional model that cannot reach the domain have opposite remedies. This is
 the same refusal for every source -- the mapped route, a packaged profile
 and the native route all raise it -- so a regional model added as table data
 gets it with no new code.
+A whole-globe source never raises it for a domain that only crosses the
+antimeridian: on every route its longitude ring is cut opposite the domain
+before the two are paired, and a regional crop across 180 degrees keeps a
+continuous longitude axis.
 
 A source whose grid declaration states a projection -- its coordinate
 arrays are then that projection's own axes rather than degrees, which is
@@ -328,7 +362,10 @@ flight. Both preserve deterministic receipt order. The product of the two
 limits may not exceed 64, preventing an apparently small setting from
 creating an unbounded connection fan-out. Publication remains create-only,
 and each assembled subset is checked for its exact byte count and complete
-GRIB framing before it enters the final SHA-256 manifest.
+GRIB framing before it enters the final SHA-256 manifest.  Files from
+before HRRRv3 (July 2018) publish hybrid cloud ice as CICE (0/6/0) rather
+than CIMIXR (0/1/82); the subset selects it under either name, and the
+bridge reads CICE only from a file that publishes no CIMIXR.
 
 ## Named 20CRv3 route
 
@@ -348,7 +385,9 @@ live unchanged-stock-WRF certificate.
 one variable per NetCDF file, three-hourly, global 1 degree -- through the
 Rust `rw_netcdf` bridge.  It takes `--input` once per file, one
 `--supplement` (the recovered orography/land-mask file), and the usual
-namelist/geography/experiment/output arguments.  It does NOT take
+namelist/geography/experiment/output arguments -- or `--source-root DIR`
+on the folder `tools/download_20crv3_native_subset.py` writes, which
+binds every variable file and `invariant.nc` itself.  It does NOT take
 `--mapping`, `--composition`, `--provenance` or `--source-format`: the
 packaged profile decides those and byte-checks them, and passing one is
 refused rather than honoured, because a packaged source's name has to mean
@@ -391,10 +430,26 @@ source's name has to mean one thing.
 queued Copernicus CDS MARS request (dataset `reanalysis-era5-complete`,
 `levtype=ml`) run under your own account, not files at a predictable
 URL, and `docs/public/SOURCES.md` states that refusal with its remedy.
-Stage the pair yourself and hand the directory to the door with
-`--source-root`, digest-bound by `--source-manifest` plus
-`--source-manifest-sha256`.  The surface donor half IS a front-door
-fetch (`gpuwm fetch --source era5`).  Two shipped configurations carry
+The surface donor half IS a front-door fetch (`gpuwm fetch --source
+era5 --retrieve --out DIR`, which writes `era5-combined.grib`).  Put the model-level
+file(s) in the same folder and hand it to the door with `--source-root
+DIR`: the source's row binds the GRIB2 model-level files as the ordered
+inputs and `era5-combined.grib` as the surface donor, the input manifest
+is authored as `DIR/inputs.json`, and the output root defaults to
+`CONFIG-prepared` beside the experiment config.  It ends by printing
+the `gpuwm sim` line that runs the forecast with `--render-products
+all`, drawing every product from each output as it lands.  Run again,
+it prepares into the next free `CONFIG-prepared-N` (a folder that
+exists is never written over), keeps `DIR/inputs.json` while the
+folder's files are unchanged, and after they or this ArWen's decoders
+change writes a new one and says which one it replaced; each
+preparation keeps its own copy of the manifest it was made from.  A
+named `--output-root` that exists is refused before anything is
+written, and a manifest path named with `--author-input-manifest` is
+still never replaced.  For a config `gpuwm domain --source
+era5-l137` wrote, `gpuwm go CONFIG.toml --data-dir DIR` binds the same
+folder the same way; the two shipped configurations below carry no
+`[fetch]` table, so they run through the prep line.  Two shipped configurations carry
 the whole procedure in their headers -- the exact MARS request, the
 donor fetch, the prep line, and the measured VRAM and wall-clock
 envelope: `configs/era5_l137_demo.toml` (one 12 km Lambert domain, two
@@ -446,7 +501,9 @@ soil geometry are rows in those documents, not code.  This route is
 distinct from the certified native `--source hrrr` route: it initialises
 from the pressure-level analysis, which is smoother near sharp terrain
 than the native hybrid levels, and it is not yet accepted by unchanged
-stock WRF.
+stock WRF.  Files from before HRRRv3 (July 2018) publish cloud ice
+under its older GRIB2 code, CICE (0/6/0); the mapping reads it as the
+same field it reads from CIMIXR (0/1/82) in later files.
 
 ## The RAP route
 
@@ -560,7 +617,15 @@ column is addressed by ordinal on fixed-surface type 151 rather than by
 metre depths, declared through the composition's
 `selector_depth_binding`; 2 m humidity derives from the published
 dewpoint; winds are earth-relative; the CCSDS-packed records and the
-north-to-south row order are handled by the generic decode.  LICENSING:
+north-to-south row order are handled by the generic decode.  Earlier
+publications of the product prepare through the same mapping: files with
+13 levels (50 to 1000 hPa, no 10 hPa) are read on that ladder
+(`vertical.era_ladders`), files that spell the soil layers on
+depth-below-land surfaces are read through `record_aliases`, and files
+with no surface geopotential have terrain derived from each column's
+height at its surface pressure (`fields.terrain_height.when_absent`).
+The receipt names each and preparation prints one warning for each that
+changes what the column is built from.  LICENSING:
 this profile is authored against the 0.25-degree open-data distribution
 (CC-BY-4.0, attribution required).  ECMWF's native 9 km HRES is
 access-restricted -- a data-licensing fact about the feed, not a

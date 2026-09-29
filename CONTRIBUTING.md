@@ -40,11 +40,17 @@ has and has not been verified.
 
 Practicalities:
 
-- Python 3.11+; install with `pip install -e '.[gpu-cu12,render,dev]'`
+- Python 3.11+; install the checkout's companion first with
+  `pip install -e gpuwm-data` (the engine requires the companion of its
+  own version, which PyPI does not carry until that version is published),
+  then `pip install -e '.[gpu-cu12,render,dev]'`
   (`gpu-cu13` instead on a CUDA-13-only box);
-  build the Rust workspace with
-  `cargo build --release --locked --offline` from `tools/grib1_bridge`
-  (the vendored, locked build is the supported one).
+  build each vendored Rust workspace the installers build with
+  `cargo build --release --locked --offline` run inside its own directory
+  (the vendored, locked build is the supported one): `tools/grib1_bridge`,
+  `tools/rustwx`, `tools/arwen-tui`, `tools/zarr_bridge`, `tools/rw_wps`
+  and `tools/region_global_dealias`. `bash install.sh` (PowerShell:
+  `.\install.ps1`) does all of this except the `dev` extra.
 - This repository builds **two** distributions. `pyproject.toml` at the
   root builds `gpuwm`; `gpuwm-data/pyproject.toml` builds `gpuwm-data`,
   which carries the RRTMGP and Thompson table directories because the

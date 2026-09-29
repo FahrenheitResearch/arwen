@@ -188,19 +188,19 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 6 distinct caller-supplied option tuples across the 18
+  The inventory records 6 distinct caller-supplied option tuples across the 19
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
     (xp.ElementwiseKernel), and 6 other site(s)
-  - `-fmad=false` -- `gpuwm/core/dycore.py:206` (cp.ElementwiseKernel), and
+  - `-fmad=false` -- `gpuwm/core/dycore.py:207` (cp.ElementwiseKernel), and
     2 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_lw.py:3756`
     (_cc.compile_using_nvrtc), and 2 other site(s)
+  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:114` (cp.RawModule), and
+    2 other site(s)
   - `-std=c++17` `--ftz=true` -- `gpuwm/core/mynn_pbl_gpu.py:361`
     (cp.RawKernel), and 1 other site(s)
-  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:114` (cp.RawModule), and
-    1 other site(s)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:260`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same
@@ -1071,7 +1071,12 @@ oversight, and each says what would close it.
   surviving `nr` 5.700e-06 is therefore NOT inherited and is not claimed to
   be; it sits at level 5 alone, the one level where the step removes 49.75% of
   the rain number without emptying it, and it is 27.5 ULP of the entry value
-  where every other unexcluded level is 0-3 ULP.
+  where every other unexcluded level is 0-3 ULP.  It changed again on
+  2026-09-23: the classic rain evaporation now writes the `L_qr` hand-off too
+  and the mp=8 adapter launches the same fallout forms, so mp=28 and mp=8 are
+  bitwise identical in `qr` and `nr` at levels 0-5 and differ only at the
+  near-cancellation level 6, both under one ULP of the entry value from WRF
+  there (measured 2026-09-24 on an RTX 5070 Ti and an RTX 4090 alike).
 
   THREE MISS, published field by field:
   `aero-cold-overlap` (`qc` 1.000e+00, `nc` 1.000e+00, `effc` 8.102e-01,
@@ -1393,11 +1398,16 @@ oversight, and each says what would close it.
   runtime path (`gpuwm run` / `gpuwm ingest`, inside `initialize_real`
   with the geopotential rebalanced) and the prepared domain-tree
   forecast runner (applied to the restored sealed states before
-  physics/diagnostics, WITHOUT rebalancing — WRF's own moist-bubble
-  convention, `init_moist_balanced`; the sealed caches stay the pure
-  analysis and both arms of an A/B can share one preparation).  Every
-  other route (the prepared-cache front doors and the single-domain
-  prepared runner) refuses it by name.  Application stats
+  physics/diagnostics, then rebalanced at the held pressure: each
+  warmed layer thickens by its ratio of new to old moist theta and the
+  geopotential re-integrates up the column, the state
+  `init_moist_balanced` builds for the idealized bubble; the sealed
+  caches stay the pure analysis and both arms of an A/B can share one
+  preparation).  Every other route (the prepared-cache front doors and
+  the single-domain prepared runner) refuses it by name.  Both routes
+  also refuse, before integration, a layer heated past the top of the
+  radiation's temperature table and `rh_preserve` vapour past a
+  measured limit (`init_perturbation.py`).  Application stats
   (per-domain cells touched, max theta delta, qv adjustment under
   `rh_preserve`) are published to `initial-perturbation.json` before
   integration starts.

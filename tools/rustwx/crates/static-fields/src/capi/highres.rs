@@ -168,6 +168,12 @@ struct DeriveRequest {
     resolution_deg: Option<f64>,
     #[serde(default)]
     sea_level_fill: Option<f64>,
+    /// Leave the holes of a global terrain mosaic (unpublished tiles,
+    /// in-band voids) as no data instead of filling them: the model
+    /// cells under them are outside the source's coverage and take the
+    /// 30-arc-second baseline terrain on the Python side.
+    #[serde(default)]
+    keep_holes: bool,
     #[serde(default)]
     source_nodata: Option<f64>,
     out_path: std::path::PathBuf,
@@ -933,17 +939,57 @@ fn resample(
                 )
             })?;
             source.verify()?;
-            let (raw, nodata) = geotiff::read_band1_raw(
-                &source.path,
-                source
-                    .crs_override
-                    .as_deref()
-                    .map(Crs::parse_override)
-                    .transpose()?,
-                source.nodata_override,
-            )?;
             let mapping: BTreeMap<i64, i64> =
                 request.mapping.iter().copied().collect();
+            let crs_override = source
+                .crs_override
+                .as_deref()
+                .map(Crs::parse_override)
+                .transpose()?;
+            let mut reader = geotiff::TiffReader::open(&source.path)?;
+            if reader.sample_type() == geotiff::SampleType::U8 {
+                // A categorical byte band stays bytes: the same answer
+                // as the f64 read below at under half its memory.
+                let (w, h) = (reader.width, reader.height);
+                let values = reader.read_window_u8(0, 0, w, h)?;
+                let crs = match (&reader.crs, crs_override) {
+                    (Some(own), _) => own.clone(),
+                    (None, Some(given)) => given,
+                    (None, None) => {
+                        return Err(StaticError::Invalid(format!(
+                            "raster {:?} has no CRS and declares no \
+                             crs_override",
+                            source.path
+                        )))
+                    }
+                };
+                let carrier = Raster {
+                    ny: h,
+                    nx: w,
+                    values: Vec::new(),
+                    transform: reader.transform,
+                    crs,
+                };
+                let fractions = highres::resample_mapped_categories_u8(
+                    &values,
+                    &carrier,
+                    &source.path.display().to_string(),
+                    &request.grid_spec,
+                    &mapping,
+                    request.category_count,
+                    source.nodata_override.or(reader.nodata),
+                )?;
+                fields
+                    .fields
+                    .insert("FRACTIONS".into(), Field::Stack(fractions));
+                return Ok((fields, "{}".into()));
+            }
+            drop(reader);
+            let (raw, nodata) = geotiff::read_band1_raw(
+                &source.path,
+                crs_override,
+                source.nodata_override,
+            )?;
             let fractions = highres::resample_mapped_categories(
                 &raw,
                 &source.path.display().to_string(),
@@ -1148,30 +1194,49 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
             )?;
             let audit;
             if global {
+                let keep_holes = request.keep_holes;
                 let fill = request.sea_level_fill.unwrap_or(0.0);
                 // The Python fills on the float32 plane; replicate the
                 // f32 fill value bit for bit.
                 let fill = fill as f32 as f64;
                 for value in mosaic.values.iter_mut() {
                     if value.is_nan() {
-                        *value = fill;
+                        if !keep_holes {
+                            *value = fill;
+                        }
                     } else {
                         // Round-trip through f32 like the Python's
                         // `dtype="float32"` mosaic plane.
                         *value = *value as f32 as f64;
                     }
                 }
-                audit = serde_json::json!({
-                    "output_resolution_deg":
-                        resolution.unwrap_or(1.0 / 3600.0),
-                    "output_shape": [mosaic.ny, mosaic.nx],
-                    "sea_level_filled_pixels": holes,
-                    "total_pixels": mosaic.ny * mosaic.nx,
-                    "sea_level_fill_m": request.sea_level_fill.unwrap_or(0.0),
-                    "source_nodata": request.source_nodata,
-                    "resampling":
-                        "nearest (latitude-banded source resolutions)",
-                });
+                audit = if keep_holes {
+                    serde_json::json!({
+                        "output_resolution_deg":
+                            resolution.unwrap_or(1.0 / 3600.0),
+                        "output_shape": [mosaic.ny, mosaic.nx],
+                        "hole_pixels": holes,
+                        "sea_level_filled_pixels": 0,
+                        "total_pixels": mosaic.ny * mosaic.nx,
+                        "sea_level_fill_m": serde_json::Value::Null,
+                        "source_nodata": request.source_nodata,
+                        "resampling":
+                            "nearest (latitude-banded source resolutions)",
+                    })
+                } else {
+                    serde_json::json!({
+                        "output_resolution_deg":
+                            resolution.unwrap_or(1.0 / 3600.0),
+                        "output_shape": [mosaic.ny, mosaic.nx],
+                        "sea_level_filled_pixels": holes,
+                        "total_pixels": mosaic.ny * mosaic.nx,
+                        "sea_level_fill_m":
+                            request.sea_level_fill.unwrap_or(0.0),
+                        "source_nodata": request.source_nodata,
+                        "resampling":
+                            "nearest (latitude-banded source resolutions)",
+                    })
+                };
                 geotiff::write_band1(
                     &request.out_path,
                     &mosaic,
@@ -1235,10 +1300,20 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
                     }
                 }
             }
-            west -= margin;
-            south -= margin;
-            east += margin;
-            north += margin;
+            // The margin is metres.  A projected raster takes it in its
+            // own unit; a geographic one takes the same distance in
+            // degrees (read as degrees, 2 km was 2000 degrees and the
+            // window was the whole global raster).
+            let (margin_x, margin_y) = match crs {
+                Crs::Geographic => {
+                    highres::margin_degrees(lat_min, lat_max, margin)
+                }
+                _ => (margin, margin),
+            };
+            west -= margin_x;
+            south -= margin_y;
+            east += margin_x;
+            north += margin_y;
             // Fractional window + explicit outward rounding, the
             // Python's arithmetic.
             let t = reader.transform;
@@ -1267,47 +1342,84 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
                     source_path.display()
                 )));
             }
-            if clip_w != width || clip_h != height {
-                return Err(DeriveFailure::coverage(format!(
-                    "footprint [{lat_min}, {lat_max}] x [{lon_min}, \
-                     {lon_max}] is only partially covered by the \
-                     land-cover raster {}; the source window would be \
-                     truncated from {width}x{height} to \
-                     {clip_w}x{clip_h} pixels",
-                    source_path.display()
-                )));
-            }
+            // A footprint that runs past the raster's extent is clipped
+            // to it, not refused: the model cells beyond receive no
+            // source pixel and take the 30-arc-second baseline land use
+            // on the Python side.  The requested window rides the audit.
             let nodata = reader.nodata;
-            let values = reader.read_window_raw(
-                clip_col as usize,
-                clip_row as usize,
-                clip_w as usize,
-                clip_h as usize,
-            )?;
-            let window = Raster {
-                ny: clip_h as usize,
-                nx: clip_w as usize,
-                values,
-                transform: [
-                    t[0],
-                    t[1],
-                    t[2] + t[0] * clip_col as f64,
-                    t[3],
-                    t[4],
-                    t[5] + t[4] * clip_row as f64,
-                ],
-                crs,
-            };
-            geotiff::write_band1(
-                &request.out_path,
-                &window,
-                geotiff::SampleType::U8,
-                nodata,
-            )?;
+            let window_transform = [
+                t[0],
+                t[1],
+                t[2] + t[0] * clip_col as f64,
+                t[3],
+                t[4],
+                t[5] + t[4] * clip_row as f64,
+            ];
+            let (ny, nx) = (clip_h as usize, clip_w as usize);
+            // Pixel count of every raw category in the window, for the
+            // receipt (what the crosswalk collapsed, what was unclassified).
+            let mut category_pixels: BTreeMap<String, u64> = BTreeMap::new();
+            if reader.sample_type() == geotiff::SampleType::U8 {
+                let values = reader.read_window_u8(
+                    clip_col as usize,
+                    clip_row as usize,
+                    nx,
+                    ny,
+                )?;
+                let mut counts = [0u64; 256];
+                for value in &values {
+                    counts[*value as usize] += 1;
+                }
+                for (value, count) in counts.iter().enumerate() {
+                    if *count > 0 {
+                        category_pixels.insert(value.to_string(), *count);
+                    }
+                }
+                geotiff::write_band1_u8(
+                    &request.out_path,
+                    &values,
+                    ny,
+                    nx,
+                    &window_transform,
+                    &crs,
+                    nodata,
+                )?;
+            } else {
+                let values = reader.read_window_raw(
+                    clip_col as usize,
+                    clip_row as usize,
+                    nx,
+                    ny,
+                )?;
+                for value in &values {
+                    if value.is_finite() {
+                        *category_pixels
+                            .entry((*value as i64).to_string())
+                            .or_insert(0) += 1;
+                    }
+                }
+                let window = Raster {
+                    ny,
+                    nx,
+                    values,
+                    transform: window_transform,
+                    crs,
+                };
+                geotiff::write_band1(
+                    &request.out_path,
+                    &window,
+                    geotiff::SampleType::U8,
+                    nodata,
+                )?;
+            }
             Ok(serde_json::json!({
-                "output_shape": [window.ny, window.nx],
+                "output_shape": [ny, nx],
                 "window": [clip_col, clip_row, clip_w, clip_h],
+                "requested_window": [col_off, row_off, width, height],
+                "clipped_to_raster": clip_w != width || clip_h != height,
                 "nodata": nodata,
+                "margin": [margin_x, margin_y],
+                "category_pixels": category_pixels,
             })
             .to_string())
         }

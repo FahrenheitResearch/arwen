@@ -44,7 +44,7 @@ CATALOG_SECONDS = 300
 SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,95}\Z")
 #: A first-class product selector. The plain slug is one spelling; the
 #: renderer's own vocabulary also has colon-bearing families (`var:<field>`,
-#: `xsec:<fill>[/<overlay>...]`, `mesh:<variable>`) that name a field rather
+#: `mesh:<variable>`) that name a field rather
 #: than a catalog entry, so a character class without a colon refused the
 #: renderer's own spellings before the node ever saw them. The node's catalog
 #: decides what it can serve; this grammar only refuses a spelling no node
@@ -52,8 +52,16 @@ SLUG = re.compile(r"[a-z0-9][a-z0-9_-]{0,95}\Z")
 SELECTOR = re.compile(r"[a-z0-9][a-z0-9_-]{0,95}(?::[A-Za-z0-9][A-Za-z0-9_.,:=~@+/-]*)?\Z")
 #: The renderer's own selector families, named in a refusal so a reader is told
 #: what a selector may be rather than only that theirs was not one.
-SELECTOR_FAMILIES = ("var:<stored 2-D variable>", "xsec:<fill>[/<overlay>...]",
-                     "mesh:<history variable>")
+SELECTOR_FAMILIES = ("var:<stored 2-D variable>", "mesh:<history variable>")
+SECTION_PREFIX = "xsec:"
+SECTION_FAMILY = "xsec:<fill>[/<overlay>...]"
+#: What a viewer says for a run that asked only for cross-sections. Without a
+#: selection of its own, such a run read as an empty product list, which is the
+#: node's default map set, so the viewer prepared and showed maps the run never
+#: asked for and said nothing about the sections it did ask for.
+NO_MAP_PRODUCTS_NOTE = ("This run asked only for cross-section pictures, which need a line this "
+                        "viewer cannot take, so it has no map products to show here. The run draws "
+                        "its sections itself.")
 
 
 
@@ -75,7 +83,7 @@ def _directory(root, job):
 _CATALOG = {}
 
 
-def node_catalog(*, now=None):
+def node_catalog(*, now=None, include_sections=False):
     """This node's own product vocabulary, asked rather than transcribed.
 
     `rw_wrfbatch --list-products` is the renderer's own answer and this tree
@@ -83,16 +91,16 @@ def node_catalog(*, now=None):
     catalog. A node that cannot answer says so in this document and refuses
     nothing: the catalog names what a reader may ask for, and whether a named
     selector can actually be served is decided on the node when the frame is
-    derived.
+    derived. Section products are offered only to a caller with a line input.
     """
     moment = time.monotonic() if now is None else now
     cached = _CATALOG.get("value")
     if cached is not None and moment - _CATALOG.get("at", 0) < CATALOG_SECONDS:
-        return cached
+        return _catalog_selection(cached, include_sections)
     document = {"schema": "arwen.node-product-catalog.v1", "products": None, "count": None,
                 "product_limit": NODE_PRODUCT_LIMIT,
                 "product_limit_basis": "the node's own viewer profile bound on named products",
-                "selector_families": list(SELECTOR_FAMILIES),
+                "selector_families": [*SELECTOR_FAMILIES, SECTION_FAMILY],
                 "source": None, "error": None}
     try:
         from gpuwm.runplan import render_catalog
@@ -108,7 +116,27 @@ def node_catalog(*, now=None):
     except Exception as error:  # noqa: BLE001 - an unreadable catalog is stated, never raised.
         document["error"] = f"{type(error).__name__}: {error}"[:1000]
     _CATALOG.update(value=document, at=moment)
-    return document
+    return _catalog_selection(document, include_sections)
+
+
+def _catalog_selection(document, include_sections):
+    if include_sections:
+        return dict(document)
+    result = {**document, "selector_families": list(SELECTOR_FAMILIES)}
+    if isinstance(document.get("products"), list):
+        names = [name for name in document["products"] if not name.startswith(SECTION_PREFIX)]
+        result.update(products=names, count=len(names))
+    return result
+
+
+def _refuse_sections(products):
+    sections = [item for item in products or []
+                if isinstance(item, str) and item.startswith(SECTION_PREFIX)]
+    if sections:
+        raise ValueError("Viewer products " + ", ".join(repr(item) for item in sections)
+                         + " need a cross-section line. This viewer has no line input, so the "
+                           "renderer cannot locate the slice; choose a map product or draw the "
+                           "section through the forecast door.")
 
 
 def _catalog_note():
@@ -129,6 +157,7 @@ def _products(value):
     if not isinstance(value, list) or not value:
         raise ValueError("Viewer products must name at least one canonical product slug; send an "
                          "empty selection to take the node's own default set instead.")
+    _refuse_sections(value)
     if len(value) > NODE_PRODUCT_LIMIT:
         raise ValueError(f"This request names {len(value)} viewer products and the node's viewer "
                          f"profile accepts at most {NODE_PRODUCT_LIMIT} named products, so the node "
@@ -152,8 +181,17 @@ def _products(value):
 
 
 def _cache_bytes(value):
-    if type(value) is not int or not 64 * 1024**2 <= value <= 1024**4:
-        raise ValueError("Viewer cache size must be an integer from 64 MiB to 1 TiB")
+    """The local viewer cache budget, in bytes.
+
+    Any positive whole number of bytes is a budget: whether a frame fits it
+    is decided where the frame is admitted, against the frame's measured
+    size, and a frame larger than the budget is refused there by name. A
+    budget of zero or less holds no frame at all, so every admission would
+    refuse; it is refused here instead, once.
+    """
+    if type(value) is not int or value <= 0:
+        raise ValueError("Viewer cache size must be a positive whole number of bytes; a budget "
+                         "of zero or less can hold no viewer frame")
     return value
 
 
@@ -267,6 +305,7 @@ def _check_time(result, record, event):
 
 def _convert(root, record, bound, event, authority, selection):
     from gpuwm.render import require_renderer
+    from gpuwm.rustwx import renderer_env
     source = ra._inside(event.get("path"), bound[0]); before = ra._stamp(source)
     if not 0 < before[2] <= 16 * 1024**3 or event.get("size_bytes", before[2]) != before[2]:
         raise ValueError("Committed native WRF size changed or exceeds its processing bound")
@@ -289,8 +328,11 @@ def _convert(root, record, bound, event, authority, selection):
         request.update(profile=PROFILE, products=selection["products"])
     legacy._write(request_path, request)
     with (directory / "native.log").open("ab", buffering=0) as log:
+        # Every call of the renderer gets one environment (renderer_env), so
+        # an installed renderer is always handed the map files it draws with.
         process = subprocess.run([str(require_renderer()), "--process-request", str(request_path), "--process-result", str(result_path)],
-                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=3600, check=False)
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=3600, check=False,
+                                 env=renderer_env())
     if process.returncode != 0:
         raise ValueError(f"Native viewer derivation exited {process.returncode}; see {directory / 'native.log'}")
     if ra._stamp(source) != before:
@@ -430,6 +472,7 @@ def _selection(profile=PROFILE, products=None):
     """A selection is either named products or the node's own default set."""
     if profile not in (PROFILE, SCIENCE_PROFILE):
         raise ValueError("Unknown native viewer processing profile")
+    _refuse_sections(products)
     if profile == SCIENCE_PROFILE:
         value, token = {"profile": profile, "products": []}, None
     elif products is None or not list(products):
@@ -458,8 +501,28 @@ def job_selection(record):
     The background map preparer and the plot gallery both read the render
     selection the run was started with through this one function, so one job
     never derives two product sets under two publication identities.
+
+    The identity is the map terms' own, so a record that also names sections
+    shares it with the same maps asked for alone. A record that names only
+    sections has no map product at all: it gets a selection that says so
+    (:func:`has_map_products`), never the node's default set.
     """
-    return _selection(PROFILE, selectors(record.get("products")))
+    terms = selectors(record.get("products"))
+    maps = [item for item in terms if not item.startswith(SECTION_PREFIX)]
+    if terms and not maps:
+        value = {"profile": PROFILE, "products": [], "map_products": False}
+        return {**value, "note": NO_MAP_PRODUCTS_NOTE, "selection_id": ra._sha(ra._encoded(value))}
+    return _selection(PROFILE, maps)
+
+
+def has_map_products(selection):
+    """Whether a selection names maps to derive; a sections-only run's does not."""
+    return selection.get("map_products") is not False
+
+
+def map_selectors(spec):
+    """Keep the run's map products for viewers with no section-line input."""
+    return [item for item in selectors(spec) if not item.startswith(SECTION_PREFIX)]
 
 
 def selectors(spec):
@@ -467,7 +530,11 @@ def selectors(spec):
 
     `all` and `none` are the renderer's group vocabulary rather than named
     products, and the node's viewer profile takes named products only, so they
-    resolve to the node's own default set and `selection_basis` says so.
+    resolve to the node's own default set and `selection_basis` says so. The
+    string is read with the engine's own tokenizer (`product_spec_terms` in
+    `gpuwm.rustwx`), so a section's level list, and the term that closes it,
+    stay one selector (`xsec:QCLOUD=0.01,0.1/wa`) instead of pieces that
+    `SELECTOR` refuses.
     """
     if spec is None:
         return []
@@ -476,7 +543,8 @@ def selectors(spec):
     text = str(spec).strip()
     if not text or text.casefold() in ("all", "none"):
         return []
-    return [token.strip() for token in text.split(",") if token.strip()]
+    from gpuwm.rustwx import product_spec_terms
+    return product_spec_terms(text)
 
 
 def selection_basis(profile, products):

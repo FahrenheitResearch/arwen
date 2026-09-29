@@ -496,7 +496,7 @@ def test_identical_wrfout_comparison_and_required_maps(tmp_path):
     assert metrics.mslp_pattern_correlation == pytest.approx(1.0)
 
     # The Task 13 panels come from the production Rust renderer now
-    # (render law, CLAUDE.md Drew 2026-08-06; audit F6), so their names
+    # (render law, 2026-08-06; audit F6), so their names
     # are the engine's and the case declares only WHICH charts it wants.
     # With no usable renderer this door draws nothing and says so, which
     # is the lawful degradation -- the metrics above are the product of

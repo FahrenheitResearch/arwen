@@ -12,9 +12,17 @@ import netCDF4
 import numpy as np
 import pytest
 
+from conftest import requires_case_inputs
+
 from gpuwm.io.wrfout import WrfoutWriter, wrfout_filename
 from gpuwm.verify import nest_gates
 from gpuwm.verify.cases import real74_chain, real74_d02, real74_n5b
+
+#: These tests load configs/real74_4dom.toml with its declared inputs
+#: required, so they run only where the WRF 1974 reference bundle its
+#: [case_data] names is on disk, and skip naming the absent file elsewhere.
+requires_4dom_inputs = requires_case_inputs(
+    Path(__file__).resolve().parents[1] / "configs" / "real74_4dom.toml")
 
 
 def _tiny_frame(path: Path, *, t_value=1.0, refl_value=20.0) -> Path:
@@ -317,7 +325,15 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
     buffer re-attach that used to drop it (measured: a streamed [tiles]
     run consumed its lateral boundaries one timestep late whenever the
     production clock was bound; 41/76 offline-child fields differed at
-    t+15 min)."""
+    t+15 min).
+
+    Adjudicated: runtime.py and prepared_single_domain_forecast.py.  The
+    single-domain roots (a config run through the shared scheduled
+    executor, and a prepared single-domain forecast) also construct their
+    DomainNode without build_experiment, so each binds its root's
+    already-attached resident mirror to the node's scheduled clock before
+    the first solve, and skips the bind on the store road, whose builder
+    receives the same clock.  Same semantics as the prepared tree root."""
     import ast
 
     package_root = Path(real74_d02.REPOSITORY_ROOT) / "gpuwm"
@@ -328,6 +344,8 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
         package_root / "verify" / "cases" / "real74_n5s.py",
         package_root / "offline_child_run.py",
         package_root / "prepared_domain_tree_forecast.py",
+        package_root / "prepared_single_domain_forecast.py",
+        package_root / "runtime.py",
     }
     referencing = set()
     for path in sorted(package_root.rglob("*.py")):
@@ -903,6 +921,7 @@ def test_f24_ensemble_rejects_nan_inherited_extra(tmp_path):
             [held], frames, domain="d04", dx_m=333.0)
 
 
+@requires_4dom_inputs
 def test_restart_split_calls_30_min_prefix_then_resume_and_compares_domains(
         tmp_path):
     exp, data = real74_d02.construct_rung_case(2)
@@ -998,6 +1017,7 @@ def test_lazy_inventory_prefix_counterfeits_raise(counterfeit):
             small, drifted, domain="d02", ticks=1)
 
 
+@requires_4dom_inputs
 def test_cross_run_equal_tick_inventory_mismatch_fails_ratchet_before_hash(
         tmp_path):
     exp, _data = real74_d02.construct_rung_case(2)
@@ -1049,6 +1069,7 @@ def test_cross_run_equal_tick_inventory_mismatch_fails_ratchet_before_hash(
     assert comparison["samples"][1]["hash_equal"] is None
 
 
+@requires_4dom_inputs
 def test_cross_run_equal_inventory_hash_mismatch_fails():
     exp, _data = real74_d02.construct_rung_case(2)
     inventory = _mock_inventory("state/u")
@@ -1064,6 +1085,7 @@ def test_cross_run_equal_inventory_hash_mismatch_fails():
     assert row["hash_equal"] is False
 
 
+@requires_4dom_inputs
 def test_cross_run_different_tick_den_identical_trajectory_passes_exactly():
     exp, _data = real74_d02.construct_rung_case(2)
     inventory = _mock_inventory("state/u")
@@ -1083,6 +1105,7 @@ def test_cross_run_different_tick_den_identical_trajectory_passes_exactly():
     assert comparison["samples"][1]["baseline_ticks"] == 900
 
 
+@requires_4dom_inputs
 def test_dtbc_fp32_bits_are_canonical_and_compared(monkeypatch):
     from gpuwm.io import restart as restart_io
 
@@ -1115,6 +1138,7 @@ def test_dtbc_fp32_bits_are_canonical_and_compared(monkeypatch):
 
 
 @pytest.mark.parametrize("resume_relation", ("subset", "superset"))
+@requires_4dom_inputs
 def test_restart_resume_inventory_converges_in_both_directions(
         resume_relation):
     exp, _data = real74_d02.construct_rung_case(2)
@@ -1152,6 +1176,7 @@ def test_restart_resume_inventory_converges_in_both_directions(
     assert evidence["post_resume_samples"][1]["hash_compared"] is True
 
 
+@requires_4dom_inputs
 def test_restart_resume_dropped_serialized_member_fails():
     exp, _data = real74_d02.construct_rung_case(2)
     stored = _mock_inventory("state/u", "scratch/mp_rainnc")
@@ -1177,6 +1202,7 @@ def test_restart_resume_dropped_serialized_member_fails():
 
 
 @pytest.mark.parametrize("failure", ("missed-deadline", "rediverged"))
+@requires_4dom_inputs
 def test_restart_inventory_convergence_failure_modes(failure):
     exp, _data = real74_d02.construct_rung_case(2)
     small = _mock_inventory("state/u")
@@ -1209,6 +1235,7 @@ def test_restart_inventory_convergence_failure_modes(failure):
         assert evidence["post_resume_samples"][-1]["passed"] is False
 
 
+@requires_4dom_inputs
 def test_restart_both_missing_checkpoint_samples_fail_loudly():
     exp, _data = real74_d02.construct_rung_case(2)
     inventory = _mock_inventory("state/u")
@@ -1225,6 +1252,7 @@ def test_restart_both_missing_checkpoint_samples_fail_loudly():
     assert "both restart arms lack" in evidence["split_checkpoint"]["reason"]
 
 
+@requires_4dom_inputs
 def test_ratchet_manifest_round_trip_and_immutability(tmp_path):
     exp, _data = real74_d02.construct_rung_case(2)
     inventory = _mock_inventory("state/u")
@@ -1277,6 +1305,7 @@ def test_ratchet_manifest_round_trip_and_immutability(tmp_path):
             state_hash_schedules=schedules)
 
 
+@requires_4dom_inputs
 def test_ratchet_publication_requires_complete_state_evidence(tmp_path):
     exp, _data = real74_d02.construct_rung_case(2)
     sample = _mock_state_sample(
@@ -1295,6 +1324,7 @@ def test_ratchet_publication_requires_complete_state_evidence(tmp_path):
                     history_interval_ticks=1800),))
 
 
+@requires_4dom_inputs
 def test_n3_publication_rejects_complete_d02_without_d01_control(tmp_path):
     exp, _data = real74_d02.construct_rung_case(2)
     inventory = _mock_inventory("state/u")
@@ -1317,6 +1347,7 @@ def test_n3_publication_rejects_complete_d02_without_d01_control(tmp_path):
                     "d02", tick_stop=900, history_interval_ticks=900),))
 
 
+@requires_4dom_inputs
 def test_n3_full_load_rejects_injected_manifest_without_d01_control(tmp_path):
     _exp, root, _frames, _state_hashes, _schedule = _publish_mock_ratchet(
         tmp_path)
@@ -1332,6 +1363,7 @@ def test_n3_full_load_rejects_injected_manifest_without_d01_control(tmp_path):
         real74_d02.load_ratchet(root, "N3")
 
 
+@requires_4dom_inputs
 def test_n4_publication_declares_exact_n5_control_domain_inventory(tmp_path):
     exp, _data = real74_d02.construct_rung_case(3)
     inventory = _mock_inventory("state/u")
@@ -1356,6 +1388,7 @@ def test_n4_publication_declares_exact_n5_control_domain_inventory(tmp_path):
 
 @pytest.mark.parametrize("corruption", (
     "absent", "empty", "wrong-domain-only", "scheduled-gap"))
+@requires_4dom_inputs
 def test_ratchet_load_rejects_incomplete_per_domain_state_evidence(
         tmp_path, corruption):
     exp, root, _frames, state_hashes, _schedule = _publish_mock_ratchet(
@@ -1430,6 +1463,7 @@ def test_boundary_blowup_fires_on_an_unmeasured_w_maximum(boundary, interior):
     assert real74_d02.gate_result(record, value=value)["passed"] is False
 
 
+@requires_4dom_inputs
 def test_complete_ratchet_inventory_catches_intermediate_and_missing_frames(
         tmp_path):
     exp, _data = real74_d02.construct_rung_case(2)
@@ -1488,6 +1522,7 @@ def test_complete_ratchet_inventory_catches_intermediate_and_missing_frames(
     assert missing["inventory_equal"] is False
 
 
+@requires_4dom_inputs
 def test_ratchet_provenance_and_artifact_corruption_refuse(tmp_path):
     exp, _data = real74_d02.construct_rung_case(2)
     sample = _mock_state_sample(
@@ -1534,6 +1569,7 @@ def test_ratchet_provenance_and_artifact_corruption_refuse(tmp_path):
 
 
 @pytest.mark.parametrize("runner", (real74_chain.run_n4, real74_chain.run_n5))
+@requires_4dom_inputs
 def test_rung_refuses_missing_predecessor_before_gpu(
         monkeypatch, tmp_path, runner):
     touched_gpu = False
@@ -1552,6 +1588,7 @@ def test_rung_refuses_missing_predecessor_before_gpu(
     assert touched_gpu is False
 
 
+@requires_4dom_inputs
 def test_production_subsets_and_full_sync_ledger_are_exact():
     for count in (2, 3, 4):
         exp, _data = real74_d02.construct_rung_case(count)
@@ -1585,6 +1622,7 @@ def test_production_subsets_and_full_sync_ledger_are_exact():
     assert missing["executed_run"]["inventory_equal"] is False
 
 
+@requires_4dom_inputs
 def test_ancestor_candidate_duplicates_are_rejected_before_dedup(
         monkeypatch, tmp_path):
     exp, _data = real74_d02.construct_rung_case(4)
@@ -1918,6 +1956,7 @@ def test_external_gate_loader_rejects_hash_shaped_report_without_lineage(
         real74_chain._load_gate_report(path, metric)
 
 
+@requires_4dom_inputs
 def test_n5b_geometry_freeze_and_hash_pinned_score(tmp_path, monkeypatch):
     exp, _data, geometry = real74_chain.construct_n5b_shrink_case()
     assert (exp.domain(4).run.ny, exp.domain(4).run.nx) == (498, 498)
@@ -2107,6 +2146,7 @@ def test_n5b_geometry_freeze_and_hash_pinned_score(tmp_path, monkeypatch):
             frozen_path, observation, freeze_anchor_sha256=anchor_sha256)
 
 
+@requires_4dom_inputs
 def test_n5b_shrink_constructor_rejects_nonintegral_parent_shift(monkeypatch):
     monkeypatch.setattr(real74_chain, "n5b_geometry", lambda: real74_chain.N5BGeometry(
         production_shape=(600, 600), shrink_shape=(500, 500),
@@ -2116,6 +2156,7 @@ def test_n5b_shrink_constructor_rejects_nonintegral_parent_shift(monkeypatch):
         real74_chain.construct_n5b_shrink_case()
 
 
+@requires_4dom_inputs
 def test_n5b_shrink_constructor_rejects_nondivisible_extent(monkeypatch):
     monkeypatch.setattr(real74_chain, "n5b_geometry", lambda: real74_chain.N5BGeometry(
         production_shape=(600, 600), shrink_shape=(499, 499),

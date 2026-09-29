@@ -203,9 +203,11 @@ pub fn partition_products(spec: &str) -> Result<ProductRequest, Box<dyn std::err
                     // at this level and --list-products prints the rest.
                     return Err(format!(
                         "unknown product '{slug}'; choose from 'all', 'direct', \
-                         'derived', 'heavy', 'windowed', 'var:<stored 2-D \
-                         variable>', or a comma-separated list of the {} \
-                         product slugs that --list-products prints",
+                         'derived', 'heavy', 'windowed', 'variables' (every \
+                         stored 2-D variable; these keywords stand alone), \
+                         'var:<stored 2-D variable>', or a comma-separated \
+                         list of the {} product slugs that --list-products \
+                         prints",
                         known_product_slug_count()
                     )
                     .into());
@@ -578,9 +580,11 @@ pub struct WindowedRenderOutcome {
 }
 
 /// Compute and render the requested windowed products across the run's
-/// stored hours through `anchor_hour`. Earlier frames remain available as
-/// accumulation baselines even when only the anchor frame was selected for
-/// rendering. Future frames never change the requested window or its time.
+/// stored hours through `anchor_hour`, a storage slot: on an exact-time
+/// store the pictures carry that frame's whole lead hour, which the
+/// window compute returns as its own `anchor_hour`. Earlier frames remain
+/// available as accumulation baselines even when only the anchor frame was
+/// selected for rendering. Future frames never change the requested window or its time.
 /// `auto` is the "all"-keyword gate: with it set, a run with at most one
 /// stored hour skips the lane entirely (returns `None`).
 /// `store` only carries the run grid + projection for the render half.

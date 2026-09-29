@@ -5497,6 +5497,102 @@ def test_flux_diag_enabled_leaves_every_prognostic_bitwise_identical():
           f"(the vent pair stands down on this column)")
 
 
+@requires_gpu
+@pytest.mark.parametrize("producer", ["sase", "smagorinsky"])
+def test_hmix_k_diag_enabled_leaves_every_prognostic_bitwise_identical(
+        producer):
+    """THE INERTNESS GATE for the horizontal eddy-viscosity diagnostic,
+    which is what admits ``hmix_k_diag`` to the output-only switches a
+    restart and a prepared cache may see change.  The same tiny
+    integration runs with the switch False and True, under each of the two
+    producers it records, and every serialized prognostic is compared BYTE
+    FOR BYTE.  The history seam is read every step in both arms so the
+    copy out of the producer runs inside the integration it must not
+    touch, and the enabled arm must record a nonzero viscosity so the gate
+    cannot pass on a diagnostic that writes nothing."""
+    import cupy as cp
+
+    from gpuwm.config import RunConfig, validate_run_config
+    from gpuwm.core import dycore
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.moist import init_moist_balanced
+    from gpuwm.core.physics import RadiationResult, initialize_physics
+    from gpuwm.io.restart import STATE_SERIALIZED_ATTRS
+
+    mixing = (dict(km_opt=0, bl_pbl_physics=_SASE_SELECTOR)
+              if producer == "sase" else dict(km_opt=4, bl_pbl_physics=1))
+    names = (("SASE_KMH", "SASE_KHH") if producer == "sase"
+             else ("XKMH", "XKHH"))
+
+    def run(enabled, steps=6):
+        cfg = RunConfig(nx=12, ny=10, nz=16, dx=2000.0, dy=2000.0,
+                        ztop=8000.0, dt=5.0, run_seconds=5.0,
+                        time_step_sound=4, moist=True, mp_physics=10,
+                        ra_physics=4, sf_sfclay_physics=1,
+                        sf_surface_physics=2, hmix_k_diag=enabled,
+                        **mixing)
+        assert validate_run_config(cfg) is cfg
+        coord = make_vertical_coord(cfg.nz)
+        base = make_base_state(
+            coord, lambda z: 300.0 + 0.004 * np.asarray(z, np.float64),
+            p_surf=cfg.p_surf, ztop=cfg.ztop)
+        state = init_moist_balanced(
+            cfg, coord, base,
+            lambda z: 0.010 * np.exp(-np.asarray(z, np.float64) / 2400.0))
+        z_half = state.height_half()
+        shear = (5.0 + 8.0 * z_half / cfg.ztop).astype(np.float32)
+        # Horizontally varying wind: both producers scale with the
+        # horizontal deformation, which a flow uniform in x and y has none of.
+        rows = np.arange(cfg.ny, dtype=np.float64)
+        columns = np.arange(cfg.nx, dtype=np.float64)
+        u_wave = 2.0 * np.sin(2.0 * np.pi * rows / cfg.ny)
+        v_wave = 1.5 * np.cos(2.0 * np.pi * columns / cfg.nx)
+        state.u[...] = cp.asarray((
+            shear[:, None, None] + u_wave[None, :, None]
+            + np.zeros((1, 1, cfg.nx + 1))).astype(np.float32))
+        state.v[...] = cp.asarray((
+            1.0 + v_wave[None, None, :]
+            + np.zeros((cfg.nz, cfg.ny + 1, 1))).astype(np.float32))
+
+        def radiation(**_kw):
+            z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
+            z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
+            return RadiationResult(z3, cp.zeros_like(z3), z2,
+                                   cp.zeros_like(z2))
+
+        driver = initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
+                                    swdown=400.0, glw=320.0,
+                                    radiation=radiation)
+        recorded = 0.0
+        for _ in range(steps):
+            driver.compute(state, cfg)
+            dycore.step(state, cfg)
+            fields = driver.output_fields()
+            if enabled:
+                recorded = max(recorded, max(
+                    float(cp.abs(fields[name]).max()) for name in names))
+        dump = {name: cp.asnumpy(getattr(state, name))
+                for name in STATE_SERIALIZED_ATTRS
+                if getattr(state, name, None) is not None}
+        return driver, dump, recorded
+
+    driver_off, off, _ = run(False)
+    driver_on, on, recorded = run(True)
+
+    assert driver_off.hmix_k_diag is None
+    assert set(driver_on.hmix_k_diag) == set(names)
+    assert set(off) == set(on) and len(off) >= 10
+    for name in sorted(off):
+        assert off[name].tobytes() == on[name].tobytes(), (
+            f"{name}: the {producer} viscosity diagnostic perturbed the "
+            f"state")
+    assert recorded > 0.0, (
+        f"the {producer} viscosity pair stayed zero for every step")
+    print(f"hmix_k_diag inertness ({producer}): {len(off)} prognostics "
+          f"bitwise identical over 6 steps; max recorded viscosity "
+          f"{recorded:.3g} m2 s-1")
+
+
 # ---------------------------------------------------------------------------
 # S3-6k: decoupled stable-limb DISSIPATION coefficient on device
 # (RunConfig sase_stable_dissipation -> launch_sase_step

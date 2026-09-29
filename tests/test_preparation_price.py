@@ -1,0 +1,763 @@
+"""A65: every CUDA preparation is priced and decided before it allocates.
+
+The defect: a CUDA preparation of 1792x1024x55 on a 24 GB card decoded its
+inputs, built its statics and then stopped about two minutes in with a raw
+CuPy out-of-memory inside ``DomainState.__init__``.  The engine had a device
+price for the phase and no door asked it.  These tests hold:
+
+* the price never undercounts a measured preparation peak;
+* on every route, a stand-in card with little free memory sends ``auto``
+  to the CPU with one named line and a receipt reason, refuses an explicit
+  ``cuda`` by name before anything is allocated (with the CPU line), and a
+  card with room still prepares on the card;
+* every door decides before its first device allocation, and defaults to
+  ``auto``.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from gpuwm.config import RunConfig
+from gpuwm.core import device_probe
+from gpuwm.ingest import preparation_price as pp
+from gpuwm.ingest import preprocess_backend as backend
+
+ROOT = Path(__file__).resolve().parents[1]
+GIB = 2 ** 30
+
+
+def _cfg(nx, ny, nz, **overrides):
+    """The measured runs' physics (mp=8, terrain, km_opt=4, YSU, Noah)."""
+    values = dict(dx=3000.0, dy=3000.0, ztop=20000.0, dt=15.0,
+                  run_seconds=21600.0, terrain_opt=1, moist=True,
+                  mp_physics=8, km_opt=4, bl_pbl_physics=1,
+                  nwp_diagnostics=1, specified=True, spec_bdy_width=5,
+                  sf_sfclay_physics=91, sf_surface_physics=2)
+    values.update(overrides)
+    return RunConfig(nx=nx, ny=ny, nz=nz, **values)
+
+
+def _measured_domains(row):
+    shapes = row["domains"]
+    domains = [_cfg(*shapes[0])]
+    for shape in shapes[1:]:
+        domains.append(_cfg(*shape, specified=False, nested=True))
+    return domains
+
+
+# ---------------------------------------------------------------- the price
+
+def test_state_term_is_the_exact_constructor_inventory():
+    """83 arrays, 21,163,805,580 bytes at the 3 km CONUS shape (the byte
+    total both surveys reached: a traced constructor and the inventory)."""
+    reference = RunConfig(nx=1792, ny=1024, nz=55, dx=3000.0, dy=3000.0,
+                          ztop=20000.0, dt=15.0, run_seconds=3600.0,
+                          terrain_opt=1, moist=True, mp_physics=8,
+                          specified=True)
+    from gpuwm.core.preflight import state_array_shapes
+    assert len(state_array_shapes(reference)) == 83
+    assert pp.state_bytes(reference) == 21_163_805_580
+
+
+@pytest.mark.parametrize("row", pp.MEASURED_PREPARATION_PEAKS,
+                         ids=[row["case"] for row in pp.MEASURED_PREPARATION_PEAKS])
+def test_the_price_never_undercounts_a_measured_peak(row):
+    """Linux context (the measured box), the measured source inventory."""
+    price = pp.price_preparation(
+        "mapped", _measured_domains(row), pp.MEASURED_SOURCE_INVENTORY,
+        boundary_intervals=pp.MEASURED_BOUNDARY_INTERVALS, platform="linux")
+    card = row["card_gb"] * 1e9
+    assert price.need_bytes >= card, (row["case"], price.need_bytes / 1e9)
+    # Calibrated, not padded: within a quarter of the measured peak.
+    assert price.need_bytes <= 1.25 * card, (row["case"], price.need_bytes / 1e9)
+    # The pool term alone (price minus context) covers what the pool held.
+    pooled = price.need_bytes - price.terms["cuda_context"]
+    assert pooled >= row["reserved_gb"] * 1e9
+
+
+def test_the_measured_live_setup_sits_inside_the_residual():
+    """The fitted terms: live non-state memory at each measured peak is
+    1.005 to 1.006 of the itemized analysis and vertical setup, under the
+    1.10 the price carries; the pool reserved 1.10 to 1.18 of live, under
+    its 1.20."""
+    for row in pp.MEASURED_PREPARATION_PEAKS[:2]:
+        (cfg,) = _measured_domains(row)
+        inventory = pp.MEASURED_SOURCE_INVENTORY
+        itemized = (pp.analysis_bytes(cfg, inventory)
+                    + pp.vertical_setup_bytes(cfg, inventory))
+        live_setup = row["live_gb"] * 1e9 - pp.state_bytes(cfg)
+        assert 1.0 <= live_setup / itemized <= pp.SETUP_RESIDUAL
+        assert row["reserved_gb"] / row["live_gb"] <= pp.PREPARATION_POOL_HEADROOM
+
+
+def test_the_24_gb_failure_is_priced_over_a_24_gb_card_and_6_km_under_it():
+    gfs = pp.SourceInventory(levels=23, level_fields=5, surface_planes=19)
+    big = pp.price_preparation("gfs", [_cfg(1792, 1024, 55)], gfs,
+                               platform="linux")
+    small = pp.price_preparation("gfs", [_cfg(896, 512, 59)], gfs,
+                                 platform="linux")
+    # The failure had 22.92 GiB reserved with 1.95 GiB of the state still
+    # to allocate: the price must sit above 24.87 GiB, and above the card.
+    assert big.need_bytes > 24.87 * GIB
+    assert big.need_bytes > 24 * 10 ** 9
+    assert small.need_bytes < 20 * GIB
+
+
+def test_the_ingest_estimate_retires_the_fractional_transient():
+    """``estimate_ingest`` (sizing, check, go) reads the same itemized setup:
+    43.51 GiB at 1792x1024x55 GFS under the 0.65 fraction, now within a
+    tenth of the door's own price."""
+    from gpuwm.core import preflight
+    from gpuwm.experiment import experiment_from_run_config
+    from datetime import datetime
+
+    exp = experiment_from_run_config(_cfg(1792, 1024, 55),
+                                     datetime(2026, 9, 27, 21))
+    estimate = preflight.estimate_ingest(exp, source="gfs",
+                                         forcing_interval_seconds=10800.0)
+    assert not hasattr(preflight, "INGEST_TRANSIENT_PER_TIME_FRACTION")
+    assert estimate.headroom == pp.PREPARATION_POOL_HEADROOM
+    assert estimate.transient_bytes == estimate.setup_bytes > 0
+    assert estimate.peak_envelope_bytes < 43.51 * GIB
+
+
+def test_source_inventory_counts_levels_fields_and_planes():
+    shapes = {"TT": (39, 10, 12), "UU": (39, 10, 13), "VV": (39, 11, 12),
+              "QC": (39, 10, 12), "PSFC": (10, 12), "SOILT": (9, 10, 12)}
+    inventory = pp.SourceInventory.from_shapes(shapes)
+    assert (inventory.levels, inventory.level_fields,
+            inventory.surface_planes) == (39, 4, 10)
+    assert inventory.mass_outputs == 3
+
+
+def test_era5_prices_its_whole_source_grid_humidity_conversion():
+    """A small target from a global source: the FP64 conversion on the
+    SOURCE grid binds, which no target-shaped term can see (F13)."""
+    inventory = pp.SourceInventory(levels=37, level_fields=5,
+                                   surface_planes=23,
+                                   source_points=1440 * 721,
+                                   fp64_humidity_transform=True)
+    price = pp.price_preparation("era5", [_cfg(100, 100, 40)], inventory,
+                                 platform="linux")
+    assert price.phase == "source transform"
+    assert price.terms["source_transform"] == 72 * 37 * 1440 * 721
+
+
+def test_native_hrrr_prices_its_boundary_workers():
+    """The kept f00 state beside spawned workers, each with a context (F12)."""
+    inventory = pp.NOMINAL_SOURCE_INVENTORIES["hrrr-native"]
+    cfg = _cfg(1799, 1059, 50)
+    one = pp.price_preparation("hrrr-native", [cfg], inventory,
+                               boundary_workers=0, platform="linux")
+    many = pp.price_preparation("hrrr-native", [cfg], inventory,
+                                boundary_workers=32, platform="linux")
+    assert many.need_bytes > one.need_bytes
+    assert many.phase == "boundary workers"
+    assert many.terms["worker_slots"] > 32 * pp.context_bytes(platform="linux")
+
+
+def test_downscale_prices_the_parent_extent_not_the_child_alone():
+    """A small child of a large parent: the parent's fields bind (F08)."""
+    child = _cfg(138, 138, 20, specified=False, nested=True)
+    price = pp.price_downscale_interpolation(
+        parent_nx=4096, parent_ny=4096, parent_nz=137, parent_fields=14,
+        child_cfg=child, platform="linux")
+    assert price.terms["parent_fields"] > 40 * GIB
+    assert price.need_bytes > price.terms["parent_fields"]
+
+
+def test_forcing_price_reads_one_snapshot_not_every_time():
+    """A lazy forcing sequence is priced from its first snapshot and its
+    length; iterating it would pack every valid time at once (the mapped
+    route's 17 GB host regression at 1792x1024x55)."""
+
+    class LazyForcing:
+        def __init__(self, count):
+            self.count, self.read = count, []
+
+        def __len__(self):
+            return self.count
+
+        def __getitem__(self, index):
+            if isinstance(index, slice):
+                raise AssertionError("the price sliced the forcing")
+            self.read.append(index)
+            fields = {"TT": SimpleNamespace(shape=(40, 1059, 1799)),
+                      "UU": SimpleNamespace(shape=(40, 1059, 1799)),
+                      "VV": SimpleNamespace(shape=(40, 1059, 1799)),
+                      "PSFC": SimpleNamespace(shape=(1059, 1799))}
+            return SimpleNamespace(fields=fields)
+
+        def __iter__(self):
+            raise AssertionError("the price iterated every forcing time")
+
+    forcing = LazyForcing(7)
+    exp = SimpleNamespace(domains=[SimpleNamespace(run=_cfg(896, 512, 59))])
+    price = pp.price_forcing_preparation("mapped", exp, forcing)
+    assert forcing.read == [0]
+    assert price.need_bytes > 0
+    one_shot = pp.price_forcing_preparation(
+        "mapped", exp, (forcing[0] for _ in range(7)))
+    assert one_shot.need_bytes == price.need_bytes
+
+
+# ------------------------------------------------- one stand-in card, every route
+
+def _route_prices():
+    c3 = _cfg(1792, 1024, 55)
+    gfs = pp.SourceInventory(levels=23, level_fields=5, surface_planes=19)
+    era5 = pp.SourceInventory(levels=37, level_fields=5, surface_planes=23,
+                              source_points=1440 * 721,
+                              fp64_humidity_transform=True)
+    child = _cfg(900, 900, 55, specified=False, nested=True)
+    return {
+        "gfs": pp.price_preparation("gfs", [c3], gfs),
+        "gfs tree": pp.price_preparation("gfs", [c3, child], gfs,
+                                         boundary_intervals=4),
+        "era5": pp.price_preparation("era5", [c3], era5),
+        "mapped": pp.price_preparation("mapped", [c3],
+                                       pp.MEASURED_SOURCE_INVENTORY),
+        "met_em": pp.price_preparation("met_em", [c3, child], gfs,
+                                       boundary_intervals=4),
+        "hrrr-native": pp.price_preparation(
+            "hrrr-native", [c3], pp.NOMINAL_SOURCE_INVENTORIES["hrrr-native"],
+            boundary_workers=2),
+        "experiment": pp.price_preparation("experiment", [c3], gfs,
+                                           boundary_intervals=4),
+        "experiment host store": pp.price_preparation(
+            "experiment-host-store", [c3], gfs, boundary_intervals=4),
+        "downscale child": pp.price_downscale_interpolation(
+            parent_nx=1792, parent_ny=1024, parent_nz=55, parent_fields=14,
+            child_cfg=child),
+    }
+
+
+ROUTES = tuple(_route_prices())
+SMALL_CARD = {"free_bytes": 3 * GIB, "total_bytes": 24 * GIB,
+              "utilization_gpu_percent": 0}
+ROOMY_CARD = {"free_bytes": 900 * GIB, "total_bytes": 960 * GIB,
+              "utilization_gpu_percent": 0}
+
+
+@pytest.fixture
+def card(monkeypatch):
+    """A certified stand-in CUDA backend whose allocations are recorded,
+    and a stand-in card whose reading the test sets."""
+    allocations = []
+
+    def _allocate(*args, **kwargs):
+        allocations.append((args, kwargs))
+        raise AssertionError("the stand-in card was allocated on")
+
+    runtime = SimpleNamespace(getDeviceCount=lambda: 1, getDevice=lambda: 0,
+                              runtimeGetVersion=lambda: 13020)
+    module = SimpleNamespace(__version__="14.2.0", zeros=_allocate,
+                             empty=_allocate, asarray=_allocate,
+                             cuda=SimpleNamespace(runtime=runtime))
+
+    def cuda_backend():
+        return SimpleNamespace(name="cuda", array_module=module)
+
+    def cpu_backend(**kwargs):
+        return SimpleNamespace(name="cpu", workers=kwargs.get("workers"))
+
+    reading = {}
+    monkeypatch.setattr(backend, "CudaPreprocessBackend", cuda_backend)
+    monkeypatch.setattr(backend, "ParallelCpuPreprocessBackend", cpu_backend)
+    monkeypatch.setattr(backend, "_gpu_runtime_installed", lambda: True)
+    monkeypatch.setattr(backend, "_ANNOUNCED_AUTO_REASONS", set())
+    monkeypatch.delenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", raising=False)
+    monkeypatch.setattr(device_probe, "device_memory_probe_subprocess",
+                        lambda **_: dict(reading))
+    return SimpleNamespace(reading=reading, allocations=allocations)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_auto_prepares_on_the_cpu_when_the_card_cannot_hold_it(
+        route, card, capsys):
+    card.reading.update(SMALL_CARD)
+    price = _route_prices()[route]
+    chosen = backend.resolve_preprocess_backend("auto", price=price)
+    assert chosen.name == "cpu"
+    selection = chosen.selection
+    assert selection["requested"] == "auto"
+    assert "the CUDA preparation needs" in selection["reason"]
+    assert "3.0 GiB free of 24.0 GiB" in selection["reason"]
+    fit = selection["device_fit"]
+    assert fit["fits"] is False and fit["route"] == price.route
+    assert fit["need_bytes"] == price.need_bytes
+    assert fit["free_bytes"] == SMALL_CARD["free_bytes"]
+    err = capsys.readouterr().err
+    assert selection["reason"] in err and err.count("\n") == 1
+    assert card.allocations == []
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_explicit_cuda_is_refused_by_name_before_anything_is_allocated(
+        route, card):
+    card.reading.update(SMALL_CARD)
+    price = _route_prices()[route]
+    with pytest.raises(backend.PreparationDeviceRefused) as refused:
+        backend.resolve_preprocess_backend("cuda", price=price)
+    message = str(refused.value)
+    assert "refused before anything was allocated" in message
+    assert "--preprocess-backend cpu" in message
+    assert "out-of-memory" in message and price.stage in message
+    assert price.summary() in message
+    assert isinstance(refused.value, MemoryError)
+    assert card.allocations == []
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("requested", ["auto", "cuda"])
+def test_a_card_with_room_still_prepares_on_the_card(route, requested, card):
+    card.reading.update(ROOMY_CARD)
+    price = _route_prices()[route]
+    chosen = backend.resolve_preprocess_backend(requested, price=price)
+    assert chosen.name == "cuda"
+    assert chosen.selection["device_fit"]["fits"] is True
+    assert card.allocations == []
+
+
+def test_an_unread_card_keeps_the_choice_and_says_so(card, monkeypatch):
+    monkeypatch.setattr(device_probe, "device_memory_probe_subprocess",
+                        lambda **_: None)
+    price = _route_prices()["gfs"]
+    chosen = backend.resolve_preprocess_backend("cuda", price=price)
+    assert chosen.name == "cuda"
+    assert chosen.selection["device_fit"]["fits"] is None
+
+
+def test_the_name_road_takes_the_same_decision(card, capsys):
+    """The offline child passes its backend by name."""
+    price = _route_prices()["downscale child"]
+    card.reading.update(SMALL_CARD)
+    name, selection = backend.decide_preparation_device("auto", price)
+    assert name == "cpu" and selection["device_fit"]["fits"] is False
+    with pytest.raises(backend.PreparationDeviceRefused):
+        backend.decide_preparation_device("cuda", price)
+    assert backend.decide_preparation_device("cpu", price) == ("cpu", None)
+    card.reading.clear()
+    card.reading.update(ROOMY_CARD)
+    assert backend.decide_preparation_device("cuda", price)[0] == "cuda"
+
+
+def test_native_hrrr_budgeted_backend_takes_the_price(card):
+    from tools import hrrr_single_domain_benchmark as benchmark
+
+    card.reading.update(SMALL_CARD)
+    args = SimpleNamespace(preprocess_backend="auto", preprocess_workers=4,
+                           cpu_preprocess_bridge=None)
+    price = benchmark.native_preparation_price(
+        _cfg(1799, 1059, 50), forcing_times=7, prepare_workers=2)
+    chosen, workers = benchmark._budgeted_preprocess_backend(args, price=price)
+    assert chosen.name == "cpu" and workers == 4
+    assert chosen.selection["device_fit"]["fits"] is False
+    args.preprocess_backend = "cuda"
+    with pytest.raises(backend.PreparationDeviceRefused):
+        benchmark._budgeted_preprocess_backend(args, price=price)
+
+
+# ------------------------------------------------------ doors: order and default
+
+#: Each door, the function that prepares, the call that decides, and the
+#: calls that make the first device allocation.
+DOORS = (
+    ("gpuwm/gfs_direct.py", "prepare_gfs_wrf", "admit_preparation",
+     ("build_forcing_time", "interpolate_era5_to_lambert", "initialize_real")),
+    ("gpuwm/era5_direct.py", "prepare_era5_wrf", "admit_preparation",
+     ("build_forcing_time", "interpolate_era5_to_lambert", "initialize_real")),
+    ("gpuwm/mapped_direct.py", "prepare_mapped_wrf", "price_forcing_preparation",
+     ("build_forcing_time", "interpolate_era5_to_lambert", "initialize_real")),
+    ("gpuwm/metem_forecast.py", "prepare_metem_run", "price_preparation",
+     ("initialize_real",)),
+    ("gpuwm/runtime.py", "prepare_real_case", "price_preparation",
+     ("interpolate_era5_to_lambert", "initialize_real")),
+    ("tools/hrrr_single_domain_benchmark.py", "run", "native_preparation_price",
+     ("_initialize_state", "_initialize_boundary_sides")),
+    ("gpuwm/offline_child_run.py", "_run", "decide_preparation_device",
+     ("interpolate_parent_initial_state", "build_offline_lateral_boundaries")),
+)
+
+
+def _call_lines(function, names):
+    lines = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call):
+            target = node.func
+            name = getattr(target, "id", None) or getattr(target, "attr", None)
+            if name in names:
+                lines.append(node.lineno)
+    return lines
+
+
+@pytest.mark.parametrize("path,function,decision,device", DOORS,
+                         ids=[door[1] for door in DOORS])
+def test_every_door_decides_before_its_first_device_allocation(
+        path, function, decision, device):
+    tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+    body = next(node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == function)
+    decided = _call_lines(body, {decision})
+    allocated = _call_lines(body, set(device))
+    assert decided, f"{path}:{function} never prices its preparation"
+    assert allocated, f"{path}:{function} lost its device calls"
+    assert min(decided) < min(allocated), (path, decided, allocated)
+
+
+def test_every_card_door_defaults_to_auto():
+    from gpuwm import offline_child_run, twentycrv3_wrf
+    from gpuwm.ingest.case_store import CaseStoreRequest
+    from gpuwm.preprocess_policy import preprocess_backend_choice
+
+    assert twentycrv3_wrf._parser().get_default("preprocess_backend") == "auto"
+    assert offline_child_run._parser().get_default("preprocess_backend") == "auto"
+    assert CaseStoreRequest(Path("x")).backend == "auto"
+    assert preprocess_backend_choice(source="met_em") == ("auto", None)
+    assert preprocess_backend_choice(source="hrrr-prs") == ("auto", None)
+    assert inspect.signature(
+        twentycrv3_wrf.prepare_20crv3_wrf).parameters[
+            "preprocess_backend"].default == "auto"
+    # The library entry points, not only their mains (A104).
+    from gpuwm import era5_direct, gfs_direct, mapped_direct
+    for function in (gfs_direct.prepare_gfs_wrf, era5_direct.prepare_era5_wrf,
+                     mapped_direct.prepare_mapped_wrf):
+        assert inspect.signature(function).parameters[
+            "preprocess_backend"].default == "auto", function.__name__
+    for path in ("tools/hrrr_single_domain_benchmark.py", "gpuwm/downscale.py"):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        start = text.index('"--preprocess-backend"')
+        flag = text[start:text.index(")", text.index("default=", start))]
+        assert 'default="auto"' in flag, path
+        assert '"auto"' in flag.split("default=")[0], path
+
+
+def test_every_route_row_names_its_door_and_stage():
+    for name, row in pp.PREPARATION_ROUTES.items():
+        assert row.name == name and row.door and row.stage.startswith("while ")
+
+
+# ------------------------------------------------------------------ gpuwm go
+
+_STREAMED_ERA5 = """\
+[experiment]
+name = "prep-fit"
+start_time = 2026-09-26T06:00:00
+run_seconds = 21600.0
+restart_interval_s = 0.0
+
+[fetch]
+source = "era5"
+cycle = "2026-09-26T06"
+hours = 6
+cadence = 6
+
+[shared]
+nz = 49
+ztop = 20000.0
+moist = true
+moist_cq = true
+mp_physics = 10
+ra_lw_physics = 4
+ra_sw_physics = 4
+sf_sfclay_physics = 91
+sf_surface_physics = 2
+bl_pbl_physics = 1
+nwp_diagnostics = 1
+
+[tiles]
+mode = "on"
+store = "host"
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 700
+ny = 700
+time_step = 15
+dx = 3000.0
+history_interval_s = 3600.0
+"""
+
+
+def test_go_prepares_on_the_cpu_instead_of_refusing_the_run(
+        tmp_path, monkeypatch):
+    """A streamed forecast that fits the card beside a preparation that does
+    not: ``gpuwm go`` used to refuse the WHOLE run on the preparation's card
+    price, although the door (backend auto) prepares it on the CPU.  The
+    gate now prices that road, and weighs the CPU preparation's host term."""
+    from gpuwm import go_cli
+    from gpuwm.core import preflight, streaming
+
+    config = tmp_path / "prep-fit.toml"
+    config.write_text(_STREAMED_ERA5, encoding="utf-8")
+    monkeypatch.setattr(streaming, "_host_total_bytes", lambda: 2048 * GIB)
+    exp = preflight._load_experiment_any(config)
+    # The gate's own machine, built from the stand-in card's reading: no
+    # process here stands up a CUDA context.
+    free = 8 * GIB
+    probe = {"free_bytes": free, "total_bytes": free + GIB,
+             "name": "stand-in card", "local_memory_bytes_per_thread": 0}
+    on_card = preflight.estimate_phases(
+        exp, source="era5", forcing_interval_seconds=21600.0,
+        machine=go_cli._planner_machine(probe))
+    assert on_card.preprocess_backend == "auto"
+    assert on_card.streamed is not None
+    assert on_card.forecast_envelope_bytes < free < on_card.ingest_envelope_bytes
+
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess",
+                        lambda *a, **k: dict(probe))
+    verdict = go_cli.memory_gate({"config": str(config), "source": "era5",
+                                  "cadence": 6})
+    assert verdict["refuse"] is False, verdict["verdict"]
+    assert verdict["phases"].preprocess_backend == "cpu"
+    # "may": the door decides from the decoded preparation's own price,
+    # which this gate does not read (A104).
+    assert "may prepare on the CPU" in verdict["verdict"]
+    assert "prepares on the CPU" not in verdict["verdict"]
+    assert verdict["preparation_on_cpu"] is not None
+
+
+def test_a_door_that_resolved_before_its_decode_reads_the_card_again(card):
+    """GFS and ERA5 resolve ``auto`` before their host decode and weigh the
+    price after it, minutes later on a card other work shares (a chained
+    preparation beside a forecast).  The decision reads the free memory at
+    the decision, not the reading ``auto`` took before the decode: reusing
+    that one kept CUDA on a card that had since filled."""
+    card.reading.update(ROOMY_CARD)
+    chosen = backend.resolve_preprocess_backend("auto")
+    assert chosen.name == "cuda"
+    card.reading.clear()
+    card.reading.update(SMALL_CARD)
+    for route in ("gfs", "era5"):
+        admitted = backend.admit_preparation(chosen, _route_prices()[route])
+        assert admitted.name == "cpu", route
+        fit = admitted.selection["device_fit"]
+        assert fit["fits"] is False
+        assert fit["free_bytes"] == SMALL_CARD["free_bytes"]
+    assert card.allocations == []
+
+
+def test_a_preparation_already_on_the_cpu_is_never_priced(card):
+    """The GFS, ERA5 and mapped doors hand the price over as a callable, so
+    a backend already on the CPU never runs it: pricing is only ever for a
+    decision about the card, and a CPU preparation has none to take.  A
+    CUDA answer still prices, once."""
+    calls = []
+
+    def price():
+        calls.append("priced")
+        return _route_prices()["gfs"]
+
+    chosen = backend.resolve_preprocess_backend("cpu", price=price)
+    assert chosen.name == "cpu" and calls == []
+    assert backend.admit_preparation(chosen, price) is chosen and calls == []
+    assert backend.decide_preparation_device("cpu", price) == ("cpu", None)
+    assert calls == []
+    card.reading.update(SMALL_CARD)
+    chosen = backend.resolve_preprocess_backend("auto", price=price)
+    assert chosen.name == "cpu" and calls == ["priced"]
+    assert chosen.selection["device_fit"]["fits"] is False
+    card.reading.clear()
+    card.reading.update(ROOMY_CARD)
+    chosen = backend.resolve_preprocess_backend("cuda", price=price)
+    assert chosen.name == "cuda" and calls == ["priced", "priced"]
+    assert card.allocations == []
+
+
+def _door_argv(door, tmp_path):
+    common = ["--wps-namelist", str(tmp_path / "namelist.wps"),
+              "--experiment-config", str(tmp_path / "case.toml"),
+              "--input-manifest", str(tmp_path / "inputs.json"),
+              "--input-manifest-sha256", "0" * 64,
+              "--output-root", str(tmp_path / "out"),
+              "--preprocess-backend", "cuda"]
+    if door == "gfs":
+        return ["--series", "series.tsv", "--cycle", "2026-07-29_06:00:00",
+                "--bridge", "bridge.exe", *common]
+    if door == "era5":
+        return ["--grib", "era5.grib", "--vtable", "Vtable.ERA5",
+                "--bridge", "bridge.exe", *common]
+    return ["--source-format", "netcdf", "--mapping", "mapping.json",
+            "--composition", "composition.json",
+            "--input", str(tmp_path / "one.nc"),
+            "--geog-root", str(tmp_path / "geog"), *common]
+
+
+@pytest.mark.parametrize("door,label", [
+    ("gfs", "rw-wps --source gfs: "),
+    ("era5", "rw-wps --source era5: "),
+    ("mapped", "rw-wps: "),
+])
+def test_an_explicit_cuda_refusal_reaches_the_user_as_a_sentence(
+        door, label, monkeypatch, tmp_path, capsys):
+    """An explicit ``--preprocess-backend cuda`` the card cannot hold is
+    refused with its remedy line.  The GFS, ERA5 and mapped door mains let
+    PreparationDeviceRefused out as a traceback, which buried that line
+    under a stack; they now answer it the way ``gpuwm`` does: the message
+    on stderr and exit 2."""
+    import importlib
+
+    module = importlib.import_module(f"gpuwm.{door}_direct")
+    price = _route_prices()[door]
+    message = backend.preparation_refusal_message(
+        price, SMALL_CARD["free_bytes"], SMALL_CARD["total_bytes"])
+
+    def refuse(**_kwargs):
+        raise backend.PreparationDeviceRefused(message)
+
+    monkeypatch.setattr(module, f"prepare_{door}_wrf", refuse)
+    if door == "mapped":
+        monkeypatch.setattr(module, "load_mapping",
+                            lambda path: {"format": "netcdf"})
+    code = module.main(_door_argv(door, tmp_path))
+    err = capsys.readouterr().err
+    assert code == 2
+    assert err.startswith(label + message.splitlines()[0]), err
+    assert "--preprocess-backend cpu" in err
+    assert "Traceback" not in err
+
+
+# ---------------------------------------------- the floor, before the decode
+
+#: Each door, its experiment load and its host decode (A98).
+FLOOR_DOORS = (
+    ("gpuwm/gfs_direct.py", "prepare_gfs_wrf", "load_experiment",
+     "_load_bridge_snapshots"),
+    ("gpuwm/era5_direct.py", "prepare_era5_wrf", "load_era5_adapter_config",
+     "cached_era5_snapshots"),
+    ("gpuwm/mapped_direct.py", "prepare_mapped_wrf", "load_experiment",
+     "decode_composed_source"),
+)
+
+
+@pytest.mark.parametrize("route", ["gfs", "era5", "mapped"])
+def test_the_floor_never_prices_above_the_decoded_preparation(route):
+    """A98: the floor is a lower bound, so it never refuses a preparation
+    the decoded price admits on the same card, and it still carries the
+    domains' own state."""
+    domains = [_cfg(1792, 1024, 55),
+               _cfg(900, 900, 55, specified=False, nested=True)]
+    exp = SimpleNamespace(domains=[SimpleNamespace(run=cfg) for cfg in domains])
+    floor = pp.price_preparation_floor(route, exp)
+    for inventory in (pp.FLOOR_SOURCE_INVENTORY, pp.MEASURED_SOURCE_INVENTORY,
+                      pp.SourceInventory(levels=37, level_fields=5,
+                                         surface_planes=23,
+                                         source_points=1440 * 721,
+                                         fp64_humidity_transform=True)):
+        for intervals in (0, 6):
+            decoded = pp.price_preparation(route, domains, inventory,
+                                           boundary_intervals=intervals)
+            assert floor.need_bytes <= decoded.need_bytes, (inventory,
+                                                            intervals)
+    assert floor.terms["model_state"] >= pp.state_bytes(domains[0])
+    assert floor.basis == pp.PREPARATION_FLOOR_BASIS
+
+
+@pytest.mark.parametrize("path,function,load,decode", FLOOR_DOORS,
+                         ids=[door[1] for door in FLOOR_DOORS])
+def test_every_source_door_weighs_the_floor_before_its_decode(
+        path, function, load, decode):
+    """A98: an explicit cuda too big for the card was refused only after
+    the host decode and the statics (501 s at 1792x1024x55 on a 24 GB
+    card).  Each door prices the floor after its experiment load and
+    before its decode."""
+    tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+    body = next(node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == function)
+    floor = _call_lines(body, {"price_preparation_floor"})
+    loaded = _call_lines(body, {load})
+    decoded = _call_lines(body, {decode})
+    assert floor, f"{path}:{function} never weighs the floor"
+    assert decoded, f"{path}:{function} lost its decode"
+    assert max(loaded) < min(floor) < min(decoded), (loaded, floor, decoded)
+
+
+_FLOOR_CASE = _STREAMED_ERA5.split("[tiles]")[0] + """\
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 1792
+ny = 1024
+time_step = 15
+dx = 3000.0
+history_interval_s = 3600.0
+"""
+
+
+def test_an_explicit_cuda_gfs_preparation_is_refused_before_the_decoder_runs(
+        card, monkeypatch, tmp_path):
+    """A98, driven through the GFS door on a stand-in card with 3 GiB
+    free: the refusal comes from the floor, and the decoder is never
+    invoked and the card never allocated."""
+    from gpuwm import gfs_direct
+
+    decoded = []
+
+    def decoder(*args, **kwargs):
+        decoded.append(args)
+        raise AssertionError("the decoder ran before the card was weighed")
+
+    class _StandInCuda:
+        name = "cuda"
+        array_module = SimpleNamespace(cuda=SimpleNamespace(
+            runtime=SimpleNamespace(getDevice=lambda: 0)))
+
+        def __init__(self):
+            self.selection = {"requested": "cuda", "backend": "cuda",
+                              "reason": backend.NAMED_BY_CALLER}
+
+        def receipt(self):
+            return {"backend": "cuda", "selection": dict(self.selection)}
+
+    card.reading.update(SMALL_CARD)
+    monkeypatch.setattr(gfs_direct, "_load_bridge_snapshots", decoder)
+    monkeypatch.setattr(gfs_direct, "resolve_preprocess_backend",
+                        lambda *args, **kwargs: _StandInCuda())
+    monkeypatch.setattr(gfs_direct, "_implementation_sha256", lambda: {})
+    monkeypatch.setattr(gfs_direct, "_git_source_identity", lambda: {})
+    monkeypatch.setattr(
+        gfs_direct, "_verify_input_manifest",
+        lambda *args, **kwargs: {
+            "source": {"model": "GFS", "product": "pgrb2.0p25",
+                       "cycle": "2026-09-26T06:00:00Z"},
+            "files": {"bridge": {"sha256": "0" * 64},
+                      "experiment_config": {"sha256": "0" * 64}}})
+    for name in ("gfs.t06z.pgrb2.0p25.f000", "gfs.t06z.pgrb2.0p25.f006",
+                 "namelist.wps", "inputs.json", "geog.keep"):
+        (tmp_path / name).write_bytes(b"")
+    (tmp_path / "series.tsv").write_text(
+        "0\tgfs.t06z.pgrb2.0p25.f000\n6\tgfs.t06z.pgrb2.0p25.f006\n",
+        encoding="utf-8")
+    bridge = tmp_path / "bridge"
+    bridge.write_bytes(b"")
+    bridge.chmod(0o755)
+    config = tmp_path / "case.toml"
+    config.write_text(_FLOOR_CASE, encoding="utf-8")
+
+    with pytest.raises(backend.PreparationDeviceRefused) as refused:
+        gfs_direct.prepare_gfs_wrf(
+            series=tmp_path / "series.tsv", cycle="2026-09-26_06:00:00",
+            bridge=bridge, wps_namelist=tmp_path / "namelist.wps",
+            static_input=None, static_receipt=None,
+            experiment_config=config, input_manifest=tmp_path / "inputs.json",
+            input_manifest_sha256="0" * 64,
+            output_root=tmp_path / "out", preprocess_backend="cuda",
+            geog_root=tmp_path)
+    assert decoded == []
+    assert card.allocations == []
+    assert "refused before anything was allocated" in str(refused.value)

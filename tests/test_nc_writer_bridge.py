@@ -355,3 +355,38 @@ def test_abi_marker_is_present_in_the_built_library():
     except FileNotFoundError as error:
         pytest.skip(f"the Rust NetCDF writer library is not built: {error}")
     assert bridge.ABI_MARKER in path.read_bytes()
+
+
+#: The writer's checkout build as each shell must receive it, written out
+#: rather than derived so a generator that loses its shell rule cannot
+#: also rewrite what it is judged against.  Windows PowerShell 5.1
+#: rejects `&&` with a parser error.
+NC_WRITER_BUILD_FOR_SHELL = {
+    False: "cd tools/rustwx && cargo build --release --offline && cd ../..",
+    True: "cd tools/rustwx; cargo build --release --offline; cd ../..",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_missing_library_refusal_spells_the_build_for_the_shell(
+        monkeypatch, tmp_path, windows):
+    """The not-found refusal reads the one shell rule every remedy reads.
+
+    It chose its separator from ``os.name``, so no test could force its
+    Windows spelling and a regression to `&&` there would pass on every
+    Linux runner.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.delenv(bridge.NCWRITE_BRIDGE_ENV, raising=False)
+    monkeypatch.setattr(bridge, "library_candidates",
+                        lambda: (tmp_path / "absent" / "netcdf_writer.dll",))
+    with pytest.raises(FileNotFoundError) as caught:
+        bridge.resolve_ncwrite_bridge()
+    message = str(caught.value)
+    assert NC_WRITER_BUILD_FOR_SHELL[windows] in message, message
+    if windows:
+        assert "&&" not in message, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {message}")

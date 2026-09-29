@@ -96,13 +96,16 @@ class WrfInputField:
     #:
     #: It exists because the exporter used to read
     #: ``state/{registry_name}`` and gpuwm drops WRF's leading ``q`` on
-    #: exactly the aerosol-aware rows: qnc/qnwfa/qnifa/qnwfa2d/qnifa2d
-    #: are nc/nwfa/nifa/nwfa2d/nifa2d in the prepared cache, so every one
-    #: of them missed and exported zeros even on a run whose WIF
+    #: the number moments of Thompson (mp=8), Morrison (mp=10),
+    #: aerosol-aware Thompson (mp=28) and P3 (mp=50): their qnc/qnr/qni/
+    #: qns/qng/qnwfa/qnifa/qnwfa2d/qnifa2d are nc/nr/ni/ns/ng/nwfa/nifa/
+    #: nwfa2d/nifa2d in the prepared cache, so every one of them missed
+    #: and exported zeros, even where the cold start had seeded them
+    #: with real.exe's make_RainNumber and make_IceNumber or the WIF
     #: climatology lane had filled them.  A transform ("strip a q") would
-    #: be wrong for qni/qnr/qns/qng/qnh/qndrop/qnn/qvolg/qvolh/qir/qib,
-    #: which DO exist under their Registry names, so the exception is
-    #: declared per row rather than computed.
+    #: be wrong for NSSL's qnr/qni/qns/qng/qnh/qndrop/qnn/qvolg/qvolh and
+    #: P3's qir/qib, which DO exist under their Registry names, so the
+    #: exception is declared per row rather than computed.
     state_name: str | None = None
 
     @property
@@ -256,8 +259,8 @@ _INVENTORIES = {
         scheme="Thompson",
         registry_package="thompson",
         wrfinput_fields=_ICE_MASS + (
-            _scalar("qni", "QNICE"),
-            _scalar("qnr", "QNRAIN", units="# kg(-1)"),
+            _scalar("qni", "QNICE", state_name="ni"),
+            _scalar("qnr", "QNRAIN", units="# kg(-1)", state_name="nr"),
         ),
         runtime_state_not_wrfinput=_EFFECTIVE_RADII,
     ),
@@ -267,10 +270,10 @@ _INVENTORIES = {
         scheme="Morrison two-moment",
         registry_package="morr_two_moment",
         wrfinput_fields=_ICE_MASS + (
-            _scalar("qni", "QNICE"),
-            _scalar("qns", "QNSNOW", units="# kg(-1)"),
-            _scalar("qnr", "QNRAIN", units="# kg(-1)"),
-            _scalar("qng", "QNGRAUPEL", units="# kg(-1)"),
+            _scalar("qni", "QNICE", state_name="ni"),
+            _scalar("qns", "QNSNOW", units="# kg(-1)", state_name="ns"),
+            _scalar("qnr", "QNRAIN", units="# kg(-1)", state_name="nr"),
+            _scalar("qng", "QNGRAUPEL", units="# kg(-1)", state_name="ng"),
         ),
         runtime_state_not_wrfinput=(
             RuntimeStateField("rqrcuten", "RQRCUTEN"),
@@ -337,8 +340,10 @@ _INVENTORIES = {
             # Units are WRF's post-reg_parse values; see
             # WRF_RESOLVED_UNITS_NUMBER_PAREN above for why they carry a
             # blank where the Registry line shows '#'.
-            _scalar("qni", "QNICE", units=WRF_RESOLVED_UNITS_NUMBER_PLAIN),
-            _scalar("qnr", "QNRAIN", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
+            _scalar("qni", "QNICE", units=WRF_RESOLVED_UNITS_NUMBER_PLAIN,
+                    state_name="ni"),
+            _scalar("qnr", "QNRAIN", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
+                    state_name="nr"),
             _scalar("qnc", "QNCLOUD", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
                     state_name="nc"),
             _scalar("qnwfa", "QNWFA", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
@@ -404,8 +409,10 @@ _INVENTORIES = {
         scheme="P3 one-category two-moment ice",
         registry_package="p3_1category",
         wrfinput_fields=_P3_MASS + (
-            _scalar("qni", "QNICE", units=WRF_RESOLVED_UNITS_NUMBER_PLAIN),
-            _scalar("qnr", "QNRAIN", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
+            _scalar("qni", "QNICE", units=WRF_RESOLVED_UNITS_NUMBER_PLAIN,
+                    state_name="ni"),
+            _scalar("qnr", "QNRAIN", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
+                    state_name="nr"),
             _scalar("qir", "QIR", units="kg kg(-1)"),
             _scalar("qib", "QIB", units="m(3) kg(-1)"),
         ),

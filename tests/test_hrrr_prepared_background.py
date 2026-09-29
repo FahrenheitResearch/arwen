@@ -69,8 +69,24 @@ def _canonical(value) -> str:
                       ensure_ascii=True, allow_nan=False)
 
 
+def _on_the_baseline_terrain(tables: dict) -> dict:
+    """Declare the 30-arc-second terrain these fixtures stand in for.
+
+    The synthetic preparations below never build terrain: their static
+    cache is a few placeholder bytes.  Their 1 km target would otherwise
+    take the grid-spacing default
+    (:data:`gpuwm.static.highres_production.HIGHRES_DEFAULT_BY_DX`), which
+    a real preparation builds and records and these stand-ins do not, so
+    the configuration says what they model.
+    """
+    tables["static"] = {"highres": {"enabled": False,
+                                    "cache_root": "highres-cache"}}
+    return tables
+
+
 def _hrrr_experiment(*, run_seconds: float = 7200.0,
-                     history_interval_seconds: float = 900.0):
+                     history_interval_seconds: float = 900.0,
+                     shared: dict | None = None):
     vertical = VerticalConfig(
         eta_levels=tuple(1.0 - index / NZ for index in range(NZ + 1)),
         p_top=5000.0, hybrid_opt=2, etac=0.2)
@@ -80,6 +96,14 @@ def _hrrr_experiment(*, run_seconds: float = 7200.0,
                   start_time=CYCLE + timedelta(hours=SOURCE_HOURS[0]),
                   history_interval_seconds=history_interval_seconds)
     tables, _resolved = _experiment_tables(vertical, **kwargs)
+    if shared:
+        # A config-driven preparation (``physics_profile=None``): the
+        # tables the namelist import would hand the preparer, with the
+        # named selectors changed.
+        from gpuwm.experiment import build_experiment
+
+        tables["shared"].update(shared)
+        return tables, build_experiment(tables, "test:config-suite")
     return tables, _experiment(vertical, **kwargs)
 
 
@@ -166,10 +190,12 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
                  rendered_wps: bool = False,
                  publish_cycle: datetime | None = None,
                  scientific_identity: dict | None = None,
-                 user_receipts: dict | None = None) -> _Bundle:
+                 user_receipts: dict | None = None,
+                 shared: dict | None = None) -> _Bundle:
     tables, exp = _hrrr_experiment(
         run_seconds=run_seconds,
-        history_interval_seconds=history_interval_seconds)
+        history_interval_seconds=history_interval_seconds, shared=shared)
+    _on_the_baseline_terrain(tables)
     root = tmp_path / "prepared"
     native = root / "native"
     bridge_dir = native / "native-bridge"
@@ -415,6 +441,69 @@ def test_preflight_admits_a_published_hrrr_bundle(tmp_path, monkeypatch):
     assert inputs.layout == runner.HRRR_DIRECT_LAYOUT
     assert inputs.forcing_hours == (0, 1, 2)
     assert inputs.experiment.root.run.nx == 48
+
+
+def test_a_scheme_with_no_stock_wrf_contract_publishes_and_runs(
+        tmp_path, monkeypatch):
+    """WDM6 has no stock-WRF package contract, and that is about exporting.
+
+    ``stock_wrf_physics_inventory`` refuses mp_physics=16 because a
+    wrfinput written for an unchanged WRF v4.6.1 would under-declare
+    WDM6's own package; it says nothing about running WDM6 here.  The
+    bundle writer hashed that stock contract into the proof's export slot
+    anyway, so publication raised, the preparation published no portable
+    bundle, and ``gpuwm run-plan`` stopped on the shipped Grell-Freitas
+    suite (WDM6) at prepare.  The slot now records the stock export as
+    refused for that scheme, and the forecast reader admits the bundle.
+    """
+
+    from gpuwm.wrf_physics_inventory import supported_stock_wrf_mp_physics
+
+    assert 16 not in supported_stock_wrf_mp_physics()
+    _bind_synthetic_geometry(monkeypatch)
+    bundle = _hrrr_bundle(tmp_path, physics_profile=None,
+                          shared={"mp_physics": 16})
+    proof = json.loads(Path(bundle.handoff["proof"]).read_text(
+        encoding="utf-8"))
+    assert proof["stock_wrf_export"] == "optional"
+    assert proof["export"]["status"] == "REFUSED"
+    assert proof["export"]["unsupported"] == {"mp_physics": 16}
+    assert "mp_physics=16" in proof["export"]["reason"]
+    inputs = _preflight(bundle)
+    assert inputs.experiment.root.run.mp_physics == 16
+    assert inputs.export_source_receipt["status"] == "REFUSED"
+
+    # A scheme WITH a contract keeps the READY slot it always had.
+    control = _hrrr_bundle(tmp_path / "control")
+    proof = json.loads(Path(control.handoff["proof"]).read_text(
+        encoding="utf-8"))
+    assert "stock_wrf_export" not in proof
+    assert proof["export"]["status"] == "READY"
+
+
+@pytest.mark.parametrize("shared", [None, {"mp_physics": 16}],
+                         ids=["ready-export", "optional-export"])
+def test_preflight_checks_the_preprocessing_digest_with_or_without_export(
+        tmp_path, monkeypatch, shared):
+    """The proof's digest of its preprocessing receipt binds the
+    preparation, not the stock-WRF export.  The reader checked it only
+    inside the READY export branch, so a bundle for a scheme with no
+    stock-WRF contract (optional export) ran with a digest that did not
+    match its receipt."""
+
+    _bind_synthetic_geometry(monkeypatch)
+    kwargs = {} if shared is None else dict(physics_profile=None,
+                                            shared=shared)
+    bundle = _hrrr_bundle(tmp_path, **kwargs)
+    proof_path = bundle.root / "proof.json"
+    proof = json.loads(proof_path.read_text())
+    assert ("stock_wrf_export" in proof) == (shared is not None)
+    proof["preprocessing_receipt_sha256"] = "0" * 64
+    proof_path.write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8", newline="\n")
+    with pytest.raises(ValueError,
+                       match="preprocessing receipt hash differs"):
+        _preflight(bundle, proof_sha256=_sha256(proof_path))
 
 
 def test_preflight_binds_the_three_hrrr_digests_separately(
@@ -737,6 +826,7 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
     tables, exp = _hrrr_experiment(
         run_seconds=run_seconds,
         history_interval_seconds=history_seconds)
+    _on_the_baseline_terrain(tables)
     forcing_hours = (0, 1, 2)
 
     source = tmp_path / "source"
@@ -842,12 +932,16 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
                     PROFILE),
             },
             "preparation": {
-                "preprocess_backend": {"backend": "cuda"},
+                "preprocess_backend": {
+                    "backend": "cuda",
+                    "masked_surface_chain": {"workers": "auto"}},
                 "preprocess_worker_budget": {
                     "schema": "gpuwm-preprocess-worker-budget-v1",
                     "backend": "cuda", "applicable": False,
+                    "requested_total_native_workers": None,
+                    "host_step_native_workers": 8,
                     "pipeline_decoder_workers_included": False,
-                    "peak_active_native_workers": 0,
+                    "peak_active_native_workers": 8,
                 },
             },
             "pipeline": {"workers": {"requested": "8", "selected": 8}},
@@ -1059,6 +1153,7 @@ def test_native_publisher_preserves_absent_optional_identity(tmp_path):
 
 @pytest.mark.parametrize("receipt_key", [
     "soil_moisture_floor", "deep_soil_repair", "soil_texture_downscale",
+    "soil_temperature_repair",
 ])
 def test_native_soil_receipt_roundtrip_is_exact(tmp_path, monkeypatch, receipt_key):
     from copy import deepcopy
@@ -1094,7 +1189,7 @@ def test_native_publisher_does_not_invent_or_approve_user_metadata(tmp_path, mon
     _bind_synthetic_geometry(monkeypatch)
     proof = json.loads((bundle.root / "proof.json").read_text(encoding="utf-8"))
     assert not {"soil_moisture_floor", "deep_soil_repair", "soil_texture_downscale",
-                "unregistered_operation"} & proof.keys()
+                "soil_temperature_repair", "unregistered_operation"} & proof.keys()
     with pytest.raises(ValueError, match="user metadata differs"):
         _preflight(bundle)
 

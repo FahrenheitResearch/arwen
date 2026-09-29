@@ -23,7 +23,10 @@ sha256 including the bridge executable's own hash):
 
 ```bash
 gpuwm fetch --source gfs --cycle latest --hours 24 \
-  --area 12,-130,58,-65 --out /case/gfs-data
+  --area 12,-130,58,-65 --p-top-pa 5000 --out /case/gfs-data
+# --p-top-pa is the experiment's [shared].p_top (5000 in every config
+# `gpuwm domain` writes).  Without it the fetch stops at 100 hPa, which
+# is enough only for a p_top of 10000 Pa or more.
 
 gpuwm fetch --source gfs --author-front-door-manifest \
   --out /case/gfs-data \

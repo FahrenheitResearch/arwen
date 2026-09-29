@@ -274,7 +274,29 @@ def nomads_query(
             + urlencode(parameters))
 
 
-def _download(url: str, destination: Path, *, retries: int = 5) -> None:
+class _IncompleteGrib(RuntimeError):
+    """A 200 answer whose body is not a whole GRIB2 stream; a fresh transfer can repair it."""
+
+
+def _retry_delay(error: BaseException, attempt: int) -> float | None:
+    """Seconds before the next attempt, or None when asking again cannot help.
+
+    The network faults are the tree's shared classification
+    (:func:`gpuwm.fetch_endpoints.retry_delay`): a 404 or another status
+    that will not change is not asked again, and a busy host's own
+    ``Retry-After`` is served up to the shared limit.  An incomplete
+    body is this transport's own, asked again on the same ladder.
+    """
+
+    from gpuwm import fetch_endpoints
+
+    if isinstance(error, _IncompleteGrib):
+        return 2.0 ** attempt
+    return fetch_endpoints.retry_delay(
+        error, attempt, wait_limit_s=fetch_endpoints.TRANSIENT_WAIT_LIMIT_S)
+
+
+def _download(url: str, destination: Path, *, retries: int | None = None) -> None:
     """Stream one NOMADS CGI subset onto ``destination``, governed.
 
     Every request goes through :mod:`gpuwm.nomads_governor`, so this
@@ -288,15 +310,28 @@ def _download(url: str, destination: Path, *, retries: int = 5) -> None:
     the attempt fails.
     """
 
+    from gpuwm import fetch_endpoints
+    from gpuwm.fetch_pool import (TransferCancelled, raise_if_stopped,
+                                  sleep_unless_stopped)
+
+    # The tree's one attempt budget (fetch_endpoints.TRANSIENT_ATTEMPTS);
+    # a caller may ask for fewer, never more.
+    attempts = fetch_endpoints.TRANSIENT_ATTEMPTS
+    if retries is not None:
+        attempts = max(1, min(int(retries), attempts))
     partial = destination.with_suffix(
         f"{destination.suffix}.{os.getpid()}-{time.time_ns()}.part")
-    for attempt in range(1, retries + 1):
+    for attempt in range(1, attempts + 1):
         try:
+            raise_if_stopped()
             request = Request(url, headers={"User-Agent": "rw-wps-gfs-fetch/1"})
             with paced_urlopen(request, timeout=300) as response, \
                     partial.open("wb") as output:
                 while block := response.read(1024 * 1024):
                     output.write(block)
+                    # Another file already failed this request: the
+                    # rest of this one would be bytes nobody uses.
+                    raise_if_stopped()
                 output.flush()
                 os.fsync(output.fileno())
             with partial.open("rb") as stream:
@@ -305,22 +340,26 @@ def _download(url: str, destination: Path, *, retries: int = 5) -> None:
                 terminator = stream.read(4)
             if (signature != b"GRIB" or terminator != b"7777"
                     or partial.stat().st_size <= 1024):
-                raise RuntimeError("NOMADS response is not a complete GRIB2 stream")
+                raise _IncompleteGrib("NOMADS response is not a complete GRIB2 stream")
             os.replace(partial, destination)
             return
         except Exception as error:
             partial.unlink(missing_ok=True)
-            if attempt == retries:
+            if attempt == attempts or isinstance(error, TransferCancelled):
                 raise
-            # The wait before the next attempt is at least the server's
-            # own Retry-After ask, when it sent one -- honoring the
-            # instruction beats guessing a ladder.  (A NOMADS
+            # The shared wait: 2, 4, 8 and 16 s, or the server's own
+            # Retry-After when that is longer and within the shared
+            # limit.  None is a fault no retry changes (a 404, a refused
+            # client, a name that does not resolve), which used to be
+            # asked five times over most of a minute.  (A NOMADS
             # over-rate-limit answer additionally opened the node-wide
             # cooldown inside paced_urlopen, which the next attempt's
-            # pacing serves in full.)
-            from gpuwm.nomads_governor import retry_after_seconds
-            asked = retry_after_seconds(error)
-            time.sleep(max(5 * attempt, asked if asked is not None else 0))
+            # pacing serves in full.)  Cut short, and the attempt not
+            # made, once another file has failed the request.
+            delay = _retry_delay(error, attempt)
+            if delay is None:
+                raise
+            sleep_unless_stopped(delay, sleep=time.sleep)
 
 
 def _write_manifest(

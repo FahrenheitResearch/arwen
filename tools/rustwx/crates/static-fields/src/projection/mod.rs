@@ -10,14 +10,9 @@
 //! reconciliation inputs -- the twins select source stencils, so their
 //! float32 arithmetic is part of the byte-parity contract.
 //!
-//! Parity: byte-identical to the Python float64/float32 results on the
-//! committed golden domains (`tests/lane1_goldens.rs`, extracted by
-//! `tools/static_rust_port/extract_lane1_goldens.py` from the real
-//! Python).  The libm ledger lives in [`npmath`]: float64 and most
-//! float32 transcendentals go through `std` (bit-equal to the UCRT
-//! libm numpy uses, measured); float32 sin/cos/exp/log go through the
-//! numpy-kernel ports in `npmath` (numpy routes those four through its
-//! own SIMD kernels, measured unequal to libm).
+//! Public coordinates retain their existing platform NumPy qualification.
+//! Sampling coordinates use fixed arithmetic in `portable` and `npmath`,
+//! with exact portable fixtures and independent NumPy bounds.
 //!
 //! The trait signatures below are the shared floor: lane 2's sampler
 //! consumes `ProjectedGrid` + `Wps32Twin` (+ [`wps32::SamplingSurface`]
@@ -29,10 +24,12 @@ pub mod lambert;
 pub mod mercator;
 pub mod npmath;
 pub mod polar;
+pub(crate) mod portable;
 pub mod wps32;
 
 pub use wps32::{DEG32, RAD32};
 
+pub mod rows;
 use rayon::prelude::*;
 
 use crate::error::{Result, StaticError};
@@ -50,13 +47,16 @@ pub(crate) fn wrap180(d: f64) -> f64 {
 }
 
 /// WPS map_proj selector.  WRF header codes: lambert=1, polar=2,
-/// mercator=3.
+/// mercator=3.  `rows` is not a WPS projection: explicit latitude rows
+/// on a uniform longitude ring, the description a global spectral
+/// model's Gaussian grid crosses the seam as ([`rows`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectionKind {
     Lambert,
     Mercator,
     Polar,
+    Rows,
 }
 
 impl ProjectionKind {
@@ -65,6 +65,9 @@ impl ProjectionKind {
             ProjectionKind::Lambert => 1,
             ProjectionKind::Polar => 2,
             ProjectionKind::Mercator => 3,
+            // No WRF map projection describes explicit rows; 0 is WRF's
+            // "no projection" header value.
+            ProjectionKind::Rows => 0,
         }
     }
 
@@ -73,6 +76,7 @@ impl ProjectionKind {
             ProjectionKind::Lambert => "LambertGrid",
             ProjectionKind::Mercator => "MercatorGrid",
             ProjectionKind::Polar => "PolarStereoGrid",
+            ProjectionKind::Rows => "RowsGrid",
         }
     }
 }
@@ -98,6 +102,17 @@ pub struct GridSpec {
     pub known_y: f64,
     pub moad_cen_lat: f64,
     pub moad_cen_lon: f64,
+    /// `rows` kind only: ascending mass-row latitude centres (degrees),
+    /// exactly `e_sn - 1` of them.  Empty for the WPS projections, whose
+    /// specs never carry the field (serde default).
+    #[serde(default)]
+    pub lat_deg: Vec<f64>,
+    /// `rows` kind only: longitude of mass column 1 (degrees).
+    #[serde(default)]
+    pub lon0_deg: f64,
+    /// `rows` kind only: uniform longitude spacing (degrees).
+    #[serde(default)]
+    pub dlon_deg: f64,
 }
 
 /// One projected WRF domain: spec + derived projection state + the
@@ -117,6 +132,7 @@ pub struct ProjectedGrid {
     /// delegate as `reference.ij_to_latlon(x + di, y + dj)`.
     pub translation: Option<(Box<ProjectedGrid>, (i64, i64))>,
     state: State,
+    pub(crate) sampling: portable::SamplingProjection,
 }
 
 /// Per-projection derived state (set_lc / set_merc / set_ps outputs).
@@ -125,6 +141,7 @@ pub(crate) enum State {
     Lambert(lambert::LambertState),
     Mercator(mercator::MercatorState),
     Polar(polar::PolarState),
+    Rows(rows::RowsState),
 }
 
 impl ProjectedGrid {
@@ -145,8 +162,10 @@ impl ProjectedGrid {
             ProjectionKind::Lambert => State::Lambert(lambert::setup(&spec, hemi)),
             ProjectionKind::Mercator => State::Mercator(mercator::setup(&spec)),
             ProjectionKind::Polar => State::Polar(polar::setup(&spec, hemi)),
+            ProjectionKind::Rows => State::Rows(rows::setup(&spec)?),
         };
         let mut grid = ProjectedGrid {
+            sampling: portable::SamplingProjection::new(spec.clone()),
             spec,
             hemi,
             cen_lat: 0.0,
@@ -172,6 +191,21 @@ impl ProjectedGrid {
         &self.state
     }
 
+    pub fn sampling_ij_to_latlon(&self, x: f64, y: f64) -> (f64, f64) {
+        if let Some((reference, (di, dj))) = &self.translation {
+            return reference.sampling_ij_to_latlon(x + *di as f64, y + *dj as f64);
+        }
+        self.sampling.ij_to_latlon(x, y)
+    }
+
+    pub fn sampling_latlon_to_ij(&self, lat: f64, lon: f64) -> (f64, f64) {
+        if let Some((reference, (di, dj))) = &self.translation {
+            let (x, y) = reference.sampling_latlon_to_ij(lat, lon);
+            return (x - *di as f64, y - *dj as f64);
+        }
+        self.sampling.latlon_to_ij(lat, lon)
+    }
+
     /// The set_* derived scalars, named as the Python attributes hold
     /// them (receipts and the golden tests pin these bits).
     pub fn state_scalars(&self) -> Vec<(&'static str, f64)> {
@@ -190,6 +224,12 @@ impl ProjectedGrid {
                 ("polei", s.polei),
                 ("polej", s.polej),
             ],
+            State::Rows(s) => vec![
+                ("lon0", s.lon0),
+                ("dlon", s.dlon),
+                ("lat_first", s.lat[0]),
+                ("lat_last", s.lat[s.lat.len() - 1]),
+            ],
         }
     }
 
@@ -206,6 +246,7 @@ impl ProjectedGrid {
             State::Polar(s) => {
                 polar::ij_to_latlon(s, &self.spec, self.hemi, x, y)
             }
+            State::Rows(s) => rows::ij_to_latlon(s, x, y),
         }
     }
 
@@ -223,6 +264,7 @@ impl ProjectedGrid {
             State::Polar(s) => {
                 polar::latlon_to_ij(s, &self.spec, self.hemi, lat, lon)
             }
+            State::Rows(s) => rows::latlon_to_ij(s, lat, lon),
         }
     }
 
@@ -236,6 +278,8 @@ impl ProjectedGrid {
             State::Lambert(s) => lambert::map_factor(s, &self.spec, self.hemi, lat),
             State::Mercator(_) => mercator::map_factor(&self.spec, lat),
             State::Polar(_) => polar::map_factor(&self.spec, lat),
+            // The spectral consumer carries its own metric.
+            State::Rows(_) => 1.0,
         }
     }
 
@@ -245,6 +289,7 @@ impl ProjectedGrid {
             State::Lambert(s) => lambert::rotation(s, &self.spec, lon),
             State::Mercator(_) => mercator::rotation(),
             State::Polar(_) => polar::rotation(&self.spec, lon),
+            State::Rows(_) => (0.0, 1.0),
         }
     }
 
@@ -350,12 +395,21 @@ impl ProjectedGrid {
                 "parent_grid_ratio must be >= 1, got {r}"
             )));
         }
+        if self.spec.kind == ProjectionKind::Rows {
+            // A row table has no parent/ratio arithmetic: a child would
+            // need its own row latitudes, which nothing here can derive.
+            return Err(StaticError::Invalid(
+                "RowsGrid does not nest: its rows are declared, not derived \
+                 from a parent"
+                    .to_string(),
+            ));
+        }
         let xp = (i_parent_start as f64 - 0.5) + 0.5 / r as f64;
         let yp = (j_parent_start as f64 - 0.5) + 0.5 / r as f64;
         let (lat11, lon11) = self.ij_to_latlon(xp, yp);
         let child_dx = resolved_dx.unwrap_or(self.spec.dx / r as f64);
         let child_dy = resolved_dy.unwrap_or(self.spec.dy / r as f64);
-        ProjectedGrid::new(GridSpec {
+        let mut child = ProjectedGrid::new(GridSpec {
             kind: self.spec.kind,
             ref_lat: lat11,
             ref_lon: lon11,
@@ -370,7 +424,16 @@ impl ProjectedGrid {
             known_y: 1.0,
             moad_cen_lat: self.spec.moad_cen_lat,
             moad_cen_lon: self.spec.moad_cen_lon,
-        })
+            lat_deg: Vec::new(),
+            lon0_deg: 0.0,
+            dlon_deg: 0.0,
+        })?;
+        let (lat, lon) = self.sampling_ij_to_latlon(xp, yp);
+        let mut spec = child.spec.clone();
+        spec.ref_lat = lat;
+        spec.ref_lon = lon;
+        child.sampling = portable::SamplingProjection::new(spec);
+        Ok(child)
     }
 
     /// Whole-cell placement translation with optional re-extent

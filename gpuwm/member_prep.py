@@ -45,7 +45,8 @@ import shutil
 from typing import Mapping, Sequence
 
 from gpuwm.member_grammar import (MemberGrammar, MemberIdentity,
-                                  MemberIdentityRefusal, load_member_grammar)
+                                  MemberIdentityRefusal, MemberVerification,
+                                  load_member_grammar)
 from gpuwm.source_authorities import (packaged_member_grammar,
                                       packaged_member_grammar_ids,
                                       packaged_member_grammar_sha256)
@@ -102,18 +103,32 @@ class MemberFileEvidence:
 
     messages: int
     product_definition_templates: tuple[int, ...]
-    type_of_ensemble_forecast: int
+    #: What the messages carry: one value, or the sorted values when a
+    #: file mixes declared ones; None when a path-identity rewrite
+    #: verified bytes that carry no such octet.
+    type_of_ensemble_forecast: int | tuple[int, ...] | None
     perturbation_number: int
     ensemble_size: tuple[int, ...]
     type_of_generating_process: tuple[int, ...]
     forecast_generating_process_id: tuple[int, ...]
+    #: The declared rewrite that verified the file; None when the
+    #: producer's own encoding did.
+    encoding: str | None = None
+    #: Where the verified member identity came from: "ordinal" or "path".
+    member_identity: str = "ordinal"
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        rewrite = ({"encoding": self.encoding,
+                    "member_identity": self.member_identity}
+                   if self.encoding is not None else {})
+        return rewrite | {
             "messages": self.messages,
             "product_definition_templates": list(
                 self.product_definition_templates),
-            "type_of_ensemble_forecast": self.type_of_ensemble_forecast,
+            "type_of_ensemble_forecast": (
+                list(self.type_of_ensemble_forecast)
+                if isinstance(self.type_of_ensemble_forecast, tuple)
+                else self.type_of_ensemble_forecast),
             "perturbation_number": self.perturbation_number,
             "ensemble_size": list(self.ensemble_size),
             "type_of_generating_process": list(
@@ -192,20 +207,86 @@ def verify_member_rows(
     rows: Sequence[Mapping[str, str]],
     *,
     source_label: str,
+    source_path: Path | None = None,
 ) -> MemberFileEvidence:
     """Every message must carry the claimed member's declared identity.
 
     Pure over already-parsed inventory rows so the contract is testable
     without the bridge; :func:`verify_member_file` binds it to bytes.
+
+    The producer's own encoding is tried first.  Only when it refuses,
+    and only when every message carries a declared rewrite's writer
+    octets, is the file held to that rewrite's whole contract instead;
+    the first rewrite that verifies names itself in the evidence.  A file
+    whose writer no rewrite declares keeps the producer's refusal, so a
+    deterministic product or a statistic is refused exactly as before.
+    ``source_path`` is needed only by a rewrite whose member identity is
+    its path component.
     """
 
     if not rows:
         raise MemberIdentityRefusal(f"{source_label} contains no GRIB messages to verify")
-    declared = member.verification
+    try:
+        return _verify_rows_under(
+            grammar, member, member.verification, rows,
+            source_label=source_label, source_path=source_path)
+    except MemberIdentityRefusal:
+        written = [rewrite for rewrite in member.rewrites
+                   if all(rewrite.writer_admits(row) for row in rows)]
+        if not written:
+            raise
+    # Two rewrites can share a writer.  The one whose templates the bytes
+    # carry is the form they are in, so its refusal is the one that names
+    # what is wrong with them: PDT 1 bytes of another member refuse on
+    # their perturbationNumber, not for lacking octets they have.
+    templated = [rewrite for rewrite in written
+                 if all(int(row["pdt"]) in rewrite.product_definition_templates
+                        for row in rows)]
+    first: MemberIdentityRefusal | None = None
+    for rewrite in templated or written:
+        try:
+            return _verify_rows_under(
+                grammar, member, rewrite, rows,
+                source_label=source_label, source_path=source_path)
+        except MemberIdentityRefusal as refusal:
+            first = first or refusal
+    assert first is not None
+    raise first
+
+
+def _path_carries_member(member: MemberIdentity, source_path: Path) -> bool:
+    parts = set(Path(source_path).parts)
+    return member.token in parts or member.member_id in parts
+
+
+def _verify_rows_under(
+    grammar: MemberGrammar,
+    member: MemberIdentity,
+    declared: MemberVerification,
+    rows: Sequence[Mapping[str, str]],
+    *,
+    source_label: str,
+    source_path: Path | None,
+) -> MemberFileEvidence:
+    """Hold every message to one declared encoding of the member."""
+
     claim = (f"{source_label} is claimed as {grammar.name} member "
              f"{member.member_id} (class {member.class_name!r}, "
              f"perturbationNumber {member.ordinal})")
+    if declared.name is not None:
+        claim += f" under its declared rewrite {declared.name!r}"
+    by_path = declared.member_identity == "path"
+    if by_path and (source_path is None
+                    or not _path_carries_member(member, source_path)):
+        raise MemberIdentityRefusal(
+            f"{claim}, whose bytes carry no ensemble identity octets: the "
+            f"member path component {member.token!r} is the only identity "
+            f"they have, and {source_path or source_label} does not carry "
+            "it, so nothing ties these bytes to that member")
+    accepted_types = declared.accepted_ensemble_types()
+    declared_types = " or ".join(str(value) for value in accepted_types)
     pdts: set[int] = set()
+    types: set[int] = set()
     sizes: set[int] = set()
     generating: set[int] = set()
     processes: set[int] = set()
@@ -237,22 +318,28 @@ def verify_member_rows(
                 f"{list(declared.product_definition_templates)}; bytes "
                 "whose template the grammar does not declare cannot be "
                 "verified as this member, so they are refused")
+        if by_path:
+            _check_generating_process(declared, row, claim, index,
+                                      generating, processes)
+            pdts.add(pdt)
+            continue
         observed_type = _optional_int(row, "ensemble_type")
         if observed_type is None:
             raise MemberIdentityRefusal(
                 f"{claim}, but field {index} (template {pdt}) carries no "
                 "typeOfEnsembleForecast octet; an unverifiable message "
                 "is refused, not assumed")
-        if observed_type != declared.type_of_ensemble_forecast:
+        if observed_type not in accepted_types:
             raise MemberIdentityRefusal(
                 f"{claim} with declared typeOfEnsembleForecast "
-                f"{declared.type_of_ensemble_forecast}, but field {index} "
+                f"{declared_types}, but field {index} "
                 f"carries typeOfEnsembleForecast {observed_type}.  Real "
                 "ensembles use this octet incompatibly -- one measured "
                 "source flags its control as a low-resolution control, "
                 "another stamps its control exactly like a perturbed "
                 "member -- so a value the grammar did not declare means "
                 "these bytes are not the declared ensemble's member")
+        types.add(observed_type)
         observed_member = _optional_int(row, "member")
         if observed_member is None:
             raise MemberIdentityRefusal(
@@ -285,34 +372,47 @@ def verify_member_rows(
                     "this triple cannot otherwise distinguish")
         if observed_size is not None:
             sizes.add(observed_size)
-        for column, declared_value, key_name in (
-                ("generating_process",
-                 declared.type_of_generating_process,
-                 "typeOfGeneratingProcess"),
-                ("forecast_generating_process_id",
-                 declared.forecast_generating_process_id,
-                 "generatingProcessIdentifier")):
-            observed = int(row[column])
-            if declared_value is not None and observed != declared_value:
-                raise MemberIdentityRefusal(
-                    f"{claim} with declared {key_name} {declared_value}, "
-                    f"but field {index} carries {observed}: a different "
-                    "generating process means a different producing "
-                    "system, not this ensemble's member")
-            if column == "generating_process":
-                generating.add(observed)
-            else:
-                processes.add(observed)
+        _check_generating_process(declared, row, claim, index,
+                                  generating, processes)
         pdts.add(pdt)
     return MemberFileEvidence(
         messages=len(rows),
         product_definition_templates=tuple(sorted(pdts)),
-        type_of_ensemble_forecast=declared.type_of_ensemble_forecast,
+        type_of_ensemble_forecast=(
+            None if not types
+            else next(iter(types)) if len(types) == 1
+            else tuple(sorted(types))),
         perturbation_number=member.ordinal,
         ensemble_size=tuple(sorted(sizes)),
         type_of_generating_process=tuple(sorted(generating)),
         forecast_generating_process_id=tuple(sorted(processes)),
+        encoding=declared.name,
+        member_identity=declared.member_identity,
     )
+
+
+def _check_generating_process(declared: MemberVerification,
+                              row: Mapping[str, str], claim: str,
+                              index: str, generating: set[int],
+                              processes: set[int]) -> None:
+    for column, declared_value, key_name in (
+            ("generating_process",
+             declared.type_of_generating_process,
+             "typeOfGeneratingProcess"),
+            ("forecast_generating_process_id",
+             declared.forecast_generating_process_id,
+             "generatingProcessIdentifier")):
+        observed = int(row[column])
+        if declared_value is not None and observed != declared_value:
+            raise MemberIdentityRefusal(
+                f"{claim} with declared {key_name} {declared_value}, "
+                f"but field {index} carries {observed}: a different "
+                "generating process means a different producing "
+                "system, not this ensemble's member")
+        if column == "generating_process":
+            generating.add(observed)
+        else:
+            processes.add(observed)
 
 
 def verify_member_file(
@@ -327,7 +427,8 @@ def verify_member_file(
     member = grammar.member(member_id)
     rows = member_inventory_rows(source, inventory_executable)
     return verify_member_rows(
-        grammar, member, rows, source_label=str(source))
+        grammar, member, rows, source_label=str(source),
+        source_path=Path(source))
 
 
 def _sha256_file(path: Path) -> str:
@@ -464,7 +565,7 @@ def prepare_member(
                     "product_definition_templates": list(
                         member.verification.product_definition_templates),
                     "type_of_ensemble_forecast": (
-                        member.verification.type_of_ensemble_forecast),
+                        member.verification.declared_ensemble_type()),
                     "perturbation_number": "ordinal",
                     "ensemble_size": member.verification.ensemble_size,
                     "type_of_generating_process": (
@@ -596,10 +697,29 @@ def _describe(grammar: MemberGrammar, identity: Mapping[str, object]) -> str:
         lines.append(
             f"    {member.member_id}  class={member.class_name} "
             f"perturbationNumber={member.ordinal} "
-            f"typeOfEnsembleForecast={declared.type_of_ensemble_forecast} "
+            "typeOfEnsembleForecast="
+            + "/".join(str(value)
+                       for value in declared.accepted_ensemble_types())
+            + " "
             f"pdt={list(declared.product_definition_templates)}"
             + (f" encodedEnsembleSize={declared.ensemble_size}"
                if declared.ensemble_size is not None else ""))
+    rewritten = {}
+    for member in grammar.members():
+        for rewrite in member.rewrites:
+            rewritten.setdefault(rewrite.name, rewrite)
+    if rewritten:
+        lines.append("  declared rewrites (selected by their writer octets):")
+        for name, rewrite in rewritten.items():
+            writer = " ".join(
+                f"{key}={'/'.join(str(value) for value in values)}"
+                for key, values in rewrite.writer)
+            lines.append(
+                f"    {name}  {writer} "
+                f"pdt={list(rewrite.product_definition_templates)} "
+                "member identity="
+                + ("path component" if rewrite.member_identity == "path"
+                   else "perturbationNumber"))
     statistics = grammar.statistics()
     if statistics:
         lines.append("  statistics sharing the namespace (never members):")

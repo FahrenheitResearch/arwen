@@ -7,7 +7,7 @@ both measured rather than assumed.  Needs cupy.
 
     python managed_oversubscription_probe.py
 
-Measured for task #260; see Downloads/GPUWM-HEX-SINGLE-CARD-STREAMING.md.
+Measured for task #260; see the single-card streaming record.
 """
 
 import json, time

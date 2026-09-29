@@ -70,6 +70,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 import tarfile
 import time
 from urllib.error import HTTPError, URLError
@@ -107,6 +108,13 @@ GEOG_SOURCES = ("hf", "ncar")
 GEOG_CONSUMER_WRF = "wrf"
 GEOG_CONSUMER_MESH = "mesh"
 GEOG_CONSUMERS = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH)
+
+#: The line that sets up the geography a WRF-grid forecast needs: the
+#: datasets the WRF static builder opens, and not the Noah-MP soil archive
+#: only ``gpuwm mesh`` reads.  Every place that tells a person to set the
+#: tree up quotes this one line (the run door's missing-input refusal, the
+#: web page's start buttons).
+WRF_FETCH_COMMAND = f"gpuwm fetch-geog --datasets {GEOG_CONSUMER_WRF}"
 
 #: Subdirectory of the geog root that holds in-flight and verified
 #: archives (kept only under --keep-archives after extraction).
@@ -233,7 +241,11 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
     # REQUIRED, not optional -- the one static writer emits the five
     # soil-composition variables and cannot invent them.
     # Pinned from a TLS download from UCAR on 2026-08-23, the same way
-    # and from the same host as the nine above.
+    # and from the same host as the nine above.  Unlike them it carries
+    # terms of its own: NCAR generated the tiles from ISRIC's SoilGrids250m,
+    # which is CC BY 4.0 and needs its credit wherever the archive is
+    # redistributed (NOTICE; tools/publish_geog_mirror.py writes it onto
+    # the mirror's page).
     GeogArchive(
         "soilgrids", "soilgrids.tar.bz2", 864090244,
         "3d42737a68a52a2be10281f0505c6cb6c05c03707e9382b3a823495afc7937bb",
@@ -581,6 +593,29 @@ def _resume_identity(response, url: str) -> dict:
     }
 
 
+def _partial_note(dest: Path, sidecar: Path, *, strict_size: bool) -> str:
+    """What a failed transfer leaves, in the terms the next run acts on.
+
+    Mirrors :func:`download_archive`'s own resume rule: a partial is
+    resumed when a resume record binds it, or on the pinned path, where
+    the exact size and SHA-256 pin catches any mixture; otherwise the
+    next run sets it aside and starts again.  The old text promised a
+    resume after every failure, including ones that left nothing on disk.
+    """
+
+    try:
+        size = dest.stat().st_size
+    except OSError:
+        size = 0
+    if size <= 0:
+        return "nothing was downloaded, so a re-run starts from the beginning"
+    if strict_size or sidecar.is_file():
+        return (f"the partial file ({size:,} B) is kept and a re-run "
+                "resumes from it")
+    return (f"the partial file ({size:,} B) has no resume record, so a "
+            "re-run sets it aside and downloads it from the start")
+
+
 def _content_range_start(value: str) -> int | None:
     """The first byte a ``206`` says it is sending, or None."""
 
@@ -698,14 +733,27 @@ def download_archive(url: str, dest: Path, *, expected_bytes: int,
                          "download")
                 recorded = {}
             if not recorded:
-                fetch_guard.atomic_write_text(
-                    sidecar,
-                    json.dumps(_resume_identity(response, url),
-                               indent=2, sort_keys=True) + "\n",
-                    tag="geog")
-            with dest.open(mode) as sink:
-                while block := response.read(_BLOCK_BYTES):
-                    sink.write(block)
+                try:
+                    fetch_guard.atomic_write_text(
+                        sidecar,
+                        json.dumps(_resume_identity(response, url),
+                                   indent=2, sort_keys=True) + "\n",
+                        tag="geog")
+                except OSError as error:
+                    raise fetch_guard.LocalWriteFailed(
+                        sidecar, error) from error
+            fetch_guard.receive(response, dest, mode,
+                                block_bytes=_BLOCK_BYTES)
+    except fetch_guard.LocalWriteFailed as failure:
+        # Caught before the network handlers below: a folder Windows
+        # will not write into used to be reported as "download failed
+        # from https://huggingface.co/...; the partial file is kept and a
+        # re-run resumes" when nothing had been written, the mirror was
+        # fine and every re-run failed the same way.
+        raise GeogFetchError(fetch_guard.local_write_refusal(
+            label, failure.path, failure.error,
+            _partial_note(dest, sidecar, strict_size=strict_size))
+        ) from failure.error
     except HTTPError as error:
         hint = ""
         # HF answers 401 for a repo that does not exist (or is private
@@ -714,12 +762,14 @@ def download_archive(url: str, dest: Path, *, expected_bytes: int,
             hint = ("  (the mirror archive is absent -- if the mirror "
                     "repo is not published yet, use --source ncar)")
         raise GeogFetchError(
-            f"{label}: HTTP {error.code} from {url}{hint}; the partial "
-            f"file is kept and a re-run resumes") from error
+            f"{label}: HTTP {error.code} from {url}{hint}; "
+            + _partial_note(dest, sidecar, strict_size=strict_size)
+        ) from error
     except (URLError, OSError, TimeoutError) as error:
         raise GeogFetchError(
-            f"{label}: download failed from {url}: {error}; the partial "
-            "file is kept and a re-run resumes") from error
+            f"{label}: download failed from {url}: {error}; "
+            + _partial_note(dest, sidecar, strict_size=strict_size)
+        ) from error
     size = dest.stat().st_size
     if strict_size and size != expected_bytes:
         _quarantine(dest, progress, label)
@@ -832,6 +882,18 @@ def _safe_member(member: tarfile.TarInfo, datasets: tuple[str, ...],
     return None
 
 
+def _extraction_staging(root: Path) -> Path:
+    """The folder one extraction stages into, beside what it publishes.
+
+    Compact for the reason :func:`gpuwm.fetch_guard._staging_path` is:
+    every staged tile sits one folder deeper than where it lands, and the
+    old ``.fetch-geog-extract-<time_ns>`` put the deepest WRF tile 101
+    characters below the geography folder against 61 once published.
+    """
+
+    return root / f"{ARCHIVE_SUBDIR}-{fetch_guard._staging_token()}"
+
+
 def extract_datasets(archive: Path, root: Path, datasets: tuple[str, ...],
                      *, progress, label: str) -> dict[str, dict]:
     """Extract ``datasets`` from ``archive`` into ``root``.
@@ -841,14 +903,21 @@ def extract_datasets(archive: Path, root: Path, datasets: tuple[str, ...],
     renamed into place, so ``root`` never holds a half-extracted or
     index-less dataset directory.  Returns per-dataset
     ``{"files": n, "bytes": n}``.
+
+    A write this computer refuses (a folder too deep for Windows, a full
+    disk) removes the half-extracted staging tree, keeps the verified
+    archive, and says which path failed and by how many characters.
     """
 
-    tmp = root / f"{ARCHIVE_SUBDIR}-extract-{time.time_ns()}"
-    tmp.mkdir(parents=True)
+    tmp = _extraction_staging(root)
     counts: dict[str, dict] = {name: {"files": 0, "bytes": 0}
                                for name in datasets}
     started = time.perf_counter()
     try:
+        try:
+            tmp.mkdir(parents=True)
+        except OSError as error:
+            raise fetch_guard.LocalWriteFailed(tmp, error) from error
         with tarfile.open(archive, "r:*") as tar:
             for member in tar:
                 placed = _safe_member(member, datasets, archive.name)
@@ -857,22 +926,46 @@ def extract_datasets(archive: Path, root: Path, datasets: tuple[str, ...],
                 dataset, relative = placed
                 target = tmp / relative
                 if member.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    try:
+                        target.mkdir(parents=True, exist_ok=True)
+                    except OSError as error:
+                        raise fetch_guard.LocalWriteFailed(
+                            target, error) from error
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
                 source = tar.extractfile(member)
                 if source is None:
                     raise GeogFetchError(
                         f"{archive.name}: unreadable member {member.name}")
-                with source, target.open("wb") as sink:
+                # Only the writes are this computer's; a read that fails
+                # is the archive, and keeps reaching its own handling.
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    sink = target.open("wb")
+                except OSError as error:
+                    source.close()
+                    raise fetch_guard.LocalWriteFailed(
+                        target, error) from error
+                with source, sink:
                     while block := source.read(_BLOCK_BYTES):
-                        sink.write(block)
+                        try:
+                            sink.write(block)
+                        except OSError as error:
+                            raise fetch_guard.LocalWriteFailed(
+                                target, error) from error
                 counts[dataset]["files"] += 1
                 counts[dataset]["bytes"] += member.size
     except tarfile.TarError as error:
         raise GeogFetchError(
             f"{label}: {archive.name} failed to extract: {error} -- "
             "the archive is corrupt; move it aside and re-run") from error
+    except fetch_guard.LocalWriteFailed as failure:
+        # The half-extracted tree is this run's own and worth nothing;
+        # left behind, every retry would add another beside it.
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise GeogFetchError(fetch_guard.local_write_refusal(
+            label, failure.path, failure.error,
+            f"the verified archive is kept at {archive}")
+        ) from failure.error
 
     for dataset in datasets:
         staged = tmp / dataset
@@ -959,23 +1052,37 @@ def publish_archive_entry(root: Path, filename: str, entry: dict) -> Path:
 
 def _print_listing(datasets: tuple[str, ...], source: str,
                    root: Path) -> None:
+    # The total is what a fetch of this root would DOWNLOAD, so it sums
+    # the datasets marked "needed" and nothing else -- the same skip
+    # decision fetch_geog takes.  It used to sum every requested dataset
+    # whether staged or not, so a fully staged root listed seven "staged"
+    # rows and then ended "total 1.21 GiB download": a figure for a
+    # download that would not happen.
     total_archive = 0
     total_extracted = 0
+    needed = 0
     print(f"fetch-geog: root {root}")
     print(f"fetch-geog: source {source} "
           f"({archive_url('<archive>', source)})")
     for name in datasets:
         archive = archive_for(name)
-        total_archive += archive.archive_bytes
-        total_extracted += archive.extracted_bytes
         ok, _ = validate_dataset_dir(root, name)
+        if not ok:
+            needed += 1
+            total_archive += archive.archive_bytes
+            total_extracted += archive.extracted_bytes
         state = "staged" if ok else "needed"
         print(f"  {state}  {name}: {archive.filename} "
               f"{archive.archive_bytes / (1024 * 1024):.1f} MiB "
               f"(~{archive.extracted_bytes / (1024 * 1024):.0f} MiB "
               "unpacked)")
+    if not needed:
+        print(f"fetch-geog: all {len(datasets)} requested dataset(s) are "
+              "staged; nothing to download")
+        return
     print(f"fetch-geog: total {total_archive / (1024 ** 3):.2f} GiB "
-          f"download, ~{total_extracted / (1024 ** 3):.1f} GiB unpacked; "
+          f"download, ~{total_extracted / (1024 ** 3):.1f} GiB unpacked "
+          f"for the {needed} of {len(datasets)} dataset(s) still needed; "
           f"bundle alternative {MANDATORY_BUNDLE_BYTES / (1024 ** 3):.2f} "
           "GiB download (--bundle, NCAR only)")
 
@@ -1226,4 +1333,5 @@ __all__ = [
     "download_archive", "extract_datasets", "fetch_geog", "fetch_geog_main",
     "geog_datasets", "parse_datasets", "register_cli", "resolve_source",
     "sha256_file", "size_phrase", "validate_dataset_dir",
+    "WRF_FETCH_COMMAND",
 ]

@@ -2,29 +2,40 @@
 
 This module turns one model-domain footprint (plus the geogrid processing
 halo) into the concrete source artifacts :mod:`gpuwm.static.highres`
-consumes: USGS 3DEP 1/3 arc-second terrain tiles, one Annual NLCD land-cover
-year, and SoilGrids v2 sand/silt/clay WCS windows.  It is deliberately
-footprint-parametric -- nothing in here knows about any particular case or
-place; every geographic number arrives from the caller's grid.
+consumes: terrain tiles (USGS 3DEP, Copernicus DEM, SRTM), one land-cover
+raster (CGLC-MODIS-LCZ by default, or one Annual NLCD year), and SoilGrids
+v2 sand/silt/clay WCS windows.  It is deliberately footprint-parametric --
+nothing in here knows about any particular case or place; every
+geographic number arrives from the caller's grid.
 
 Contract:
 
-- Sources that publish whole artifacts are fetched whole.  3DEP is fetched
-  as complete 1x1-degree staged GeoTIFF tiles and Annual NLCD as the
-  complete published CONUS year bundle; neither is ever range-subset from
+- Sources that publish whole artifacts are fetched whole.  Terrain is
+  fetched as complete 1x1-degree GeoTIFF tiles, CGLC-MODIS-LCZ as its one
+  global GeoTIFF (pinned by size, MD5 and SHA-256) and Annual NLCD as the
+  complete published CONUS year bundle; none is ever range-subset from
   the network.  SoilGrids is served by ISRIC's own WCS windowing service,
   which is the pilot-proven route for that source.
+- Land-cover sources are table rows (:data:`LANDCOVER_SOURCES`): the
+  fetch kind, the crosswalk into WRF's MODIS 21 categories, the water
+  rule and the reference years are data, so another collection is a row,
+  not a code path.
 - Every fetched byte is hashed (SHA-256) at fetch time and the digest is
   recorded in a JSON sidecar next to the cached payload; receipts carry
   those digests.  Arbitrary user windows cannot be pre-pinned, so recorded
   provenance -- not a pinned manifest -- is the contract.
 - A cache hit is a payload whose sidecar exists and whose byte count
   matches the sidecar.  Anything else is refetched (resumable ``.partial``
-  staging, atomic rename).
+  staging, atomic rename), by one writer at a time per cached file; a
+  preparation that finds another downloading the file waits for as long
+  as that download keeps growing.
 - Incomplete tile coverage refuses loudly, naming the missing tiles
-  (:class:`CoverageError`).  Transport failures other than the source
-  saying "absent" raise plainly; they are infrastructure faults, not
-  coverage facts, and must never be converted into a silent fallback.
+  (:class:`CoverageError`).  A transient network fault is asked again
+  with a bounded backoff, resuming the staged bytes; a network failure
+  that outlasts it is :class:`HighresFetchRefusal`.  Transport failures
+  are infrastructure faults, not coverage facts, and must never be
+  converted into a silent fallback, so ``on_refuse = "fallback-30s"``
+  does not apply to them.
 """
 from __future__ import annotations
 
@@ -32,20 +43,30 @@ from __future__ import annotations
 from .geog_stack import geog_unavailable_detail
 
 import hashlib
+import http.client
 import json
 import math
 import os
 import re
+import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 
-from .highres import sha256_file
+from gpuwm import fetch_endpoints, fetch_guard
+from gpuwm.ingest.source_coverage import PreparationRefusal
+
+from .highres import (CGLC_MODIS_LCZ_TO_MODIS21, NLCD_TO_MODIS21_INLAND,
+                      WATER_FROM_SOURCE, WATER_RULES,
+                      WATER_SPLIT_BY_BASELINE, sha256_file)
 from .highres_refusal import HighresRefusal
 from .projection import _wrap180
 
@@ -71,6 +92,29 @@ ANNUAL_NLCD_LICENSE = ("US-PD", "https://www.mrlc.gov/data")
 #: year take the earliest map and the receipt names the anachronism.
 ANNUAL_NLCD_FIRST_YEAR = 1985
 ANNUAL_NLCD_LAST_YEAR = 2024
+
+#: CGLC-MODIS-LCZ, the hybrid 100 m global land cover WRF and WPS ship
+#: from version 4.5 as tiled WPS data: the Copernicus Global Land Service
+#: LC100 v3 map of 2018 in the MODIS IGBP legend, with the global Local
+#: Climate Zone map's urban classes.  One GeoTIFF on the same grid as the WPS tiles,
+#: fetched whole (anonymous HTTPS, resumable) and pinned.
+CGLC_MODIS_LCZ_URL = ("https://zenodo.org/records/7670653/files/"
+                      "CGLC_MODIS_LCZ.tif?download=1")
+CGLC_MODIS_LCZ_SOURCE_URL = "https://doi.org/10.5281/zenodo.7670653"
+CGLC_MODIS_LCZ_LICENSE = ("CC-BY-4.0",
+                          "https://creativecommons.org/licenses/by/4.0/")
+CGLC_MODIS_LCZ_ATTRIBUTION = (
+    "CGLC-MODIS-LCZ, Demuzere M., He C., Martilli A. and Zonato A. (2023), "
+    "doi:10.5281/zenodo.7670653, CC BY 4.0; built from the Copernicus "
+    "Global Land Service LC100 v3 (Buchhorn et al. 2020) and the global "
+    "Local Climate Zone map (Demuzere et al. 2022, Earth Syst. Sci. Data "
+    "14, 3835).")
+CGLC_MODIS_LCZ_BYTES = 2_281_913_068
+CGLC_MODIS_LCZ_MD5 = "a757712949c23e5a3967aec69529a19e"
+CGLC_MODIS_LCZ_SHA256 = (
+    "4f8ea602a84ffc45ce82ee61d55970da22323618f9e8ece3b15c91de91942b01")
+#: The map represents 2018 everywhere.
+CGLC_MODIS_LCZ_YEAR = 2018
 
 #: SoilGrids v2 250 m WCS (ISRIC; CC-BY-4.0).  The pilot-proven route.
 SOILGRIDS_WCS_URL = (
@@ -208,6 +252,12 @@ class FootprintBBox:
                 and self.lon_min <= other.lon_min
                 and self.lon_max >= other.lon_max)
 
+    def intersects(self, other: "FootprintBBox") -> bool:
+        return (self.lat_min < other.lat_max
+                and other.lat_min < self.lat_max
+                and self.lon_min < other.lon_max
+                and other.lon_min < self.lon_max)
+
     def as_dict(self) -> dict[str, float]:
         return {"lat_min": self.lat_min, "lat_max": self.lat_max,
                 "lon_min": self.lon_min, "lon_max": self.lon_max}
@@ -253,6 +303,35 @@ class SourceCoverage:
             if bbox.lon_max > env.lon_max:
                 out["east_by_deg"] = round(bbox.lon_max - env.lon_max, 6)
         return out
+
+    def reaches(self, bbox: FootprintBBox) -> bool:
+        """True when any part of ``bbox`` lies inside the envelope.
+
+        A footprint that only partly overlaps is built: the cells the
+        source does not cover take the 30-arc-second baseline
+        (:mod:`gpuwm.static.highres`).  Only a footprint wholly outside
+        has nothing to take from the source.
+        """
+        env = self.envelope
+        if not (bbox.lat_min < env.lat_max and env.lat_min < bbox.lat_max):
+            return False
+        if self.global_lon:
+            return True
+        return bbox.lon_min < env.lon_max and env.lon_min < bbox.lon_max
+
+    def require_reach(self, bbox: FootprintBBox) -> None:
+        """Raise :class:`CoverageError` when ``bbox`` lies wholly outside."""
+        if self.reaches(bbox):
+            return
+        raise CoverageError(
+            f"source {self.source_id!r} ({self.role}, "
+            f"{self.nominal_resolution}) is published over "
+            f"{self.envelope.as_dict()}; the domain+halo footprint "
+            f"{bbox.as_dict()} lies wholly outside it (by "
+            f"{self.outside(bbox)}), so it has no cell of this domain to "
+            "supply. "
+            + (f"{self.note} " if self.note else "")
+            + f"Publication terms: {self.source_url}")
 
     def check(self, bbox: FootprintBBox) -> None:
         """Raise :class:`CoverageError` naming source, footprint, overshoot."""
@@ -329,19 +408,160 @@ TERRAIN_SOURCES: dict[str, SourceCoverage] = {
         global_lon=True),
 }
 
-#: Land-cover sources.  There is exactly one wired, and it is US-only.
-LANDCOVER_SOURCES: dict[str, SourceCoverage] = {
-    "annual-nlcd": SourceCoverage(
-        source_id="annual-nlcd", role="landcover",
-        envelope=_US_ENVELOPE, nominal_resolution="30 m",
-        source_url=ANNUAL_NLCD_SOURCE_URL,
-        license_id=ANNUAL_NLCD_LICENSE[0],
-        license_url=ANNUAL_NLCD_LICENSE[1],
-        attribution="Annual NLCD Collection 1, MRLC (public domain).",
-        note="Annual NLCD is a conterminous-United-States collection; no "
-             "global land cover is wired, so outside the US the land-use "
-             "fields stay on the 30-arc-second baseline."),
+#: Land-cover fetch kinds.  Each is a way a collection is PUBLISHED, not a
+#: collection: another source published the same way is a table row.
+#: ``yearly-zip-bundle``: one zip per year around one GeoTIFF (``{year}``
+#: in the URL).  ``whole-geotiff``: one GeoTIFF fetched whole, pinned by
+#: size, MD5 and SHA-256.
+LANDCOVER_FETCH_KINDS = ("yearly-zip-bundle", "whole-geotiff")
+
+
+@dataclass(frozen=True)
+class LandcoverSource:
+    """One land-cover collection, as data the production path reads.
+
+    Where it is published and under what terms (``coverage``), how it is
+    fetched, how its raw classes reach WRF's MODIS 21 categories
+    (``crosswalk``), how its water reaches WRF ocean and lake (``water``,
+    one of :data:`gpuwm.static.highres.WATER_RULES`) and which years it
+    represents.  A case outside ``first_year..last_year`` takes the nearest
+    year, and the receipt names the anachronism.
+    """
+
+    coverage: SourceCoverage
+    fetch: str
+    url: str
+    cache_dir: str
+    crosswalk: Mapping[int, int]
+    water: str
+    first_year: int
+    last_year: int
+    #: Local file name of a ``whole-geotiff`` payload.
+    file_name: str = ""
+    pinned_bytes: int | None = None
+    pinned_md5: str | None = None
+    pinned_sha256: str | None = None
+    #: Short name used in console lines and anachronism statements.
+    label: str = ""
+    #: The raw class list a reader can check the crosswalk against.
+    legend: str = ""
+    #: Raw value that marks an unclassified pixel when the file carries no
+    #: nodata tag of its own.  Such pixels reach no model cell, so the
+    #: cells they cover take the 30-arc-second baseline.
+    nodata: float | None = None
+
+    def __post_init__(self):
+        if self.fetch not in LANDCOVER_FETCH_KINDS:
+            raise ValueError(
+                f"land-cover source {self.source_id!r}: fetch kind "
+                f"{self.fetch!r} is not one of {list(LANDCOVER_FETCH_KINDS)}")
+        if self.water not in WATER_RULES:
+            raise ValueError(
+                f"land-cover source {self.source_id!r}: water rule "
+                f"{self.water!r} is not one of {list(WATER_RULES)}")
+        if self.fetch == "whole-geotiff" and not self.file_name:
+            raise ValueError(
+                f"land-cover source {self.source_id!r} is fetched whole "
+                "and names no file")
+        if self.first_year > self.last_year:
+            raise ValueError(
+                f"land-cover source {self.source_id!r}: first year "
+                f"{self.first_year} is after last year {self.last_year}")
+
+    @property
+    def source_id(self) -> str:
+        return self.coverage.source_id
+
+    def year_for(self, case_date: date) -> tuple[int, int]:
+        """(represented year nearest the case date, anachronism in years)."""
+        year = min(max(int(case_date.year), self.first_year),
+                   self.last_year)
+        return year, abs(int(case_date.year) - year)
+
+    def bound_id(self, year: int) -> str:
+        """The source id a bound raster and the receipt carry."""
+        return f"{self.source_id}-{int(year)}"
+
+    def echo(self) -> dict[str, object]:
+        return {**self.coverage.echo(), "fetch": self.fetch,
+                "url": self.url, "water": self.water,
+                "years": [self.first_year, self.last_year],
+                "pinned_bytes": self.pinned_bytes,
+                "pinned_md5": self.pinned_md5,
+                "pinned_sha256": self.pinned_sha256,
+                "legend": self.legend, "nodata": self.nodata,
+                "crosswalk": {str(raw): int(target) for raw, target
+                              in sorted(self.crosswalk.items())}}
+
+
+#: CGLC-MODIS-LCZ's published extent: the GeoTIFF runs from 78 N to 60 S
+#: at every longitude.  WRF's tiled dataset fills poleward of that from
+#: MODIS; here the 30-arc-second MODIS baseline does the same through the
+#: coverage fallback.
+_CGLC_ENVELOPE = FootprintBBox(lat_min=-60.0, lat_max=78.0,
+                               lon_min=-180.0, lon_max=180.0)
+
+#: Land-cover sources, keyed by the id users write in ``landcover_source``.
+LANDCOVER_SOURCES: dict[str, LandcoverSource] = {
+    "cglc-modis-lcz": LandcoverSource(
+        coverage=SourceCoverage(
+            source_id="cglc-modis-lcz", role="landcover",
+            envelope=_CGLC_ENVELOPE,
+            nominal_resolution="100 m (0.000898 degree)",
+            source_url=CGLC_MODIS_LCZ_SOURCE_URL,
+            license_id=CGLC_MODIS_LCZ_LICENSE[0],
+            license_url=CGLC_MODIS_LCZ_LICENSE[1],
+            attribution=CGLC_MODIS_LCZ_ATTRIBUTION,
+            note="CGLC-MODIS-LCZ is published from 60 S to 78 N at every "
+                 "longitude; poleward of that the land-use fields take the "
+                 "30-arc-second MODIS baseline.",
+            global_lon=True),
+        fetch="whole-geotiff", url=CGLC_MODIS_LCZ_URL,
+        cache_dir="cglc_modis_lcz", file_name="CGLC_MODIS_LCZ.tif",
+        pinned_bytes=CGLC_MODIS_LCZ_BYTES, pinned_md5=CGLC_MODIS_LCZ_MD5,
+        pinned_sha256=CGLC_MODIS_LCZ_SHA256,
+        crosswalk=CGLC_MODIS_LCZ_TO_MODIS21, water=WATER_FROM_SOURCE,
+        first_year=CGLC_MODIS_LCZ_YEAR, last_year=CGLC_MODIS_LCZ_YEAR,
+        label="CGLC-MODIS-LCZ",
+        legend="MODIS IGBP 1-20, 17 sea, 21 inland water, 51-61 Local "
+               "Climate Zones LCZ 1-10 and LCZ E, 0 unclassified (the "
+               "open sea past the collection's coastal zone)",
+        nodata=0.0),
+    "annual-nlcd": LandcoverSource(
+        coverage=SourceCoverage(
+            source_id="annual-nlcd", role="landcover",
+            envelope=_US_ENVELOPE, nominal_resolution="30 m",
+            source_url=ANNUAL_NLCD_SOURCE_URL,
+            license_id=ANNUAL_NLCD_LICENSE[0],
+            license_url=ANNUAL_NLCD_LICENSE[1],
+            attribution="Annual NLCD Collection 1, MRLC (public domain).",
+            note="Annual NLCD is a conterminous-United-States collection; "
+                 "for a domain outside it use landcover_source = "
+                 "\"cglc-modis-lcz\" (the default)."),
+        fetch="yearly-zip-bundle", url=ANNUAL_NLCD_URL,
+        cache_dir="annual_nlcd", crosswalk=NLCD_TO_MODIS21_INLAND,
+        water=WATER_SPLIT_BY_BASELINE,
+        first_year=ANNUAL_NLCD_FIRST_YEAR, last_year=ANNUAL_NLCD_LAST_YEAR,
+        label="Annual NLCD",
+        legend="NLCD Anderson classes 11-95"),
 }
+
+#: What ``landcover_source = "auto"`` selects: the global collection,
+#: everywhere.  Annual NLCD stays selectable by name inside the US.
+DEFAULT_LANDCOVER_SOURCE = "cglc-modis-lcz"
+
+
+def landcover_source(source_id: str) -> LandcoverSource:
+    """Look up one land-cover source (``auto`` is the default), refusing
+    an unknown id by name."""
+    if source_id == "auto":
+        source_id = DEFAULT_LANDCOVER_SOURCE
+    try:
+        return LANDCOVER_SOURCES[source_id]
+    except KeyError:
+        raise CoverageError(
+            f"unknown land-cover source {source_id!r}; known sources are "
+            f"{sorted(LANDCOVER_SOURCES)}") from None
 
 
 def terrain_source_coverage(source_id: str) -> SourceCoverage:
@@ -443,6 +663,78 @@ class RangeExhausted(RuntimeError):
     """A resume offset sits at/after the payload end (HTTP 416)."""
 
 
+#: What to do about :class:`HighresFetchRefusal` when nothing more
+#: specific is known.  ``on_refuse = "fallback-30s"`` is not offered: it
+#: answers a domain past a source's coverage, and a network outage is not
+#: that (see the module contract).
+HIGHRES_FETCH_REMEDY = (
+    "remedy: check this computer's connection to the host named above and "
+    "prepare again; the high-resolution files already downloaded stay in "
+    "their cache and a partly downloaded file resumes where it stopped.  "
+    "To prepare without them, leave [static.highres] disabled and run on "
+    "the 30-arc-second baseline.")
+
+
+class HighresFetchRefusal(PreparationRefusal):
+    """A high-resolution geography file could not be downloaded.
+
+    The concrete breakage it replaces: one TLS connection reset from the
+    terrain tile host ended whole preparations as a raw ``URLError``
+    traceback at exit 1.  A preparation door owns this class (two
+    lines, the message and the remedy), and it is deliberately not a
+    :class:`HighresRefusal`, so ``on_refuse = "fallback-30s"`` never
+    turns a network outage into baseline terrain.
+    """
+
+    remedy = HIGHRES_FETCH_REMEDY
+
+
+#: Transfers of one file before a network fault ends the preparation:
+#: the schedule every source's fetch shares
+#: (:data:`gpuwm.fetch_endpoints.TRANSIENT_ATTEMPTS`, 2, 4, 8 and 16 s
+#: apart).  A preparation fetches dozens of tiles back to back, and losing
+#: any one of them ends the whole preparation, so it never takes fewer
+#: tries than a source fetch does.
+FETCH_ATTEMPTS = fetch_endpoints.TRANSIENT_ATTEMPTS
+
+#: The longest ``Retry-After`` a host may ask for and still be waited out.
+FETCH_RETRY_WAIT_LIMIT_S = fetch_endpoints.TRANSIENT_WAIT_LIMIT_S
+
+#: The pause between attempts.  A module attribute so a test records the
+#: backoff instead of sleeping through it.
+_sleep = time.sleep
+
+#: Failures that are the network's, as opposed to this computer's (a full
+#: disk or an unwritable cache is an ``OSError`` too, and propagates).
+_NETWORK_FAULTS = (urllib.error.URLError, http.client.HTTPException,
+                   ConnectionError, TimeoutError)
+
+#: The ``fetch_guard`` lock kind that makes one process the writer of one
+#: cached file.
+_FETCH_LOCK_KIND = "highres-fetch"
+
+
+def _network_reason(error: BaseException) -> str:
+    """One line naming what the network did."""
+    if isinstance(error, http.client.IncompleteRead):
+        missing = getattr(error, "expected", None)
+        return ("the response ended early" if not missing else
+                f"the response ended {missing} bytes early")
+    reason = fetch_endpoints.fault_reason(error)
+    if reason is not None:
+        return reason
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP {error.code}"
+    return f"{type(error).__name__}: {error}"
+
+
+def _staged_bytes(partial: Path) -> int:
+    try:
+        return partial.stat().st_size
+    except OSError:
+        return 0
+
+
 def _default_urlopen(url: str, offset: int):
     request = urllib.request.Request(url)
     if offset:
@@ -502,39 +794,189 @@ def record_local_artifact(path: Path, *, url: str,
     return record
 
 
-def fetch_file(url: str, path: Path, *, urlopen=None) -> FetchedFile:
-    """Fetch ``url`` to ``path`` (cached, resumable, hashed at fetch)."""
-    path = Path(path)
+def _cache_hit(path: Path, url: str) -> FetchedFile | None:
     cached = _read_sidecar(path)
-    if cached is not None:
-        return FetchedFile(
-            path=path, url=str(cached.get("url", url)),
-            sha256=cached["sha256"], bytes=int(cached["bytes"]),
-            fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
+    if cached is None:
+        return None
+    return FetchedFile(
+        path=path, url=str(cached.get("url", url)),
+        sha256=cached["sha256"], bytes=int(cached["bytes"]),
+        fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
 
-    opener = _default_urlopen if urlopen is None else urlopen
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + ".partial")
-    offset = partial.stat().st_size if partial.is_file() else 0
+
+def _declared_length(response) -> int | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("Content-Length")
+        return None if raw is None else int(raw)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _transfer(opener, url: str, partial: Path) -> None:
+    """One request, appended to what ``partial`` already holds.
+
+    Returns once ``partial`` holds the whole payload.  A body shorter
+    than the ``Content-Length`` the host declared raises
+    :class:`http.client.IncompleteRead`: ``HTTPResponse.read(n)`` reports
+    a connection closed mid-body as a quiet end of data, and a tile cut
+    short that way used to be renamed into the cache and hashed as if it
+    were whole.
+    """
+    offset = _staged_bytes(partial)
     try:
         response = opener(url, offset)
     except RangeExhausted:
-        # The staged partial already holds the complete payload; promote
-        # it.  The recorded digest still reflects the exact local bytes.
-        os.replace(partial, path)
-        return record_local_artifact(path, url=url)
+        # The staged partial already holds the complete payload.
+        return
     status = int(getattr(response, "status", 200) or 200)
     mode = "ab" if (offset and status == 206) else "wb"
+    declared = _declared_length(response)
+    received = 0
     with response, partial.open(mode) as stream:
         while True:
             block = response.read(_CHUNK)
             if not block:
                 break
             stream.write(block)
+            received += len(block)
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(partial, path)
-    return record_local_artifact(path, url=url)
+    if declared is not None and received < declared:
+        raise http.client.IncompleteRead(b"", declared - received)
+
+
+def _fetch_refusal(path: Path, url: str, partial: Path, error: BaseException,
+                   *, attempts: int, waited_s: float) -> HighresFetchRefusal:
+    host = urllib.parse.urlsplit(url).netloc or url
+    message = (f"[static.highres] could not download {path.name} from "
+               f"{host}: {_network_reason(error)}")
+    if attempts > 1:
+        message += (f" (the last of {attempts} attempts, "
+                    f"{waited_s:g} s apart in total)")
+    kept = _staged_bytes(partial)
+    remedy = (f"remedy: check this computer's connection to {host} and "
+              f"prepare again; the files already downloaded stay in "
+              f"{path.parent}")
+    remedy += (f", and the {kept} bytes of {path.name} received so far "
+               "resume where they stopped" if kept else "")
+    remedy += (".  To prepare without them, leave [static.highres] "
+               "disabled and run on the 30-arc-second baseline.")
+    return HighresFetchRefusal(message, remedy=remedy, folders=(path.parent,))
+
+
+def _lock_refusal(path: Path, partial: Path,
+                  busy: fetch_guard.FetchLockBusy) -> HighresFetchRefusal:
+    """Another preparation holds ``path`` and this one stops waiting."""
+    who = f"another preparation ({busy.holder or 'unidentified'})"
+    if not busy.budget_s:
+        state = (f"and {fetch_guard.LOCK_TIMEOUT_ENV} = 0 tells this one "
+                 "not to wait for it")
+    else:
+        # The idle time is at least the budget; whole seconds, floored,
+        # so the line never claims more than was measured.
+        idle = int(busy.idle_s if busy.idle_s is not None
+                   else busy.budget_s)
+        waited = int(busy.waited_s if busy.waited_s is not None else idle)
+        state = (f"and its download has not grown for {idle} s, with "
+                 f"{_staged_bytes(partial)} bytes staged; this one waited "
+                 f"{waited} s for it")
+    return HighresFetchRefusal(
+        f"[static.highres] {who} is downloading {path.name} into "
+        f"{path.parent}, {state}",
+        remedy=("remedy: check that preparation and its connection; once "
+                "it has finished or been stopped, prepare again (a "
+                "finished file is read from the cache and a stopped "
+                "download resumes from the bytes it received), or raise "
+                f"{fetch_guard.LOCK_TIMEOUT_ENV} when that host is known "
+                "to pause for longer"),
+        folders=(path.parent,))
+
+
+def _one_writer(path: Path):
+    """The cross-process writer lock over one cached file.
+
+    The concrete breakage it prevents: preparations sharing one cache
+    (four at once in a multi-area build) staged the same uncached tile
+    into one ``.partial``, both wrote into it, and the second rename
+    failed with ``FileNotFoundError``; a resume read the other process's
+    bytes as its own.  The loser waits for the holder and then finds the
+    file in the cache.  The ``.partial`` keeps its one name, so a
+    preparation that was stopped still resumes it the next time.
+
+    The waiter watches the holder's ``.partial`` (and the published
+    file) grow, and the lock's wait budget runs from the last growth, so
+    it waits out a slow but live download and refuses only a stalled
+    one.  With the flat budget it had, any link slower than about
+    3.8 MB/s ended parallel preparations on a fresh cache while the
+    2.28 GB default land-cover file was still arriving.
+    """
+    partial = path.with_name(path.name + ".partial")
+    return fetch_guard.hold(
+        _FETCH_LOCK_KIND, path,
+        progress=lambda line: print(f"[static.highres] {line}",
+                                    file=sys.stderr, flush=True),
+        holder_progress=lambda: (_staged_bytes(partial),
+                                 _staged_bytes(path)))
+
+
+def fetch_file(url: str, path: Path, *, urlopen=None) -> FetchedFile:
+    """Fetch ``url`` to ``path`` (cached, resumable, hashed at fetch).
+
+    A transient network fault (a reset connection, a timeout, a body cut
+    short, HTTP 408/429/5xx) is asked again up to :data:`FETCH_ATTEMPTS`
+    times with the tree's shared backoff
+    (:func:`gpuwm.fetch_endpoints.retry_delay`), each attempt resuming
+    the staged bytes.  A network failure that outlasts that, or one no
+    retry can change, is :class:`HighresFetchRefusal`.  ``SourceAbsent``
+    and failures on this computer propagate unchanged.
+    """
+    path = Path(path)
+    cached = _cache_hit(path, url)
+    if cached is not None:
+        return cached
+
+    opener = _default_urlopen if urlopen is None else urlopen
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".partial")
+    try:
+        writer = _one_writer(path).acquire()
+    except fetch_guard.FetchLockBusy as error:
+        raise _lock_refusal(path, partial, error) from error
+    try:
+        cached = _cache_hit(path, url)
+        if cached is not None:
+            # Another preparation fetched it while this one waited.
+            return cached
+        waited_s = 0.0
+        for attempt in range(1, FETCH_ATTEMPTS + 1):
+            try:
+                _transfer(opener, url, partial)
+                break
+            except Exception as error:  # noqa: BLE001 - classified below
+                delay = fetch_endpoints.retry_delay(
+                    error, attempt, wait_limit_s=FETCH_RETRY_WAIT_LIMIT_S)
+                if delay is None and not isinstance(error, _NETWORK_FAULTS):
+                    raise
+                if delay is None or attempt == FETCH_ATTEMPTS:
+                    raise _fetch_refusal(path, url, partial, error,
+                                         attempts=attempt,
+                                         waited_s=waited_s) from error
+                kept = _staged_bytes(partial)
+                print(f"[static.highres] {path.name}: "
+                      f"{_network_reason(error)}; asking again in "
+                      f"{delay:g} s (attempt {attempt + 1} of "
+                      f"{FETCH_ATTEMPTS})"
+                      + (f", resuming after {kept} bytes" if kept else ""),
+                      file=sys.stderr, flush=True)
+                _sleep(delay)
+                waited_s += delay
+        os.replace(partial, path)
+        return record_local_artifact(path, url=url)
+    finally:
+        writer.release()
 
 
 # ---------------------------------------------------------------------------
@@ -564,11 +1006,20 @@ def three_dep_tile_ids(bbox: FootprintBBox) -> tuple[str, ...]:
 
 
 def fetch_three_dep_tiles(bbox: FootprintBBox, cache_root: Path, *,
-                          urlopen=None) -> tuple[FetchedFile, ...]:
-    """Fetch every whole 3DEP tile covering ``bbox``; refuse on gaps."""
+                          urlopen=None
+                          ) -> tuple[tuple[FetchedFile, ...], tuple[str, ...]]:
+    """Fetch every published whole 3DEP tile covering ``bbox``.
+
+    Returns ``(fetched, absent)``, the same contract as
+    :func:`fetch_copernicus_dem_tiles`.  3DEP stages no tile over open
+    sea or wholly outside the United States, so an absent tile is a
+    square this source does not cover: its cells take the 30-arc-second
+    baseline terrain (:mod:`gpuwm.static.highres`), and the ids are
+    named in the receipt.  ``fetched`` is empty when no tile is staged.
+    """
     cache = Path(cache_root) / "usgs3dep_13as"
     fetched: list[FetchedFile] = []
-    missing: list[str] = []
+    absent: list[str] = []
     for tile in three_dep_tile_ids(bbox):
         url = THREE_DEP_TILE_URL.format(tile=tile)
         try:
@@ -576,13 +1027,8 @@ def fetch_three_dep_tiles(bbox: FootprintBBox, cache_root: Path, *,
                 fetch_file(url, cache / f"USGS_13_{tile}.tif",
                            urlopen=urlopen))
         except SourceAbsent:
-            missing.append(tile)
-    if missing:
-        raise CoverageError(
-            "USGS 3DEP 1/3 arc-second coverage is incomplete for footprint "
-            f"{bbox.as_dict()}: missing staged tile(s) {missing} "
-            f"(checked {THREE_DEP_TILE_URL.format(tile='<tile>')})")
-    return tuple(fetched)
+            absent.append(tile)
+    return tuple(fetched), tuple(absent)
 
 
 # ---------------------------------------------------------------------------
@@ -655,8 +1101,7 @@ def fetch_srtm_gl1_tiles(bbox: FootprintBBox, cache_root: Path, *,
 
     Same ``(fetched, absent)`` contract as
     :func:`fetch_copernicus_dem_tiles`: SRTM publishes no all-water tiles
-    either, so absence is handed back for the caller to cross-check rather
-    than being read as terrain.
+    either, so absence is handed back rather than being read as terrain.
     """
     cache = Path(cache_root) / "srtm_gl1"
     fetched: list[FetchedFile] = []
@@ -669,14 +1114,6 @@ def fetch_srtm_gl1_tiles(bbox: FootprintBBox, cache_root: Path, *,
                                       urlopen=urlopen))
         except SourceAbsent:
             absent.append(tile)
-    if not fetched:
-        raise CoverageError(
-            "SRTM 1 arc-second publishes none of the "
-            f"{len(tiles)} tile(s) covering footprint {bbox.as_dict()} "
-            f"({list(tiles)}); SRTM omits all-water tiles and stops at "
-            "60 N / 56 S, so this footprint is either open water or beyond "
-            f"the mission's reach (checked "
-            f"{SRTM_GL1_TILE_URL.format(tile='<tile>')})")
     return tuple(fetched), tuple(absent)
 
 
@@ -686,12 +1123,12 @@ def fetch_copernicus_dem_tiles(bbox: FootprintBBox, cache_root: Path, *,
                                           tuple[str, ...]]:
     """Fetch every published GLO-30 tile covering ``bbox``.
 
-    Returns ``(fetched, absent)``.  Absence is *not* silently equivalent to
-    a coverage gap here, because the product deliberately does not publish
-    all-water tiles: the absent ids are handed back so the caller can
-    cross-check them against the domain's own baseline land mask before
-    deciding they mean ocean.  A footprint where *every* tile is absent has
-    no terrain to improve and refuses outright.
+    Returns ``(fetched, absent)``.  The product does not publish
+    all-water tiles (nor a few withheld land tiles), so an absent tile
+    is a square this source does not cover: the derived window keeps it
+    as no data and its cells take the 30-arc-second baseline terrain
+    (:mod:`gpuwm.static.highres`), whether the baseline calls them sea
+    or land.  ``fetched`` is empty when every tile is absent.
     """
     cache = Path(cache_root) / "copernicus_dem_glo30"
     fetched: list[FetchedFile] = []
@@ -705,14 +1142,6 @@ def fetch_copernicus_dem_tiles(bbox: FootprintBBox, cache_root: Path, *,
                 urlopen=urlopen))
         except SourceAbsent:
             absent.append(tile)
-    if not fetched:
-        raise CoverageError(
-            "Copernicus DEM GLO-30 publishes none of the "
-            f"{len(tiles)} tile(s) covering footprint {bbox.as_dict()} "
-            f"({list(tiles)}); the product omits all-water tiles, so this "
-            "footprint is open water and has no high-resolution terrain to "
-            f"apply (checked "
-            f"{COPERNICUS_DEM_TILE_URL.format(tile='<tile>')})")
     return tuple(fetched), tuple(absent)
 
 
@@ -790,7 +1219,7 @@ def _require_cut_frame_window(bbox: FootprintBBox) -> None:
 
 def derive_global_terrain_window(tiles, bbox: FootprintBBox,
                                  cache_root: Path, *,
-                                 sea_level_fill: float = 0.0,
+                                 sea_level_fill: float | None = 0.0,
                                  source_nodata: float | None = None,
                                  resolution_deg: float
                                  = COPERNICUS_DEM_LAT_STEP_DEG
@@ -807,11 +1236,13 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
       elevation value is invented -- coarser bands are replicated, and the
       subsequent area-average to the model grid is what actually reduces
       them.
-    - Unpublished all-water tiles leave holes (and SRTM additionally
-      carries an in-band void sentinel).  They are filled with
-      ``sea_level_fill`` (0 m on the EGM2008 geoid, the source's own
-      vertical datum) and the filled pixel count is returned so the caller
-      can refuse if any of it lands on baseline land.
+    - Unpublished tiles leave holes (and SRTM additionally carries an
+      in-band void sentinel).  With ``sea_level_fill = None`` -- what the
+      production overlay passes -- they stay no data (NaN), so the model
+      cells under them take the 30-arc-second baseline terrain and are
+      counted as outside the source's coverage.  A number fills them with
+      that height instead (0 m on the EGM2008 geoid, the source's own
+      vertical datum), and the filled pixel count is returned.
 
     The derivation itself -- decode, mosaic, void fill, re-emit -- runs
     in the Rust static-fields library by default; the rasterio body is
@@ -821,11 +1252,14 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     if not tiles:
         raise ValueError("terrain window derivation requires >= 1 tile")
     _require_cut_frame_window(bbox)
+    keep_holes = sea_level_fill is None
     identity = hashlib.sha256(json.dumps(
         {"tiles": sorted(item.sha256 for item in tiles),
          "bbox": bbox.as_dict(), "res": resolution_deg,
          "fill": sea_level_fill, "src_nodata": source_nodata,
-         "kind": "global-terrain-window-v1"},
+         # v2: cut on the fixed lattice (_terrain_lattice), not at the
+         # footprint's own edge, so a v1 window is never reused.
+         "kind": "global-terrain-window-v2"},
         sort_keys=True).encode("utf-8")).hexdigest()[:20]
     out_dir = Path(cache_root) / "derived"
     out_path = out_dir / f"terrain_global_{identity}.tif"
@@ -847,23 +1281,31 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     partial = out_path.with_name(out_path.name + ".partial")
     bridge = _static_rust("derive_global_terrain_window")
     if bridge is not None:
-        audit = bridge.highres_derive_window({
+        request = {
             "kind": "global-terrain-window",
             "tiles": [str(item.path) for item in tiles],
             "bounds": list(bounds),
             "resolution_deg": float(resolution_deg),
-            "sea_level_fill": float(sea_level_fill),
             "source_nodata": (None if source_nodata is None
                               else float(source_nodata)),
             "out_path": str(partial),
-        })
+        }
+        if keep_holes:
+            request["keep_holes"] = True
+        else:
+            request["sea_level_fill"] = float(sea_level_fill)
+        audit = bridge.highres_derive_window(request)
         os.replace(partial, out_path)
+        holes = int(audit.get("hole_pixels",
+                              audit.get("sea_level_filled_pixels", 0)))
         audit = {
             "output_resolution_deg": float(resolution_deg),
             "output_shape": [int(v) for v in audit["output_shape"]],
-            "sea_level_filled_pixels": int(audit["sea_level_filled_pixels"]),
+            "sea_level_filled_pixels": 0 if keep_holes else holes,
+            "no_data_pixels_outside_coverage": holes if keep_holes else 0,
             "total_pixels": int(audit["total_pixels"]),
-            "sea_level_fill_m": float(sea_level_fill),
+            "sea_level_fill_m": (None if keep_holes
+                                 else float(sea_level_fill)),
             "source_nodata": (None if source_nodata is None
                               else float(source_nodata)),
             "resampling": str(audit["resampling"]),
@@ -888,6 +1330,8 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     datasets = [rasterio.open(item.path) for item in tiles]
     try:
         crs = datasets[0].crs
+        bounds = _lattice_bounds(bounds, *_terrain_lattice(
+            None, resolution_deg))
         mosaic, transform = rasterio_merge(
             datasets, bounds=bounds,
             res=(resolution_deg, resolution_deg),
@@ -902,7 +1346,8 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
         # SRTM carries an in-band void sentinel; Copernicus carries none.
         holes |= values == np.float32(source_nodata)
     filled = int(np.count_nonzero(holes))
-    values[holes] = np.float32(sea_level_fill)
+    values[holes] = (np.float32(np.nan) if keep_holes
+                     else np.float32(sea_level_fill))
     with rasterio.open(
             partial, "w", driver="GTiff", height=values.shape[0],
             width=values.shape[1], count=1, dtype="float32", crs=crs,
@@ -913,9 +1358,11 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     audit = {
         "output_resolution_deg": float(resolution_deg),
         "output_shape": [int(values.shape[0]), int(values.shape[1])],
-        "sea_level_filled_pixels": filled,
+        "sea_level_filled_pixels": 0 if keep_holes else filled,
+        "no_data_pixels_outside_coverage": filled if keep_holes else 0,
         "total_pixels": int(values.size),
-        "sea_level_fill_m": float(sea_level_fill),
+        "sea_level_fill_m": (None if keep_holes
+                             else float(sea_level_fill)),
         "source_nodata": (None if source_nodata is None
                           else float(source_nodata)),
         "resampling": "nearest (latitude-banded source resolutions)",
@@ -927,53 +1374,155 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
 
 
 # ---------------------------------------------------------------------------
-# Annual NLCD land cover
+# Land cover (table-driven: LANDCOVER_SOURCES)
 # ---------------------------------------------------------------------------
 
 def nlcd_year_for(case_date: date) -> tuple[int, int]:
     """(published year nearest the case date, anachronism in years)."""
-    year = min(max(int(case_date.year), ANNUAL_NLCD_FIRST_YEAR),
-               ANNUAL_NLCD_LAST_YEAR)
-    return year, abs(int(case_date.year) - year)
+    return LANDCOVER_SOURCES["annual-nlcd"].year_for(case_date)
+
+
+def fetch_landcover(source: LandcoverSource, year: int, cache_root: Path,
+                    *, urlopen=None
+                    ) -> tuple[tuple[FetchedFile, ...], FetchedFile]:
+    """Fetch one land-cover source's raster for ``year``.
+
+    Returns ``(downloaded, raster)``: the artifacts exactly as published
+    (hashed at fetch time) and the GeoTIFF the window step decodes.  The
+    fetch kind is the row's, so the dispatch below is over publication
+    shapes, never over collections.
+    """
+    if source.fetch == "yearly-zip-bundle":
+        bundle, raster = _fetch_yearly_zip_bundle(source, year, cache_root,
+                                                  urlopen=urlopen)
+        return (bundle,), raster
+    if source.fetch == "whole-geotiff":
+        raster = _fetch_whole_geotiff(source, cache_root, urlopen=urlopen)
+        return (raster,), raster
+    raise ValueError(  # pragma: no cover - __post_init__ refuses it first
+        f"land-cover fetch kind {source.fetch!r} has no fetcher")
+
+
+def _human_bytes(count: int) -> str:
+    return (f"{count / 1e9:.2f} GB" if count >= 1e9
+            else f"{count / 1e6:.0f} MB")
+
+
+def _md5_file(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(_CHUNK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _reject_payload(path: Path, detail: str) -> None:
+    """Remove a payload that failed its pin, so the next run fetches it
+    again, and raise.  An integrity failure is a fault, not a coverage
+    fact: it is never answered with the 30-arc-second baseline."""
+    Path(path).unlink(missing_ok=True)
+    _sidecar(Path(path)).unlink(missing_ok=True)
+    raise ValueError(
+        f"{detail}; the payload {path} was removed so the next preparation "
+        "fetches it again")
+
+
+def _fetch_whole_geotiff(source: LandcoverSource, cache_root: Path, *,
+                         urlopen=None) -> FetchedFile:
+    """Fetch a whole-GeoTIFF source once per cache root and hold it to
+    its pins.
+
+    The download is resumable (:func:`fetch_file` stages a ``.partial``
+    and continues it with an HTTP range) and happens once per
+    ``cache_root``.  A fresh payload must match the pinned size, MD5 and
+    SHA-256; a cached one is held to the size and SHA-256 its sidecar
+    recorded when it was fetched.
+    """
+    path = Path(cache_root) / source.cache_dir / source.file_name
+    if _read_sidecar(path) is None:
+        size = ("" if source.pinned_bytes is None
+                else f" ({_human_bytes(source.pinned_bytes)})")
+        print(f"[static.highres] fetching {source.label or source.source_id}"
+              f"{size} once into {path.parent}; later preparations with "
+              "this cache_root read it from there")
+    try:
+        fetched = fetch_file(source.url, path, urlopen=urlopen)
+    except SourceAbsent as error:
+        raise CoverageError(
+            f"land-cover source {source.source_id!r} is not published at "
+            f"{source.url}") from error
+    label = f"land-cover source {source.source_id!r}"
+    if (source.pinned_bytes is not None
+            and int(fetched.bytes) != int(source.pinned_bytes)):
+        _reject_payload(path, f"{label} is pinned at {source.pinned_bytes} "
+                              f"bytes and {path} holds {fetched.bytes}")
+    if (source.pinned_sha256 is not None
+            and fetched.sha256 != source.pinned_sha256):
+        _reject_payload(path, f"{label} is pinned at SHA-256 "
+                              f"{source.pinned_sha256} and {path} hashes "
+                              f"to {fetched.sha256}")
+    if not fetched.cache_hit and source.pinned_md5 is not None:
+        observed = _md5_file(path)
+        if observed != source.pinned_md5:
+            _reject_payload(path, f"{label} is published with MD5 "
+                                  f"{source.pinned_md5} and {path} hashes "
+                                  f"to {observed}")
+    return fetched
 
 
 def fetch_annual_nlcd(year: int, cache_root: Path, *, urlopen=None
                       ) -> tuple[FetchedFile, FetchedFile]:
-    """Fetch one whole Annual NLCD year bundle; return (zip, extracted tif).
+    """Fetch one whole Annual NLCD year bundle; return (zip, extracted tif)."""
+    return _fetch_yearly_zip_bundle(LANDCOVER_SOURCES["annual-nlcd"], year,
+                                    cache_root, urlopen=urlopen)
 
-    The published artifact is a zip around one CONUS GeoTIFF; both the
-    bundle exactly as fetched and the extracted raster are hashed and
+
+def _fetch_yearly_zip_bundle(source: LandcoverSource, year: int,
+                             cache_root: Path, *, urlopen=None
+                             ) -> tuple[FetchedFile, FetchedFile]:
+    """Fetch one whole year bundle; return (zip, extracted tif).
+
+    The published artifact is a zip around one GeoTIFF; both the bundle
+    exactly as fetched and the extracted raster are hashed and
     sidecar-recorded, so the receipt can bind the raster actually decoded
     back to the bytes actually downloaded.
     """
-    if not (ANNUAL_NLCD_FIRST_YEAR <= int(year) <= ANNUAL_NLCD_LAST_YEAR):
+    name = source.label or source.source_id
+    if not (source.first_year <= int(year) <= source.last_year):
         raise CoverageError(
-            f"Annual NLCD publishes {ANNUAL_NLCD_FIRST_YEAR}.."
-            f"{ANNUAL_NLCD_LAST_YEAR}; there is no year {year}")
-    cache = Path(cache_root) / "annual_nlcd"
-    url = ANNUAL_NLCD_URL.format(year=int(year))
+            f"{name} publishes {source.first_year}..{source.last_year}; "
+            f"there is no year {year}")
+    cache = Path(cache_root) / source.cache_dir
+    url = source.url.format(year=int(year))
     try:
         bundle = fetch_file(url, cache / Path(url).name, urlopen=urlopen)
     except SourceAbsent as error:
         raise CoverageError(
-            f"Annual NLCD year {year} is not published at {url}") from error
+            f"{name} year {year} is not published at {url}") from error
 
     members: list[str] = []
     with zipfile.ZipFile(bundle.path) as archive:
-        members = [name for name in archive.namelist()
-                   if name.lower().endswith(".tif")]
+        members = [member for member in archive.namelist()
+                   if member.lower().endswith(".tif")]
         if len(members) != 1:
             raise ValueError(
-                f"Annual NLCD bundle {bundle.path} contains "
-                f"{len(members)} .tif members ({members}); expected one")
+                f"{name} bundle {bundle.path} contains {len(members)} .tif "
+                f"members ({members}); expected one")
         raster_path = cache / Path(members[0]).name
         cached = _read_sidecar(raster_path)
         if cached is None:
-            partial = raster_path.with_name(raster_path.name + ".partial")
-            with archive.open(members[0]) as source, \
+            # One staging file per process: preparations sharing this
+            # cache extracted the same year into one ".partial", both
+            # wrote into it, and the second rename failed with
+            # FileNotFoundError.  An extraction never resumes, so nothing
+            # is lost by the name; the rename is atomic and the last
+            # complete copy of the same member wins.
+            partial = raster_path.with_name(
+                f"{raster_path.name}.partial-{os.getpid()}")
+            with archive.open(members[0]) as stream, \
                     partial.open("wb") as target:
                 while True:
-                    block = source.read(_CHUNK)
+                    block = stream.read(_CHUNK)
                     if not block:
                         break
                     target.write(block)
@@ -1063,11 +1612,39 @@ def fetch_soilgrids(bbox: FootprintBBox, cache_root: Path, *, urlopen=None
 # Derived per-footprint windows (local derivations of fetched payloads)
 # ---------------------------------------------------------------------------
 
+#: Metres per degree of latitude on the mean sphere, for turning the
+#: window margin into degrees on a geographic raster.
+_METRES_PER_DEGREE = 111_320.0
+
+
+def margin_degrees(lat_min: float, lat_max: float, margin_m: float
+                   ) -> tuple[float, float]:
+    """(longitude, latitude) margin in degrees for a metre margin.
+
+    The window margin is stated in metres.  On a projected raster that is
+    its own unit; on a geographic (EPSG:4326) raster the same number read
+    as degrees turned a 2 km margin into 2000 degrees, so the window was
+    the whole global raster.  The longitude margin is widened by the
+    footprint's most poleward latitude (floored at cos 87 degrees), so it
+    is at least ``margin_m`` everywhere in the footprint.  The Rust window
+    step computes the same two numbers.
+    """
+    extreme = max(abs(float(lat_min)), abs(float(lat_max)))
+    shrink = max(math.cos(math.radians(min(extreme, 90.0))),
+                 math.cos(math.radians(87.0)))
+    return (margin_m / (_METRES_PER_DEGREE * shrink),
+            margin_m / _METRES_PER_DEGREE)
+
+
 def _densified_bounds(bbox: FootprintBBox, dst_crs, margin_m: float
                       ) -> tuple[float, float, float, float]:
-    """Footprint bounds in ``dst_crs``, sampled along the perimeter."""
+    """Footprint bounds in ``dst_crs``, sampled along the perimeter.
+
+    ``margin_m`` is metres; a geographic ``dst_crs`` takes it in degrees
+    through :func:`margin_degrees`.
+    """
     try:
-        from pyproj import Transformer
+        from pyproj import CRS, Transformer
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             geog_unavailable_detail()
@@ -1077,8 +1654,40 @@ def _densified_bounds(bbox: FootprintBBox, dst_crs, margin_m: float
     lats = np.linspace(bbox.lat_min, bbox.lat_max, 41)
     grid_lon, grid_lat = np.meshgrid(lons, lats)
     x, y = transformer.transform(grid_lon, grid_lat)
-    return (float(np.min(x)) - margin_m, float(np.min(y)) - margin_m,
-            float(np.max(x)) + margin_m, float(np.max(y)) + margin_m)
+    margin_x = margin_y = margin_m
+    if CRS.from_user_input(dst_crs).is_geographic:
+        margin_x, margin_y = margin_degrees(bbox.lat_min, bbox.lat_max,
+                                            margin_m)
+    return (float(np.min(x)) - margin_x, float(np.min(y)) - margin_y,
+            float(np.max(x)) + margin_x, float(np.max(y)) + margin_y)
+
+
+def _terrain_lattice(transform, resolution_deg):
+    """The fixed pixel lattice a terrain crop is cut on, as the native
+    library chooses it: ``((res_x, res_y), (origin_x, origin_y))``.
+
+    Every footprint cut from a source must sample the same source pixel
+    for the same ground, or a moving nest's statics corridor disagrees
+    with the nest's own statics and the move is refused.  An inherited
+    resolution keeps the first tile's own lattice; a declared one puts
+    pixel centres on whole multiples of the resolution, where the
+    point-sampled DEMs put their samples.
+    """
+    if resolution_deg is not None:
+        r = float(resolution_deg)
+        return (r, r), (-0.5 * r, 0.5 * r)
+    return ((float(transform.a), -float(transform.e)),
+            (float(transform.c), float(transform.f)))
+
+
+def _lattice_bounds(bounds, resolution, origin):
+    """``bounds`` grown outward to whole pixels of the lattice."""
+    west, south, east, north = bounds
+    (rx, ry), (ox, oy) = resolution, origin
+    return (ox + math.floor((west - ox) / rx) * rx,
+            oy - math.ceil((oy - south) / ry) * ry,
+            ox + math.ceil((east - ox) / rx) * rx,
+            oy - math.floor((oy - north) / ry) * ry)
 
 
 def derive_terrain_window(tiles, bbox: FootprintBBox,
@@ -1098,7 +1707,9 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
     _require_cut_frame_window(bbox)
     identity = hashlib.sha256(json.dumps(
         {"tiles": sorted(item.sha256 for item in tiles),
-         "bbox": bbox.as_dict(), "kind": "terrain-window-v1"},
+         # v2: cut on the source's own pixel lattice, not at the
+         # footprint's own edge, so a v1 window is never reused.
+         "bbox": bbox.as_dict(), "kind": "terrain-window-v2"},
         sort_keys=True).encode("utf-8")).hexdigest()[:20]
     out_dir = Path(cache_root) / "derived"
     out_path = out_dir / f"terrain_{identity}.tif"
@@ -1137,6 +1748,8 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
     datasets = [rasterio.open(item.path) for item in tiles]
     try:
         crs = datasets[0].crs
+        bounds = _lattice_bounds(bounds, *_terrain_lattice(
+            datasets[0].transform, None))
         mosaic, transform = rasterio_merge(datasets, bounds=bounds)
         nodata = datasets[0].nodata
     finally:
@@ -1153,20 +1766,40 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
     return record_local_artifact(out_path, url=derivation_url)
 
 
+def _landcover_audit_path(window_path: Path) -> Path:
+    return Path(window_path).with_name(
+        Path(window_path).stem + ".audit.json")
+
+
+def landcover_window_audit(window: FetchedFile) -> dict | None:
+    """The window step's audit (window, clip, raw category pixel counts),
+    or None for a window derived before the audit was recorded."""
+    path = _landcover_audit_path(window.path)
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
                             cache_root: Path) -> FetchedFile:
-    """Clip the whole NLCD year raster to the footprint (cached).
+    """Clip a whole land-cover raster to the footprint (cached).
 
     Decode, the footprint densification into the raster's own CRS, the
     window arithmetic and the re-emit run in the Rust static-fields
     library by default; the rasterio body is the parity reference and
-    the reported fallback.  The two SOURCE-COVERAGE refusals come back
-    over the seam as their own return code, so a footprint that leaves
-    the published raster stays a :class:`CoverageError` the user's
-    ``on_refuse`` policy may answer with the 30-arc-second baseline,
-    while a decode fault stays a fault.  The two engines word those two
-    refusals differently -- each names the footprint and the raster --
-    and neither is silent.
+    the reported fallback.  The 2 km margin is metres on a projected
+    raster and the same distance in degrees on a geographic one
+    (:func:`margin_degrees`).  A footprint that runs past the raster's
+    extent is clipped to it: the model cells beyond receive no source
+    pixel and take the 30-arc-second baseline land use
+    (:mod:`gpuwm.static.highres`).  A footprint wholly outside the
+    raster is a :class:`CoverageError` (it crosses the seam as its own
+    return code, so a decode fault stays a fault), which the production
+    shell answers with the baseline land use on every cell.
+
+    The step's audit, including the pixel count of every raw category in
+    the window, is kept beside the window (:func:`landcover_window_audit`)
+    and copied into the receipt.
     """
     identity = hashlib.sha256(json.dumps(
         {"source": raster.sha256, "bbox": bbox.as_dict(),
@@ -1174,9 +1807,10 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
         sort_keys=True).encode("utf-8")).hexdigest()[:20]
     out_dir = Path(cache_root) / "derived"
     out_path = out_dir / f"landcover_{identity}.tif"
+    audit_path = _landcover_audit_path(out_path)
     derivation_url = f"derived:clip of {raster.path.name}"
     cached = _read_sidecar(out_path)
-    if cached is not None:
+    if cached is not None and audit_path.is_file():
         return FetchedFile(
             path=out_path, url=derivation_url, sha256=cached["sha256"],
             bytes=int(cached["bytes"]),
@@ -1188,7 +1822,7 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
     if bridge is not None:
         from .rust_bridge import StaticCoverageRefusal
         try:
-            bridge.highres_derive_window({
+            audit = bridge.highres_derive_window({
                 "kind": "landcover-window",
                 "source": str(raster.path),
                 "bounds_lonlat": [bbox.lat_min, bbox.lat_max,
@@ -1200,6 +1834,8 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
             partial.unlink(missing_ok=True)
             raise CoverageError(str(refusal)) from refusal
         os.replace(partial, out_path)
+        audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True)
+                              + "\n", encoding="utf-8")
         return record_local_artifact(out_path, url=derivation_url)
 
     try:
@@ -1226,16 +1862,8 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
         clipped = window.intersection(full)
         if clipped.width <= 0 or clipped.height <= 0:
             raise CoverageError(
-                f"footprint {bbox.as_dict()} lies outside the Annual NLCD "
+                f"footprint {bbox.as_dict()} lies outside the land-cover "
                 f"raster extent of {raster.path.name}")
-        if (clipped.width != window.width
-                or clipped.height != window.height):
-            raise CoverageError(
-                f"footprint {bbox.as_dict()} is only partially covered by "
-                f"the Annual NLCD raster {raster.path.name}; the source "
-                "window would be truncated from "
-                f"{int(window.width)}x{int(window.height)} to "
-                f"{int(clipped.width)}x{int(clipped.height)} pixels")
         values = source.read(1, window=clipped)
         transform = source.window_transform(clipped)
         partial = out_path.with_name(out_path.name + ".partial")
@@ -1245,16 +1873,41 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
                 crs=source.crs, transform=transform, nodata=source.nodata,
                 compress="deflate", predictor=2, tiled=True) as target:
             target.write(values, 1)
+        categories, counts = np.unique(values, return_counts=True)
+        audit = {
+            "output_shape": [int(values.shape[0]), int(values.shape[1])],
+            "window": [int(clipped.col_off), int(clipped.row_off),
+                       int(clipped.width), int(clipped.height)],
+            "requested_window": [int(window.col_off), int(window.row_off),
+                                 int(window.width), int(window.height)],
+            "clipped_to_raster": (int(clipped.width) != int(window.width)
+                                  or int(clipped.height)
+                                  != int(window.height)),
+            "nodata": source.nodata,
+            "category_pixels": {
+                str(int(category)): int(count)
+                for category, count in zip(categories, counts)
+                if np.isfinite(category)},
+        }
     os.replace(partial, out_path)
+    audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
     return record_local_artifact(out_path, url=derivation_url)
 
 
 __all__ = [
     "ANNUAL_NLCD_FIRST_YEAR", "ANNUAL_NLCD_LAST_YEAR", "ANNUAL_NLCD_URL",
+    "CGLC_MODIS_LCZ_ATTRIBUTION", "CGLC_MODIS_LCZ_BYTES",
+    "CGLC_MODIS_LCZ_LICENSE", "CGLC_MODIS_LCZ_MD5", "CGLC_MODIS_LCZ_SHA256",
+    "CGLC_MODIS_LCZ_SOURCE_URL", "CGLC_MODIS_LCZ_URL", "CGLC_MODIS_LCZ_YEAR",
+    "DEFAULT_LANDCOVER_SOURCE", "LANDCOVER_FETCH_KINDS", "LandcoverSource",
+    "fetch_landcover", "landcover_source", "landcover_window_audit",
+    "margin_degrees",
     "COPERNICUS_DEM_ATTRIBUTION", "COPERNICUS_DEM_LAT_STEP_DEG",
     "COPERNICUS_DEM_LICENSE", "COPERNICUS_DEM_SOURCE_URL",
     "COPERNICUS_DEM_TILE_URL", "COPERNICUS_DEM_VERTICAL_DATUM",
-    "CoverageError", "FetchedFile", "FootprintBBox", "LANDCOVER_SOURCES",
+    "CoverageError", "FETCH_ATTEMPTS", "FetchedFile", "FootprintBBox",
+    "HIGHRES_FETCH_REMEDY", "HighresFetchRefusal", "LANDCOVER_SOURCES",
     "SOILGRIDS_COMPONENTS", "SOILGRIDS_CRS", "SOILGRIDS_DEPTHS",
     "SOILGRIDS_NODATA", "SOILGRIDS_SCALE", "SRTM_GL1_LICENSE",
     "SRTM_GL1_ATTRIBUTION", "SRTM_GL1_NODATA", "SRTM_GL1_SOURCE_URL",

@@ -1,6 +1,6 @@
 """The region-global engine: the selector, the handshake, the refusal.
 
-The solver itself is Drew's vendored crate and is tested by its own Rust
+The solver itself is the project's vendored crate and is tested by its own Rust
 suite (``cargo test`` in ``tools/region_global_dealias``) and, on real
 sweeps, against Py-ART itself -- see
 ``evidence/dealias-region/pyart-parity.json``.  What is tested here is the

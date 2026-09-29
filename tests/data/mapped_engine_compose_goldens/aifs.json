@@ -322,7 +322,6 @@
         }
       },
       "grid_fingerprint": "a2f9620a8ff98506bf256cf3975020a6910f029562813ea49879cc1c3f5b9b2d",
-      "header_sha256": "a089e39f5fb9d9449116c10b88cc7a5e9d2278ce7b7f92707c640d1afad248f7",
       "inputs": [
         {
           "name": "20260817000000-0h-oper-fc.grib2",
@@ -342,6 +341,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": null,
+      "portable_header_sha256": "3c43400b58c0f4a085d9f126ac7fee117bdabdd5d4eef940053e389450e76f8b",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T00:00:00",
       "vertical": {
@@ -626,7 +626,6 @@
         }
       },
       "grid_fingerprint": "a2f9620a8ff98506bf256cf3975020a6910f029562813ea49879cc1c3f5b9b2d",
-      "header_sha256": "a9dd9d54b49c90211ccb7698037498a9b113c747184fb5d1d7b2b387aaa86b48",
       "inputs": [
         {
           "name": "20260817000000-0h-oper-fc.grib2",
@@ -646,6 +645,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": null,
+      "portable_header_sha256": "de2c5603709b1f6d0f000c8d9f8fc15de37ee0ff40a4770ed719d8dd87a57aba",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T06:00:00",
       "vertical": {
@@ -656,15 +656,16 @@
       "vertical_units": "Pa"
     }
   ],
+  "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-aifs-single-grib2.mapping.json",
-    "sha256": "7f65b6f9879112b27abcb1b6f02c2313de0571e673e864f848e2f5d01f3ea247"
+    "sha256": "421178fe8a81e304db6904428d57bd1852d2c55d9f3fda1f95a1becaeafba5dc"
   },
   "measured_on": {
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
     "depth_units": "m",
     "missing": {

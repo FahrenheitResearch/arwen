@@ -96,7 +96,7 @@ def _coarse_global(nz=1, kv_extra=None):
     return kv, 360, 180
 
 
-def _synthetic_wps_geog(root: Path) -> Path:
+def _synthetic_wps_geog(root: Path, *, regional_size=750) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     yy_ = lambda nyg, nxg, nz: np.meshgrid(  # noqa: E731
         np.arange(nz), np.arange(1, nyg + 1), np.arange(1, nxg + 1),
@@ -106,6 +106,7 @@ def _synthetic_wps_geog(root: Path) -> Path:
     kv, nxg, nyg = _fine_regional(dict(
         type="continuous", signed="yes", wordsize=2, tile_z=1,
         units='"meters MSL"'))
+    nxg = nyg = regional_size
     kv = _write_index(root / "topo_gmted2010_30s", **kv)
     z, y, x = yy_(nyg, nxg, 1)
     _write_tiles(root / "topo_gmted2010_30s",
@@ -117,6 +118,7 @@ def _synthetic_wps_geog(root: Path) -> Path:
         wordsize=1, tile_z=1,
         mminlu='"MODIFIED_IGBP_MODIS_NOAH"', iswater=17, islake=21,
         isice=15, isurban=13))
+    nxg = nyg = regional_size
     kv = _write_index(root / "modis_landuse_20class_30s_with_lakes", **kv)
     z, y, x = yy_(nyg, nxg, 1)
     landuse = 1 + (3 * x + 5 * y) % 21
@@ -396,26 +398,20 @@ def test_load_refuses_a_corridor_from_a_different_tree(corridor_build,
         _load(directory, receipt, child_dc=_child_dc(i_parent_start=5))
 
 
-def test_load_refuses_a_corridor_sealed_by_the_pre_fold_build(
+def test_load_reverifies_a_corridor_without_a_build_contract(
         corridor_build, tmp_path):
-    """A corridor whose BYTES predate canonical-column binning is refused
-    by name, with the re-preparation that repairs it.
-
-    THE BREAKAGE THIS PREVENTS: a corridor sealed before 2.7.5 binned its
-    source pixels at unwrapped column indices wherever its window crossed
-    the x-wrap seam, so on a dateline-spanning parent its crop differs
-    from the footprint build and the FIRST relocation refuses on the
-    overlap-statics equality, hours into a run and far from the cause.
-    The digest relay cannot catch this: those bytes are exactly the ones
-    preparation wrote.
-    """
+    """The missing marker alone says nothing about these field bytes."""
     directory, receipt = _sealed(corridor_build, tmp_path)
     stale = json.loads(json.dumps(receipt))
     del stale["domains"]["d02"]["build_contract"]
     (directory / STATICS_CORRIDOR_RECEIPT).write_text(
         json.dumps(stale, indent=2, sort_keys=True), encoding="utf-8")
-    with pytest.raises(CorridorRefusal, match="build contract"):
-        _load(directory, stale)
+    sealed_child = {
+        name: field[..., 9:18, 9:18].copy()
+        for name, field in corridor_build.fields.items()}
+    loaded = _load(directory, stale, sealed_child_statics=sealed_child)
+    for name, field in corridor_build.fields.items():
+        assert loaded.fields[name].tobytes() == field.tobytes()
 
 
 def test_sealed_corridor_records_its_build_contract(corridor_build, tmp_path):
@@ -535,3 +531,111 @@ def test_crop_equals_direct_build_on_the_real_static_source(tmp_path):
             assert (np.asarray(crop[name]).tobytes()
                     == np.asarray(direct[name]).tobytes()), (
                 f"{name} differs at ({ip}, {jp})")
+
+
+# ---------------------------------------------------------------------------
+# The reach window: a corridor built over only the ground a nest can reach
+# is the whole-frame corridor's own cells there, bit for bit
+# ---------------------------------------------------------------------------
+
+#: A window of the 30x30-cell frame: child cells 6..23 x 3..23.  The
+#: placements whose footprint lies inside it are ip 3..6, jp 2..6.
+_WINDOW = (6, 3, 18, 21)
+
+
+@pytest.fixture(scope="module")
+def window_build(geog_root, tmp_path_factory):
+    catalog = _catalog(geog_root, tmp_path_factory.mktemp("catalog-window"))
+    return build_child_statics_corridor(
+        child_dc=_child_dc(), parent_run=_parent_run(),
+        reference_grid=_reference_grid(), static_catalog=catalog,
+        window=_WINDOW, reach={"window_child_cells": list(_WINDOW)})
+
+
+def test_a_window_corridor_is_the_whole_corridor_there_bitwise(
+        corridor_build, window_build):
+    """The byte contract of the reach window.
+
+    Every field of the window build equals the whole-frame build's cells
+    inside the window, to the bit, so a run that crops from either reads
+    the same statics wherever its nest can go.  The instrument is armed
+    the same way the crop test's is: one ULP planted in the whole build
+    is caught by exactly this comparison.
+    """
+    x0, y0, nx, ny = _WINDOW
+    assert sorted(window_build.fields) == sorted(corridor_build.fields)
+    for name, whole in sorted(corridor_build.fields.items()):
+        part = np.asarray(window_build.fields[name])
+        cut = np.ascontiguousarray(
+            np.asarray(whole)[..., y0:y0 + ny, x0:x0 + nx])
+        assert part.shape == cut.shape and part.dtype == cut.dtype, name
+        assert part.tobytes() == cut.tobytes(), f"{name} differs"
+    tampered = np.array(corridor_build.fields["HGT_M"], copy=True)
+    tampered[y0 + 4, x0 + 5] = np.nextafter(tampered[y0 + 4, x0 + 5], np.inf)
+    cut = tampered[y0:y0 + ny, x0:x0 + nx]
+    part = np.asarray(window_build.fields["HGT_M"])
+    assert np.flatnonzero(cut.view(np.uint64)
+                          != part.view(np.uint64)).size == 1
+
+
+def test_the_window_entry_says_where_it_sits_and_what_it_costs(
+        window_build):
+    entry = window_build.entry
+    assert entry["window_origin_child_cells"] == [6, 3]
+    assert (entry["corridor_nx"], entry["corridor_ny"]) == (18, 21)
+    assert entry["cells"] == 18 * 21
+    assert entry["reach"] == {"window_child_cells": list(_WINDOW)}
+    # Priced before it is built by the same arithmetic.
+    quoted = corridor_cost(_child_dc(), _parent_run(), window=_WINDOW)
+    assert quoted["host_bytes"] == entry["host_bytes"]
+    # A whole-frame corridor carries no window key: its receipt is what
+    # it was before windows existed.
+    assert "window_origin_child_cells" not in corridor_geometry(
+        _child_dc(), _parent_run())
+
+
+def test_crops_from_a_window_equal_crops_from_the_whole_frame(
+        corridor_build, window_build, tmp_path):
+    whole = _load(*_sealed(corridor_build, tmp_path / "whole"))
+    directory = tmp_path / "window" / "statics-corridor"
+    receipt = write_statics_corridor_set(directory, [window_build])
+    part = _load(directory, receipt, required_window=_WINDOW)
+    for ip, jp in ((3, 2), (6, 6), (4, 5), (_REF_I, _REF_J)):
+        a, b = part.crop(ip, jp), whole.crop(ip, jp)
+        for name in sorted(b):
+            assert a[name].tobytes() == b[name].tobytes(), (name, ip, jp)
+    # Outside the window there are no statics, and the crop says where
+    # the corridor is.
+    for ip, jp in ((2, 4), (7, 4), (4, 1), (4, 7)):
+        with pytest.raises(CorridorRefusal, match="covers child cells 6..23"):
+            part.crop(ip, jp)
+
+
+def test_a_corridor_that_does_not_cover_the_reach_is_refused_at_load(
+        window_build, tmp_path):
+    directory = tmp_path / "statics-corridor"
+    receipt = write_statics_corridor_set(directory, [window_build])
+    # Asking for more than was sealed (here the whole frame, which is
+    # also what a loader asks for when handed no window) refuses with
+    # both windows named, before any move needs the ground.
+    with pytest.raises(CorridorRefusal,
+                       match=r"covers child cells 6\.\.23 x 3\.\.23.*"
+                             r"can reach 0\.\.29 x 0\.\.29"):
+        _load(directory, receipt)
+    with pytest.raises(CorridorRefusal, match="can reach 5..22"):
+        _load(directory, receipt, required_window=(5, 3, 18, 21))
+    # A smaller reach inside the sealed window is served.
+    _load(directory, receipt, required_window=(9, 6, 12, 12))
+
+
+def test_a_whole_frame_corridor_serves_any_reach(corridor_build, tmp_path):
+    """A corridor sealed before reach windows existed covers every reach,
+    so a bundle prepared by an earlier release still runs."""
+    directory, receipt = _sealed(corridor_build, tmp_path)
+    corridor = _load(directory, receipt, required_window=_WINDOW)
+    assert corridor.crop(4, 4)["HGT_M"].shape == (9, 9)
+
+
+def test_a_window_the_frame_cannot_hold_is_refused():
+    with pytest.raises(ValueError, match="does not lie inside"):
+        corridor_geometry(_child_dc(), _parent_run(), window=(20, 0, 18, 9))

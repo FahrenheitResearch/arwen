@@ -341,7 +341,7 @@ def run(args) -> dict[str, object]:
             # frozen mp_physics=6 configuration executes not one extra
             # instruction.
             met, cfg, coord, static["HGT_M"], grid=grid, p_top=10000.0,
-            sfcp_to_sfcp=True)
+            landmask=static["LANDMASK"], sfcp_to_sfcp=True)
         result.state.set_map_coriolis(
             static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
             static["F"], static["E"], sina=static["SINALPHA"],

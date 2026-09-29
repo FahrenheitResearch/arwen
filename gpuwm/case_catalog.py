@@ -490,7 +490,8 @@ def preview_case(catalog, case_id: str, *, tier: str = "recommended",
     cadence = option.get("cadence_hours", 1)
     horizon = math.ceil(row["run_hours"] / cadence) * cadence + option.get("forecast_start_hour", 0)
     try:
-        source_info = availability(option["source"], horizon, now=now)
+        # The spacing the option's fetch asks for, when it names one; the route table's default otherwise.
+        source_info = availability(option["source"], horizon, now=now, cadence=option.get("cadence_hours"))
         cycle, notes = validate_cycle(source_info, option["cycle_utc"])
     except ValueError as error:
         raise CatalogError(f"Source option {option['id']}: {error}") from error

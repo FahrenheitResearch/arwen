@@ -21,7 +21,6 @@
       "skin_temperature": "43f47990a51cc2bc46b6db413abe65ce9fb6faa9d47f06743f90e4b526ffa367",
       "soil_temperature": "7e164708afce4c337a901c42f3742bddbcaea3ad2d687e02d0ebc8744ffad751",
       "specific_humidity_2m": "3cfee18143c941728fd3119441c1dcf39801af0021a766c920b9a70c8af056d9",
-      "surface_pressure": "12437e5631bfb50bd0e8d3eca8f0111e9ce398927b91f4fca8147a2f8feb003a",
       "terrain_height": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd",
       "volumetric_soil_moisture": "d80d5029d2ec35120417fd58b972c0102ffd77ca62f8488a5c0f9beb37c2dec0"
     },
@@ -30,7 +29,6 @@
       "skin_temperature",
       "soil_temperature",
       "specific_humidity_2m",
-      "surface_pressure",
       "terrain_height",
       "volumetric_soil_moisture"
     ],
@@ -58,7 +56,7 @@
   },
   "composition": {
     "name": "rw-wps-aigfs-gdas-hybrid-grib2.composition.json",
-    "sha256": "85aafd9a79e3d6ac33b6e14fcaee08cfc5608b90d64e0fdcf0de9dc0874481a7"
+    "sha256": "e11db42390a6b1f08b2edcd7d25e4574dc5be74021748e65c3c7b1115c34d07c"
   },
   "contributing_sources": [
     {
@@ -84,7 +82,6 @@
           "skin_temperature": "43f47990a51cc2bc46b6db413abe65ce9fb6faa9d47f06743f90e4b526ffa367",
           "soil_temperature": "7e164708afce4c337a901c42f3742bddbcaea3ad2d687e02d0ebc8744ffad751",
           "specific_humidity_2m": "3cfee18143c941728fd3119441c1dcf39801af0021a766c920b9a70c8af056d9",
-          "surface_pressure": "12437e5631bfb50bd0e8d3eca8f0111e9ce398927b91f4fca8147a2f8feb003a",
           "terrain_height": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd",
           "volumetric_soil_moisture": "d80d5029d2ec35120417fd58b972c0102ffd77ca62f8488a5c0f9beb37c2dec0"
         },
@@ -93,7 +90,6 @@
           "skin_temperature",
           "soil_temperature",
           "specific_humidity_2m",
-          "surface_pressure",
           "terrain_height",
           "volumetric_soil_moisture"
         ],
@@ -131,7 +127,6 @@
         "skin_temperature",
         "soil_temperature",
         "specific_humidity_2m",
-        "surface_pressure",
         "terrain_height",
         "volumetric_soil_moisture"
       ],
@@ -141,7 +136,7 @@
       },
       "provenance": {
         "path": "rw-wps-aigfs-gdas-hybrid-grib2.provenance.json",
-        "sha256": "99aea1e8945dd56e618d12e516870943b6d18c5a452ed016eddd24edb0264256"
+        "sha256": "72299bca17576bce3a0bedfe846806dbde31d126781d4d3ebaafb9dbf78318ed"
       },
       "source_id": "gdas-pgrb2-0p25-analysis-donor-grib2-native"
     }
@@ -161,6 +156,21 @@
           "sha256": "35b1f2ed10d1ba38b855f88b5be6bfe987545da2d5eaa19345d167cca5d0da06",
           "shape": [
             13,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "air_pressure_at_mean_sea_level": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "6e9d1a1bd99d8985d472ab64be0df6fee2c879ed65623daf8d845b01df971ede",
+          "shape": [
             721,
             1440
           ],
@@ -366,7 +376,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "12437e5631bfb50bd0e8d3eca8f0111e9ce398927b91f4fca8147a2f8feb003a",
+          "sha256": "d5a8a12fbc89bbe924886eaa9224c238fda78c9dcb6118bf895d46f9fdf8a3f5",
           "shape": [
             721,
             1440
@@ -408,7 +418,6 @@
         }
       },
       "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
-      "header_sha256": "cbe0c626394bb5739ebff3d2ebea97b51240ddb5be33dac23d96242c5ff56945",
       "inputs": [
         {
           "name": "NOMADS.aigfs.t00z.pres.f000.grib2",
@@ -440,6 +449,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": null,
+      "portable_header_sha256": "49b4ba6a91a5cb85a409bc96afd1c6d5c66a9e8d3cb38abcd342b4aea75661be",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T00:00:00",
       "vertical": {
@@ -462,6 +472,21 @@
           "sha256": "35b1f2ed10d1ba38b855f88b5be6bfe987545da2d5eaa19345d167cca5d0da06",
           "shape": [
             13,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "air_pressure_at_mean_sea_level": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "7881b0cb798c3f2ac2bef0954ac905abb085767cfb70fc578f11958061ae593e",
+          "shape": [
             721,
             1440
           ],
@@ -667,7 +692,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "12437e5631bfb50bd0e8d3eca8f0111e9ce398927b91f4fca8147a2f8feb003a",
+          "sha256": "d9d1f1c9207ed24c1eaebc800931c448a1775c0e10cfcd7c3d70b55d33e631ab",
           "shape": [
             721,
             1440
@@ -709,7 +734,6 @@
         }
       },
       "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
-      "header_sha256": "fb4b614dca8b389395d36d72c6f104c3893f448dda37b34407c98fa158a4c079",
       "inputs": [
         {
           "name": "NOMADS.aigfs.t00z.pres.f000.grib2",
@@ -741,6 +765,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": null,
+      "portable_header_sha256": "7cb07f5104ee1cc29614be244887e3c23609529073aade845bedd7eea7973b49",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T06:00:00",
       "vertical": {
@@ -751,15 +776,16 @@
       "vertical_units": "Pa"
     }
   ],
+  "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-aigfs-gdas-hybrid-grib2.mapping.json",
-    "sha256": "0427834583be3189130ff676a57aff9d000a2196b82eb0bb7c2f7215412fff4d"
+    "sha256": "b672a224abdf5d41b2675034530440577e4d2976420d90a4d89dfad0b3f50ff6"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
-  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
     "depth_units": "m",
     "missing": {
@@ -928,7 +954,7 @@
   ],
   "terrain_provenance": {
     "name": "rw-wps-aigfs-gdas-hybrid-grib2.provenance.json",
-    "sha256": "99aea1e8945dd56e618d12e516870943b6d18c5a452ed016eddd24edb0264256"
+    "sha256": "72299bca17576bce3a0bedfe846806dbde31d126781d4d3ebaafb9dbf78318ed"
   },
   "verdict": "COMPOSED"
 }

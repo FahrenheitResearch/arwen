@@ -29,6 +29,7 @@ pub struct Node {
     pub last_job: Option<String>,
     pub plot_label: Option<String>,
     pub plot_products: Option<String>,
+    pub render_section: String,
 }
 
 impl Node {
@@ -50,6 +51,7 @@ impl Node {
             last_job: None,
             plot_label: None,
             plot_products: None,
+            render_section: String::new(),
         }
     }
 
@@ -136,7 +138,7 @@ impl Node {
         }
     }
 
-    pub fn fields(&self) -> [(&'static str, &str); 12] {
+    pub fn fields(&self) -> [(&'static str, &str); 13] {
         [
             ("Name", &self.name),
             ("SSH host", &self.host),
@@ -150,6 +152,7 @@ impl Node {
             ("SSH config on this computer (optional)", &self.ssh_config),
             ("Prepared folder on node (optional)", &self.prepared),
             ("WPS namelist on node (optional)", &self.wps_namelist),
+            ("Cross-section line lat,lon,lat,lon (optional)", &self.render_section),
         ]
     }
 
@@ -168,6 +171,7 @@ impl Node {
             9 => self.ssh_config = value,
             10 => self.prepared = value,
             11 => self.wps_namelist = value,
+            12 => self.render_section = value,
             _ => return,
         }
         if self.connection_key() != before {
@@ -267,13 +271,14 @@ impl Node {
                 if let Some(sequence)=sequence{if *sequence==0||*sequence>i64::MAX as u64{return Err("Viewer frame sequence must be positive.".into());}args.extend(["--sequence".into(),sequence.to_string()]);}
                 options.args(&mut args);
                 if *reader_leases{args.push("--reader-leases".into());}
-                if let Some(bytes)=cache_bytes{if !(64*1024*1024..=1024_u64.pow(4)).contains(bytes){return Err("Viewer cache must be 64 MiB to 1 TiB.".into());}args.extend(["--cache-bytes".into(),bytes.to_string()]);}
+                if let Some(bytes)=cache_bytes{if *bytes==0{return Err(VIEWER_CACHE_REFUSAL.into());}args.extend(["--cache-bytes".into(),bytes.to_string()]);}
             }
             Operation::Start {
                 products,
                 preview,
                 binding,
             } => {
+                crate::plotsettings::for_section(products, !self.render_section.trim().is_empty())?;
                 args.extend([
                     "--config".into(),
                     self.config.clone(),
@@ -291,6 +296,9 @@ impl Node {
                     "--products".into(),
                     products.clone(),
                 ]);
+                if !self.render_section.trim().is_empty() {
+                    args.push(format!("--section={}", self.render_section.trim()));
+                }
                 if !self.geography.is_empty() {
                     args.extend(["--geog-root".into(), self.geography.clone()]);
                 }
@@ -381,7 +389,8 @@ impl Node {
             "geography":self.geography,"port":self.port,"identity":self.identity,
             "ssh_config":self.ssh_config,"last_job":self.last_job,
             "prepared":self.prepared,"wps_namelist":self.wps_namelist,
-            "plot_label":self.plot_label,"plot_products":self.plot_products})
+            "plot_label":self.plot_label,"plot_products":self.plot_products,
+            "render_section":self.render_section})
     }
 
     fn from_value(value: &Value) -> Result<Self, String> {
@@ -415,6 +424,7 @@ impl Node {
             wps_namelist: optional("wps_namelist")?.unwrap_or_default(),
             plot_label: optional("plot_label")?,
             plot_products: optional("plot_products")?,
+            render_section: optional("render_section")?.unwrap_or_default(),
             last_job: match value.get("last_job") {
                 None | Some(Value::Null) => None,
                 Some(Value::String(id)) => {
@@ -692,6 +702,16 @@ pub(crate) fn processed_message(value:&Value)->Result<String,String>{
     Ok("Converted native weather fields are ready.".into())
 }
 
+/// What a native-plots reply means to the reader. A run that asked only for
+/// sections has no map gallery and never publishes one, so its node's note
+/// is the answer; "still being prepared" was a promise nothing keeps.
+pub(crate) fn native_plots_message(value:&Value)->String{
+    if value["map_products"]==false{
+        if let Some(note)=value["selection_basis"].as_str().map(str::trim).filter(|note|!note.is_empty()){return note.to_owned();}
+    }
+    if value["waiting"]==true{"Native plots are still being prepared.".into()}else{"Native plot gallery is ready.".into()}
+}
+
 pub fn stamp() -> String {
     format!(
         "{}-{}",
@@ -822,6 +842,45 @@ impl Store {
     }
 }
 
+/// The node's viewer profile names at most this many products and refuses the
+/// whole frame beyond it; the viewer door's `NODE_PRODUCT_LIMIT` is the same.
+const VIEWER_PRODUCT_LIMIT: usize = 128;
+/// The node's per-product spelling bound, the viewer door's `MAX_SELECTOR_CHARS`.
+const VIEWER_SELECTOR_CHARS: usize = 128;
+/// A cache budget of zero holds no frame, so every admission would refuse it.
+/// Any positive budget is a budget: frame admission refuses a frame larger than
+/// the budget by the frame's measured size.
+pub(crate) const VIEWER_CACHE_REFUSAL: &str =
+    "Viewer cache size must be a positive whole number of bytes; a budget of zero or less can hold no viewer frame.";
+
+/// One product selector, spelled as the viewer door's `SELECTOR` spells it: a
+/// catalog slug, or one of the renderer's own families (`var:<stored 2-D
+/// variable>`, `mesh:...`). This viewer has no section-line input. The node's
+/// catalog decides what it can serve; commas cannot appear inside one selector
+/// because the list reaches the door separated by commas.
+fn viewer_selector(value:&Value)->Result<String,String>{
+    let shown=|text:&str|text.chars().take(120).collect::<String>();
+    let text=value.as_str().ok_or_else(||format!("Viewer product {} is not a selector string.",shown(&value.to_string())))?;
+    if text.starts_with("xsec:") {
+        return Err(format!("Viewer product {:?} needs a cross-section line. This viewer has no line input, so the renderer cannot locate the slice; choose a map product or draw the section through the forecast door.", shown(text)));
+    }
+    if text.contains(','){
+        return Err(format!("Viewer product {:?} contains a comma. The product list reaches the node separated by commas, \
+            so it would arrive there as two products.",shown(text)));
+    }
+    let (slug,family)=match text.split_once(':'){Some((slug,argument))=>(slug,Some(argument)),None=>(text,None)};
+    let slug_ok=matches!(slug.bytes().next(),Some(b'a'..=b'z'|b'0'..=b'9'))&&slug.len()<=96
+        &&slug.bytes().all(|c|matches!(c,b'a'..=b'z'|b'0'..=b'9'|b'_'|b'-'));
+    let family_ok=family.is_none_or(|argument|argument.bytes().next().is_some_and(|c|c.is_ascii_alphanumeric())
+        &&argument.bytes().all(|c|c.is_ascii_alphanumeric()||matches!(c,b'_'|b'.'|b':'|b'='|b'~'|b'@'|b'+'|b'/'|b'-')));
+    if !slug_ok||!family_ok||text.len()>VIEWER_SELECTOR_CHARS{
+        return Err(format!("Viewer product {:?} is not a selector the viewer door can read, so it would refuse the whole request. \
+            A selector is a catalog slug, or one of the renderer's own families (var:<stored 2-D variable>, \
+            mesh:<history variable>), of at most {VIEWER_SELECTOR_CHARS} characters.",shown(text)));
+    }
+    Ok(text.to_owned())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewerOptions {
     pub profile: String,
@@ -833,11 +892,15 @@ impl ViewerOptions {
     pub(crate) fn from_value(value:&Value)->Result<Self,String>{
         let profile=value.get("profile").map(|v|v.as_str().ok_or("Viewer profile must be a string.")).transpose()?.unwrap_or("viewer-2d-v1");
         if !matches!(profile,"viewer-2d-v1"|"full-science-v1"){return Err("Unsupported native viewer profile.".into());}
+        // An empty list is the node's own default set, as an absent one is.
         let products=match value.get("products"){
             None=>vec![],Some(value)=>{
-                let rows=value.as_array().filter(|rows|!rows.is_empty()&&rows.len()<=96).ok_or("Choose 1..96 canonical viewer products.")?;
-                rows.iter().map(|v|v.as_str().filter(|s|!s.is_empty()&&s.len()<=96&&s.bytes().all(|c|c.is_ascii_lowercase()||c.is_ascii_digit()||matches!(c,b'_'|b'-')))
-                    .map(str::to_owned).ok_or_else(||"Invalid native viewer product slug.".to_owned())).collect::<Result<Vec<_>,_>>()?
+                let rows=value.as_array().ok_or("Viewer products must be a list of selectors; send an empty list to take the node's default set.")?;
+                if rows.len()>VIEWER_PRODUCT_LIMIT{
+                    return Err(format!("This request names {} viewer products and the node's viewer profile accepts at most {VIEWER_PRODUCT_LIMIT}, \
+                        so the node would refuse the whole frame. Ask for fewer products, or send none to take the node's default set.",rows.len()));
+                }
+                rows.iter().map(viewer_selector).collect::<Result<Vec<_>,_>>()?
             }};
         let expected_run_id=value.get("expected_run_id").map(|v|v.as_str().filter(|s|!s.is_empty()&&s.len()<=256&&!s.chars().any(char::is_control)).map(str::to_owned).ok_or("Invalid native run identity.")).transpose()?;
         let prefetch_sequences=match value.get("prefetch_sequences"){
@@ -1694,6 +1757,52 @@ mod tests {
         assert_eq!(ViewerOptions::from_value(&json!({"profile":"full-science-v1"})).unwrap().profile,"full-science-v1");
     }
     #[test]
+    fn compact_viewer_cache_budget_reaches_the_node_at_any_positive_size(){
+        // Whether a frame fits the budget is decided where the frame is
+        // admitted, against its measured size, so 32 MiB and 2 TiB are budgets.
+        let operation=|bytes:u64|Operation::SyncProcessedFrameV2{job:"job-1".into(),domain:2,sequence:Some(42),cache:std::env::temp_dir().join("viewer-cache"),
+            options:ViewerOptions::from_value(&json!({})).unwrap(),reader_leases:false,cache_bytes:Some(bytes)};
+        for bytes in [1_u64,32*1024*1024,2*1024_u64.pow(4),u64::MAX]{
+            let args=node().args(&operation(bytes)).unwrap();
+            assert_eq!(args[args.iter().position(|arg|arg=="--cache-bytes").unwrap()+1],bytes.to_string());
+        }
+        assert!(node().args(&operation(0)).unwrap_err().contains("can hold no viewer frame"));
+    }
+    #[test]
+    fn compact_viewer_takes_map_selectors_and_refuses_cross_sections_without_a_line(){
+        let args=|products:Value|->Result<Vec<String>,String>{
+            let options=ViewerOptions::from_value(&json!({"profile":"viewer-2d-v1","products":products}))?;
+            node().args(&Operation::SyncProcessedFrameV2{job:"job-1".into(),domain:2,sequence:Some(42),cache:std::env::temp_dir().join("viewer-cache"),options,reader_leases:false,cache_bytes:None})
+        };
+        let products=|args:&[String]|args.iter().position(|arg|arg=="--products").map(|at|args[at+1].clone());
+        // A stored 2-D field by name, the renderer's own `var:` family.
+        assert_eq!(products(&args(json!(["var:temperature_2m"])).unwrap()).as_deref(),Some("var:temperature_2m"));
+        assert_eq!(products(&args(json!(["mslp_10m_winds","var:T2","var:wrf_tsk"])).unwrap()).as_deref(),Some("mslp_10m_winds,var:T2,var:wrf_tsk"));
+        // No products is the node's own default set, as at the viewer door.
+        assert_eq!(products(&args(json!([])).unwrap()),None);
+        // The node's own bounds: 128 products of at most 128 characters each.
+        let many=|n:usize|Value::from((0..n).map(|i|format!("var:field_{i}")).collect::<Vec<_>>());
+        assert_eq!(products(&args(many(128)).unwrap()).unwrap().split(',').count(),128);
+        assert!(args(many(129)).unwrap_err().contains("at most 128"));
+        let long=format!("var:{}","a".repeat(124));
+        assert_eq!(products(&args(json!([&long])).unwrap()),Some(long.clone()));
+        assert!(args(json!([format!("{long}a")])).is_err());
+        let slug="a".repeat(96);
+        assert!(args(json!([&slug])).is_ok());
+        assert!(args(json!([format!("{slug}a")])).is_err());
+        // The list travels comma-separated, so a comma would split one product in two.
+        assert!(args(json!(["var:a,b"])).unwrap_err().contains("two products"));
+        // Spellings no node parses.
+        for bad in [json!(""),json!("Var:t2"),json!("-x"),json!("_x"),json!("var:"),json!("var:_x"),json!("var: t2"),json!(7)]{
+            assert!(args(json!([bad])).is_err(),"{bad}");
+        }
+        assert!(ViewerOptions::from_value(&json!({"products":"var:t2"})).is_err());
+        for section in ["xsec:wa", "xsec:wa=1,2/temperature"] {
+            let error = args(json!([section])).unwrap_err();
+            assert!(error.contains(section) && error.contains("no line input") && error.contains("cannot locate the slice"), "{error}");
+        }
+    }
+    #[test]
     fn compact_viewer_pending_reply_cannot_change_selected_run_time_or_profile(){
         let options=ViewerOptions::from_value(&json!({"expected_run_id":"run-1"})).unwrap();
         let value=json!({"schema":"arwen.remote-processed-frame.v2","job_id":"job-1","domain":2,"sequence":42,
@@ -1843,6 +1952,26 @@ mod tests {
         assert!(processed_message(&failed).unwrap_err().contains("source checksum changed"));
     }
     #[test]
+    fn a_sections_only_native_plots_reply_answers_with_the_nodes_note(){
+        // The run viewer and the companion both answer through this one
+        // reading; each used to say "still being prepared" for a run that
+        // has no map gallery to prepare.
+        let note="This run asked only for cross-section pictures, which need a line this viewer cannot take, so it has no map products to show here.";
+        let sections=json!({"schema":"arwen.native-plots.v1","job_id":"saved-job","domain":1,"sequence":1,"waiting":true,"map_products":false,"selection_basis":note});
+        validate_native_plots("saved-job",1,Path::new("uncreated-cache"),1,&sections).unwrap();
+        assert_eq!(native_plots_message(&sections),note);
+        let mut maps=sections.clone();maps["map_products"]=json!(true);maps["selection_basis"]=json!("the products this request named");
+        assert_eq!(native_plots_message(&maps),"Native plots are still being prepared.");
+        // A node that sends no flag keeps the waiting answer; so does a
+        // sections-only reply whose note is empty.
+        let mut unflagged=maps.clone();unflagged.as_object_mut().unwrap().remove("map_products");
+        assert_eq!(native_plots_message(&unflagged),"Native plots are still being prepared.");
+        let mut blank=sections.clone();blank["selection_basis"]=json!(" ");
+        assert_eq!(native_plots_message(&blank),"Native plots are still being prepared.");
+        maps["waiting"]=json!(false);
+        assert_eq!(native_plots_message(&maps),"Native plot gallery is ready.");
+    }
+    #[test]
     #[ignore="explicit real converted reply/cache; validates existing metadata and lengths without decoding fields or contacting nodes"]
     fn actual_converted_reply_keeps_its_native_authorities_and_local_store(){
         let reply_path=PathBuf::from(std::env::var_os("ARWEN_PROCESSED_REPLY").expect("ARWEN_PROCESSED_REPLY"));
@@ -1907,6 +2036,33 @@ mod tests {
             }
             assert!(!args.iter().any(|v| v == "--dry-run"));
         }
+    }
+    #[test]
+    fn node_cross_section_line_survives_profile_and_launch_review() {
+        let mut value = node().value();
+        value["render_section"] = json!("35,-100,36,-99");
+        let node = Node::from_value(&value).unwrap();
+        let preview = Operation::Start {
+            products: "xsec:wa".into(), preview: true, binding: None,
+        };
+        for operation in [preview.clone(), preview.confirmed(&review(false)).unwrap()] {
+            let args = node.args(&operation).unwrap();
+            assert!(args.iter().any(|arg| arg == "--section=35,-100,36,-99"), "{args:?}");
+        }
+        assert_eq!(node.value()["render_section"], value["render_section"]);
+    }
+    #[test]
+    fn node_cross_section_without_a_line_names_the_missing_slice() {
+        let operation = Operation::Start {
+            products: "total_qpf,xsec:wa=1,2/temperature".into(), preview: true, binding: None,
+        };
+        let error = node().args(&operation).unwrap_err();
+        assert!(error.contains("xsec:wa=1,2/temperature") && error.contains("cannot locate the slice"), "{error}");
+        let mut value = node().value();
+        value.as_object_mut().unwrap().remove("render_section");
+        assert_eq!(Node::from_value(&value).unwrap().render_section, "");
+        value["render_section"] = json!([35, -100, 36, -99]);
+        assert!(Node::from_value(&value).unwrap_err().contains("render_section"));
     }
     #[test]
     fn node_validation_refuses_ambiguous_target_and_local_paths() {

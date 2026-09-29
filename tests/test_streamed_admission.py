@@ -23,7 +23,6 @@ admitted or if a genuinely-too-big one stops being refused.
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
 import math
 import textwrap
@@ -516,13 +515,17 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # vectors on this flat grid: 1,210,588 real resident bytes.
     # The CFL diagnostic is off and contributes exactly zero here.
     # Resolved radiation selection (267900003) also prices the requested
-    # 4/4 modules when the legacy ra_physics alias is zero. The RTE ceiling
-    # is 5152 B/thread versus Morrison's 5120: 32 * 170 * 1536 = 8,355,840
-    # non-pool bytes on the reference card. No itemized allocation moves.
-    assert payload["peak_envelope_bytes"] == 15360247081
-    assert payload["observed_peak_envelope_bytes"] == 15360247081
+    # 4/4 modules when the legacy ra_physics alias is zero.  Their widest
+    # frame, rrtmgp_rte, is 3,600 B/thread on every compile platform read,
+    # so Morrison's 5,120 stays this configuration's widest frame and the
+    # four modules reserve nothing more.  While the sm_120 recordings still
+    # carried the pre-optimisation 5,152 B, the ceiling priced 32 * 170 *
+    # 1536 = 8,355,840 B of backing store here that no compiler emits.
+    # No itemized allocation moves.
+    assert payload["peak_envelope_bytes"] == 15351891241
+    assert payload["observed_peak_envelope_bytes"] == 15351891241
     assert payload["alloc_estimate_bytes"] == 12185625897
-    assert payload["reserve_bytes"] == 3540189961
+    assert payload["reserve_bytes"] == 3531834121
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -532,9 +535,11 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     estimate = preflight.estimate_experiment(exp, vram_gib=None)
     assert payload["alloc_estimate_bytes"] == estimate.alloc_estimate_bytes
 
-    # Retain the old pins as an executable attribution control. Before
-    # 267900003, domain_kernel_modules checked only ra_physics == 4 and
-    # omitted these four modules for an explicitly declared LW/SW pair.
+    # Attribution control. Before 267900003, domain_kernel_modules checked
+    # only ra_physics == 4 and omitted these four modules for an explicitly
+    # declared LW/SW pair.  The modules are priced, at their measured
+    # frames, and pricing them leaves every admission number where the
+    # Morrison frame puts it.
     assert exp.root.run.ra_physics == 0
     assert preflight.radiation_scheme_ids(exp.root.run) == (4, 4)
     frames = preflight.kernel_local_frame_bytes(exp)
@@ -542,7 +547,9 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
                          "rrtmgp_rte"}
     assert (set(preflight._radiation_44_kernel_modules(exp.root.run))
             == radiation_modules)
-    assert frames["rrtmgp_rte"] == max(frames.values()) == 5152
+    assert radiation_modules <= set(frames)
+    assert frames["rrtmgp_rte"] == 3600
+    assert frames["morrison"] == max(frames.values()) == 5120
     with monkeypatch.context() as old_accounting:
         # Remove only the newly reachable module accounting, preserving all
         # physics selectors, arrays, workspace prices and admission logic.
@@ -556,21 +563,18 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
         old_rc, old_payload = _check(capsys, config, "--budget-gib",
                                      str(_FITS_STREAMED_GIB))
 
-    # The actual command regains every original pin, with the same refusal.
+    # The command without the radiation modules gives every pin above,
+    # with the same refusal: they are narrower than Morrison, so they
+    # change nothing this configuration is charged.
     assert old_payload["peak_envelope_bytes"] == 15351891241
     assert old_payload["observed_peak_envelope_bytes"] == 15351891241
     assert old_payload["alloc_estimate_bytes"] == 12185625897
     assert old_payload["reserve_bytes"] == 3531834121
     assert old_rc == rc == 1
-    delta = (5152 - 5120) * 170 * 1536
-    assert delta == 8355840
-    assert (estimate.non_pool_device_bytes - old_estimate.non_pool_device_bytes
-            == delta)
-    assert replace(old_estimate,
-                   non_pool_device_bytes=estimate.non_pool_device_bytes) == estimate
+    assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",
                 "reserve_bytes"):
-        assert payload[key] - old_payload[key] == delta
+        assert payload[key] == old_payload[key]
 
 
 def test_an_unconfigured_run_is_priced_exactly_as_it_always_was(tmp_path):
@@ -908,3 +912,213 @@ def test_the_wizard_fit_seam_weighs_the_radiation_peak(tmp_path):
     assert (_total_from_terms(env, radiation_storage=False) <= budget), (
         "fixture no longer straddles")
     assert phases.peak_envelope_bytes > budget
+
+
+# --------------------------------------------------------------------------
+# One host admission for a streamed forecast: domain, check and go.
+#
+# THE DEFECT (measured on a 30 GiB RTX PRO 4500 worker).  ``gpuwm domain
+# --tiles auto`` emitted a 1158x928x55 3 km GFS config and ``gpuwm check``
+# passed it while printing that the stream needs 14.20 GiB of host memory
+# against a 14.13 GiB budget; ``gpuwm go`` then refused the same config
+# before the download on exactly that shortfall.  The tile planner weighs
+# the pinned store and arena alone (14.11 GiB, which fits); the run also
+# holds the domain's lateral-boundary series beside them (0.09 GiB for a
+# one-hour forecast), and only ``gpuwm go`` counted it.
+
+#: The worker's RAM: 47% of it is the 14.13 GiB page-locking budget.
+_A44_HOST_BYTES = int(30.06 * GIB)
+#: What the 32 GiB card measured free, as ``gpuwm domain --card 32gb``
+#: declares it.
+_A44_FREE_BYTES = int(30.08 * GIB)
+
+_A44_FRAME = """\
+[experiment]
+name = "a44-frame"
+start_time = 2024-05-20T12:00:00
+run_seconds = 3600.0
+restart_interval_s = 3600.0
+
+[projection]
+map_proj = "lambert"
+ref_lat = 35.45
+ref_lon = -97.95
+truelat1 = 25.45
+truelat2 = 45.45
+stand_lon = -97.95
+
+[shared]
+nz = 55
+ztop = 20000.0
+p_top = 5000.0
+hybrid_opt = 2
+etac = 0.2
+time_step_sound = 4
+moist = true
+moist_cq = true
+mp_physics = 10
+morr_rimed_ice = 1
+ra_lw_physics = 4
+ra_sw_physics = 4
+ra_rrtmg_variant = "rte-rrtmgp"
+sf_sfclay_physics = 91
+sf_surface_physics = 2
+num_soil_layers = 4
+bl_pbl_physics = 1
+nwp_diagnostics = 1
+
+[tiles]
+mode = "auto"
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = {nx}
+ny = {ny}
+time_step = 15
+dx = 3000.0
+history_interval_s = 3600.0
+radt = 12.0
+cu_physics = 0
+cudt_minutes = 0.0
+
+[fetch]
+source = "gfs"
+cycle = "2024-05-20T12"
+hours = 3
+cadence = 3
+"""
+
+
+@pytest.fixture()
+def a44_worker(monkeypatch):
+    """The 30 GiB worker and its 32 GiB card, off any real hardware."""
+    from gpuwm.core import streaming
+
+    monkeypatch.setattr(streaming, "_host_total_bytes",
+                        lambda: _A44_HOST_BYTES)
+
+    def _probe(*_args, **_kwargs):
+        return {"free_bytes": _A44_FREE_BYTES, "total_bytes": int(32 * GIB),
+                "name": "test card", "local_memory_bytes_per_thread": 0}
+
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess", _probe)
+
+
+def _a44_config(tmp_path, nx, ny):
+    path = tmp_path / f"a44-{nx}x{ny}.toml"
+    path.write_text(_A44_FRAME.format(nx=nx, ny=ny), encoding="utf-8")
+    return path
+
+
+def _a44_phases(path):
+    from gpuwm.core import streaming
+
+    exp = preflight._load_experiment_any(path)
+    machine = streaming.planner_machine(vram_bytes=_A44_FREE_BYTES,
+                                        name="a44 worker")
+    return exp, preflight.estimate_phases(
+        exp, source="gfs", machine=machine,
+        forcing_interval_seconds=10800.0,
+        ingest_forcing_interval_seconds=10800.0)
+
+
+def test_the_host_admission_counts_the_boundary_series_the_planner_leaves_out(
+        tmp_path, a44_worker):
+    """The A44 frame, at its measured figures: 14.20 GiB against 14.13."""
+    _exp, phases = _a44_phases(_a44_config(tmp_path, 1158, 928))
+    env = phases.streamed
+    assert env is not None, "the A44 frame no longer streams"
+    # The straddle: the planner's store and arena fit the budget, the
+    # whole claim with the boundary series does not.
+    assert env.pinned_bytes <= env.host_budget_bytes < env.host_bytes
+    assert f"{env.host_bytes / GIB:.2f}" == "14.20"
+    assert f"{env.host_budget_bytes / GIB:.2f}" == "14.13"
+
+    refusal = phases.streamed_host_refusal()
+    assert refusal is not None
+    assert "14.20 GiB of host RAM" in refusal
+    assert "14.13 GiB host budget" in refusal
+    assert "lateral-boundary tables" in refusal
+
+
+def test_go_check_and_domain_refuse_the_a44_frame_on_one_admission(
+        tmp_path, a44_worker, capsys):
+    """Every door gives the same answer about one config on one worker."""
+    from gpuwm import domain_wizard as dw
+    from gpuwm.cli import main as cli_main
+
+    path = _a44_config(tmp_path, 1158, 928)
+    exp, phases = _a44_phases(path)
+    refusal = phases.streamed_host_refusal()
+
+    gate = go_cli.memory_gate({"config": str(path), "source": "gfs",
+                               "cadence": 3})
+    assert gate["refuse"] is True, gate["verdict"]
+    assert refusal in gate["verdict"]
+
+    # The wizard's sizing seam: a host failure, which shrinks the layout.
+    with pytest.raises(dw.DomainFitError) as caught:
+        dw._sizing_phases(exp, free_bytes=_A44_FREE_BYTES, source="gfs",
+                          forcing_interval_seconds=10800.0)
+    assert caught.value.resource == "host"
+    assert refusal in str(caught.value)
+
+    capsys.readouterr()
+    rc = cli_main(["check", str(path), "--free-gib",
+                   f"{_A44_FREE_BYTES / GIB:.17g}", "--vram-gib", "32"])
+    err = capsys.readouterr().err
+    assert rc == preflight._EXIT_HOST_MEMORY_OVER_BUDGET, err
+    assert refusal in err
+
+
+def test_the_frame_go_admitted_passes_every_door(tmp_path, a44_worker):
+    """Control: the 1132x906x55 frame A44 ran fits the same budget."""
+    from gpuwm import domain_wizard as dw
+    from gpuwm.cli import main as cli_main
+
+    path = _a44_config(tmp_path, 1132, 906)
+    exp, phases = _a44_phases(path)
+    env = phases.streamed
+    assert env is not None and env.host_bytes <= env.host_budget_bytes
+    assert phases.streamed_host_refusal() is None
+
+    gate = go_cli.memory_gate({"config": str(path), "source": "gfs",
+                               "cadence": 3})
+    assert gate["refuse"] is False, gate["verdict"]
+    dw._sizing_phases(exp, free_bytes=_A44_FREE_BYTES, source="gfs",
+                      forcing_interval_seconds=10800.0)
+    assert cli_main(["check", str(path), "--free-gib",
+                     f"{_A44_FREE_BYTES / GIB:.17g}", "--vram-gib", "32"]) == 0
+
+
+def test_the_wizard_emits_only_what_go_admits_on_that_worker(
+        tmp_path, a44_worker, monkeypatch, capsys):
+    """``gpuwm domain --tiles auto`` end to end, then ``gpuwm go``'s gate.
+
+    On the head this emitted a layout whose store just fit and whose whole
+    claim did not, printed "gpuwm check: PASS", and go refused it.
+    """
+    from gpuwm.cli import main as cli_main
+
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "fit.toml"
+    rc = cli_main(["domain", "--point=35.45,-97.95",
+                   "--point-extent-km", "4000", "--root-dx", "3",
+                   "--tiles", "auto", "--nz", "55", "--hours", "1",
+                   "--cycle", "2024-05-20T12", "--source", "gfs",
+                   "--card", "32gb", "--name", "fit", "--out", str(out)])
+    printed = capsys.readouterr().out
+    assert rc == 0, printed
+    assert "gpuwm check: PASS" in printed
+
+    gate = go_cli.memory_gate({"config": str(out), "source": "gfs",
+                               "cadence": 3})
+    env = gate["phases"].streamed
+    assert env is not None, "the fitted domain no longer streams"
+    assert env.host_bytes <= env.host_budget_bytes, gate["verdict"]
+    assert gate["refuse"] is False, gate["verdict"]

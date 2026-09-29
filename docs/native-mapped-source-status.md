@@ -137,8 +137,13 @@ RTX 5090 (7 history frames, `prepared_content_sha256` identical across
 two independent preparations); `gpuwm render --engine rust` produced the
 weather panels.  The provenance receipt names both contributing sources
 with mapping/data hashes and the exact carried valid time of the frozen
-analysis surface.  Evidence:
-`Downloads/evidence-gallery/aigfs-hybrid-sim-20260817/`.
+analysis surface.  Surface pressure is not part of that frozen surface:
+AIGFS publishes mean-sea-level pressure, and the profile derives surface
+pressure from it at every lead through the `surface_pressure_from_sea_level`
+derivation (WRF real's sfcprs3 relation over the AIGFS isobaric heights,
+at the analysis terrain height), so the column mass follows the forecast.
+Evidence:
+the aigfs-hybrid-sim evidence gallery (2026-08-17).
 
 The second packaged profile built on this capability is the AI-ensemble
 member hybrid (`aigefs-member-hybrid-grib2-v1`, adapter `aigefs`): a
@@ -156,6 +161,44 @@ control and two perturbed members each prepared through
 drawn from the three PASS runs
 (`tests/test_aigefs_member_hybrid_real_bytes.py`,
 `tests/test_cross_source_sim_stage.py`).
+
+The operational NOMADS door serves the same members with no surface
+pressure in the sfc product (mean-sea-level pressure only; the AWS
+mirror's copy appends the record) and stamps typeOfEnsembleForecast 6
+where the mirror's copy says 3.  The member grammar declares both
+stamps, and the profile derives surface pressure at every lead from the
+member's own mean-sea-level pressure and isobaric heights at the analysis
+donor's terrain height (`surface_pressure_from_sea_level`), so files from
+either door prepare the same way and the column mass follows each lead
+and each member.  The mirror's appended record is not read: it sits on
+the AI model's own orography, and MEASURED on the 2026-09-26 00Z cycle it
+is 5.0 hPa RMS off the analysis surface pressure over CONUS (7 hPa RMS
+over terrain above 1000 m, up to 59 hPa), where the reduction is 0.3 hPa
+off.  Across leads the reduction follows the member's own surface
+pressure change to 0.3 hPa RMS at f048 and 0.5 hPa at f120 over CONUS,
+and the difference between two members to 0.4 and 0.6 hPa
+(`tests/test_aigefs_nomads_door.py`,
+`tests/test_surface_pressure_from_sea_level.py`).
+
+The AWS mirror serves part of its archive re-encoded by another GRIB
+writer, and both forms prepare.  MEASURED on the mem000 pres f000 of every
+cycle from 2025-12-25 to 2026-05-05: 2026-01-11 00Z to 2026-04-08 06Z
+carry PDT 0 with no ensemble octets, centre 74 (7 on the mean-sea-level
+pressure and precipitation records), subcentre 0, master table 4, local
+table 0 and generating process 255; 2026-04-08 12Z to 2026-04-24 12Z keep
+PDT 1 and 11 with perturbationNumber and the encoded size intact but carry
+centre 7, master table 4, local table 0 and generating process 255.  The
+bytes are each member's own atmosphere: on 2026-01-20 00Z the mem000 f000
+500 hPa height is 2.0 m RMS from the same-cycle GDAS analysis and mem001
+3.8 m, the two members differ by 3.4 m, and f006 moves 25 m from f000.
+Every selector of the member mapping ranks the same record under PDT 0
+with master table 4 and local table 0 after its PDT 1 form, which no
+deterministic product carries (GFS, GDAS and AIGFS stamp 2 and 1), and
+the member grammar declares both rewrites per class, selected only by the
+writer octets every message carries; where the ensemble octets are gone
+the member path component is the identity the verifier checks, in the
+Python preparation and the Rust fetch and ingest alike
+(`tests/test_aigefs_mirror_rewrites.py`).
 
 ## Current-HEAD real GFS GRIB2 d01-d04 gate (v2)
 

@@ -6,7 +6,7 @@ regression with no error.  Needs cupy; holds no mutex of its own.
 
     python pcie_bandwidth_probe.py
 
-Measured for task #260; see Downloads/GPUWM-HEX-SINGLE-CARD-STREAMING.md.
+Measured for task #260; see the single-card streaming record.
 """
 
 import json, time, sys

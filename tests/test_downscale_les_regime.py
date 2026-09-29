@@ -296,8 +296,8 @@ def test_a_blown_up_child_reaches_the_reader_as_a_sentence(
         survey={"surveyed": ["W"], "fields": [{
             "field": "W", "carrier": "w", "shape": [5, 24, 24],
             "size": 2880, "count": 1,
-            "first_cell": {"k": 2, "j": 11, "i": 9},
-            "bounding_box": {"k": [2, 2], "j": [11, 11], "i": [9, 9]}}]})
+            "bounding_box": {"k": [2, 2], "j": [11, 11], "i": [9, 9]},
+            "edges": [], "cell": {"k": 2, "j": 11, "i": 9}}]})
 
     def blow_up(_namespace):
         raise offline_child_run.OfflineChildNonFinite(capsule)
@@ -313,5 +313,5 @@ def test_a_blown_up_child_reaches_the_reader_as_a_sentence(
     assert cli_main(args) == 2
     captured = capsys.readouterr()
     assert "gpuwm downscale: The child blew up:" in captured.err
-    assert "W went non-finite at cell (k=2, j=11, i=9)" in captured.err
+    assert "found W non-finite at one cell, (k=2, j=11, i=9)" in captured.err
     assert "Traceback" not in captured.err

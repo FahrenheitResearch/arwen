@@ -1068,6 +1068,43 @@ def test_parent_restart_latest_looks_above_a_wrfout_folder(tmp_path, capsys):
     assert "restart_interval_s" in message
 
 
+@needs_netcdf_bridge
+def test_a_relative_parent_is_recorded_by_its_absolute_folder(
+        tmp_path, monkeypatch, capsys):
+    """``gpuwm downscale chain/run/wrfout`` run inside the parent's run
+    folder recorded ``chain/run/wrfout`` as the parent's folder.  The run
+    browser finds a downscale's parent run by the folder names in that
+    path, so the child's map lost its parent grid: the plan keeps the
+    absolute folder, and the absolute checkpoint beside it."""
+    from gpuwm.gui.runs import EVENTS, _parent_run
+
+    runs = tmp_path / "runs"
+    run = runs / "run-parent3km"
+    frames = run / "chain" / "run" / "wrfout"
+    frames.mkdir(parents=True)
+    (run / EVENTS).write_text("", encoding="utf-8")
+    _named_checkpoint(
+        frames.parent,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    args = _controller_point_args(
+        frames, restart="latest", extra=["--child-size", "12,10"])
+    assert args[1] == str(frames)
+    args[1] = str(Path("chain", "run", "wrfout"))
+    monkeypatch.chdir(run)
+    assert cli_main(args) == 0
+    capsys.readouterr()
+    parent = _plan_document(frames)["parent"]
+    recorded = parent["run_dir"]
+    assert Path(recorded).is_absolute()
+    assert Path(recorded).resolve() == frames.resolve()
+    assert Path(parent["restart"]).is_absolute()
+    assert Path(parent["restart"]).resolve() == (
+        frames.parent / "gpuwmrst_d01_1974-04-03_12_00_00.npz").resolve()
+    found = _parent_run(runs, recorded)
+    assert found is not None and found.resolve() == run.resolve()
+
+
 def test_parent_restart_latest_names_the_setting_that_makes_one(
         tmp_path, capsys):
     """A parent with no checkpoint is refused with its remedy, at the door.
@@ -1295,8 +1332,11 @@ def test_a_downscaled_run_is_accepted_as_a_parent(tmp_path, capsys):
     assert plan["child_grid_id"] == 3
     grandchild = read_config(plan["child_config"])
     assert grandchild.grid_id == 3
+    # a 15-minute child reads the first two of the three hourly frames
     assert [Path(frame).name[:10] for frame in plan["parent_frames"]] == [
-        "wrfout_d02"] * 3
+        "wrfout_d02"] * 2
+    assert plan["parent"]["frames"] == 3
+    assert plan["parent"]["frames_used"] == 2
 
 
 @needs_netcdf_bridge
@@ -1880,7 +1920,8 @@ def test_a_product_the_catalog_does_not_carry_is_refused_at_plan_review(
     for spec in ("composite_reflectivity", "severe", "refl", "all", "none",
                  "var:T2", "ALL", "SEVERE", "composite_reflectivity, mslp_10m_winds",
                  "xsec:wa=1,2,5,10@5", "composite_reflectivity,xsec:QCLOUD/wa=1,2,3",
-                 "xsec:wa=1,2,5,mslp_10m_winds"):
+                 "xsec:wa=1,2,5,mslp_10m_winds", "xsec:QCLOUD=0.01,0.1/wa",
+                 "xsec:QCLOUD=0.01,0.1/wa,composite_reflectivity"):
         assert go_cli.unknown_render_products(spec) == [], spec
     # A level list is the renderer's own comma grammar; a slug after it is
     # still a slug, and an unknown one is still refused.
@@ -1988,7 +2029,7 @@ def _fake_render_runner(monkeypatch, *, pictures=1):
 
     import gpuwm.first_products as first_products
 
-    def runner(command):
+    def runner(command, **_options):
         out = Path(command[command.index("--out") + 1])
         (out / "d02" / "composite_reflectivity" / "1974-04-03").mkdir(
             parents=True, exist_ok=True)
@@ -2139,7 +2180,7 @@ def test_a_child_that_did_not_pass_keeps_its_pictures(
     assert kept[0]["status"] == DID_NOT_FINISH_STATUS
     # The message is what a run view puts on screen, so it agrees with
     # itself on number the way the banner and the capsule do.
-    assert ("the 1 picture the early render had already drawn is kept"
+    assert ("the 1 picture drawn while it ran is kept"
             in kept[0]["message"])
     assert "(s)" not in kept[0]["message"]
     assert events[-1]["event"] == "completed"
@@ -2188,7 +2229,7 @@ def test_a_child_that_stopped_mid_run_keeps_its_pictures(
     kept = [event for event in events
             if event.get("code") == "early_render_kept"]
     assert len(kept) == 1 and kept[0]["pictures"] == 1
-    assert ("the 1 picture the early render had already drawn is kept"
+    assert ("the 1 picture drawn while it ran is kept"
             in kept[0]["message"])
     assert kept[0]["why"] == "offline child became non-finite at step 900"
     assert events[-1]["event"] == "failed"
@@ -2205,8 +2246,8 @@ def _nonfinite_survey():
         "fields": [{
             "field": "W", "carrier": "w", "shape": [8, 24, 24],
             "size": 4608, "count": 1,
-            "first_cell": {"k": 3, "j": 4, "i": 5},
             "bounding_box": {"k": [3, 3], "j": [4, 4], "i": [5, 5]},
+            "edges": [], "cell": {"k": 3, "j": 4, "i": 5},
         }],
     }
 
@@ -2449,3 +2490,201 @@ def test_the_child_progress_object_is_the_observer_surface_it_is_handed(
     assert len(coarse) == 1
     assert coarse[0]["source"] == "stage_progress_file"
     assert events[-1]["event"] == "failed" and events[-1]["stage"] == "forecast"
+
+
+def test_a_point_east_of_greenwich_finds_the_same_parent_cell():
+    """``--point 39.5,276`` is ``39.5,-84``: the same cell, either spelling."""
+    lat = np.linspace(38.0, 41.0, 18)[:, None] * np.ones((1, 20))
+    lon = np.ones((18, 1)) * np.linspace(-86.0, -82.0, 20)[None, :]
+    west = _nearest_parent_index(lat, lon, 39.5, -84.0)
+    assert _nearest_parent_index(lat, lon, *_parse_point("39.5,276")) == west
+    assert _nearest_parent_index(lat, lon, 39.5, 276.0) == west
+    # a parent written 0..360 is measured the same way
+    assert _nearest_parent_index(lat, lon % 360.0, 39.5, -84.0) == west
+    assert _parse_point("39.5,276") == (39.5, -84.0)
+
+
+def test_a_parent_across_the_date_line_is_measured_across_it():
+    lat = np.full((3, 5), -17.0)
+    lon = np.array([[178.0, 179.0, 180.0, -179.0, -178.0]] * 3)
+    assert _nearest_parent_index(lat, lon, -17.0, -179.1)[1] == 3
+    assert _nearest_parent_index(lat, lon, -17.0, 181.0)[1] == 3
+
+
+def test_the_point_route_derives_the_same_child_from_a_positive_longitude(
+        tmp_path, capsys):
+    east = tmp_path / "east"
+    west = tmp_path / "west"
+    plans = []
+    for folder, point in ((west, "39.5,-84.0"), (east, "39.5,276")):
+        folder.mkdir()
+        args = _point_args(folder)
+        args[args.index("--point") + 1] = point
+        args += ["--dry-run", "--render-products", "none"]
+        assert cli_main(args) == 0, capsys.readouterr().err
+        capsys.readouterr()
+        plans.append(json.loads(downscale_plan_path(folder / "child-run", dry_run=True).read_text()))
+    assert plans[0]["placement"] == plans[1]["placement"]
+
+
+@pytest.mark.parametrize("ratio", ["0", "-1", "two"])
+def test_a_ratio_below_one_is_refused_where_it_is_read(tmp_path, capsys, ratio):
+    args = _point_args(tmp_path)
+    args[args.index("--ratio") + 1] = ratio
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main(args + ["--dry-run", "--render-products", "none"])
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "--ratio" in err
+    assert "Traceback" not in err
+    assert not (tmp_path / "child-run").exists()
+
+
+@pytest.mark.parametrize("ratio", [0, -1, 2.5, "two"])
+def test_a_ratio_below_one_is_refused_by_the_command_itself(tmp_path, ratio):
+    """A caller that builds its own namespace skips the parser's check.
+
+    Every later step divides by the ratio, so the command refuses it in
+    the parser's words before it reads a parent or reserves a folder.
+    """
+
+    from gpuwm.downscale import downscale_main
+
+    args = Namespace(ratio=ratio, out=str(tmp_path / "child-run"))
+    with pytest.raises(OfflineChildContractError, match="--ratio"):
+        downscale_main(args)
+    assert not (tmp_path / "child-run").exists()
+
+
+def test_a_truncated_parent_history_is_a_sentence_not_a_traceback(
+        tmp_path, capsys):
+    """Incomplete wrfout bytes name the file and the way back."""
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    (parent / "wrfout_d01_2026-09-26_00_00_00").write_bytes(
+        b"\x89HDF\r\n\x1a\n" + b"\x00" * 40)
+    (parent / "wrfout_d01_2026-09-26_01_00_00").write_bytes(b"CDF\x02" + b"\xff" * 7)
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    rc = cli_main([
+        "downscale", str(parent), "--parent-namelist", str(namelist),
+        "--child-config", str(tmp_path / "child.toml"),
+        "--ratio", "1", "--i-parent-start", "2", "--j-parent-start", "2",
+        "--out", str(tmp_path / "child-run"), "--dry-run",
+        "--render-products", "none"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "wrfout_d01_2026-09-26_00_00_00" in err
+    assert "restore it" in err
+    assert "Traceback" not in err
+
+
+def _as_classic_history(frame: Path) -> None:
+    """``frame`` rewritten as CDF-2 with an unlimited Time.
+
+    The container gpuwm's own wrfout writer and stock WRF both write, and
+    the one a cut-off copy fails silently in: its header survives and
+    netCDF4 reads the missing data as zeros.
+    """
+
+    source = frame.with_name(frame.name + ".nc4")
+    frame.rename(source)
+    with netCDF4.Dataset(source) as old, netCDF4.Dataset(
+            frame, "w", format="NETCDF3_64BIT_OFFSET") as new:
+        for name, dimension in old.dimensions.items():
+            new.createDimension(name, None if name == "Time" else len(dimension))
+        new.setncatts({name: old.getncattr(name) for name in old.ncattrs()})
+        for name, variable in old.variables.items():
+            variable.set_auto_maskandscale(False)
+            copy = new.createVariable(name, variable.dtype, variable.dimensions)
+            copy.setncatts({key: variable.getncattr(key)
+                            for key in variable.ncattrs()})
+            copy.set_auto_maskandscale(False)
+            copy[:] = variable[:]
+    source.unlink()
+    with open(frame, "rb") as handle:
+        assert handle.read(4) == b"CDF\x02"
+
+
+@needs_netcdf_bridge
+@pytest.mark.parametrize("cut", ["every frame", "the last frame"])
+def test_a_parent_cut_off_partway_through_its_data_is_a_sentence(
+        tmp_path, capsys, cut):
+    """A CDF-2 parent cut short keeps its header and still opens.
+
+    The first frame cut used to end in the NetCDF decoder's traceback, and
+    a cut later frame in "geometry changes between frames", because
+    netCDF4 read its missing data as zeros.  Either is a sentence saying
+    the file is incomplete and how to get it back, on the ``--point`` route.
+    """
+
+    args = _point_args(tmp_path) + ["--dry-run", "--render-products", "none"]
+    frames = sorted(tmp_path.glob("wrfout_d01_*"))
+    assert len(frames) == 3
+    for frame in frames:
+        _as_classic_history(frame)
+    # The whole CDF-2 archive plans: the cut is the only thing wrong below.
+    whole = list(args)
+    whole[whole.index("--out") + 1] = str(tmp_path / "whole-run")
+    assert cli_main(whole) == 0, capsys.readouterr().err
+    capsys.readouterr()
+
+    damaged = frames if cut == "every frame" else frames[-1:]
+    for frame in damaged:
+        data = frame.read_bytes()
+        frame.write_bytes(data[: len(data) * 2 // 3])
+    rc = cli_main(args)
+    err = capsys.readouterr().err
+    assert rc == 2, err
+    assert "Traceback" not in err
+    assert "changes between frames" not in err
+    named = damaged[0]
+    assert f"{named} cannot be read as a parent history file" in err
+    assert "the file ends before its data does" in err or "beyond file" in err
+    assert "restore it from the parent run" in err
+    assert not (tmp_path / "child-run").exists()
+
+
+@needs_netcdf_bridge
+def test_a_surface_value_the_writer_never_set_is_refused_naming_the_cell(
+        tmp_path):
+    """Both surface readers refuse the default fill, not only the 3-D reader.
+
+    A value written masked with no ``_FillValue`` is stored as 9.97e36; the
+    reader hands it on as missing, and each reader of surface fields says
+    which file, variable and cell, and what to do about the file.
+    """
+    from gpuwm.offline_child import (
+        OfflineChildPlacement,
+        derive_child_surface_from_parent,
+    )
+
+    surface = tmp_path / "wrfinput_child"
+    _surface_file(surface)
+    with netCDF4.Dataset(surface, "a") as dataset:
+        dataset.variables["TSK"][0, 3, 5] = np.ma.masked
+        assert "_FillValue" not in dataset.variables["TSK"].ncattrs()
+    with pytest.raises(OfflineChildContractError) as caught:
+        read_child_surface_state(
+            surface, child_ny=10, child_nx=12, num_soil_layers=4)
+    message = str(caught.value)
+    assert message.startswith(f"{surface}/TSK has 1 missing or non-finite value")
+    assert "south_north=3, west_east=5" in message
+    assert "make it again on the child grid" in message
+
+    frame = tmp_path / "wrfout_d01_1974-04-03_12_00_00"
+    _history(frame, datetime(1974, 4, 3, 12), ny=18, nx=20)
+    _add_parent_surface(frame, ny=18, nx=20)
+    with netCDF4.Dataset(frame, "a") as dataset:
+        dataset.variables["TMN"][0, 7, 8] = np.ma.masked
+        assert "_FillValue" not in dataset.variables["TMN"].ncattrs()
+    placement = OfflineChildPlacement(
+        parent_nx=20, parent_ny=18, child_nx=12, child_ny=9,
+        parent_grid_ratio=3, i_parent_start=6, j_parent_start=6)
+    with pytest.raises(OfflineChildContractError) as caught:
+        derive_child_surface_from_parent(
+            frame, placement=placement, num_soil_layers=4)
+    message = str(caught.value)
+    assert message.startswith(f"{frame}/TMN has 1 missing or non-finite value")
+    assert "south_north=7, west_east=8" in message
+    assert "restored or regenerated" in message

@@ -135,16 +135,23 @@ fn draw_line_aa_kernel(
     y1: f64,
     color: Rgba,
     width: u32,
+    clip: Option<(i32, i32, i32, i32)>,
 ) {
     if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
         return;
     }
 
     let radius = width.max(1) as f64 * 0.5 + 1.0;
-    let min_x = (x0.min(x1) - radius).floor() as i32;
-    let max_x = (x0.max(x1) + radius).ceil() as i32;
-    let min_y = (y0.min(y1) - radius).floor() as i32;
-    let max_y = (y0.max(y1) + radius).ceil() as i32;
+    let mut min_x = (x0.min(x1) - radius).floor() as i32;
+    let mut max_x = (x0.max(x1) + radius).ceil() as i32;
+    let mut min_y = (y0.min(y1) - radius).floor() as i32;
+    let mut max_y = (y0.max(y1) + radius).ceil() as i32;
+    if let Some((cx0, cy0, cx1, cy1)) = clip {
+        min_x = min_x.max(cx0);
+        max_x = max_x.min(cx1);
+        min_y = min_y.max(cy0);
+        max_y = max_y.min(cy1);
+    }
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
@@ -165,7 +172,7 @@ pub fn draw_line_aa_width(
     color: Rgba,
     width: u32,
 ) {
-    draw_line_aa_kernel(img, x0, y0, x1, y1, color, width.max(1));
+    draw_line_aa_kernel(img, x0, y0, x1, y1, color, width.max(1), None);
 }
 
 pub fn draw_plus_marker_aa(
@@ -207,6 +214,28 @@ pub fn draw_polyline_aa(img: &mut RgbaImage, points: &[(f64, f64)], color: Rgba,
         let (x0, y0) = segment[0];
         let (x1, y1) = segment[1];
         draw_line_aa_width(img, x0, y0, x1, y1, color, width);
+    }
+}
+
+/// `draw_polyline_aa` that writes no pixel outside `clip`, an inclusive pixel
+/// rect `(x0, y0, x1, y1)`. A caller that has already cut its geometry at the
+/// rect still needs this: a stroke's width and antialiasing reach up to
+/// `width / 2 + 1` px past its centre line, so a line ending exactly on the
+/// rect's edge would otherwise put ink one or two pixels beyond it.
+pub fn draw_polyline_aa_clipped(
+    img: &mut RgbaImage,
+    points: &[(f64, f64)],
+    color: Rgba,
+    width: u32,
+    clip: (i32, i32, i32, i32),
+) {
+    if points.len() < 2 || clip.2 < clip.0 || clip.3 < clip.1 {
+        return;
+    }
+    for segment in points.windows(2) {
+        let (x0, y0) = segment[0];
+        let (x1, y1) = segment[1];
+        draw_line_aa_kernel(img, x0, y0, x1, y1, color, width.max(1), Some(clip));
     }
 }
 
@@ -303,6 +332,15 @@ pub fn fill_polygon(
         return;
     }
 
+    // Activate each edge only on the rows it can cross. Scanning every
+    // coast/polygon edge on every row made live frame drawing fall behind.
+    // Keep original edge order in the active set, including when a finite
+    // endpoint calculation overflows: the intersection sort below is stable.
+    let mut starts: Vec<usize> = (0..edges.len()).collect();
+    starts.sort_by(|&a, &b| edges[a].y_min.total_cmp(&edges[b].y_min));
+    let mut next = 0;
+    let mut active: Vec<usize> = Vec::new();
+
     // Scanline loop. At pixel center (y + 0.5), collect edge x-intersections
     // for edges that straddle the scanline (using half-open [y_min, y_max)
     // avoids double-counting shared endpoints).
@@ -312,10 +350,24 @@ pub fn fill_polygon(
     for y in y0..=y1 {
         let yf = y as f64 + 0.5;
         xs.clear();
-        for edge in &edges {
-            if yf >= edge.y_min && yf < edge.y_max {
-                xs.push(edge.x + (yf - edge.y_min) * edge.dx);
+        active.retain(|&index| yf < edges[index].y_max);
+        let mut added = false;
+        while next < starts.len() && edges[starts[next]].y_min <= yf {
+            let index = starts[next];
+            if yf < edges[index].y_max {
+                active.push(index);
+                added = true;
             }
+            next += 1;
+        }
+        if added {
+            active.sort_unstable();
+        }
+        for &index in &active {
+            let edge = &edges[index];
+            #[cfg(test)]
+            polygon_scan_tests::record_edge_visit();
+            xs.push(edge.x + (yf - edge.y_min) * edge.dx);
         }
         if xs.len() < 2 {
             continue;
@@ -586,3 +638,6 @@ fn draw_barb_flag(
         width + 1,
     );
 }
+
+#[cfg(test)]
+mod polygon_scan_tests;

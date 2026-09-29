@@ -95,12 +95,13 @@ FIRST_PLOT_DEFINITION = (
 )
 
 #: What ``gpuwm render`` draws when nobody passes ``--products``
-#: (``gpuwm/render.py``'s own default).  The early render is asked for the
+#: (``gpuwm/render.py``'s own default), spelled once in
+#: :mod:`gpuwm.render_layout`.  The early render is asked for the
 #: explicit spelling because it is given a command line; the finalize stage
 #: leaves the flag off.  Comparing the two literally made every `go` run's
 #: receipt look like it had been drawn for a different product set than the
 #: stage that could have skipped it, so the skip never happened there.
-DEFAULT_RENDER_PRODUCTS = "all"
+from gpuwm.render_layout import DEFAULT_RENDER_PRODUCTS  # noqa: E402
 
 #: Slack between a published picture's mtime and the instant stamped for
 #: it.  The publish is ``os.replace``, which carries the mtime the RENDERER
@@ -145,7 +146,10 @@ def arm(render_plan: Mapping[str, Any], *,
         report: Callable[[dict], None],
         warn: Callable[..., None],
         runner: Callable[[Sequence[str]],
-                         subprocess.CompletedProcess] | None = None
+                         subprocess.CompletedProcess] | None = None,
+        slot: threading.Lock | None = None,
+        own_group: bool = False,
+        report_live: Callable[[dict], None] | None = None
         ) -> FirstProducts | None:
     """The early render for one run, or ``None`` when it asked for none.
 
@@ -162,13 +166,32 @@ def arm(render_plan: Mapping[str, Any], *,
     :func:`gpuwm.go_cli._render_stage`, so the early render and the late
     one cannot differ in output directory or product spec.  ``report``
     and ``warn`` are the caller's own event stream or, for a process
-    that has none, its stdout and stderr.
+    that has none, its stdout and stderr.  ``slot`` is the lock this
+    render shares with the every-frame render
+    (:class:`gpuwm.live_products.LiveProducts`) of the same run, so the
+    two never draw at once.  ``own_group`` starts the render in a process
+    group of its own (:func:`_run_render`), for a host that ends it
+    itself when the run is stopped (:meth:`FirstProducts.halt`).
+
+    ``report_live`` asks for every frame, not the first alone: what comes
+    back is a :class:`gpuwm.live_products.LandingRenders`, which IS this
+    early render with the every-frame render behind it, reporting each
+    later frame there.  A door with no every-frame render of its own (a
+    runner with no host, an ensemble member) takes this one; it holds its
+    own lock, so ``slot`` is for the early render alone, and
+    ``own_group`` reaches both of its renders.
     """
 
     if not early_render_requested(render_plan.get("render_products")):
         return None
+    if report_live is not None:
+        from gpuwm.live_products import LandingRenders
+
+        return LandingRenders(render_plan, report=report,
+                              report_live=report_live, warn=warn,
+                              runner=runner, own_group=own_group)
     return FirstProducts(render_plan, report=report, warn=warn,
-                         runner=runner)
+                         runner=runner, slot=slot, own_group=own_group)
 
 
 class FrameHook:
@@ -225,6 +248,18 @@ def effective_products(render_products: Any) -> str:
     return text or DEFAULT_RENDER_PRODUCTS
 
 
+def section_text(render_section: Any) -> str | None:
+    """A section line as two records compare it; ``None`` for no line.
+
+    An empty spelling is no line, the same answer ``gpuwm render`` gives
+    it, so a receipt written before sections were recorded and a plan
+    that names none compare equal.
+    """
+
+    text = "" if render_section is None else str(render_section).strip()
+    return text or None
+
+
 def render_without_output_refusal(render_products: Any,
                                   io_mode: Any) -> str | None:
     """Explain an explicit request for pictures without history frames."""
@@ -250,20 +285,306 @@ def _sha256_file(path: Path) -> str:
     return sha256_file(Path(fs_path(path)))
 
 
-def _run_render(command: Sequence[str]) -> subprocess.CompletedProcess:
+def finished_pictures(scratch: Path, written: Sequence[Path],
+                      returncode: int | None) -> list[Path]:
+    """The pictures a render may publish from its scratch.
+
+    All of them when the renderer exited 0.  When it failed partway,
+    only the ones its own invocation receipt names
+    (:func:`receipted_pictures`): those it reported drawn and ``gpuwm
+    render`` filed into the layout.  A renderer that dies partway,
+    killed for memory or crashed on one product, can leave the picture
+    it was writing under its flat staging name, whole or cut short, and
+    nothing reported it.  Measured with the real renderer ended after
+    its first picture: the early render published that unreported
+    staging file as the frame's only picture.  Such a file goes with the
+    scratch; the frame is recorded incomplete and finalize draws it
+    again.
+    """
+
+    if returncode == 0:
+        return list(written)
+    names = receipted_pictures(scratch)
+    return [path for path in written
+            if Path(path).relative_to(scratch).as_posix() in names]
+
+
+def render_outcome(completed: subprocess.CompletedProcess, *, render_dir: Path,
+                   published: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """What one frame's render finished as, recorded beside its pictures.
+
+    The renderer draws a frame's products one after another and can fail
+    partway: temperature drawn, wind refused, exit 1.  The pictures it did
+    draw are good and are kept, but the frame is not done, and a record
+    that said so let the end-of-run render skip it and lose wind for good.
+    ``complete`` is the renderer's own word (exit 0); ``products`` names
+    what it drew, and ``diagnostics`` is its last words when it failed.
+    """
+
+    from gpuwm.render_layout import parse_engine_output
+
+    products: list[str] = []
+    for entry in published:
+        parts = Path(str(entry.get("name") or "")).parts
+        if len(parts) >= 4:
+            product = parts[-3]
+        else:
+            parsed = parse_engine_output(parts[-1]) if parts else None
+            product = parsed[1] if parsed is not None else "unclassified"
+        if product not in products:
+            products.append(product)
+    code = int(completed.returncode)
+    outcome: dict[str, Any] = {"exit_code": code, "complete": code == 0,
+                               "products": products}
+    if code != 0:
+        outcome["diagnostics"] = ((completed.stderr or "")[-2000:]
+                                  or (completed.stdout or "")[-2000:])
+    return outcome
+
+
+#: The render subprocess each worker thread is waiting on, keyed by the
+#: thread, so a stopped run can end the one it no longer wants
+#: (:func:`end_render`).  Only renders spawned by :func:`_run_render`
+#: are here; one started in a process group of its own carries
+#: :data:`_OWN_GROUP_ATTRIBUTE`.
+_RUNNING: dict[int, subprocess.Popen] = {}
+_RUNNING_LOCK = threading.Lock()
+
+#: Set on a render process started in a process group of its own.
+_OWN_GROUP_ATTRIBUTE = "gpuwm_own_group"
+
+#: How long :func:`end_render` looks for the render of a thread that is
+#: alive but has not started its subprocess yet: the halt can land in the
+#: few instructions between a worker's last check and its spawn.
+_SPAWN_LOOK_SECONDS = 0.5
+
+#: How long :func:`end_render` lets a render answer its interrupt before
+#: killing it.  ``gpuwm render`` answers SIGINT by ending the renderer it
+#: runs and exiting 130 in well under a second; the desktop's own stop
+#: escalates to a kill after 5 s, and a stopped run still has its banner
+#: and report to write inside that.
+END_RENDER_GRACE_SECONDS = 2.0
+
+#: How long a stop waits for a render thread once its render has been
+#: ended (:meth:`FirstProducts.halt`).  The desktop and the terminal kill
+#: a run 5 s after asking it to stop, and the stopped run's banner and
+#: report are written after this.
+HALT_WAIT_SECONDS = 3.0
+
+#: ``gpuwm render``'s exit on an interrupt (the shell's 128 + SIGINT).
+_INTERRUPTED_EXIT = 130
+
+
+def render_was_stopped(returncode: int | None) -> bool:
+    """Whether a render ended because it was told to stop.
+
+    Exit 130 is ``gpuwm render`` answering SIGINT; a negative code is a
+    render killed by a signal.  Either way the scratch holds whatever the
+    renderer had staged at that instant (flat staging names beside
+    half-organised folders), which is not a drawn frame.
+    """
+
+    return returncode is not None and (returncode < 0
+                                       or returncode == _INTERRUPTED_EXIT)
+
+
+def _own_group_options() -> dict[str, Any]:
+    """``Popen`` options that start a process in a process group of its own."""
+
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess,
+                                         "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _run_render(command: Sequence[str], *,
+                own_group: bool = False,
+                env_overrides: Mapping[str, str] | None = None
+                ) -> subprocess.CompletedProcess:
     """Spawn the render exactly as the finalize stage spawns it.
 
-    Same cwd and same environment, from the same two helpers, because a
-    render that differs from finalize's in any way that could reach the
-    output is a render whose bytes cannot be assumed to match it.
+    Same cwd and stage environment, with optional resource limits for
+    concurrent live frames. The request and picture settings stay the same
+    as finalize's so its pictures can be compared byte for byte.
+
+    What :func:`subprocess.run` does, with the process recorded against
+    the calling thread while it runs, so :func:`end_render` can end it.
+
+    ``own_group`` starts the render in a process group of its own, for a
+    host that stops it itself.  THE BREAKAGE: the
+    desktop and terminal Stop send SIGINT to the run's whole process
+    group, so a render in that group died mid-organisation, with its
+    pictures still under the renderer's flat staging names, and the run
+    then published and counted those files as pictures.  Out of the
+    group, the stop reaches the run alone; the run decides that nothing
+    more is published and then ends the render (:func:`end_render`).
     """
 
     from gpuwm.go_cli import _stage_cwd, _stage_env
 
-    return subprocess.run(
+    environment = _stage_env()
+    if env_overrides:
+        environment.update(env_overrides)
+    process = subprocess.Popen(
         list(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, errors="replace", cwd=str(_stage_cwd()),
-        env=_stage_env())
+        env=environment, **(_own_group_options() if own_group else {}))
+    setattr(process, _OWN_GROUP_ATTRIBUTE, bool(own_group))
+    ident = threading.get_ident()
+    with _RUNNING_LOCK:
+        _RUNNING[ident] = process
+    try:
+        stdout, stderr = process.communicate()
+    except BaseException:
+        _kill(process, own_group=own_group)
+        process.wait()
+        raise
+    finally:
+        with _RUNNING_LOCK:
+            _RUNNING.pop(ident, None)
+    # Relay warnings from this second capture into the forecast log, even
+    # on success: finalize may skip frames already published early/live.
+    from gpuwm.rustwx import relay_native_warnings
+
+    relay_native_warnings(stderr)
+    return subprocess.CompletedProcess(process.args, process.returncode,
+                                       stdout, stderr)
+
+
+def _kill(process: subprocess.Popen, *, own_group: bool) -> None:
+    """Kill a render now, with every process it started when it has a group.
+
+    A render in a group of its own takes the renderer binary with it:
+    killing only ``gpuwm render`` would leave ``rw_wrfbatch`` drawing
+    into a folder nobody reads.  In the caller's group only the render
+    itself is signalled, because that group is the caller's too.
+    """
+
+    try:
+        if own_group and os.name == "posix":
+            import signal
+
+            os.killpg(process.pid, signal.SIGKILL)
+        elif own_group and os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            process.kill()
+    except OSError:
+        pass
+
+
+class WorkerEnd:
+    """Whether a render worker thread has returned, told by the worker.
+
+    NOT ``Thread.is_alive()``.  On CPython 3.11 and 3.12 an exception a
+    signal handler raises while ``Thread.join()`` waits -- the
+    ``KeyboardInterrupt`` of a Ctrl-C, the ``ChildStopped`` a SIGTERM
+    becomes on ``gpuwm downscale`` -- marks the joined thread stopped
+    while it is still running, and ``is_alive()`` answers ``False`` from
+    then on.  A stop lands in exactly such a join whenever the run is
+    waiting for a render: the finalize stage waiting for the last
+    frame's every-frame render, a runner waiting for its early render.
+    The stop then read the worker as finished, never ended its render,
+    and tidied the folder under it.  Measured on a real 250 m child
+    stopped 1 s into its finalize stage: ``gpuwm render`` and
+    ``rw_wrfbatch`` kept drawing the last frame after the child had
+    exited, and left 65 to 69 staging pictures in the picture folder.
+
+    The worker sets this when its target returns (:meth:`run`), and
+    every wait and every liveness question on the stop path asks it
+    instead.  ``Event.wait`` interrupted the same way leaves nothing
+    wrong behind.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def run(self, target: Callable[..., Any], *args: Any,
+            **kwargs: Any) -> None:
+        """Run ``target`` here, marking its end however it ends."""
+
+        try:
+            target(*args, **kwargs)
+        finally:
+            self._event.set()
+
+    @property
+    def ended(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, timeout: float | None) -> bool:
+        """Wait for the worker to return; whether it has."""
+
+        return self._event.wait(timeout)
+
+
+def end_render(thread: threading.Thread | None, *,
+               grace: float = END_RENDER_GRACE_SECONDS,
+               ended: WorkerEnd | None = None) -> bool:
+    """End the render subprocess ``thread`` is waiting on, if there is one.
+
+    For a run that was stopped: the picture being drawn is not wanted,
+    and a render left running would outlive the run that asked for it.
+    On POSIX the render is sent SIGINT, which ``gpuwm render`` answers
+    by ending the renderer process it runs and exiting 130; a render
+    that ignores it (a run started with SIGINT ignored passes that on)
+    is killed after ``grace`` seconds.  Elsewhere it is terminated.
+
+    A render started in a group of its own (:func:`_run_render`) is
+    signalled as a group, so the renderer binary under it is told too,
+    and killed as a group.  A thread that is alive but has not started
+    its subprocess yet is watched for a moment, because a halt can land
+    between a worker's last check and its spawn.  ``ended`` is the
+    worker's own word on whether it has returned (:class:`WorkerEnd`);
+    without it the thread's ``is_alive()`` is asked, which a stop can
+    have made wrong.
+
+    Returns whether a running render was found.  Never raises.
+    """
+
+    ident = getattr(thread, "ident", None)
+    if ident is None:
+        return False
+
+    def returned() -> bool:
+        return ended.ended if ended is not None else not thread.is_alive()
+
+    deadline = time.monotonic() + _SPAWN_LOOK_SECONDS
+    while True:
+        with _RUNNING_LOCK:
+            running = _RUNNING.get(ident)
+        if (running is not None or returned()
+                or time.monotonic() >= deadline):
+            break
+        time.sleep(0.02)
+    if running is None:
+        return False
+    process = running
+    own_group = bool(getattr(process, _OWN_GROUP_ATTRIBUTE, False))
+    if process.poll() is not None:
+        return False
+    try:
+        if os.name == "posix":
+            import signal
+
+            if own_group:
+                os.killpg(process.pid, signal.SIGINT)
+            else:
+                process.send_signal(signal.SIGINT)
+            try:
+                process.wait(grace)
+            except subprocess.TimeoutExpired:
+                _kill(process, own_group=own_group)
+        elif own_group:
+            _kill(process, own_group=True)
+        else:
+            process.terminate()
+    except OSError:
+        pass
+    return True
 
 
 class FirstProducts:
@@ -284,14 +605,32 @@ class FirstProducts:
                  report: Callable[[dict], None],
                  warn: Callable[..., None],
                  runner: Callable[[Sequence[str]],
-                                  subprocess.CompletedProcess] | None = None):
+                                  subprocess.CompletedProcess] | None = None,
+                 slot: threading.Lock | None = None,
+                 own_group: bool = False):
         self._plan = dict(render_plan)
         self._report = report
         self._warn = warn
         self._runner = _run_render if runner is None else runner
+        #: Whether the render is started in a process group of its own,
+        #: which only a host that ends it on a stop asks for
+        #: (:meth:`halt`).  Passed to the runner as ``own_group``.
+        self._own_group = bool(own_group)
         self._lock = threading.Lock()
+        #: Held for the whole render: shared with the every-frame render
+        #: (:mod:`gpuwm.live_products`) to bound their combined concurrency,
+        #: whichever grid's frame is committed first.
+        self._slot = threading.Lock() if slot is None else slot
         self._thread: threading.Thread | None = None
+        #: Set when the render thread returns; asked instead of the
+        #: thread's ``is_alive()`` (:class:`WorkerEnd`).
+        self._ended = WorkerEnd()
         self._receipt: dict[str, Any] | None = None
+        #: Held while the drawn frame is moved into the folder and its
+        #: receipt written, so a halt never lands between a picture and
+        #: the receipt that names it.
+        self._publish = threading.Lock()
+        self._abandoned = False
 
     # -- what this was armed with -------------------------------------
 
@@ -302,6 +641,12 @@ class FirstProducts:
     @property
     def render_products(self) -> str:
         return str(self._plan.get("render_products") or "")
+
+    @property
+    def render_section(self) -> str | None:
+        """The line the section products are cut along, or ``None``."""
+
+        return section_text(self._plan.get("render_section"))
 
     @property
     def receipt(self) -> dict[str, Any] | None:
@@ -333,7 +678,7 @@ class FirstProducts:
             if self._thread is not None:
                 return False
             thread = threading.Thread(
-                target=self._guarded_render,
+                target=self._ended.run, args=(self._guarded_render,),
                 name="gpuwm-first-products", daemon=True,
                 kwargs={"domain": int(domain), "valid_time": valid_time,
                         "frame": Path(path)})
@@ -350,28 +695,98 @@ class FirstProducts:
         dispatched, or the render declined, or it is still going after
         ``timeout``.  In every one of those cases finalize renders the
         whole set exactly as it always did, which is the safe answer.
+
+        A render still going after ``timeout`` is given up on for good:
+        it is told to publish nothing and its process is ended
+        (:meth:`_abandon`).  THE BREAKAGE: it used to be left running.
+        Its late finish then moved its pictures over the ones finalize
+        had just drawn into the same folder and wrote a receipt claiming
+        them, and its render process outlived the run that started it.
         """
 
         thread = self._thread
         if thread is None:
             return None
-        thread.join(timeout)
-        if thread.is_alive():
+        if not self._ended.wait(timeout):
+            self._abandon()
+            if self._receipt is not None:
+                # A publish that was already moving files when the wait
+                # ran out finished first, under the lock the abandon
+                # takes, so its pictures and receipt are whole.
+                return self._receipt
             self._warn(
                 "first_products_timeout",
                 "the early render of the first frame was still running "
-                f"after {timeout:.0f} s, so the finalize stage is "
-                "rendering every frame itself; the early render will "
-                "publish nothing",
+                f"after {timeout:.0f} s, so it was ended and publishes "
+                "nothing; the finalize stage is rendering every frame "
+                "itself",
                 render_dir=str(self.render_dir))
             return None
         return self._receipt
+
+    def _abandon(self, timeout: float | None = None) -> bool:
+        """Give up on this early render alone: nothing more is published and its render is ended.
+
+        :meth:`halt` for this render only.  A subclass's ``halt`` may stop
+        more than this render (:class:`gpuwm.live_products.LandingRenders`
+        also closes the every-frame queue, whose worker can be the very
+        caller waiting on this render), so a wait that runs out calls
+        this, never ``self.halt``.
+        """
+
+        return FirstProducts.halt(
+            self, HALT_WAIT_SECONDS if timeout is None else timeout)
+
+    def halt(self, timeout: float | None = HALT_WAIT_SECONDS) -> bool:
+        """Stop now, for a run that was stopped.  ``True`` once nothing runs.
+
+        Nothing is published after this returns: a publish already moving
+        files finishes first, under the same lock, so every picture it
+        moved has its receipt beside it.  The render in flight is ended
+        rather than waited for (:func:`end_render`), because the desktop
+        kills a stopped run 5 s after asking it to stop and the run still
+        has its banner and report to write.  ``False`` means the render
+        thread was still alive after ``timeout``: its render may still be
+        drawing, so a caller must not tidy the folder under it.
+
+        Safe to call more than once, and before anything was dispatched.
+        """
+
+        with self._publish:
+            self._abandoned = True
+        thread = self._thread
+        if thread is None:
+            return True
+        if not self._ended.ended:
+            end_render(thread, ended=self._ended)
+            self._ended.wait(timeout)
+        return self._ended.ended
+
+    def _requests_windows(self) -> bool:
+        """Whether the request holds any window, from the renderer's listing.
+
+        Asked only for a resumed run's first frame that has saved context
+        to import.  When the listing cannot be had the answer is yes, and
+        the context goes along as before: time, never a picture lost.
+        """
+
+        from gpuwm import live_products
+
+        try:
+            return live_products.requests_windows(
+                self.render_products, live_products.catalog_windowed_slugs)
+        except Exception:  # noqa: BLE001 - import the hour as before
+            return True
 
     # -- the worker ---------------------------------------------------
 
     def _guarded_render(self, **kwargs: Any) -> None:
         try:
-            self._render(**kwargs)
+            with self._slot:
+                if self._abandoned:
+                    # Halted before this render took its turn.
+                    return
+                self._render(**kwargs)
         except BaseException as error:  # noqa: BLE001 - never fail a run
             self._warn(
                 "first_products_failed",
@@ -382,9 +797,15 @@ class FirstProducts:
 
     def _render(self, *, domain: int, valid_time: Any, frame: Path) -> None:
         from gpuwm.go_cli import render_command
+        from gpuwm.render import announce_missing_basemap
+        from gpuwm.restart_render import history_before_restart, hour_before
+        from gpuwm.rustwx import COMMAND_LINE_BUDGET
 
         started = time.perf_counter()
         render_dir = self.render_dir
+        # A picture with no coastlines is still a picture, so the render
+        # below succeeds either way; the run has to be told here, once.
+        announce_missing_basemap(self._warn, render_dir, stage="as-drawn")
         scratch = render_dir / _SCRATCH_NAME
         # Create-only for the scratch: a leftover from a previous run in
         # the same directory would be published as though this render had
@@ -398,10 +819,54 @@ class FirstProducts:
             shutil.rmtree(fs_path(scratch, descend=True))
         scratch.mkdir(parents=True)
         try:
+            # A resumed run's first frame closes an hour its checkpoint
+            # opened: the frames of that hour, saved before the checkpoint,
+            # go along as context, so its rainfall is drawn now.
+            context = hour_before(
+                frame, history_before_restart(self._plan.get("restart")))
+            # And only for a request that holds a window, the one thing a
+            # baseline buys, as the every-frame render and the end-of-run
+            # batch already decide it (live_products.requests_windows).
+            # THE BREAKAGE: a 12 km GFS run resumed from its hour-1
+            # checkpoint and asked for composite reflectivity alone drew
+            # its first new hour with the saved hour-1 frame imported
+            # beside it (the renderer's receipt listed it as a context
+            # input), for a picture that reads nothing from it: the same
+            # import the live pass stopped paying at every whole hour of a
+            # 3 km CONUS run (77 to 82 s against 14 s).
+            if context and not self._requests_windows():
+                context = []
             command = render_command(
-                {**self._plan, "render": scratch}, [frame])
-            completed = self._runner(command)
-            written = iter_rendered(scratch)
+                {**self._plan, "render": scratch}, [frame], context_frames=context)
+            if len(subprocess.list2cmdline(command)) > COMMAND_LINE_BUDGET:
+                command = render_command(
+                    {**self._plan, "render": scratch}, [frame], context_frames=context,
+                    inputs_file=scratch / "restart-render-inputs.json")
+            completed = (self._runner(command, own_group=True)
+                         if self._own_group else self._runner(command))
+            if self._abandoned:
+                # Halted while it drew: the halt ended this render, and
+                # nothing it left is published.
+                return
+            if render_was_stopped(completed.returncode):
+                # A render told to stop by someone else (a Ctrl-C that
+                # reached its process group) left whatever it had staged
+                # at that instant: pictures under the renderer's flat
+                # staging names beside half-filed folders, and no receipt.
+                # That is not a drawn frame, and publishing it is how a
+                # stopped child's folder came to hold 155 flat files
+                # counted as pictures.
+                self._warn(
+                    "first_products_stopped",
+                    f"drawing the first frame ({frame.name}) was stopped "
+                    f"before it finished (render exited "
+                    f"{completed.returncode}), so none of it was "
+                    "published; the frame is on disk and draws with "
+                    "gpuwm render",
+                    frame=str(frame))
+                return
+            written = finished_pictures(scratch, iter_rendered(scratch),
+                                        completed.returncode)
             if not written:
                 # Not a failure.  The cold-start frame carries no
                 # REFL_10CM -- no microphysics call precedes it, a
@@ -420,44 +885,120 @@ class FirstProducts:
                     stdout=(completed.stdout or "")[-2000:],
                     stderr=(completed.stderr or "")[-2000:])
                 return
-            render_dir.mkdir(parents=True, exist_ok=True)
-            published: list[dict[str, Any]] = []
-            paths: list[Path] = []
-            for source in written:
-                # The RELATIVE path, not the bare name: since 2.5.0 the
-                # render writes a tree (domain/product/valid-day, see
-                # gpuwm.render_layout) and flattening it here would
-                # publish the early frame into a different directory
-                # from the one finalize renders the rest into -- two
-                # layouts in one run, from the same command.
-                relative = source.relative_to(scratch)
-                target = render_dir / relative
-                # Both sides through render_layout.fs_path: the scratch
-                # is one folder DEEPER than the published tree, so it is
-                # the first place the layout's own path length runs into
-                # Windows' MAX_PATH, and a publish that failed there
-                # would drop a drawn picture on the floor.
-                spelled = fs_path(target)
-                Path(spelled).parent.mkdir(parents=True, exist_ok=True)
-                # Atomic within the volume: a reader tailing the render
-                # directory sees a whole PNG or no PNG, and a later
-                # finalize write of the same name cannot land on top of
-                # a write still in flight.
-                os.replace(fs_path(source), spelled)
-                # Recorded relative to the render directory, in posix
-                # spelling, so `render_dir / entry["name"]` re-finds it
-                # on any platform when finalize re-checks the digests.
-                published.append({"name": relative.as_posix(),
-                                  "sha256": _sha256_file(target),
-                                  "size_bytes": Path(spelled).stat().st_size})
-                paths.append(target)
-            published_unix_ms = int(time.time() * 1000)
-            elapsed = time.perf_counter() - started
-            # The render CLI also wrote its exact invocation receipt in scratch.
-            # Preserve/rebase it before cleanup so final aggregation retains
-            # these early images and their native skip/failure outcomes.
-            from gpuwm.render_receipts import relocate_invocations
-            relocate_invocations(scratch, render_dir, published)
+            with self._publish:
+                if self._abandoned:
+                    # Halted while the render was exiting: a stopped run
+                    # publishes nothing after its halt.
+                    return
+                render_dir.mkdir(parents=True, exist_ok=True)
+                published: list[dict[str, Any]] = []
+                paths: list[Path] = []
+                for source in written:
+                    # The RELATIVE path, not the bare name: since 2.5.0
+                    # the render writes a tree (domain/product/valid-day,
+                    # see gpuwm.render_layout) and flattening it here
+                    # would publish the early frame into a different
+                    # directory from the one finalize renders the rest
+                    # into -- two layouts in one run, from one command.
+                    relative = source.relative_to(scratch)
+                    target = render_dir / relative
+                    # Both sides through render_layout.fs_path: the
+                    # scratch is one folder DEEPER than the published
+                    # tree, so it is the first place the layout's own
+                    # path length runs into Windows' MAX_PATH, and a
+                    # publish that failed there would drop a drawn
+                    # picture on the floor.
+                    spelled = fs_path(target)
+                    Path(spelled).parent.mkdir(parents=True, exist_ok=True)
+                    # Atomic within the volume: a reader tailing the
+                    # render directory sees a whole PNG or no PNG, and a
+                    # later finalize write of the same name cannot land
+                    # on top of a write still in flight.
+                    os.replace(fs_path(source), spelled)
+                    # Recorded relative to the render directory, in
+                    # posix spelling, so `render_dir / entry["name"]`
+                    # re-finds it on any platform when finalize re-checks
+                    # the digests.
+                    published.append({
+                        "name": relative.as_posix(),
+                        "sha256": _sha256_file(target),
+                        "size_bytes": Path(spelled).stat().st_size})
+                    paths.append(target)
+                published_unix_ms = int(time.time() * 1000)
+                elapsed = time.perf_counter() - started
+                # The render CLI also wrote its exact invocation receipt
+                # in scratch.  Preserve/rebase it before cleanup so final
+                # aggregation retains these early images and their native
+                # skip/failure outcomes.
+                from gpuwm import render_georef
+                from gpuwm.render_receipts import relocate_invocations
+                # The frame's map record goes with its pictures, merged
+                # into the folder's own rather than left in the scratch it
+                # drew in.
+                render_georef.fold(render_dir, render_georef.read(
+                    scratch / render_georef.GEOREF_FILENAME))
+                relocate_invocations(scratch, render_dir, published)
+                announced = {
+                    "schema": FIRST_PRODUCTS_SCHEMA,
+                    # One definition, written down where the number is, so
+                    # a consumer never has to guess which quantity it is
+                    # holding.
+                    "measures": FIRST_PLOT_DEFINITION,
+                    # THE TIME-TO-FIRST-PLOT INSTANT, on the wall clock.
+                    #
+                    # The report hook below carries seconds-from-start,
+                    # which is the number a HOST wants because the host
+                    # owns the start.  A caller that did not host this
+                    # render -- `gpuwm go`, which asks the runner
+                    # subprocess to do it -- has only the receipt, and a
+                    # duration measured from a start it cannot see is not
+                    # a number it can use.  So the receipt carries the
+                    # absolute instant and every consumer subtracts its
+                    # own launch from it.
+                    "published_unix_ms": published_unix_ms,
+                    "frame": str(frame),
+                    "domain": int(domain),
+                    "valid_time": (valid_time.isoformat()
+                                   if hasattr(valid_time, "isoformat")
+                                   else str(valid_time)),
+                    "render_products": self.render_products,
+                    # The line the pictures' sections were cut along;
+                    # None when the render cut none.
+                    "render_section": self.render_section,
+                    "command": [str(part) for part in command],
+                    "written": published,
+                    "render_seconds": round(elapsed, 6),
+                    # A renderer that failed partway leaves the frame
+                    # incomplete: its pictures are kept, and finalize
+                    # draws the frame again (render_outcome).
+                    **render_outcome(completed, render_dir=render_dir,
+                                     published=published),
+                }
+                if not announced["complete"]:
+                    self._warn(
+                        "first_products_incomplete",
+                        f"the early render of {frame.name} exited "
+                        f"{announced['exit_code']} after drawing "
+                        f"{len(published)} picture(s); they are kept, and "
+                        "the finalize stage draws the frame again for the "
+                        "rest",
+                        frame=str(frame), exit_code=announced["exit_code"],
+                        products=announced["products"],
+                        diagnostics=announced["diagnostics"])
+                # The event goes out HERE, before the frame is digested
+                # and before the receipt is written.  Both of those are
+                # the finalize stage's business and can wait; the event
+                # is the TTFP number, and its whole value is marking the
+                # instant the pictures became readable.  Hashing a 362 MB
+                # history frame first would have put about a second of
+                # bookkeeping inside the number.  All of it stays under
+                # the publish lock, so a halt never finds a picture here
+                # without the receipt that names it.
+                self._report({**announced,
+                              "paths": [str(path) for path in paths]})
+                receipt = {**announced, "frame_sha256": _sha256_file(frame)}
+                self._receipt = receipt
+                _write_receipt(render_dir / FIRST_PRODUCTS_RECEIPT, receipt)
         finally:
             shutil.rmtree(fs_path(scratch, descend=True), ignore_errors=True)
             # And the renderer's OWN scratch, which it parks beside the
@@ -474,43 +1015,6 @@ class FirstProducts:
                 fs_path(scratch.with_name(scratch.name + SCRATCH_SUFFIX),
                         descend=True),
                 ignore_errors=True)
-
-        announced = {
-            "schema": FIRST_PRODUCTS_SCHEMA,
-            # One definition, written down where the number is, so a
-            # consumer never has to guess which quantity it is holding.
-            "measures": FIRST_PLOT_DEFINITION,
-            # THE TIME-TO-FIRST-PLOT INSTANT, on the wall clock.
-            #
-            # The report hook below carries seconds-from-start, which is
-            # the number a HOST wants because the host owns the start.
-            # A caller that did not host this render -- `gpuwm go`,
-            # which asks the runner subprocess to do it -- has only the
-            # receipt, and a duration measured from a start it cannot
-            # see is not a number it can use.  So the receipt carries
-            # the absolute instant and every consumer subtracts its own
-            # launch from it.
-            "published_unix_ms": published_unix_ms,
-            "frame": str(frame),
-            "domain": int(domain),
-            "valid_time": (valid_time.isoformat()
-                           if hasattr(valid_time, "isoformat")
-                           else str(valid_time)),
-            "render_products": self.render_products,
-            "command": [str(part) for part in command],
-            "written": published,
-            "render_seconds": round(elapsed, 6),
-        }
-        # The event goes out HERE, before the frame is digested and
-        # before the receipt is written.  Both of those are the finalize
-        # stage's business and can wait; the event is the TTFP number,
-        # and its whole value is marking the instant the pictures became
-        # readable.  Hashing a 362 MB history frame first would have put
-        # about a second of bookkeeping inside the number.
-        self._report({**announced, "paths": [str(path) for path in paths]})
-        receipt = {**announced, "frame_sha256": _sha256_file(frame)}
-        self._receipt = receipt
-        _write_receipt(render_dir / FIRST_PRODUCTS_RECEIPT, receipt)
 
 
 #: The plain file a run that did not finish leaves at the top of its
@@ -590,7 +1094,8 @@ def _stop_sentence(stopped: Mapping[str, Any] | None) -> str:
 
 def banner_text(*, why: str, stopped: Mapping[str, Any] | None,
                 frames: Sequence[Any], pictures: int | None,
-                pictures_error: str | None = None) -> str:
+                pictures_error: str | None = None,
+                requested: bool = False) -> str:
     """The words the banner says.  One writer, so every route agrees.
 
     Four facts, in the order a reader needs them: how far the forecast
@@ -606,6 +1111,11 @@ def banner_text(*, why: str, stopped: Mapping[str, Any] | None,
     ``pictures_error``.  A tree nothing could read is not a tree with
     nothing in it, and printing the second over the first is what tells
     a reader who still has their pictures that they have none.
+
+    ``requested`` is a run somebody stopped (a Stop button, a Ctrl-C, a
+    ``kill -TERM``), and the first line says so: the same banner over a
+    stop and over a blow-up read as the same event to a reader, and only
+    one of them is something to look into.
     """
 
     names = [str(frame) for frame in frames]
@@ -615,8 +1125,8 @@ def banner_text(*, why: str, stopped: Mapping[str, Any] | None,
     # A number made singular over a sentence that kept its plural reads
     # exactly as carelessly as the parenthesised plural it replaced, on
     # a file whose reader has just lost a forecast.
-    source = ("" if not names else ", from the frame below"
-              if len(names) == 1 else ", from the frames below")
+    source = ("" if not names else " (the frame below)"
+              if len(names) == 1 else " (the frames below)")
     if pictures is None:
         # THE TREE COULD NOT BE READ.  Not a count, so no sentence here
         # may claim one: what is in this folder is unknown, and the
@@ -625,8 +1135,8 @@ def banner_text(*, why: str, stopped: Mapping[str, Any] | None,
         detail = str(pictures_error or "").strip()
         held = ("This folder could not be listed"
                 + (f" ({detail})" if detail else "")
-                + ", so whether the early render had published a picture "
-                "before the forecast stopped is not known from here.")
+                + ", so whether any picture had been drawn before the "
+                "forecast stopped is not known from here.")
     elif not pictures:
         # STOPS here.  The frame block below is the one that says
         # whether anything was named, and it handles both cases; a
@@ -634,20 +1144,26 @@ def banner_text(*, why: str, stopped: Mapping[str, Any] | None,
         # written before the stop." whenever the run also committed
         # nothing, and the two sentences contradicted each other in the
         # one case they share.
-        held = ("No pictures are in this folder: the early render had not "
-                "published one before the forecast stopped.")
+        held = ("No pictures are in this folder: none had been drawn "
+                "before the forecast stopped.")
     elif pictures == 1:
-        held = ("1 picture is in this folder.  It was drawn before the "
-                f"forecast stopped{source}.  Nothing here was drawn "
-                "afterwards, and it does not show the state the forecast "
-                "stopped in.")
+        # "Of a frame written before", not "drawn before": a child that
+        # failed on its own finishes drawing the frames it had already
+        # written (gpuwm.live_products), so a picture can be drawn a few
+        # seconds after the stop.  What it can never show is the state
+        # the forecast stopped in.
+        one = (" (one of the frames below)" if len(names) > 1 else source)
+        held = ("1 picture is in this folder.  It is of a frame written "
+                f"before the forecast stopped{one}, and it does not show "
+                "the state the forecast stopped in.")
     else:
         held = (f"{pictures} pictures are in this folder.  Every one of them "
-                f"was drawn before the forecast stopped{source}.  Nothing "
-                "here was drawn afterwards, and no picture shows the state "
-                "the forecast stopped in.")
+                "is of a frame written before the forecast "
+                f"stopped{source}, and no picture shows the state the "
+                "forecast stopped in.")
     lines = [
-        "THIS FORECAST DID NOT FINISH",
+        ("THIS FORECAST WAS STOPPED BEFORE IT FINISHED" if requested
+         else "THIS FORECAST DID NOT FINISH"),
         "",
         _stop_sentence(stopped),
         "",
@@ -767,9 +1283,182 @@ def count_pictures(render_dir) -> tuple[int | None, str | None]:
     return drawn, None
 
 
+#: The long-path prefixes :func:`gpuwm.render_layout.fs_path` puts on a
+#: Windows path; a receipt can record either spelling of one file.
+_VERBATIM_UNC = "\\\\?\\UNC\\"
+_VERBATIM = "\\\\?\\"
+
+
+def _plain(text: str) -> str:
+    """``text`` without a Windows extended-length prefix."""
+
+    if text.startswith(_VERBATIM_UNC):
+        return "\\\\" + text[len(_VERBATIM_UNC):]
+    if text.startswith(_VERBATIM):
+        return text[len(_VERBATIM):]
+    return text
+
+
+def _named_inside(root: Path, recorded: Any) -> str | None:
+    """A receipt's picture path, relative to ``root`` in posix spelling."""
+
+    if not recorded:
+        return None
+    path = Path(_plain(str(recorded)))
+    bases = [Path(_plain(str(root.resolve()))), Path(_plain(str(root)))]
+    if not path.is_absolute():
+        return path.as_posix()
+    for base in bases:
+        try:
+            return path.resolve().relative_to(base.resolve()).as_posix()
+        except (ValueError, OSError):
+            continue
+    return None
+
+
+def receipted_pictures(render_dir) -> set[str]:
+    """Every picture a render receipt in ``render_dir`` names.
+
+    Relative to the directory, in posix spelling.  Three receipts vouch
+    for a picture, and each is written only once the pictures it names
+    are whole and in place: ``gpuwm render``'s own invocation receipt in
+    ``.render-receipts/`` (written after the render has filed every
+    picture into the layout, and moved beside them when the early or the
+    every-frame render publishes), :data:`FIRST_PRODUCTS_RECEIPT` and
+    ``live-products.json``.  A picture no receipt names is the output of
+    a render that did not finish.
+
+    Nothing raises: an unreadable receipt vouches for nothing.
+    """
+
+    from gpuwm import render_receipts
+    from gpuwm.live_products import read_receipt as read_live_receipt
+
+    root = Path(render_dir)
+    names: set[str] = set()
+    first = read_receipt(root)
+    live = read_live_receipt(root)
+    entries = list((first or {}).get("written") or [])
+    for frame in (live or {}).get("frames") or []:
+        if isinstance(frame, dict):
+            entries.extend(frame.get("written") or [])
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("name"):
+            names.add(Path(str(entry["name"])).as_posix())
+    receipts = Path(fs_path(root / ".render-receipts", descend=True))
+    try:
+        documents = sorted(receipts.glob("*.json"))
+    except OSError:
+        documents = []
+    for document in documents:
+        try:
+            if document.stat().st_size > render_receipts._MAX_RECEIPT_BYTES:
+                continue
+            payload = json.loads(document.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (not isinstance(payload, dict) or payload.get("schema")
+                != render_receipts.INVOCATION_SCHEMA):
+            continue
+        for row in payload.get("rendered") or []:
+            if not isinstance(row, dict):
+                continue
+            name = _named_inside(root, row.get("path"))
+            if name is not None:
+                names.add(name)
+    return names
+
+
+def _render_scratch(root: Path) -> list[Path]:
+    """The working folders renders leave inside and beside ``root``.
+
+    The early render's and the every-frame render's scratch, and the
+    renderer's own store beside each of them and beside the picture
+    folder itself (:func:`gpuwm.render.scratch_root_for`).
+    """
+
+    from gpuwm.live_products import _SCRATCH_NAME as LIVE_SCRATCH
+    from gpuwm.render_layout import SCRATCH_SUFFIX
+
+    inside = [root / name for name in (_SCRATCH_NAME, LIVE_SCRATCH)]
+    return [*inside,
+            *(path.with_name(path.name + SCRATCH_SUFFIX) for path in inside),
+            root.with_name(root.name + SCRATCH_SUFFIX)]
+
+
+def discard_stopped_render(render_dir) -> dict[str, Any]:
+    """Remove what a stopped render left, and keep every receipted picture.
+
+    THE BREAKAGE: a child stopped while its
+    analysis frame was being drawn kept 155 to 171 of the renderer's
+    staging files as its pictures: ``rustwx_wrf_..._<product>.png`` and
+    ``var_wrf_isltyp_<hash>.png`` lying flat in ``png/``, against the
+    render folder ruling, and the banner and report counted them as
+    pictures drawn.  The engine draws every picture flat under a name of
+    its own and only then files it into ``<domain>/<product>/<day>/``;
+    a render stopped in between leaves the flat names behind and writes
+    no receipt for them.
+
+    So, on a stop, once every render this run started has ended: every
+    PNG in the folder that no render receipt names
+    (:func:`receipted_pictures`) is removed, and so is the renderers'
+    working scratch.  What stays is the organised tree of pictures a
+    render finished and vouched for, and the frames themselves, which
+    draw again with ``gpuwm render`` at any time.
+
+    Only a caller that has ENDED every render may call this: a render
+    still running would lose the pictures it has drawn and not yet
+    receipted.  Never raises; ``{"removed": [...], "errors": [...]}``.
+    """
+
+    from gpuwm.render_layout import is_scratch_dir
+
+    root = Path(render_dir)
+    removed: list[str] = []
+    errors: list[str] = []
+    for scratch in _render_scratch(root):
+        spelled = fs_path(scratch, descend=True)
+        if os.path.isdir(spelled):
+            shutil.rmtree(spelled, ignore_errors=True)
+            if os.path.isdir(spelled):
+                errors.append(f"{scratch}: could not be removed")
+    keep_names = receipted_pictures(root)
+    walk_root = Path(fs_path(root, descend=True))
+    emptied: set[str] = set()
+    for directory, subdirectories, names in os.walk(walk_root):
+        subdirectories[:] = [name for name in subdirectories
+                             if not is_scratch_dir(name)]
+        for name in names:
+            if not name.lower().endswith(".png"):
+                continue
+            path = Path(directory) / name
+            relative = path.relative_to(walk_root).as_posix()
+            if relative in keep_names:
+                continue
+            try:
+                os.remove(path)
+            except OSError as error:
+                errors.append(f"{relative}: {error.strerror or error}")
+                continue
+            removed.append(relative)
+            emptied.add(directory)
+    # A folder the removal emptied goes too, deepest first, so a render
+    # stopped half way through filing leaves no empty product folders.
+    for directory in sorted(emptied, key=len, reverse=True):
+        current = Path(directory)
+        while current != walk_root and walk_root in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
+    return {"removed": removed, "errors": errors}
+
+
 def keep(render_dir: Path, *, why: str,
          stopped: Mapping[str, Any] | None = None,
-         frames: Sequence[Any] = ()) -> dict[str, Any]:
+         frames: Sequence[Any] = (), requested: bool = False,
+         discard: bool = False) -> dict[str, Any]:
     """Keep what the early render drew, and say on disk that it stopped.
 
     THE DECISION, recorded where it is enforced: a run that did not
@@ -802,11 +1491,19 @@ def keep(render_dir: Path, *, why: str,
     stamped either way -- two independent writes, because the summary
     is the document the readers key on and a banner's failure says
     nothing about whether the status can be recorded.
+
+    A STOP (``requested``) says so in the banner's first line, and
+    ``discard`` first removes what a stopped render left
+    (:func:`discard_stopped_render`), so the count below covers only
+    pictures a render receipt names.  The caller passes ``discard`` only
+    once every render the run started has ended.
     """
 
     from gpuwm import render_receipts
 
     root = Path(render_dir)
+    discarded = (discard_stopped_render(root) if discard
+                 else {"removed": [], "errors": []})
     # THREE outcomes, from the counter both stop routes and the
     # failed-render capsule share (:func:`count_pictures`): a count, an
     # empty folder, and a folder that could not be LISTED.  Counting a
@@ -825,7 +1522,8 @@ def keep(render_dir: Path, *, why: str,
         os.makedirs(fs_path(root, descend=True), exist_ok=True)
         Path(fs_path(root / DID_NOT_FINISH_BANNER)).write_text(
             banner_text(why=why, stopped=stopped, frames=frames,
-                        pictures=pictures, pictures_error=pictures_error),
+                        pictures=pictures, pictures_error=pictures_error,
+                        requested=requested),
             encoding="utf-8", newline="\n")
     except OSError:
         banner = None
@@ -843,6 +1541,8 @@ def keep(render_dir: Path, *, why: str,
             "render": str(root),
             "banner": None if banner is None else str(banner),
             "status": DID_NOT_FINISH_STATUS,
+            "discarded": len(discarded["removed"]),
+            "discard_errors": list(discarded["errors"]),
             "summary": summary}
 
 
@@ -907,7 +1607,8 @@ def published_pictures_are_original(receipt: Mapping[str, Any],
 
 
 def _receipt_still_holds(receipt: Mapping[str, Any], *, render_dir: Path,
-                         render_products: Any) -> str | None:
+                         render_products: Any,
+                         render_section: Any = None) -> str | None:
     """Why this receipt may not be trusted, or ``None`` when it may.
 
     Every clause is a digest or an existence check against what is on
@@ -920,6 +1621,20 @@ def _receipt_still_holds(receipt: Mapping[str, Any], *, render_dir: Path,
     if declared != wanted:
         return (f"it was rendered for --products {declared!r} and this "
                 f"stage renders {wanted!r}")
+    drawn = section_text(receipt.get("render_section"))
+    along = section_text(render_section)
+    if drawn != along:
+        return (f"its sections were cut along {drawn or 'no line'} and "
+                f"this stage cuts them along {along or 'no line'}")
+    code = receipt.get("exit_code", 0)
+    if receipt.get("complete") is False or code not in (0, None):
+        return (f"its render exited {code} before every product was "
+                "drawn, so the frame is drawn again")
+    if receipt.get("complete") is not True:
+        # Written before receipts recorded the renderer's exit: such a receipt said "done" for a render that
+        # failed partway as well, so it cannot show that every product was drawn.
+        return ("it does not record whether its render finished, so the "
+                "frame is drawn again")
     frame = Path(str(receipt.get("frame") or ""))
     if not frame.is_file():
         return f"the frame it names ({frame}) is not on disk"
@@ -956,7 +1671,8 @@ def published_frames(frames: Sequence[Path], plan: Mapping[str, Any]
         return list(frames), [], None
     stale = _receipt_still_holds(
         receipt, render_dir=render_dir,
-        render_products=plan.get("render_products"))
+        render_products=plan.get("render_products"),
+        render_section=plan.get("render_section"))
     if stale is not None:
         return (list(frames), [],
                 f"early-render receipt not used: {stale}; every frame is "
@@ -986,14 +1702,21 @@ __all__ = [
     "FIRST_PRODUCTS_SCHEMA",
     "FirstProducts",
     "FrameHook",
+    "WorkerEnd",
     "arm",
     "banner_text",
     "count_pictures",
+    "discard_stopped_render",
     "early_render_requested",
     "effective_products",
+    "finished_pictures",
     "keep",
     "published_frames",
     "published_pictures_are_original",
     "read_receipt",
+    "receipted_pictures",
+    "render_outcome",
+    "render_was_stopped",
     "render_without_output_refusal",
+    "section_text",
 ]

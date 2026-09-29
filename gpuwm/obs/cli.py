@@ -37,6 +37,13 @@ import hashlib
 import json
 from pathlib import Path
 
+from gpuwm.cli_help import ForecastParser
+from gpuwm.cli_numbers import float_between, positive_float
+
+#: An elevation angle, which is a finite number of degrees above (or just
+#: below) the horizon.
+_ELEVATION = float_between(-90.0, 90.0)
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -68,9 +75,19 @@ def _bbox(value: str) -> tuple[float, float, float, float]:
     except ValueError as error:
         raise argparse.ArgumentTypeError(
             f"--bbox {value!r} is not four numbers: {error}") from error
+    # float() reads nan and inf, and a NaN compares false against every
+    # site, so an unchecked box selected nothing and reported success.
+    if not all(-180.0 <= lon <= 180.0 for lon in (west, east)) or not all(
+            -90.0 <= lat <= 90.0 for lat in (south, north)):
+        raise argparse.ArgumentTypeError(
+            f"--bbox {value!r} is outside the globe: longitudes run from "
+            "-180 to 180 and latitudes from -90 to 90")
     if south >= north:
         raise argparse.ArgumentTypeError(
             f"--bbox south {south} is not below north {north}")
+    if west >= east:
+        raise argparse.ArgumentTypeError(
+            f"--bbox west {west} is not west of east {east}")
     return west, south, east, north
 
 
@@ -333,13 +350,13 @@ def _register_radar(sub) -> None:
                       help="ODIM quantity names to carry (DBZH,VRADH). "
                            "Omitting this carries every quantity in the "
                            "volume, which is nine of them on a Dutch scan")
-    pack.add_argument("--max-elevation-deg", type=float, default=None,
+    pack.add_argument("--max-elevation-deg", type=_ELEVATION, default=None,
                       metavar="DEG",
                       help="drop cuts above this elevation. The 90-degree "
                            "birdbath a Dutch volume opens with is a "
                            "calibration cut, not an observation of anything a "
                            "model column exists for")
-    pack.add_argument("--max-range-km", type=float, default=None,
+    pack.add_argument("--max-range-km", type=positive_float, default=None,
                       metavar="KM",
                       help="trim gates beyond this range")
     pack.set_defaults(func=_radar_pack)
@@ -385,13 +402,13 @@ def _register_radar(sub) -> None:
                            "are gridded onto; its SHA-256 joins the receipt")
     grid.add_argument("--out", type=Path, required=True, metavar="NC",
                       help="observation file to write")
-    grid.add_argument("--max-range-km", type=float, required=True,
+    grid.add_argument("--max-range-km", type=positive_float, required=True,
                       metavar="KM",
                       help="THE range authority, required rather than "
                            "defaulted: a build that quietly picked a "
                            "different range than the one it is compared "
                            "against produces a plausible, wrong answer")
-    grid.add_argument("--max-elevation-deg", type=float, required=True,
+    grid.add_argument("--max-elevation-deg", type=_ELEVATION, required=True,
                       metavar="DEG",
                       help="likewise: the elevation ceiling, stated rather "
                            "than defaulted")
@@ -522,17 +539,48 @@ _INSTRUMENTS = {
 }
 
 
+class _ObservationParser(ForecastParser):
+    """The ``gpuwm obs`` subcommand parser; an instrument door forwards.
+
+    ``REMAINDER`` alone does not forward: argparse still reads every
+    token that looks like an option as one of the door's own before any
+    positional is filled, so ``gpuwm obs mrms --help`` printed this
+    wrapper's help instead of the binary's grammar, and ``--abi``,
+    ``--version`` or any other leading native switch exited 2 as an
+    unrecognized argument without the binary ever seeing it.  A door
+    made with ``forward_argv=True`` parses nothing of its own: every
+    token after the instrument name is the binary's, verbatim.
+    """
+
+    def __init__(self, *args, forward_argv: bool = False, **kwargs):
+        if forward_argv:
+            kwargs["add_help"] = False
+        super().__init__(*args, **kwargs)
+        self._forward_argv = forward_argv
+
+    def parse_known_args(self, args=None, namespace=None):
+        if not self._forward_argv:
+            return super().parse_known_args(args, namespace)
+        import sys
+
+        tokens = list(sys.argv[1:] if args is None else args)
+        parsed, _ = super().parse_known_args([], namespace)
+        parsed.argv = tokens
+        return parsed, []
+
+
 def _register_instruments(sub) -> None:
     for instrument, subject in sorted(_INSTRUMENTS.items()):
         parser = sub.add_parser(
-            instrument,
+            instrument, forward_argv=True,
             help=f"acquire and decode {subject}: resolves the front door's "
                  "binary and passes ARGS to it unchanged "
                  f"(`gpuwm obs {instrument} --help` prints its grammar)")
         parser.add_argument(
             "argv", nargs=argparse.REMAINDER, metavar="ARGS",
-            help="arguments passed to the instrument's binary unchanged; "
-                 "gpuwm's own flags must come before the instrument name")
+            help="arguments passed to the instrument's binary unchanged, "
+                 "--help included; gpuwm's own flags must come before the "
+                 "instrument name")
         parser.set_defaults(func=_instrument_main)
 
 
@@ -552,7 +600,8 @@ def register_cli(subparsers) -> None:
     # Not `required=True`: bare `gpuwm obs` prints where every front
     # door resolved, which is the answer to "is my observation estate
     # actually here" and is worth more than an argparse usage error.
-    obs_sub = obs.add_subparsers(dest="obs_command", required=False)
+    obs_sub = obs.add_subparsers(dest="obs_command", required=False,
+                                 parser_class=_ObservationParser)
     obs.set_defaults(func=_obs_estate)
     _register_radar(obs_sub)
     _register_instruments(obs_sub)

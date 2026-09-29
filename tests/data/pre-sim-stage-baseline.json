@@ -16,7 +16,7 @@
     "and that the pinned prepare receipt accounts for itself."
   ],
   "provenance": {
-    "box": "Drew's Windows 11 workstation, 32-thread CPU (the reference box)",
+    "box": "the development Windows 11 workstation, 32-thread CPU (the reference box)",
     "card": "NVIDIA RTX 3080 (sm_86); this box's 5090 moved to node-2 on 2026-08-15",
     "date": "2026-08-16",
     "gpuwm_version": "2.5.0.dev, integration/release-2.5.0 at ed4c0ef69 plus this instrumentation lane",

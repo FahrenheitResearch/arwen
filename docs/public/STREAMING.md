@@ -95,8 +95,10 @@ The root preparation is a real one-hour extension. For fNNN after f001 it
 decodes only the terminal overlap hour and the newly available hour, proves
 the old source and bridge manifests are unchanged prefixes, then hardlinks
 the immutable prepared-cache arrays, bridge payloads, and static artifacts
-from the preceding root. This requires predecessor and successor roots on the
-same filesystem; the command refuses instead of silently copying them.
+from the preceding root. On a drive without hard links (exFAT, FAT32) or
+across two drives it copies them instead, checks each copy byte for byte
+against its original, and prints one line saying the copies cost disk; a copy
+the disk cannot hold is refused by name before its first byte.
 
 The nested hierarchy is currently rebuilt in full for each hourly leg. Each
 forecast is also a new sealed process: it restores the preceding tree

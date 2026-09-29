@@ -231,9 +231,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import sys
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 from tilestream import harness as _harness
+from tilestream import spec as _spec
 
 GIB = 1 << 30
 MIB = 1 << 20
@@ -299,6 +300,36 @@ ARENA_TIE_BAND = 0.05
 #: tiling at a realistic tile size measured 2-6%; the badly ragged plans
 #: measured 22-25%.
 EXPENSIVE_ARENA = 0.10
+
+#: The most halo work a tiling may do, as a multiple of the necessary work,
+#: before :func:`plan` refuses it.  ``[tiles] max_redundancy`` replaces it
+#: and ``false`` lifts it; ``mode = "auto"`` never lifts it on its own.
+#:
+#: THE BREAKAGE IT PREVENTS is a streamed step fifty or more times the
+#: resident step, which a user cannot tell from a hang.  MEASURED
+#: 2026-09-26: on a card that missed a 206x204x49 domain's resident budget
+#: by 0.3 GB, auto dropped this limit and swept the domain in 1,190 tiles
+#: of 6x6 at 49.95x; each 15 s step took 237-547 s against 0.6-1.9 s
+#: resident on the same card, so a 24 h forecast would have run for about
+#: 16 days.
+#:
+#: WHAT IT DOES NOT BOUND is the tile count.  A domain much larger than
+#: the card still streams in many tiles within the limit, and every tile
+#: past nine is priced by :func:`gpuwm.core.pace.estimate_pace`, so the
+#: review quotes that cost before the run.
+#:
+#: WHY 4.0 AND NOT ANOTHER NUMBER, measured by
+#: ``tilestream/bench_tile_overhead.py`` on an idle RTX 5070 Ti under
+#: Linux (192x192x49 full physics, halo 16, one buffer): the streamed step
+#: as a multiple of the resident step was 3.8x at 1.78x redundancy, 6.0x at
+#: 2.25x, 9.6x at 2.78x and 16x at 4.0x, then 50x at 5.44x, 61x at 9.0x,
+#: 174x at 13.4x and 288x at 25x.  The cliff is between 4.0x and 5.44x,
+#: where a window stops being much wider than its two halos and the fixed
+#: cost every tile pays (18 ms a step in that sweep's fit) outgrows its
+#: columns.  At and below the limit :func:`gpuwm.core.pace.estimate_pace`
+#: quotes the slower step, per tile and per redundancy, so the review says
+#: what it costs.
+MAX_REDUNDANCY = 4.0
 
 #: Fraction of MemTotal that may be pinned.  ``hoststore`` measured the wall
 #: at 0.4998 x MemTotal and refuses past 0.47; this is that refusal, restated
@@ -648,6 +679,21 @@ def _forced(cfg) -> bool:
             or bool(getattr(cfg, "nested", False)))
 
 
+def edge_band(cfg) -> int:
+    """Cells from each forced edge that only an edge-owning tile's interior
+    and halo may reach.
+
+    The relaxation frame's width (``lateral_bc._launch_state_relaxation``),
+    for a boundary-forced config; 0 otherwise.  See
+    :func:`tilestream.spec.edge_band_unowned` for what a plan that breaks
+    it would do.
+    """
+    if not _forced(cfg):
+        return 0
+    return max(int(getattr(cfg, "spec_zone", 1)),
+               int(getattr(cfg, "relax_zone", 4)))
+
+
 def is_periodic_x(cfg) -> bool:
     """``not dycore._boundary_x(cfg)`` -- does the model wrap in x?
 
@@ -689,30 +735,185 @@ def is_periodic(cfg) -> bool:
 # the machine
 # --------------------------------------------------------------------------
 
-def _cgroup_memory_limit() -> int | None:
-    """The container's own memory ceiling, or None outside a container.
+#: Where the cgroup file systems are mounted, the file naming the cgroup
+#: this process runs in on each hierarchy, and the kernel's memory report.
+#: Module names so the readers below can be pointed at stand-in files.
+_CGROUP_ROOT = "/sys/fs/cgroup"
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
+_PROC_MEMINFO = "/proc/meminfo"
 
-    cgroup v2 first (``memory.max``), then v1.  ``"max"`` means unlimited and
-    is reported as None so the caller falls back to MemTotal.
+#: A cgroup v1 limit at or above this is the "no limit" sentinel (about
+#: 2**63 rounded down to a page), not a limit.
+_CGROUP_UNLIMITED = 1 << 62
+
+
+def _cgroup_memory_limit() -> int | None:
+    """The smallest memory cgroup limit binding this process, or None.
+
+    A total, where :func:`_cgroup_memory_headroom` is room: the ceiling
+    :meth:`Machine.detect` sizes the pinned host store against and
+    ``gpuwm.core.streaming._host_total_bytes`` prices host RAM against.
+    Every limit from the process's own cgroup up to its mount binds
+    (:func:`_cgroup_memory_limits`), so the smallest is the ceiling.  None
+    when no limit binds, so the caller falls back to MemTotal.
+
+    THE BREAKAGE: this read only the mount root's ``memory.max`` (or v1
+    ``memory.limit_in_bytes``).  Inside a systemd scope with
+    ``MemoryMax=2G`` on a 30 GiB worker the root carries no limit, so it
+    read none, the host total read 32.8 GB, the planner sized its pinned
+    host store to the whole host, and the kernel killed the run at the
+    scope's limit.  The renderer's and the MPAS builder's readers
+    (``rw_host_memory::cgroup_memory_limit``) are held to the same table.
     """
-    for path in ("/sys/fs/cgroup/memory.max",
-                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-        try:
-            with open(path, "r", encoding="ascii") as handle:
-                raw = handle.read().strip()
-        except OSError:
-            continue
-        if raw == "max":
-            return None
-        try:
-            value = int(raw)
-        except ValueError:
-            continue
-        # v1 reports a sentinel near 2**63 for "no limit".
-        if value <= 0 or value >= (1 << 62):
-            return None
-        return value
+    limits = [limit for limit, _room in _cgroup_memory_limits()]
+    return min(limits) if limits else None
+
+
+def _cgroup_bytes(path: str) -> int | None:
+    """One cgroup file's integer, or None for absent, ``max`` or unreadable."""
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            return int(handle.read().strip())
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _cgroup_stat_field(path: str, key: str) -> int | None:
+    """The value of ``key`` in a ``memory.stat`` file, or None."""
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) >= 2 and fields[0] == key:
+                    return int(fields[1])
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
     return None
+
+
+def _cgroup_memory_headroom() -> int | None:
+    """Bytes this process may still allocate under its memory cgroup limits.
+
+    ``None`` when no limit binds it: the least room of
+    :func:`_cgroup_memory_limits`.
+
+    THE BREAKAGE: reading only the mount's root limit and never the usage
+    told a process in a limited systemd scope or slice (whose
+    ``memory.max`` sits below the root), or one that had already used most
+    of its container's limit, that the whole host, or the whole limit, was
+    free.  The renderer's reader (``rusty_weather::host_memory``, the
+    ``rw-host-memory`` crate) reads the same way, and both are held to one
+    table, ``host_memory_cgroup_cases.json`` in that crate.
+    """
+    rooms = [room for _limit, room in _cgroup_memory_limits()]
+    return min(rooms) if rooms else None
+
+
+def _cgroup_memory_limits() -> list[tuple[int, int]]:
+    """``(limit, room)`` for every memory cgroup limit binding this process.
+
+    Every directory from the process's own cgroup (``/proc/self/cgroup``)
+    up to its mount is read (:func:`_cgroup_memory_walk`), because a limit
+    on an ancestor (a systemd slice, a pod) binds as hard as one on the
+    leaf.  The room is the limit minus the working set.  The inactive file
+    pages in ``memory.stat`` (``inactive_file``, v1
+    ``total_inactive_file``) are not counted as used: the kernel reclaims
+    them inside the cgroup before it kills anything, so a container that
+    had read its inputs through the page cache still has that room.  A
+    limit whose usage cannot be read is the room.  The same answer as
+    ``rw_host_memory::cgroup_memory_limits``.
+    """
+    return [(level.limit, level.room) for level in _cgroup_memory_walk()
+            if level.limit is not None]
+
+
+class _CgroupMemoryLevel(NamedTuple):
+    """One directory on this process's memory cgroup path, as read.
+
+    ``limit`` is None when the directory publishes no limit (absent,
+    ``max``, unreadable, or the v1 "unlimited" sentinel); ``usage`` is None
+    when its usage cannot be read, and ``inactive`` is then 0.
+    """
+
+    limit_file: str
+    limit: int | None
+    usage: int | None
+    inactive: int
+
+    @property
+    def room(self) -> int | None:
+        """The limit minus the working set; the limit when usage is unread."""
+        if self.limit is None:
+            return None
+        if self.usage is None:
+            return self.limit
+        return max(0, self.limit - max(0, self.usage - self.inactive))
+
+
+def _cgroup_memory_walk() -> list[_CgroupMemoryLevel]:
+    """Every memory cgroup directory on this process's path, deepest first.
+
+    The one walk every host-memory reader in this package takes: the
+    planner's total and headroom (:func:`_cgroup_memory_limits`), the tile
+    host store's ``tilestream.hoststore.host_memory``, and the diagnostics
+    in ``tilestream.da_stream``, ``tilestream.endure`` and
+    ``tilestream.node_probe``.  From the process's own cgroup
+    (``/proc/self/cgroup``) up to its mount: cgroup v2 ``memory.max``, used
+    ``memory.current``; cgroup v1 ``memory.limit_in_bytes``, used
+    ``memory.usage_in_bytes``.  An unreadable ``/proc/self/cgroup`` reads
+    the mounts' own roots.  A directory that publishes neither a limit nor
+    a usage is left out.
+
+    THE BREAKAGE: each of those readers used to open the mount root's own
+    files.  Inside a systemd scope with ``MemoryMax=2G`` on a 30 GiB worker
+    the root carries no limit and, on cgroup v2, no usage, so the host
+    store admitted a 3 GiB pinned store against the whole host, the DA
+    ensemble report said no limit applied and the endurance trace's cgroup
+    column read NaN.
+    """
+    memberships = []
+    try:
+        with open(_PROC_SELF_CGROUP, "r", encoding="utf-8") as handle:
+            for line in handle.read().splitlines():
+                fields = line.split(":", 2)
+                if len(fields) == 3:
+                    memberships.append((fields[1], fields[2]))
+    except (OSError, UnicodeDecodeError):
+        pass
+    if not memberships:
+        memberships = [("", "/"), ("memory", "/")]
+    levels = []
+    for controllers, relative in memberships:
+        if controllers == "":
+            mounts = [_CGROUP_ROOT]
+            names = ("memory.max", "memory.current", "inactive_file")
+        elif "memory" in controllers.split(","):
+            mounts = list(dict.fromkeys([os.path.join(_CGROUP_ROOT, controllers),
+                                         os.path.join(_CGROUP_ROOT, "memory")]))
+            names = ("memory.limit_in_bytes", "memory.usage_in_bytes",
+                     "total_inactive_file")
+        else:
+            continue
+        limit_name, usage_name, inactive_key = names
+        parts = [part for part in relative.split("/") if part and part != ".."]
+        for mount in mounts:
+            for depth in range(len(parts), -1, -1):
+                directory = os.path.join(mount, *parts[:depth])
+                limit_file = os.path.join(directory, limit_name)
+                limit = _cgroup_bytes(limit_file)
+                if limit is not None and (limit <= 0
+                                          or limit >= _CGROUP_UNLIMITED):
+                    limit = None
+                usage = _cgroup_bytes(os.path.join(directory, usage_name))
+                if limit is None and usage is None:
+                    continue
+                inactive = 0
+                if usage is not None:
+                    inactive = _cgroup_stat_field(
+                        os.path.join(directory, "memory.stat"), inactive_key) or 0
+                levels.append(_CgroupMemoryLevel(limit_file, limit, usage,
+                                                 inactive))
+    return levels
 
 
 def _in_container() -> bool:
@@ -770,15 +971,17 @@ class Machine:
         import cupy as cp
 
         selected_device = cp.cuda.Device(device)
-        with selected_device:
-            free, total = cp.cuda.runtime.memGetInfo()
         if use_free_vram:
             # Share check's machine-wide cap: on WDDM CUDA may count memory
             # obtainable only by evicting another process. PCI identity keeps
             # CUDA-visible device ordering from selecting a different NVML GPU.
-            from gpuwm.core.preflight import cap_free_to_device_wide
-            free, _ = cap_free_to_device_wide(
-                free, device_id=selected_device.pci_bus_id)
+            # The one reading every "free on the card" line uses, so the
+            # forecast's stream-init line cannot print a second figure.
+            from gpuwm.core.preflight import device_free_and_total_bytes
+            free, total = device_free_and_total_bytes(device)
+        else:
+            with selected_device:
+                free, total = cp.cuda.runtime.memGetInfo()
         props = cp.cuda.runtime.getDeviceProperties(device)
         name = props["name"].decode() if isinstance(props["name"], bytes) \
             else str(props["name"])
@@ -875,7 +1078,7 @@ def _host_memavailable() -> int | None:
         status = _windows_memory_status()
         return None if status is None else status[1]
     try:
-        with open("/proc/meminfo", "r", encoding="ascii") as handle:
+        with open(_PROC_MEMINFO, "r", encoding="ascii") as handle:
             for line in handle:
                 if line.startswith("MemAvailable:"):
                     available = int(line.split()[1]) * 1024
@@ -895,7 +1098,7 @@ def _host_memtotal() -> int | None:
     if sys.platform == "win32":
         return _windows_memtotal()
     try:
-        with open("/proc/meminfo", "r", encoding="ascii") as handle:
+        with open(_PROC_MEMINFO, "r", encoding="ascii") as handle:
             for line in handle:
                 if line.startswith("MemTotal:"):
                     return int(line.split()[1]) * 1024
@@ -1190,7 +1393,7 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
          rung: str | None = None, write_mode: str = "ring",
          prefer_resident: bool = True, max_nbuffers: int = 3,
          allow_ragged: bool = True, prefer_exact: bool = True,
-         max_redundancy: float | None = 4.0,
+         max_redundancy: float | None = MAX_REDUNDANCY,
          minimum_halo: int | None = None) -> Plan:
     """Decide how to run ``cfg`` on ``machine``, or refuse and say why.
 
@@ -1222,7 +1425,10 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     the necessary work -- the failure mode where a card is so small that the
     only window that fits is barely wider than two halos, and the run would
     technically proceed while spending most of the machine on halo cells.
-    Pass ``None`` to allow it anyway.
+    Pass ``None`` to allow it anyway.  :data:`MAX_REDUNDANCY` names what it
+    prevents.  The refusal's ``detail`` carries the tiling it refused
+    (``tile``, ``ntiles``, ``window``, ``halo``, ``redundancy``, ``limit``)
+    so a caller can quote it without parsing the sentence.
 
     The boundary condition is read off ``cfg`` and constrains the search: on
     a non-periodic domain ``plan_tiles`` clamps the window inside the domain
@@ -1241,6 +1447,7 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     halo = _harness.halo_radius(cfg)
     if minimum_halo is not None:
         halo = max(halo, int(minimum_halo))
+    band = edge_band(cfg)
     # PER AXIS.  ``open_x`` alone leaves y wrapping, and a plan that clamps
     # a wrapping axis corrupts its two boundary tile rows -- see
     # :func:`is_periodic`.
@@ -1366,7 +1573,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
         if window_cells <= 0:
             continue
         cand = _best_tile(nx, ny, nz, halo, window_cells, periodic_x,
-                          periodic_y, allow_ragged, prefer_exact)
+                          periodic_y, allow_ragged, prefer_exact,
+                          band=band)
         if cand is None:
             continue
         if cand.get("ragged_only"):
@@ -1401,25 +1609,39 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
         # the constraint.  Blaming VRAM there sends the user shopping for a
         # bigger card that would change nothing.
         if _geometry_admits_no_tile(nx, ny, nz, halo, periodic_x, periodic_y,
-                                    allow_ragged):
+                                    allow_ragged, band=band):
             raise CannotPlan(
                 _too_small_to_tile_message(nx, ny, halo, periodic_x,
                                            periodic_y, fp, cells,
-                                           vram_budget),
+                                           vram_budget, band=band),
                 "geometry", dict(nx=nx, ny=ny, halo=halo,
                                  periodic_x=periodic_x,
-                                 periodic_y=periodic_y))
-        floor = fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1)
+                                 periodic_y=periodic_y, band=band))
+        # The smallest window the geometry admits.  A forced domain's
+        # relaxation zone rules out every tiling that puts a seam between
+        # halo and zone + halo cells from an edge (spec.edge_band_unowned),
+        # so with a zone sized in parent cells that window is far wider
+        # than a one-cell tile's, and pricing the one-cell window would
+        # tell the user the card holds a tile it cannot run.
+        wnx = _smallest_legal_tile(nx, halo, periodic_x, band) + 2 * halo
+        wny = _smallest_legal_tile(ny, halo, periodic_y, band) + 2 * halo
+        floor = fp.vram_bytes(wnx * wny * nz, 1)
         cost_basis = (
-            _prepared_memory_basis(fp) if fp.prepared_memory is not None else
-            f"({fp.process_fixed_bytes / GIB:.2f} GiB of that is the "
+            f". {_prepared_memory_basis(fp)}" if fp.prepared_memory is not None
+            else f" ({fp.process_fixed_bytes / GIB:.2f} GiB of that is the "
             f"per-process fixed cost of the {fp.rung} rung, which no tile "
             f"size can reduce).")
+        window = (f"{wnx}^2 x {nz}" if wnx == wny else
+                  f"{wnx} x {wny} x {nz}")
+        zone = (f" (every seam at least zone + halo = {band + halo} cells "
+                f"from a forced edge or no more than the halo's {halo} "
+                f"cells from it, for the {band}-cell relaxation zone)"
+                if band > 0 else "")
         raise CannotPlan(
             f"no tile fits in {vram_budget / GIB:.2f} GiB of VRAM: the "
-            f"smallest legal compute window at halo {halo} is "
-            f"{2 * halo + 1}^2 x {nz} and one buffer of it already costs "
-            f"{floor / GIB:.2f} GiB "
+            f"smallest legal compute window at halo {halo}{zone} is "
+            f"{window} and one buffer of it already costs "
+            f"{floor / GIB:.2f} GiB"
             f"{cost_basis}",
             "vram", dict(vram_budget=vram_budget, floor_bytes=floor))
 
@@ -1469,6 +1691,12 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
                          host_budget=host_budget))
 
     if max_redundancy is not None and best["redundancy"] > max_redundancy:
+        refused = dict(redundancy=best["redundancy"], tile=(tile_nx, tile_ny),
+                       ntiles=int(ntiles),
+                       window=(best["window_nx"], best["window_ny"]),
+                       halo=int(halo), limit=float(max_redundancy),
+                       nbuffers=int(nbuffers), vram_bytes=float(vram),
+                       vram_budget=int(vram_budget))
         # The resource is derived the same way as the empty-search case
         # above: if an UNBOUNDED budget still cannot beat the limit, the
         # tile is capped by the domain's own geometry (a non-periodic axis
@@ -1477,7 +1705,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
         # a bigger budget WOULD admit a better tile is this a VRAM problem.
         roomy = _best_tile(nx, ny, nz, halo,
                            _unbounded_window_cells(nx, ny, nz, halo),
-                           periodic_x, periodic_y, allow_ragged, prefer_exact)
+                           periodic_x, periodic_y, allow_ragged, prefer_exact,
+                           band=band)
         geometry_capped = (roomy is None or roomy.get("ragged_only")
                            or roomy["redundancy"] > max_redundancy)
         if geometry_capped:
@@ -1505,8 +1734,7 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
                 f"changes nothing.{resident_note}  Pass max_redundancy=None "
                 f"([tiles] max_redundancy = false in a forecast "
                 f"configuration) to stream it anyway.",
-                "geometry", dict(redundancy=best["redundancy"],
-                                 tile=(tile_nx, tile_ny), halo=halo))
+                "geometry", refused)
         cost_basis = (
             f"the {vram_budget / GIB:.2f} GiB budget limits the complete "
             f"independent-buffer envelope. {_prepared_memory_basis(fp)} "
@@ -1522,8 +1750,7 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
             f"problem: {cost_basis} Pass "
             f"max_redundancy=None ([tiles] max_redundancy = false in a "
             f"forecast configuration) to run it anyway.",
-            "vram", dict(redundancy=best["redundancy"],
-                         tile=(tile_nx, tile_ny)))
+            "vram", refused)
 
     # ----------------------------------------------------------------- notes
     fraction = arena / store if store else 0.0
@@ -1613,7 +1840,7 @@ def _unbounded_window_cells(nx: int, ny: int, nz: int, halo: int) -> int:
 
 def _geometry_admits_no_tile(nx: int, ny: int, nz: int, halo: int,
                              periodic_x: bool, periodic_y: bool,
-                             allow_ragged: bool) -> bool:
+                             allow_ragged: bool, band: int = 0) -> bool:
     """Whether the tile search is empty AT ANY BUDGET.
 
     True exactly when the domain's own geometry -- in practice a
@@ -1624,13 +1851,33 @@ def _geometry_admits_no_tile(nx: int, ny: int, nz: int, halo: int,
     """
     probe = _best_tile(nx, ny, nz, halo,
                        _unbounded_window_cells(nx, ny, nz, halo),
-                       periodic_x, periodic_y, allow_ragged)
+                       periodic_x, periodic_y, allow_ragged, band=band)
     return probe is None or bool(probe.get("ragged_only"))
+
+
+def _smallest_legal_tile(n: int, halo: int, periodic: bool,
+                         band: int) -> int:
+    """The narrowest interior extent the tile search admits along one axis.
+
+    1 without a relaxation band, which keeps the one-cell window the VRAM
+    refusal has always priced.  With one, the narrowest candidate whose
+    window fits the axis and whose tiles' interiors, widened by the halo,
+    reach no zone of an edge their windows do not reach
+    (:func:`tilestream.spec.edge_band_unowned`); ``n`` when no candidate
+    does, a case the geometry refusal reports first.
+    """
+    if periodic or band <= 0:
+        return 1
+    for tile in sorted(tile_candidates(n)):
+        if tile + 2 * halo <= n and not _spec.edge_band_unowned(
+                n, tile, halo, band):
+            return tile
+    return int(n)
 
 
 def _too_small_to_tile_message(nx: int, ny: int, halo: int, periodic_x: bool,
                                periodic_y: bool, fp: Footprint, cells: int,
-                               vram_budget: int) -> str:
+                               vram_budget: int, *, band: int = 0) -> str:
     """The geometry refusal, with the remedy that actually helps.
 
     A domain in this state is SMALL -- the clamp only empties the search at
@@ -1653,17 +1900,29 @@ def _too_small_to_tile_message(nx: int, ny: int, halo: int, periodic_x: bool,
               f"resident needs {resident / GIB:.2f} GiB against "
               f"{vram_budget / GIB:.2f} GiB, so neither shape of this run "
               f"fits this card")
+    zone = ""
+    if band > 0:
+        # spec.edge_band_unowned: a zone cell of an edge the tile does not
+        # own, within the halo of its interior, runs unrelaxed and the
+        # tiled run stops matching the resident one.
+        zone = (f"  The domain is boundary-forced with a {band}-cell "
+                f"relaxation zone, and every seam has to sit at least "
+                f"zone + halo = {band + halo} cells from a forced edge or "
+                f"no more than the halo's {halo} cells from it, or the "
+                f"tile beside it would run zone cells with no "
+                f"relaxation.")
     return (f"the domain cannot be tiled at all at halo {halo}: on a "
             f"non-periodic axis the transport refuses any compute window "
             f"wider than the domain (tile + 2*halo <= n), and at "
-            f"{nx}x{ny} that leaves no legal tile -- {'; '.join(caps)}.  "
+            f"{nx}x{ny} that leaves no legal tile -- {'; '.join(caps)}."
+            f"{zone}  "
             f"No card size changes this; {remedy}.  A larger domain tiles "
             f"fine, which is why a size sweep sees its SMALLEST arm refused.")
 
 
 def _best_tile(nx: int, ny: int, nz: int, halo: int, window_cells: int,
                periodic_x: bool, periodic_y: bool, allow_ragged: bool,
-               prefer_exact: bool = True) -> dict | None:
+               prefer_exact: bool = True, *, band: int = 0) -> dict | None:
     """The best tile whose compute window fits ``window_cells``.
 
     Lowest redundancy wins; everything within :data:`ARENA_TIE_BAND` of it is
@@ -1688,11 +1947,20 @@ def _best_tile(nx: int, ny: int, nz: int, halo: int, window_cells: int,
             continue
         if wnx * (1 + 2 * halo) > cap:
             continue
+        # ``band`` (edge_band): no tile's interior, widened by its halo,
+        # may reach a forced domain's relaxation zone along an edge its
+        # window does not reach -- tilestream.spec.edge_band_unowned.
+        if not periodic_x and _spec.edge_band_unowned(nx, tile_nx, halo,
+                                                      band):
+            continue
         for tile_ny in tile_candidates(ny):
             wny = tile_ny + 2 * halo
             if not periodic_y and wny > ny:
                 continue
             if wnx * wny > cap:
+                continue
+            if not periodic_y and _spec.edge_band_unowned(ny, tile_ny, halo,
+                                                          band):
                 continue
             ragged = (nx % tile_nx != 0) or (ny % tile_ny != 0)
             if ragged and not allow_ragged:

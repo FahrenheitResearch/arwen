@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -882,9 +883,15 @@ def test_captured_config_loader_keeps_original_source_and_relative_base(
         b"[case_data]\nforcing='relative.grib2'\n")
     observed = {}
 
+    class _Experiment(str):
+        # The door reads the built experiment's domain spacings for the
+        # sub-km terrain default (resolve_static_highres); a stand-in with
+        # no domains takes no default.
+        domains = ()
+
     def build_experiment(raw, *, source):
         observed["experiment"] = (raw, source)
-        return "experiment"
+        return _Experiment("experiment")
 
     def build_case_data(raw, *, source, base_dir, require_inputs=True,
                         **kwargs):
@@ -1497,9 +1504,11 @@ def test_worker_refuses_forcing_glob_path_set_toctou_after_restore(
     config.write_bytes(payload)
     captured.write_bytes(payload)
     monkeypatch.setattr(
-        case_data, "build_experiment", lambda *_args, **_kwargs: object())
-    # A bare object stands in for the experiment, so the door's plan review
-    # of it (review_root_footprint) is stubbed beside the builder.
+        case_data, "build_experiment",
+        lambda *_args, **_kwargs: SimpleNamespace(domains=()))
+    # A stand-in with no domains takes the experiment's place (so no sub-km
+    # terrain default applies), and the door's plan review of it
+    # (review_root_footprint) is stubbed beside the builder.
     monkeypatch.setattr(case_data, "review_root_footprint",
                         lambda _experiment, _source: None)
 
@@ -1999,9 +2008,11 @@ def test_worker_failure_capsule_embeds_the_exact_config_and_small_text_inputs(
     config.write_bytes(payload)
     captured.write_bytes(payload)
     monkeypatch.setattr(
-        case_data, "build_experiment", lambda *_args, **_kwargs: object())
-    # A bare object stands in for the experiment, so the door's plan review
-    # of it (review_root_footprint) is stubbed beside the builder.
+        case_data, "build_experiment",
+        lambda *_args, **_kwargs: SimpleNamespace(domains=()))
+    # A stand-in with no domains takes the experiment's place (so no sub-km
+    # terrain default applies), and the door's plan review of it
+    # (review_root_footprint) is stubbed beside the builder.
     monkeypatch.setattr(case_data, "review_root_footprint",
                         lambda _experiment, _source: None)
     parent_hashes = supervisor.resolved_input_hashes(

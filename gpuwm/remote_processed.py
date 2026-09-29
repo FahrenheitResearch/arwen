@@ -193,6 +193,7 @@ def _check_identity(result, run_id, event, source_sha256=None):
 
 def _convert(root, record, bound, event, authority):
     from gpuwm.render import require_renderer
+    from gpuwm.rustwx import renderer_env
     producer_root = bound[0]
     source = ra._inside(event.get("path"), producer_root)
     stamp = ra._stamp(source)
@@ -211,9 +212,11 @@ def _convert(root, record, bound, event, authority):
                "store_root": str(store_root), "heavy_ecape": False}
     _write(request_path, request)
     with (directory / "native.log").open("ab", buffering=0) as log:
+        # Every call of the renderer gets one environment (renderer_env), so
+        # an installed renderer is always handed the map files it draws with.
         result = subprocess.run([str(require_renderer()), "--process-request", str(request_path),
                                  "--process-result", str(result_path)], stdin=subprocess.DEVNULL,
-                                stdout=log, stderr=log, timeout=3600, check=False)
+                                stdout=log, stderr=log, timeout=3600, check=False, env=renderer_env())
     if result.returncode != 0:
         raise ValueError(f"Native WRF processing exited {result.returncode}; see {directory / 'native.log'}")
     if ra._stamp(source) != stamp:

@@ -477,13 +477,20 @@ def register(server: Any, manager: JobManager) -> list[str]:
         arwen_cells_catalog(out_dir).  `profile` is a titan threshold
         profile (research, severe, legacy, operational); `ladder` is
         BOTTOM:TOP:STEP metres; `titan` names the binary when the
-        resolution ladder does not find one.
+        resolution ladder does not find one.  titan is a separate
+        program ArWen does not ship: without one this tool is off and
+        says so before launching anything.
         """
 
         if not wrfout:
             raise ArwenRefusal(
                 "no wrfout files were given, so there is no history to "
                 "find a cell in.")
+        from gpuwm.cells import titan as cells_titan
+        try:
+            cells_titan.resolve_titan(titan, what="arwen_cells")
+        except (cells_titan.TitanMissing, FileNotFoundError) as error:
+            raise ArwenRefusal(str(error)) from error
         args = ["cells", "analyze", *[str(p) for p in wrfout],
                 "--out", out_dir]
         if profile:

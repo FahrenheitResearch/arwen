@@ -27,6 +27,7 @@ unobserved child pids are only printed.
 
 from __future__ import annotations
 
+import io
 import signal
 import subprocess
 import sys
@@ -260,8 +261,11 @@ def test_go_reports_the_interrupt_in_one_sentence_and_exits_130(
             def poll(self):
                 return 0
 
-            stdout = None
-            stderr = None
+            # Empty pipes: a stage's output is read as it is written.
+            def __init__(self):
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
+
             stdin = None
             args = ()
 
@@ -273,6 +277,10 @@ def test_go_reports_the_interrupt_in_one_sentence_and_exits_130(
     monkeypatch.setattr(subprocess, "Popen", interrupt_at_fetch)
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
+    # The device check runs its probe through subprocess, which is the
+    # stand-in above, so it would refuse before the fetch stage this test
+    # interrupts.  The check has its own tests.
+    monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
 
     rc = cli.main(["go", str(gfs_config), "--outdir", str(tmp_path / "go"),
                    "--geog-root", str(staged_geog)])

@@ -172,3 +172,58 @@ def test_accelerator_staging_carries_every_field_a_batch_declares(tmp_path, monk
             assert after == before, (
                 f"staging dropped or changed {name}, which it does not move"
                 " to the device")
+
+
+def test_the_dispersion_gate_rides_the_reviewed_settings(tmp_path, monkeypatch):
+    """The local route reads the dispersion gate's thresholds from the
+    reviewed plan's applied settings, the way it reads rtps_alpha, and
+    records them with every analysis; the reviewed defaults are the
+    cycling door's."""
+    import gpuwm.da.obs_point as obs_point
+    import gpuwm.da.radar_assimilation as ra
+    from gpuwm.da.letkf import GriddedObs
+    from gpuwm.da.velocity_dispersion import (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+        DEFAULT_VELOCITY_DISPERSION_RATIO)
+    from gpuwm.experiment import load_experiment
+    from gpuwm.local_da import build_plan
+    from gpuwm.local_da_runtime import PreparedBackend
+    from test_local_da_plan import availability, price, request
+
+    plan = build_plan(request(scale=2), availability=availability, price=price)
+    applied = plan['cadence_settings']['applied']
+    assert applied['velocity_dispersion_ratio'] == DEFAULT_VELOCITY_DISPERSION_RATIO
+    assert applied['velocity_dispersion_batch_ratio'] == DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO
+    applied.update(velocity_dispersion_ratio=None,
+                   velocity_dispersion_batch_ratio=4.5)
+    backend = PreparedBackend(plan, tmp_path)
+    (tmp_path / 'experiment.toml').write_text(plan['configuration']['experiment'])
+    backend.exp = load_experiment(tmp_path / 'experiment.toml')
+    backend.mp_physics = backend.exp.root.run.mp_physics
+    backend.grid = small_grid()
+    backend.setup = {'thb': np.array([300., 310.])}
+    members = plan['selected']['members']
+    mask = np.zeros((2, 5, 5), bool)
+    mask[0, 2, 2] = True
+    rng = np.random.default_rng(3)
+    batch = GriddedObs(name='point:u', values=np.full((2, 5, 5), 12.),
+                       errors=2., simulated=rng.standard_normal((members, 2, 5, 5)),
+                       mask=mask)
+    monkeypatch.setattr(obs_point, 'point_batches',
+                        lambda *a, **k: ([batch], {'counts': {'accepted': 1}}))
+    monkeypatch.setattr(backend, '_surface_for_members', lambda _: {})
+    monkeypatch.setattr(backend, '_observation_window', lambda *a: dict(
+        rows=[object()], surface=[], radar=None, cwp=None, receipts=[]))
+    seen = []
+    real = ra.assimilate_radar_grid
+
+    def spy(*args, **kwargs):
+        seen.append(args[3])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ra, 'assimilate_radar_grid', spy)
+    _, receipt = backend.assimilate(0, states_on_disk(tmp_path, members))
+    assert seen[0].velocity_dispersion_ratio is None
+    assert seen[0].velocity_dispersion_batch_ratio == 4.5
+    assert receipt['velocity_dispersion']['ratio'] is None
+    assert receipt['velocity_dispersion']['batch_ratio_gate'] == 4.5

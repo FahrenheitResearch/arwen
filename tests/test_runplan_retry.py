@@ -665,7 +665,7 @@ def test_the_chain_reruns_into_the_same_run_directory_without_refusing(
 
 
 def _chain_that_fails_at_the_forecast(tmp_path, monkeypatch):
-    """The chain Drew hit: fetch and prepare land, the forecast does not.
+    """The chain that failed: fetch and prepare land, the forecast does not.
 
     The two stages under test are real -- the real ``_hrrr_chain``, the
     real ``_prepare_stage``, the real decision -- and only the three

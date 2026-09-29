@@ -200,12 +200,14 @@ def main() -> None:
         # function: the crosswalk puts every open-water pixel in the
         # inland lake category, and the domain's own 30-arc-second water
         # field is what moves the sea back to ocean.  Two doors, one
-        # configuration, one answer.
+        # configuration, one answer.  The baseline also stands in for
+        # every cell a source does not cover, as it does in production.
         overrides, source_audit = build_highres_overrides(
             grid, terrain=terrain, landcover=landcover,
             soil_sources=soil_sources, soil_fallback=baseline,
             landcover_mapping=landcover_mapping,
             baseline_ocean=baseline_ocean_mask(baseline),
+            baseline=baseline,
         )
         highres_seconds = time.perf_counter() - highres_started
         merge_started = time.perf_counter()

@@ -34,6 +34,7 @@ from gpuwm.ingest.soil_contract import (
 )
 from gpuwm.mapped_composition import load_composition
 from gpuwm.static.lambert import LambertGrid
+from conftest import requires_wps_masked_chain_bridge
 
 
 ROOT = Path(__file__).parents[1]
@@ -237,6 +238,7 @@ def test_declarative_era5_remap_is_bit_identical_to_retired_named_packing():
     _assert_soil_state_equal(actual, expected)
 
 
+@requires_wps_masked_chain_bridge
 def test_declarative_era5_full_horizontal_path_matches_retired_named_packing():
     latitude = np.linspace(34.0, 46.0, 9, dtype=np.float64)
     longitude = np.linspace(267.0, 283.0, 10, dtype=np.float64)

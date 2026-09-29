@@ -42,6 +42,8 @@ from gpuwm.bridges import (default_bridge_dir, accept_resolved,
                            executable_name, packaged_bridge_dir)
 from gpuwm.ingest.source_coverage import \
     ForcingSeriesRefusal as _ForcingSeriesRefusal
+from gpuwm.ingest.source_coverage import \
+    ScratchDiskRefusal as _ScratchDiskRefusal
 
 #: Executable basename, resolved through the standard bridge-ladder
 #: shape (env override, this checkout's build, staged copies) the way
@@ -73,7 +75,7 @@ ENGINE_CRATE_RELATIVE = "tools/rw_wps"
 #: never the problem.
 ABI_MARKER = (
     b"gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 "
-    b"grib2-drt=0,2,3,4,40,41,42,50,51,61,200")
+    b"height-interfaces=1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200")
 
 #: Output schemas the engine writes.
 FRAMESET_SCHEMA = "gpuwm-mapped-frameset-v1"
@@ -408,7 +410,40 @@ REFUSAL_CLASSES: Mapping[str, type[Exception]] = {
     "forcing_series": _ForcingSeriesRefusal,
     # Authority file changed hash mid-run.
     "authority_moved": RuntimeError,
+    # The disk holding the engine's output directory -- the preparation
+    # scratch -- has no room for the frame stream: a full disk or quota
+    # met mid-write, or a stream sized before its first byte and found
+    # too big.  A PreparationRefusal, so the door prints the folder, the
+    # bytes and GPUWM_COMPOSE_SCRATCH as sentences.
+    "disk_full": _ScratchDiskRefusal,
+    # Any other failure to write the engine's own output; the message
+    # names the path and the operating system's reason, as the OSError
+    # the Python writer raises for the same condition does.
+    "write_failed": OSError,
+    # This process closed the pipe the engine asks its atmospheric window
+    # question on: it stopped reading, or closed before replying.  The
+    # exception Python raises for a pipe whose other end is gone, and an
+    # OSError, so a caller's existing net still holds; its own class so
+    # its remedy stops naming an output directory nothing is wrong with.
+    "requester_closed": BrokenPipeError,
 }
+
+
+def _raise_scratch_write(error: OSError, what: str) -> None:
+    """Re-raise a failed scratch write as the refusal its cause earns.
+
+    A full disk or exhausted quota becomes :class:`ScratchDiskRefusal`,
+    the class the engine's ``disk_full`` maps to, so both writers answer
+    the same condition with the same type; anything else is re-raised
+    unchanged, since an ``OSError`` already names its path and reason.
+    """
+
+    import errno
+
+    full = {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}
+    if error.errno is not None and error.errno in full:
+        raise _ScratchDiskRefusal(f"cannot write {what}: {error}") from error
+    raise error
 
 
 def engine_candidates() -> tuple[Path, ...]:
@@ -837,13 +872,21 @@ def write_frameset(directory: str | Path, frames: Sequence[Any]) -> Path:
     """
 
     directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / FRAMES_STREAM).open("wb") as sink:
-        document = _emit_frameset(frames, sink)
-    (directory / FRAMES_DOCUMENT).write_text(
-        json.dumps(document, indent=2, sort_keys=True, allow_nan=False),
-        encoding="utf-8",
-    )
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / FRAMES_STREAM).open("wb") as sink:
+            document = _emit_frameset(frames, sink)
+    except OSError as error:
+        _raise_scratch_write(
+            error, f"the frame stream {directory / FRAMES_STREAM}")
+    try:
+        (directory / FRAMES_DOCUMENT).write_text(
+            json.dumps(document, indent=2, sort_keys=True, allow_nan=False),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        _raise_scratch_write(
+            error, f"the frameset manifest {directory / FRAMES_DOCUMENT}")
     return directory
 
 
@@ -1581,7 +1624,8 @@ def parse_refusal(stderr: str) -> dict[str, str] | None:
     return None
 
 
-def refusal_error(refusal: Mapping[str, str], command: Sequence[str]) -> Exception:
+def refusal_error(refusal: Mapping[str, str],
+                  command: Sequence[str] = ()) -> Exception:
     """Map an engine refusal onto the exception the Python engine raises.
 
     An unlisted class is itself a contract defect: it means the engine
@@ -1589,6 +1633,10 @@ def refusal_error(refusal: Mapping[str, str], command: Sequence[str]) -> Excepti
     then disagree about what a caller may catch.  That re-raises as
     ``RuntimeError`` naming the unknown class rather than being widened
     into whatever exception looks closest.
+
+    ``command`` is optional because :func:`declared_capabilities` maps
+    its refusal with none in hand; requiring it turned that refusal into
+    a ``TypeError`` about the call instead of the engine's own sentence.
     """
 
     name = str(refusal.get("class", ""))
@@ -1672,10 +1720,13 @@ def run_engine(
             raise ValueError("mapped writer returned an unknown capability schema")
         window_enabled = declared.get("features", {}).get("atmospheric_window") == WINDOW_SCHEMA
     output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
     input_list = output / "inputs.txt"
-    input_list.write_text(
-        "".join(f"{Path(path)}\n" for path in files), encoding="utf-8")
+    try:
+        output.mkdir(parents=True, exist_ok=True)
+        input_list.write_text(
+            "".join(f"{Path(path)}\n" for path in files), encoding="utf-8")
+    except OSError as error:
+        _raise_scratch_write(error, f"the engine input list {input_list}")
     command = engine_command(
         subcommand,
         engine=binary,

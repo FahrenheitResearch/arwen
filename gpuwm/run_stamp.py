@@ -500,9 +500,18 @@ def resolve(root, *, init=None, launch=None, enabled: bool = DEFAULT_RUN_STAMP,
             root.mkdir(parents=True, exist_ok=True)
         return root
     if not create:
-        return root / format_stamp(
-            launch=utcnow() if launch is None else launch,
-            init=parse_time(init))
+        # The name allocate() would take right now: the first ordinal no
+        # folder holds yet.  Always naming ordinal 1 predicted a folder
+        # an earlier run of the same second already owned, and the claim
+        # then took the next ordinal under a name nobody had announced.
+        when = utcnow() if launch is None else launch
+        start = parse_time(init)
+        for ordinal in range(1, MAX_ORDINAL + 1):
+            candidate = root / format_stamp(launch=when, init=start,
+                                            ordinal=ordinal)
+            if not candidate.exists():
+                return candidate
+        return root / format_stamp(launch=when, init=start)
     return allocate(root, init=init, launch=launch, publish=publish)
 
 

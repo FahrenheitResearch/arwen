@@ -241,7 +241,7 @@ def _record(directory):
 #: so the review and the launch cannot compose two different commands.
 ENTRY_DOORS = {
     "go": {"module": "gpuwm.cli", "command": "go",
-           "flags": ("--outdir", "--no-memory-gate", "--geog-root", "--products",
+           "flags": ("--outdir", "--no-memory-gate", "--geog-root", "--products", "--section",
                      "--prepared-root", "--wps-namelist", "--restart")},
     "run-plan": {"module": "gpuwm.cli", "command": "run-plan", "flags": ()},
 }
@@ -283,8 +283,9 @@ def compose_argv(entry):
             raise ValueError(f"The remote '{entry['door']}' door carries no {name}. It carries "
                              + (", ".join(door["flags"]) or "no options at all")
                              + "; deliver this setting through a door that carries it.")
-        # A switch carries no value; an option carries exactly one.
-        flags += [name] if value is None else [name, str(value)]
+        # A signed coordinate remains a value, not another argparse option.
+        flags += ([name] if value is None else [name + "=" + str(value)]
+                  if str(value).startswith("-") else [name, str(value)])
     return [sys.executable, "-I", "-u", "-m", door["module"], door["command"],
             str(entry["document"]), *flags]
 
@@ -387,6 +388,13 @@ def _status(directory):
                         value = _json(path)
                         if value.get("schema") == schema and value.get("job_id") == record["id"]:
                             job[key] = value
+                            warning = value.get("render_warning")
+                            if (key == "native_plots" and isinstance(warning, str) and warning
+                                    and "render_warning" not in job):
+                                # The gallery's renderer had no map files. The
+                                # job-level field the run's own warning fills,
+                                # so the terminal workspace shows it either way.
+                                job["render_warning"] = warning[:1600]
                 except (OSError, ValueError) as error:
                     job[key + "_error"] = {"message": str(error)[:1000], "receipt": str(path),
                                            "class": type(error).__name__}
@@ -721,9 +729,17 @@ def _review(request, workspace):
         if not Path(geog).is_dir():
             raise ValueError("geog_root must already exist on the remote node")
     products = _requested(request, old, "products")
+    section = _requested(request, old, "section")
     device = _requested(request, old, "device")
     if products is not None and (not isinstance(products, str) or len(products) > 16384 or "\x00" in products):
         raise ValueError("products must be a catalog selector string of at most 16384 characters")
+    if section is not None and (not isinstance(section, str) or len(section) > 8192
+                                or any(ord(char) < 32 for char in section)):
+        raise ValueError("section must be a line or node JSON path of at most 8192 characters; "
+                         "otherwise the renderer cannot read the cut line")
+    cwd = source.parent if old is None else Path(old["cwd"])
+    from gpuwm.go_cli import admit_render_products, render_section_value
+    section = render_section_value(section, base=cwd)
     checkpoint = None
     resume_notes = []
     if old:
@@ -743,7 +759,9 @@ def _review(request, workspace):
         resumed = _resumed_plan(plan_document, old, run_root, checkpoint, overrides={
             "prepared_root": None if prepared is None else str(prepared),
             "wps_namelist": None if wps is None else str(wps),
-            "render_products": request.get("products"), "device": device,
+            "render_products": request.get("products"),
+            "render_section": section if request.get("section") is not None else None,
+            "device": device,
             "geog_root": request.get("geog_root")})
         snapshots["plan.json"] = _plan_bytes(resumed)
         plan_path = str(Path(old["snapshot_plan"]).parent / "plan.json")
@@ -751,8 +769,10 @@ def _review(request, workspace):
         # The plan carries its own render selection; it is recorded so this
         # job's own watchers draw what the run draws, and never passed as a flag.
         products = resumed.get("run_options", {}).get("render_products")
+        section = resumed.get("run_options", {}).get("render_section")
         entry = {"door": "run-plan", "document": plan_path, "flags": []}
     else:
+        admit_render_products(products, section=section)
         # The remote review already carries sizing advice. Do not turn the same
         # estimate into a refusal again inside go; its input and device checks
         # and the runner's real allocation errors still apply.
@@ -761,6 +781,8 @@ def _review(request, workspace):
             flags.append(("--geog-root", geog))
         if products is not None:
             flags.append(("--products", products))
+        if section is not None:
+            flags.append(("--section", section))
         if prepared is not None:
             flags.append(("--prepared-root", str(prepared)))
         if wps is not None:
@@ -777,7 +799,7 @@ def _review(request, workspace):
     memory = memory_decision(source, device=device)
     value = {"entry": entry, "argv": compose_argv(entry), "config": str(source), "outdir": str(outdir),
              "run_root": str(run_root),
-             "cwd": str(source.parent if old is None else Path(old["cwd"])),
+             "cwd": str(cwd), "section": section,
              "geog_root": geog, "products": products, "checkpoint": None if checkpoint is None else str(checkpoint),
              "prepared_root": None if prepared is None else str(prepared), "wps_namelist": None if wps is None else str(wps),
              "parent_job": None if old is None else old["id"], "runtime": runtime(), "memory": memory,
@@ -1083,7 +1105,7 @@ def dispatch(request):
     _ownership_provider()
     if not isinstance(request, dict) or request.get("schema") != "gpuwm.remote.request.v1":
         raise ValueError("unsupported remote request schema")
-    allowed = {"schema", "action", "workspace", "config", "outdir", "geog_root", "prepared_root", "wps_namelist", "products", "device", "request_id", "job", "cursor", "limit",
+    allowed = {"schema", "action", "workspace", "config", "outdir", "geog_root", "prepared_root", "wps_namelist", "products", "section", "device", "request_id", "job", "cursor", "limit",
                "from_checkpoint", "dry_run", "expected_config_sha256", "expected_wps_sha256", "expected_input_sha256",
                "expected_checkpoint_sha256", "expected_checkpoint_set_sha256", "expected_prepared_sha256",
                "bundle", "bundle_id", "expected_bundle_sha256", "expected_plan_sha256", "domain", "inputs", "expected_source_blobs_sha256",
@@ -1118,7 +1140,7 @@ def dispatch(request):
         if set(request) - {"schema", "action", "workspace"}:
             raise ValueError("unsupported remote product catalog request fields")
         from gpuwm.remote_processed_v2 import node_catalog
-        return {"product_catalog": node_catalog()}
+        return {"product_catalog": node_catalog(include_sections=True)}
     if action == "processed-frame":
         from gpuwm.remote_processed import catalog
         return {"processed_frame": catalog(request, workspace)}

@@ -68,13 +68,21 @@ auditable local deltas required by the native GFS bridge:
   located by the fixed lengths of templates 4.0/4.1/4.2, an unmodeled
   template with NV > 0 refuses by name, and a tail short of its
   declared count refuses rather than rereading template octets as
-  coefficients.
+  coefficients.  A conformant Section 5 template 4 (IEEE packing) is
+  read from its own precision code (1 is 32 bits, 2 is 64, 3 is the
+  128-bit width the unpacker names as unimplemented, anything else
+  refuses by number) instead of being routed to the simple-packing
+  reader, which asked for octets template 4 does not have.
+  `DECODE_TEMPLATES` lists the Section-5 templates `parse_section5` has
+  a reader for, in the spelling a binary compiles into its contract
+  marker, with a test that each listed template parses.
   Patched-file SHA-256:
-  `74c7f0c4e968438ad2d5e91709ab1d7db4357d559a54158d7595d6360f9365dc`.
-- `src/grib2/mod.rs` re-exports that identification value object, and
-  `MissingValueMode` / `missing_value_mode` beside the unpackers.
+  `d6163611772b33aa90a72b74e5722050540ae77e6b2a3e653670f867b0c2f950`.
+- `src/grib2/mod.rs` re-exports that identification value object and
+  `DECODE_TEMPLATES`, and `MissingValueMode` / `missing_value_mode`
+  beside the unpackers.
   Patched-file SHA-256:
-  `2002c7ba1dd4a616b8fad01a181c1f01840af5a5e6b1edc25eb974b8d58ce31d`.
+  `f4821ab9c8fca81b96a76751bf74af3a4bc131f352806a5b09c749ec5f4ec969`.
 - `src/grib2/search.rs` initializes the new identity in its pre-existing
   synthetic test messages. `src/grib2/unpack.rs` additionally enforces
   Section-5/7 simple- and complex-packing cardinality, checked bit reads, a
@@ -100,10 +108,14 @@ auditable local deltas required by the native GFS bridge:
   instead of synthesizing reference-value fill.  Three regression tests cover
   a short simple payload, a bitmap that outlasts its payload, and a truncated
   complex-group payload.  This is a local delta to the upstream tree pinned
-  above; the patched-file pins were rechecked on 2026-09-06.
+  above; the patched-file pins were rechecked on 2026-09-06.  A
+  simple-packed field whose bitmap marks every point missing and whose
+  Sections 5/7 carry no coded value decodes as an all-missing field
+  (NaN) rather than inventing its reference value; a missing or
+  malformed bitmap, or a nonempty payload, is still a decode error.
   Patched-file SHA-256 values are respectively
   `22254047da83fafcc06816170b7687127cb9f64bc7e82e4de2d239861c149547`
-  and `e285cb7971959a844c74216e9bd65ca443586c771d33ea6f99274141f644fad5`.
+  and `a832f9cd8d4c6e94565799337b31eac7bdafeee455cb8e481e78fba96c0f5316`.
 - `src/grib2/grid.rs` fails closed on a grid-definition template it has no
   point placement for: `grid_latlon` returns `crate::Result` and refuses
   naming the template number (and that supporting it needs the template's

@@ -271,6 +271,9 @@ def publish_hrrr_prepared_bundle(
         single_domain_physics_selection,
         validate_single_domain_physics_profile,
     )
+    from gpuwm.wrf_direct import (
+        StockWrfExportUnsupported, stock_wrf_export_refused)
+    from gpuwm.wrf_physics_inventory import stock_wrf_physics_inventory
 
     root = Path(output_root).resolve()
     if not root.is_dir():
@@ -370,16 +373,48 @@ def publish_hrrr_prepared_bundle(
         "array_count": len(header.get("arrays") or {}),
         "payload_bytes": header.get("payload_bytes"),
     }
-    export_source = {
-        "contract_sha256": _sha256(
-            Path(__file__).resolve().parent / "wrf_direct_v461_contract.json"),
-        "geometry_receipt_sha256": _sha256(geometry_receipt),
-        "prepared_content_sha256": header.get("content_sha256"),
-        "prepared_header_sha256": _sha256(cache_path / "header.json"),
-        "resolved_physics_contract_sha256": (
-            _resolved_wrf_direct_contract_sha256(int(cfg.mp_physics))),
-        "static_cache_sha256": _sha256(static_cache),
-    }
+    # The export slot binds the stock-WRF physics contract, and a scheme
+    # with no stock-WRF package contract (WDM6, Kessler, Milbrandt-Yau)
+    # has none to bind.  That is a fact about exporting a wrfinput for an
+    # unchanged WRF, not about running the scheme here: hashing the
+    # contract regardless raised, the preparation published no bundle,
+    # and the shipped Grell-Freitas suite (WDM6) could not run from HRRR.
+    # Such a slot records the stock export as refused, in the receipt
+    # the mapped routes write for the same case, and the forecast reader
+    # admits it (``_optional_stock_wrf_export``).
+    mp_physics = int(cfg.mp_physics)
+    try:
+        stock_wrf_physics_inventory(mp_physics)
+    except ValueError as error:
+        stock_refusal = StockWrfExportUnsupported(
+            str(error), unsupported={"mp_physics": mp_physics})
+    else:
+        stock_refusal = None
+    if stock_refusal is None:
+        export = {
+            "schema": EXPORT_SCHEMA,
+            "status": "READY",
+            "forcing_hours": forcing_hours,
+            "boundary_interval_seconds": boundary_interval_seconds,
+            "dimensions": {"nx": int(cfg.nx), "ny": int(cfg.ny),
+                           "nz": int(cfg.nz)},
+            "valid_time": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
+            "source": {
+                "contract_sha256": _sha256(
+                    Path(__file__).resolve().parent
+                    / "wrf_direct_v461_contract.json"),
+                "geometry_receipt_sha256": _sha256(geometry_receipt),
+                "prepared_content_sha256": header.get("content_sha256"),
+                "prepared_header_sha256": _sha256(
+                    cache_path / "header.json"),
+                "resolved_physics_contract_sha256": (
+                    _resolved_wrf_direct_contract_sha256(mp_physics)),
+                "static_cache_sha256": _sha256(static_cache),
+            },
+            "physics": physics,
+        }
+    else:
+        export = stock_wrf_export_refused(stock_refusal, schema=EXPORT_SCHEMA)
     proof = {
         "schema": PROOF_SCHEMA,
         "status": "READY_NOT_YET_STOCK_WRF_GATED",
@@ -423,18 +458,10 @@ def publish_hrrr_prepared_bundle(
         },
         "prepared_cache": cache_receipt,
         "physics": physics,
-        "export": {
-            "schema": EXPORT_SCHEMA,
-            "status": "READY",
-            "forcing_hours": forcing_hours,
-            "boundary_interval_seconds": boundary_interval_seconds,
-            "dimensions": {"nx": int(cfg.nx), "ny": int(cfg.ny),
-                           "nz": int(cfg.nz)},
-            "valid_time": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
-            "source": export_source,
-            "physics": physics,
-        },
+        "export": export,
     }
+    if stock_refusal is not None:
+        proof["stock_wrf_export"] = "optional"
     # The cache owns these declared scientific settings. The forecast reader
     # compares each present field to both this proof and the experiment; losing
     # one at publication makes a valid native preparation impossible to run.

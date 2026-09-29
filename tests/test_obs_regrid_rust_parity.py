@@ -4,7 +4,7 @@ reference bit for bit.
 `gpuwm/verify/obs/regrid.py` was the last scipy site on a shipped data
 path: every remap plan the observation battery builds went through
 `scipy.spatial.cKDTree` with no second engine and no fallback, and
-"regrid/transform" is named verbatim in Drew's Python boundary.  This
+"regrid/transform" is named verbatim in the project's Python boundary.  This
 file is the shipping-path half of that port -- the crate's own goldens
 (`tools/rustwx/crates/obs-regrid/golden/`) prove the arithmetic, and
 these prove the ROUTE: that a bare call lands on Rust, that the estate
@@ -419,3 +419,37 @@ def test_the_search_ladder_refusal_lists_every_path_and_the_remedies(
     message = str(caught.value)
     assert "gpuwm fetch-bridges" in message
     assert "cargo build --release -p obs-regrid" in message
+
+
+#: The observation-remap library's checkout build as each shell must
+#: receive it, written out rather than derived so a generator that loses
+#: its shell rule cannot also rewrite what it is judged against.  Windows
+#: PowerShell 5.1 rejects `&&` with a parser error.
+OBS_REGRID_BUILD_FOR_SHELL = {
+    False: "cd tools/rustwx && cargo build --release -p obs-regrid "
+           "--offline && cd ../..",
+    True: "cd tools/rustwx; cargo build --release -p obs-regrid "
+          "--offline; cd ../..",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_search_ladder_refusal_spells_the_build_for_the_shell(
+        monkeypatch, windows):
+    """The not-found refusal reads the one shell rule every remedy reads.
+
+    It chose its separator from ``os.name``, so no test could force its
+    Windows spelling and a regression to `&&` there would pass on every
+    Linux runner.
+    """
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.delenv(regrid_bridge.OBSREGRID_BRIDGE_ENV, raising=False)
+    monkeypatch.setattr(regrid_bridge, "library_candidates", lambda: ())
+    with pytest.raises(FileNotFoundError) as caught:
+        regrid_bridge.resolve_obsregrid_bridge()
+    message = str(caught.value)
+    assert OBS_REGRID_BUILD_FOR_SHELL[windows] in message, message
+    if windows:
+        assert "&&" not in message, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {message}")

@@ -1,6 +1,6 @@
 ## gpuwm vendored Rusty Weather renderer workspace.
 ##
-## The crates under crates/ and vendor/ are a verbatim subset of Drew's
+## The crates under crates/ and vendor/ are a verbatim subset of the project's
 ## rusty-weather workspace (MIT, LICENSE in this directory), vendored at
 ## the exact working-tree state that produced the campaign renderer
 ## binary (rw_wrf_batch.exe sha256 aa220a5a...); provenance and the two
@@ -22,8 +22,10 @@ members = [
     "crates/rustwx-products",
     "crates/rustwx-render",
     "crates/rusty-weather",
+    "crates/rw-atms",
     "crates/rw-fetch",
     "crates/rw-fieldcmp",
+    "crates/rw-host-memory",
     "crates/rw-ingest",
     "crates/rw-mpas",
     "crates/rw-netcdf",

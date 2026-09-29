@@ -182,7 +182,7 @@ when 63% of the call moved to the device. `ENERGY`, `NOAHMP_SFLX` and
 physical leaf call and **resume in the same frame**. Each land column runs
 exactly once.
 
-Measured on Drew's local RTX 5090 (Windows, CUDA 13.0, CuPy 14.1.1), paired in
+Measured on the development workstation's RTX 5090 (Windows, CUDA 13.0, CuPy 14.1.1), paired in
 one process against the same tree's host authority:
 
 | land columns | host authority ms/col | device leaves ms/col | speedup |
@@ -412,7 +412,7 @@ either disbelieve the rest of the warning or re-derive the figure themselves.
 
 # Third conversion: RADIATION, THERMOPROP, TSNOSOI, PHASECHANGE
 
-*Same machine as the second section -- Drew's local RTX 5090, Windows, CUDA
+*Same machine as the second section -- the development workstation's RTX 5090, Windows, CUDA
 13.0, CuPy 14.1.1 -- so the millisecond figures below **are** comparable with
 that section's and are **not** comparable with the first section's, which came
 off a rented Linux card.*
@@ -771,7 +771,7 @@ a further factor of two. For the lead:
 
 # Fourth conversion: the SFLX prefix, the driver loop, and a correction to the diagnosis above
 
-*Same machine as the second and third sections -- Drew's local RTX 5090,
+*Same machine as the second and third sections -- the development workstation's RTX 5090,
 Windows, CUDA 13.0, CuPy 14.1.1.  Every millisecond below was taken with **one
 script, run back to back on the pre-lane tree and on this one**, because the
 absolute figures on this box move by up to 30% between harnesses and only a
@@ -1414,7 +1414,7 @@ re-deriving any of this.
 
 # Fifth conversion: the column solver stops being a per-column Python program
 
-*Drew's local RTX 5090, Windows, CUDA 13.0, CuPy 14.1.1.  The absolute
+*the development workstation's RTX 5090, Windows, CUDA 13.0, CuPy 14.1.1.  The absolute
 milliseconds on this box move by up to 30% between harnesses and between
 hours, so nothing below is compared with a figure from an earlier section;
 every comparison is paired, in one process, minutes apart.*
@@ -1875,7 +1875,7 @@ value reaching a scalar kernel argument.
 
 # Sixth conversion: the orchestration lands, and the forecast takes it
 
-*Drew's local RTX 5090, Windows, CUDA 13.0, CuPy 14.1.1.  As every section
+*the development workstation's RTX 5090, Windows, CUDA 13.0, CuPy 14.1.1.  As every section
 since the second has warned, absolute seconds on this box move by up to 30%
 between harnesses and hours; every comparison below is paired, in one
 process, minutes apart, and the timing was run twice end to end.*

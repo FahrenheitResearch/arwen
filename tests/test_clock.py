@@ -59,6 +59,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import requires_case_inputs
+
 from gpuwm.case_data import load_experiment_case
 from gpuwm.config import RunConfig
 from gpuwm.experiment import (DomainConfig, ExperimentConfig,
@@ -68,6 +70,12 @@ from gpuwm.core.clock import (FEEDBACK, FORCE, STEP, Op, Schedule,
                               resolve_clock)
 
 REPO = Path(__file__).resolve().parents[1]
+
+#: These tests load configs/real74_4dom.toml with its declared inputs
+#: required, so they run only where the WRF 1974 reference bundle its
+#: [case_data] names is on disk, and skip naming the absent file elsewhere.
+requires_4dom_inputs = requires_case_inputs(
+    Path(__file__).resolve().parents[1] / "configs" / "real74_4dom.toml")
 
 #: SHA-256 of the canonical bundle schedule serialization (ops counts +
 #: hash pin, plan Task 9).  Any reordering, count change, or tick change
@@ -263,6 +271,7 @@ def _split_periods(ops, head_gid):
 # resolve_clock: bundle tick + calendar pins
 # ---------------------------------------------------------------------------
 
+@requires_4dom_inputs
 def test_bundle_tick_pins(bundle_clock):
     """tick = 1/3 s, step_ticks 180/45/15/5, 12 h = 129,600 ticks."""
     assert bundle_clock.tick_den == 3
@@ -275,6 +284,7 @@ def test_bundle_tick_pins(bundle_clock):
     assert bundle_clock.dt_exact(4) == Fraction(5, 3)
 
 
+@requires_4dom_inputs
 def test_chained_fp32_dt_consumed_bit_pins(bundle_exp, bundle_clock):
     """WRF REAL grid%dt bit patterns, CONSUMED from T1's run.dt."""
     expected_bits = {1: 0x42700000, 2: 0x41700000,
@@ -296,6 +306,7 @@ def test_chained_fp32_dt_consumed_bit_pins(bundle_exp, bundle_clock):
     assert float(bundle_clock.spec(4).dt_fp32) == 1.6666666269302368
 
 
+@requires_4dom_inputs
 def test_bundle_calendar_pins(bundle_clock):
     """STEPRA 12/12/12/36; cudt 900 ticks d01-only; bldt=0 every step;
     history 10800/2700/2700/2700; restart 32400 on the d01 clock."""
@@ -327,6 +338,7 @@ def test_bundle_calendar_pins(bundle_clock):
         assert bundle_clock.spec(gid).lbc_interval_ticks is None
 
 
+@requires_4dom_inputs
 def test_every_cadence_lands_on_exact_ticks(bundle_clock):
     """Each calendar is an exact multiple of its domain's step_ticks, and
     the WRF driver predicates fire with tick spacing == the calendar."""
@@ -427,6 +439,7 @@ def test_resolve_clock_validation_failures():
         resolve_clock(base, lbc_interval_s=90.0)
 
 
+@requires_4dom_inputs
 def test_chained_dt_validation_is_bit_exact(bundle_exp):
     """Shadow F2 repro: the 1-ULP neighbour of d04's chained-FP32 dt
     (0x3FD55556 vs WRF's 0x3FD55555) must be REJECTED -- the validation
@@ -501,6 +514,7 @@ def test_flat_table_equals_reference_recursion(tratios):
     assert sched.final_period == sched.interior_period
 
 
+@requires_4dom_inputs
 def test_bundle_schedule_counts_and_hash(bundle_schedule):
     """53 STEPs + 17 FORCEs + 17 dormant FEEDBACKs per d01 step in EVERY
     period (final-period feedbacks tail-relocated, not suppressed); 720
@@ -525,6 +539,7 @@ def test_bundle_schedule_counts_and_hash(bundle_schedule):
         sched.period_ops(720)
 
 
+@requires_4dom_inputs
 def test_bundle_schedule_equals_reference_recursion(bundle_exp,
                                                     bundle_schedule):
     """Full 12 h flat walk == the reference recursion (62,640 ops)."""
@@ -534,6 +549,7 @@ def test_bundle_schedule_equals_reference_recursion(bundle_exp,
     assert full == ref
 
 
+@requires_4dom_inputs
 def test_bundle_interior_period_ordering(bundle_schedule):
     """Leading and trailing op-order pins for the (1,4,3,3) period."""
     ops = bundle_schedule.interior_period
@@ -613,6 +629,7 @@ def test_multi_child_tree_three_loop_order():
 # Executor: integer walk, sync asserts, alarms, dtbc
 # ---------------------------------------------------------------------------
 
+@requires_4dom_inputs
 def test_executor_full_bundle_walk(bundle_execution):
     report, rec = bundle_execution
     assert report.steps == 53 * 720 == 38_160
@@ -629,6 +646,7 @@ def test_executor_full_bundle_walk(bundle_execution):
         assert clock.at_stop_time
 
 
+@requires_4dom_inputs
 def test_executor_history_restart_alarms(bundle_execution):
     """History fires at the top of the step (med_before_solve_io,
     module_integrate.F:375) incl. t=0, plus the run-stop frame; restart
@@ -645,6 +663,7 @@ def test_executor_history_restart_alarms(bundle_execution):
     assert rec["restart"] == [32_400, 64_800, 97_200, 129_600]
 
 
+@requires_4dom_inputs
 def test_executor_dtbc_launch_phase_and_lbc_seam(bundle_execution):
     """Shadow F1 pins: a boundary kernel launched during a step sees the
     POST-INCREMENT dtbc (WRF increments at dyn_em/solve_em.F:371-372
@@ -667,6 +686,7 @@ def test_executor_dtbc_launch_phase_and_lbc_seam(bundle_execution):
                                  (129_420, 21_600.0)]
 
 
+@requires_4dom_inputs
 def test_executor_force_sync_and_dtbc_reset(bundle_execution):
     """At every FORCE the parent leads by exactly one parent step; the
     child's recurrent FP32 dtbc equals one parent interval (its Davies
@@ -813,6 +833,7 @@ def test_subhour_boundary_cadence_and_delayed_start_constraints():
             lbc_interval_s=310)
 
 
+@requires_4dom_inputs
 def test_domain_clock_elapsed_and_dtbc_pins(bundle_clock):
     """Elapsed seconds stay tick-derived while dtbc mirrors WRF's REAL
     recurrence (dyn_em/solve_em.F:371-372)."""
@@ -863,6 +884,7 @@ def test_domain_clock_elapsed_and_dtbc_pins(bundle_clock):
     assert ring.history_rings_within_step() is False
 
 
+@requires_4dom_inputs
 def test_elapsed_seconds_fp32_mirrors_wrf_real_time(bundle_clock):
     """Shadow F3: WRF's REAL curr_secs is ``dt_whole + dt_num /
     REAL(dt_den)`` (dyn_em/adapt_timestep_em.F real_time; consumed by
@@ -884,6 +906,7 @@ def test_elapsed_seconds_fp32_mirrors_wrf_real_time(bundle_clock):
     assert float(root.elapsed_seconds_fp32) == 43200.0  # 12 h exact
 
 
+@requires_4dom_inputs
 def test_elapsed_seconds_fp32_enforces_exact_integer_guarantee_bound(
         bundle_clock):
     """D4: whole/num/den stay inside the conservative exact-integer bound."""
@@ -960,6 +983,7 @@ def test_executor_detects_desync():
 # clock_dt consumer pins (section C traced list)
 # ---------------------------------------------------------------------------
 
+@requires_4dom_inputs
 def test_diff6_per_domain_plain_factor(bundle_exp):
     """With clock_dt retired (0.0), the clock-scaled diff_6th coefficient
     short-circuits to the plain per-domain factor 0.12/0.10/0.08/0.06 at
@@ -973,6 +997,7 @@ def test_diff6_per_domain_plain_factor(bundle_exp):
         assert factor == dc.run.diff_6th_factor == expected[dc.grid_id]
 
 
+@requires_4dom_inputs
 def test_davies_weights_keyed_by_child_dt(bundle_exp, monkeypatch):
     """_resident_weights caches Davies fcx/gcx keyed by the child's own
     dt (ingest/lateral_bc.py:282-302); lateral_boundary_clock_dt resolves
@@ -1067,6 +1092,7 @@ def test_davies_weights_keyed_by_child_dt(bundle_exp, monkeypatch):
     assert resident.device_nbytes == before
 
 
+@requires_4dom_inputs
 def test_kf_calendar_d01_only(bundle_exp, bundle_clock):
     """KF's clock-defined dt resolves to the domain dt (core/kf.py:22-31)
     and the cumulus calendar exists on d01 only (bundle cu_physics)."""

@@ -233,7 +233,7 @@ def test_the_stopped_capsule_counts_one_picture_in_the_singular():
     kept = {"pictures": 1, "render": "/runs/child/png",
             "banner": "/runs/child/png/DID-NOT-FINISH.txt"}
     text = offline_child_run._did_not_finish_capsule(kept)
-    assert "the 1 picture the early render had already drawn is kept" in text
+    assert "the 1 picture drawn while it ran is kept" in text
     assert "are kept" not in text
 
 
@@ -241,7 +241,7 @@ def test_the_stopped_capsule_keeps_the_plural_for_several_pictures():
     kept = {"pictures": 20, "render": "/runs/child/png",
             "banner": "/runs/child/png/DID-NOT-FINISH.txt"}
     text = offline_child_run._did_not_finish_capsule(kept)
-    assert "the 20 pictures the early render had already drawn are kept" in text
+    assert "the 20 pictures drawn while it ran are kept" in text
 
 
 def test_a_stopped_child_that_drew_nothing_says_there_is_none_to_keep():
@@ -250,7 +250,7 @@ def test_a_stopped_child_that_drew_nothing_says_there_is_none_to_keep():
 
     text = offline_child_run._did_not_finish_capsule(
         {"pictures": 0, "render": "/runs/child/png", "banner": None})
-    assert "no picture yet" in text
+    assert "No picture had been drawn yet" in text
     assert "Next: open" not in text
 
 

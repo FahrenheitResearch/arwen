@@ -522,13 +522,30 @@ pub fn decode_collection(
     files: &[String],
     progress: &mut dyn FnMut(Value),
 ) -> Result<DecodedCollection> {
+    match decode_collection_or_unmatched(mapping, files, progress)? {
+        Ok(collection) => Ok(collection),
+        Err(refusal) => Err(refusal),
+    }
+}
+
+/// [`decode_collection`], with a GRIB2 decode that matched no record at
+/// all handed back as its refusal instead of raised.
+///
+/// A caller with a declared answer for a field the files do not carry
+/// (`fields.terrain_height.when_absent`) takes that answer only when the
+/// decode matched nothing; any other failure is raised as it always was.
+pub fn decode_collection_or_unmatched(
+    mapping: &Mapping,
+    files: &[String],
+    progress: &mut dyn FnMut(Value),
+) -> Result<std::result::Result<DecodedCollection, crate::refusal::Refusal>> {
     let format = mapping.format()?.to_owned();
     if format == "netcdf" {
         progress(json!({"event": "decode_netcdf", "files": files.len()}));
-        return crate::ncdf::decode_netcdf(mapping, files);
+        return crate::ncdf::decode_netcdf(mapping, files).map(Ok);
     }
     if format == "grib1" {
-        return decode_grib1_collection(mapping, files, progress);
+        return decode_grib1_collection(mapping, files, progress).map(Ok);
     }
     let declaration = mapping.grid_declaration()?;
     let mut records: Vec<GribRecord> = Vec::new();
@@ -574,11 +591,11 @@ pub fn decode_collection(
         // A total miss earns the identity diagnosis: two products under one
         // filename, separable only by the section-1 octets, must refuse by
         // naming them.
-        return Err(crate::refusal::selector_unmatched(
+        return Ok(Err(crate::refusal::selector_unmatched(
             selector_identity_refusal(mapping, &identity_pins, files, inventoried)?,
-        ));
+        )));
     }
-    assemble_grib(mapping, &records)
+    assemble_grib(mapping, &records).map(Ok)
 }
 
 /// What ONE input object's inventory pass produced.
@@ -598,6 +615,9 @@ struct ObjectInventory {
     /// read into EVERY slice.
     invariant: Vec<usize>,
     cycles: BTreeMap<crate::assemble::TimeKey, chrono::NaiveDateTime>,
+    /// Selected records read through `mapping.record_aliases`, counted
+    /// per field they answer.
+    aliased: BTreeMap<String, usize>,
 }
 
 /// Staged bytes the inventory pass may hold IN FLIGHT at once, counted
@@ -717,9 +737,14 @@ fn inventory_one_object(
             "GRIB2 input {source} contains no parsed fields"
         )));
     }
-    let identities = grib2_identities(&file.messages);
+    let mut identities = grib2_identities(&file.messages);
+    let aliased = crate::grib::alias_identities(
+        &crate::grib::record_aliases(mapping)?,
+        &mut identities,
+    );
     let wanted = wanted_indices(mapping, &identities)?;
     let declared_levels = mapping.declared_levels()?;
+    let interface_levels = mapping.interface_levels()?;
     let fields = mapping.fields()?;
     let mut inventory = ObjectInventory {
         selected: wanted.len(),
@@ -727,6 +752,7 @@ fn inventory_one_object(
         by_key: BTreeMap::new(),
         invariant: Vec::new(),
         cycles: BTreeMap::new(),
+        aliased: BTreeMap::new(),
     };
     for index in wanted {
         let identity = &inventory.identities[index];
@@ -743,11 +769,15 @@ fn inventory_one_object(
             if !hit
                 || !crate::grib::declared_vertical_admits(
                     &declared_levels,
+                    &interface_levels,
                     field,
                     identity.level_value,
                 )?
             {
                 continue;
+            }
+            if aliased[index] {
+                *inventory.aliased.entry(field.name.clone()).or_default() += 1;
             }
             if invariant_fields.contains(&field.name) {
                 invariant = true;
@@ -814,6 +844,8 @@ pub struct DecodeStream<'a> {
     hybrid_a: Vec<f64>,
     hybrid_b: Vec<f64>,
     direct_names: std::collections::BTreeSet<String>,
+    /// Selected records read through `mapping.record_aliases`, per field.
+    aliased: BTreeMap<String, usize>,
 }
 
 enum StreamKind {
@@ -868,9 +900,13 @@ impl<'a> DecodeStream<'a> {
         let mut source_cycles: BTreeMap<crate::assemble::TimeKey, chrono::NaiveDateTime> =
             BTreeMap::new();
         let mut wanted_total = 0usize;
+        let mut aliased: BTreeMap<String, usize> = BTreeMap::new();
         let inventories = inventory_objects(mapping, files, &invariant_fields)?;
         for (source, inventory) in files.iter().zip(inventories) {
             inventoried += inventory.identities.len();
+            for (name, count) in &inventory.aliased {
+                *aliased.entry(name.clone()).or_default() += count;
+            }
             progress(json!({
                 "event": "inventory",
                 "source": source,
@@ -940,6 +976,7 @@ impl<'a> DecodeStream<'a> {
             hybrid_a: Vec::new(),
             hybrid_b: Vec::new(),
             direct_names: std::collections::BTreeSet::new(),
+            aliased,
         };
         // The first valid time establishes the header every cross-time
         // check and every join plan reads: the grid, the vertical ladder,
@@ -985,7 +1022,24 @@ impl<'a> DecodeStream<'a> {
                 grid_fingerprint: collection.grid_fingerprint.clone(),
             },
             keys,
+            aliased: BTreeMap::new(),
             kind: StreamKind::Whole { collection },
+        }
+    }
+
+    /// Selected records read through `mapping.record_aliases`, per field
+    /// they answer; empty when the mapping declares none or none applied.
+    pub fn aliased(&self) -> &BTreeMap<String, usize> {
+        &self.aliased
+    }
+
+    /// The first valid time's decoded collection, while it is still held
+    /// for the writer.  `None` once it has been handed out, and on a
+    /// whole-object format, which keeps no separate first slice.
+    pub fn first_slice(&self) -> Option<&DecodedCollection> {
+        match &self.kind {
+            StreamKind::Sliced { first, .. } => first.as_ref(),
+            StreamKind::Whole { .. } => None,
         }
     }
 
@@ -1086,6 +1140,7 @@ impl<'a> DecodeStream<'a> {
                 parsed,
                 ..
             } => {
+                let aliases = crate::grib::record_aliases(mapping)?;
                 let mut records: Vec<GribRecord> = Vec::new();
                 for object in plan.iter() {
                     let mut wanted: Vec<usize> = object
@@ -1115,12 +1170,14 @@ impl<'a> DecodeStream<'a> {
                         parsed.insert(object.source.clone(), file);
                     }
                     let file = &parsed[&object.source];
-                    records.extend(crate::grib::grib2_records(
+                    let mut decoded = crate::grib::grib2_records(
                         file,
                         &object.source,
                         &wanted,
                         declaration,
-                    )?);
+                    )?;
+                    crate::grib::alias_records(&aliases, &mut decoded);
+                    records.extend(decoded);
                     // The parsed object is dropped the moment this valid
                     // time is done with it, unless the NEXT valid time
                     // reads the same object (a multi-time object) or it
@@ -1250,7 +1307,13 @@ fn decode_one_object(
     source: &str,
     declaration: &crate::model::GridDeclaration,
 ) -> FileOutcome {
-    let opened = (|| -> Result<(grib_core::grib2::Grib2File, Vec<crate::grib::RecordIdentity>, Vec<usize>)> {
+    #[allow(clippy::type_complexity)]
+    let opened = (|| -> Result<(
+        grib_core::grib2::Grib2File,
+        Vec<crate::grib::RecordIdentity>,
+        Vec<usize>,
+        Vec<crate::grib::RecordAlias>,
+    )> {
         let raw = std::fs::read(source)
             .map_err(|error| missing_input(format!("cannot read {source}: {error}")))?;
         // Acquisition codec staging: the compressed object is what the
@@ -1265,20 +1328,27 @@ fn decode_one_object(
                 "GRIB2 input {source} contains no parsed fields"
             )));
         }
-        let identities = grib2_identities(&file.messages);
+        let aliases = crate::grib::record_aliases(mapping)?;
+        let mut identities = grib2_identities(&file.messages);
+        crate::grib::alias_identities(&aliases, &mut identities);
         let wanted = wanted_indices(mapping, &identities)?;
-        Ok((file, identities, wanted))
+        Ok((file, identities, wanted, aliases))
     })();
     match opened {
         Err(refusal) => FileOutcome::Unopened(refusal),
-        Ok((file, identities, wanted)) => FileOutcome::Inventoried {
+        Ok((file, identities, wanted, aliases)) => FileOutcome::Inventoried {
             selected: wanted.len(),
             identities,
             // The object is parsed ONCE and the selected messages are
             // decoded from it.  The serial path parsed the same bytes a
             // second time inside `grib2_records`, holding two parsed
             // copies of a half-gigabyte object at the peak.
-            records: crate::grib::grib2_records(&file, source, &wanted, declaration),
+            records: crate::grib::grib2_records(&file, source, &wanted, declaration).map(
+                |mut records| {
+                    crate::grib::alias_records(&aliases, &mut records);
+                    records
+                },
+            ),
         },
     }
 }

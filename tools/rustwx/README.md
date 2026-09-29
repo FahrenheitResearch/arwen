@@ -18,7 +18,7 @@ with coast, state, and county basemaps, at the campaign product
 sheets' quality.  Every product a store's fields prove out renders;
 `--list-products` prints all 151 candidate rows with per-file
 availability and a field-level reason for anything unavailable.  Provenance and
-licensing: `VENDOR.md` (the code is Drew's own rusty-weather
+licensing: `VENDOR.md` (the code is the project's own rusty-weather
 workspace, MIT).
 
 ## Prerequisites

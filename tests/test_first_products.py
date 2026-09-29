@@ -48,7 +48,7 @@ def _stand_in_renderer(*, names=("refl_d01-1km_x.png",),
     ``--out`` breaks these tests instead of silently bypassing them.
     """
 
-    def run(command):
+    def run(command, **options):
         if raises is not None:
             raise raises
         out = Path(command[command.index("--out") + 1])
@@ -58,6 +58,23 @@ def _stand_in_renderer(*, names=("refl_d01-1km_x.png",),
         return subprocess.CompletedProcess(list(command), returncode, "", "")
 
     return run
+
+
+@pytest.fixture
+def halted():
+    """Halts the every-frame render of each observer handed to it.
+
+    At the test's end, as a stopped run halts it.  An observer armed for
+    pictures draws each frame as it lands on a worker of its own.  A test
+    that never stopped it left that worker alive, and the real render it
+    had started, for the rest of the process, where another test's count
+    of live workers found it.
+    """
+
+    observers = []
+    yield observers.append
+    for observer in observers:
+        observer.stop_live_products(halt=True)
 
 
 def _plan(tmp_path, *, products="refl,t2"):
@@ -126,9 +143,11 @@ def test_the_early_render_is_off_unless_the_run_named_products(
     assert early_render_requested(products) is armed
 
 
-def test_arming_a_run_that_named_no_products_leaves_nothing_armed(tmp_path):
+def test_arming_a_run_that_named_no_products_leaves_nothing_armed(
+        tmp_path, halted):
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
     observer = RunObserver(events)
+    halted(observer)
     observer.arm_first_products(_plan(tmp_path, products=None))
     assert observer.first_products is None
 
@@ -369,14 +388,7 @@ def test_the_ensemble_driver_draws_each_member_first_frame_early(
 
     # The renderer, and only the renderer, is a stand-in: the engine
     # runs its own arming, on its own plan, through the real trigger.
-    real = first_products.FirstProducts
-
-    class _StandInRender(real):
-        def __init__(self, render_plan, **kwargs):
-            super().__init__(render_plan,
-                             **{**kwargs, "runner": _stand_in_renderer()})
-
-    monkeypatch.setattr(first_products, "FirstProducts", _StandInRender)
+    monkeypatch.setattr(first_products, "_run_render", _stand_in_renderer())
 
     root = tmp_path / "ens"
     events = []
@@ -412,6 +424,79 @@ def test_the_ensemble_driver_draws_each_member_first_frame_early(
             "refl_d01-1km_x.png"]
 
 
+def test_every_frame_of_every_member_is_drawn_while_it_runs(
+        tmp_path, monkeypatch):
+    """A member draws each frame as it lands, not its analysis frame alone.
+
+    Each stand-in member commits three frames and, after each, waits to be
+    told that frame was drawn before it commits the next, as a real member
+    goes on integrating.  Fails before this fix at the second frame: a
+    member drew its analysis frame and no other, so a finished ensemble
+    held one picture set per member however many frames it wrote.
+    """
+
+    import threading
+    import time
+    from datetime import timedelta
+
+    from gpuwm.ensemble.engine import run_ensemble
+    from gpuwm.ensemble.member import MemberOutcome
+
+    monkeypatch.setattr(first_products, "_run_render", _stand_in_renderer())
+    events = []
+    seen = threading.Condition()
+
+    def record(event):
+        with seen:
+            events.append(event)
+            seen.notify_all()
+
+    def drawn(index, frame):
+        return any(event.get("index") == index
+                   and event["event"] in ("member-first-products",
+                                          "member-live-products")
+                   and str(event["receipt"]["frame"]) == str(frame)
+                   for event in events)
+
+    waited = []
+
+    def run(*, base_config, member_dir, index, seed, perturbation,
+            perturbation_options, run_seconds, restart,
+            progress_callback=None):
+        member_dir = Path(member_dir)
+        member_dir.mkdir(parents=True, exist_ok=True)
+        for hour in range(3):
+            valid = _VALID + timedelta(hours=hour)
+            frame = member_dir / valid.strftime("wrfout_d01_%Y-%m-%d_%H_%M_%S")
+            frame.write_bytes(f"member {index} frame {hour}".encode())
+            progress_callback.output_committed(domain=1, valid_time=valid,
+                                               path=frame)
+            deadline = time.monotonic() + 20.0
+            with seen:
+                while (not drawn(index, frame)
+                       and time.monotonic() < deadline):
+                    seen.wait(0.05)
+            waited.append((index, hour, drawn(index, frame)))
+        return MemberOutcome(
+            index=index, seed=seed, member_dir=member_dir,
+            initial_state_sha256="a" * 64, final_state_sha256="b" * 64,
+            wall_seconds=0.1, sim_seconds=float(run_seconds or 60.0),
+            wrfout_count=3, last_checkpoint=None)
+
+    cfg = _Overlay(tmp_path, products="refl", n_members=2)
+    result = run_ensemble(cfg, tmp_path / "ens", runner=run,
+                          run_seconds=7200.0, on_event=record)
+
+    assert result.status == "COMPLETE"
+    assert waited == [(index, hour, True) for index in (0, 1)
+                      for hour in range(3)]
+    live = [(event["index"], Path(event["receipt"]["frame"]).name)
+            for event in events if event["event"] == "member-live-products"]
+    assert [index for index, _ in live] == [0, 0, 1, 1]
+    assert all(event["receipt"]["pictures"] == 1 for event in events
+               if event["event"] == "member-live-products")
+
+
 def test_a_member_that_fell_over_still_leaves_its_render_collected(
         tmp_path, monkeypatch):
     """A failed member does not walk out on a render still running.
@@ -425,14 +510,7 @@ def test_a_member_that_fell_over_still_leaves_its_render_collected(
     from gpuwm.ensemble.engine import run_ensemble
     from gpuwm.ensemble.manifest import member_directory_name
 
-    real = first_products.FirstProducts
-
-    class _StandInRender(real):
-        def __init__(self, render_plan, **kwargs):
-            super().__init__(render_plan,
-                             **{**kwargs, "runner": _stand_in_renderer()})
-
-    monkeypatch.setattr(first_products, "FirstProducts", _StandInRender)
+    monkeypatch.setattr(first_products, "_run_render", _stand_in_renderer())
 
     def run(*, base_config, member_dir, index, seed, perturbation,
             perturbation_options, run_seconds, restart,
@@ -549,11 +627,13 @@ def test_only_the_first_committed_frame_dispatches_a_render(tmp_path):
     assert str(second) not in calls[0]
 
 
-def test_a_nest_frame_is_not_the_analysis_and_does_not_dispatch(tmp_path):
+def test_a_nest_frame_is_not_the_analysis_and_does_not_dispatch(
+        tmp_path, halted):
     """The trigger is the ROOT domain's first frame, not any domain's."""
 
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
     observer = RunObserver(events, root_domain=1)
+    halted(observer)
     observer.arm_first_products(_plan(tmp_path))
     observer.first_products._runner = _stand_in_renderer()
 
@@ -670,11 +750,13 @@ def test_a_render_that_raises_warns_and_never_reaches_the_caller(tmp_path):
     assert "no renderer here" in recorder.warnings[0][1]
 
 
-def test_a_dispatch_failure_never_escapes_the_observer(tmp_path):
+def test_a_dispatch_failure_never_escapes_the_observer(
+        tmp_path, halted):
     """``runtime._output_committed`` does not wrap this call.  So we do."""
 
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
     observer = RunObserver(events, root_domain=1)
+    halted(observer)
     observer.arm_first_products(_plan(tmp_path))
 
     class _Exploding:
@@ -682,6 +764,14 @@ def test_a_dispatch_failure_never_escapes_the_observer(tmp_path):
 
         def frame_committed(self, **_fields):
             raise RuntimeError("the thread would not start")
+
+        # The observer's stop reaches the early render too; this one
+        # never started anything, so there is nothing to end or collect.
+        def halt(self, timeout=None):
+            return True
+
+        def wait(self, timeout=None):
+            return None
 
     observer._first_products = _Exploding()
     observer.output_committed(domain=1, valid_time=_VALID, path="frame")
@@ -922,6 +1012,19 @@ class _CollectedTrigger:
         return None
 
 
+#: A request with a window in it: the early frame is that window's baseline.
+_WITH_A_WINDOW = "refl,t2,qpf_1h"
+
+
+def _windows_listed(monkeypatch) -> None:
+    """The renderer's listing of windowed slugs, the same on every box."""
+
+    from gpuwm import live_products
+
+    monkeypatch.setattr(live_products, "catalog_windowed_slugs",
+                        lambda: frozenset({"qpf_1h"}))
+
+
 def _a_box_that_can_draw(monkeypatch) -> None:
     """Declare a usable render engine for the three bookkeeping tests.
 
@@ -950,7 +1053,9 @@ def test_the_render_stage_collects_the_early_render_before_it_draws(
     from gpuwm import go_cli
 
     _a_box_that_can_draw(monkeypatch)
-    plan, frame, _receipt = _published(tmp_path)
+    _windows_listed(monkeypatch)
+    # A window in the request, so the early frame is its baseline.
+    plan, frame, _receipt = _published(tmp_path, products=_WITH_A_WINDOW)
     later = _frame(tmp_path, "wrfout_d01_1974-04-03_19_00_00")
     commands = []
     monkeypatch.setattr(
@@ -1015,7 +1120,8 @@ def test_the_hrrr_chain_arms_with_the_dict_its_finalize_stage_uses(
         plan, forecast_dir=forecast_dir, run_dir=run_dir)
     assert armed == {"run": forecast_dir,
                      "render": run_dir / "chain" / "png",
-                     "render_products": "refl,t2"}
+                     "render_products": "refl,t2",
+                     "render_section": None}
 
     seen = []
     monkeypatch.setattr(go_cli, "_render_stage",
@@ -1131,7 +1237,8 @@ def test_finalize_keeps_verified_early_frame_as_series_context(
     from gpuwm import go_cli
 
     _a_box_that_can_draw(monkeypatch)
-    plan, first, _receipt = _published(tmp_path)
+    _windows_listed(monkeypatch)
+    plan, first, _receipt = _published(tmp_path, products=_WITH_A_WINDOW)
     later = _frame(tmp_path, name="wrfout_d01_1974-04-03_19_00_00")
     commands = []
     monkeypatch.setattr(go_cli, "_run_stage",
@@ -1141,6 +1248,29 @@ def test_finalize_keeps_verified_early_frame_as_series_context(
     command = commands[0]
     assert "--series" in command and str(later) in command
     assert command[command.index("--context-wrfout") + 1] == str(first)
+
+
+def test_finalize_imports_no_baseline_for_a_request_with_no_window(
+        tmp_path, monkeypatch):
+    """A baseline buys only windows.  The early frame was imported beside
+    the rest of the run for a request that held none, and the render of
+    a whole hour cost six times a frame's (77 s against 14 s at 3 km)."""
+
+    from gpuwm import go_cli
+
+    _a_box_that_can_draw(monkeypatch)
+    _windows_listed(monkeypatch)
+    plan, first, _receipt = _published(tmp_path)
+    later = _frame(tmp_path, name="wrfout_d01_1974-04-03_19_00_00")
+    commands = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: commands.append(list(command)))
+    assert go_cli._render_stage(plan, explain=False, observer=None)
+    assert len(commands) == 1
+    command = commands[0]
+    assert "--series" in command and str(later) in command
+    assert "--context-wrfout" not in command
+    assert str(first) not in command
 
 
 # ---------------------------------------------------------------------------

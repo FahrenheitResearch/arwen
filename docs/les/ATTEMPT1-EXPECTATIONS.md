@@ -12,7 +12,7 @@ segment of its long-track tornado. Initiation in northeast Arkansas around
 02Z on 12-11, Mayfield struck near 03:27Z, roughly a 250 km track. Window
 00Z-06Z on 12-11, 6 h.
 
-Drew moved the case here from Dodge City 2016-05-24 on 2026-08-06 so that an
+The case moved here from Dodge City 2016-05-24 on 2026-08-06 so that an
 HRRRv1 data-identity question would not need a ruling before anything could
 run. Dodge City is parked, not adjudicated. **No screen below changed as a
 result of the move** -- the chain, the vertical grid, the parents, the inflow

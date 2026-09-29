@@ -232,3 +232,90 @@ def test_variable_length_text_is_not_truncated_to_characters(tmp_path):
     with netcdf_bridge.open_dataset(path, executable=bridge) as ds:
         with pytest.raises(netcdf_bridge.NetcdfDecodeError, match="fixed-width ASCII"):
             ds.variables["labels"][:]
+
+
+def test_an_undeclared_default_fill_reads_as_missing_as_the_c_library_masks_it(tmp_path):
+    """A masked element with no ``_FillValue`` is the default fill on disk.
+
+    netCDF4 masks it; the bridge used to hand it back as the finite number
+    9.97e36.  Cross-lane: the C library's masked cells are the bridge's NaN
+    cells, and a declared ``_FillValue`` still replaces the default.
+    """
+
+    bridge = _bridge()
+    source = tmp_path / "fill.nc"
+    with netCDF4.Dataset(source, "w") as out:
+        out.createDimension("x", 4)
+        plain = out.createVariable("plain", "f4", ("x",))
+        plain[:] = np.ma.array([1.0, 2.0, 3.0, 4.0], mask=[0, 1, 0, 0])
+        double = out.createVariable("double", "f8", ("x",))
+        double[:] = np.ma.array([1.0, 2.0, 3.0, 4.0], mask=[1, 0, 0, 0])
+        declared = out.createVariable("declared", "f4", ("x",), fill_value=-999.0)
+        declared[:] = np.array([9.969209968386869e36, -999.0, 3.0, 4.0], dtype=np.float32)
+    dataset = netcdf_bridge.open_dataset(source, executable=bridge)
+    with netCDF4.Dataset(source) as reference:
+        for name in ("plain", "double", "declared"):
+            expected = np.ma.getmaskarray(reference.variables[name][:])
+            got = np.isnan(np.asarray(dataset.variables[name][:], dtype=np.float64))
+            np.testing.assert_array_equal(got, expected, err_msg=name)
+            assert expected.sum() == 1, name
+
+
+def test_a_reader_older_than_the_default_fill_rule_is_masked_the_same():
+    """An installed ``rw_netcdf`` that predates the rule says nothing about it."""
+
+    variable = type("V", (), {"attributes": {}, "stored_dtype": "F32"})()
+    stored = np.array([1.0, float(np.float32(9.969209968386869e36))])
+    masked = netcdf_bridge._mask_default_fill(variable, stored, {"applied": True})
+    assert masked[0] == 1.0 and np.isnan(masked[1])
+    # a reader that applied the rule itself is not second-guessed
+    kept = netcdf_bridge._mask_default_fill(
+        variable, stored, {"applied": True, "default_fill_rule": True})
+    assert kept[1] > 9e36
+    declared = type("V", (), {"attributes": {"_FillValue": -1.0}, "stored_dtype": "F32"})()
+    assert netcdf_bridge._mask_default_fill(declared, stored, {})[1] > 9e36
+
+
+def test_an_older_reader_s_unpacked_default_fill_is_found_where_the_c_library_masks(tmp_path):
+    """A packed field's default fill arrives unpacked from a reader without the rule.
+
+    The fallback compared the stored -32767 against values the reader had
+    already multiplied by ``scale_factor`` and shifted by ``add_offset``,
+    so a packed short never matched.  Cross-lane: the reader's own unpacked,
+    unmasked answer (all a reader without the rule gives for a variable
+    with no fill attributes), masked here, masks exactly the cells netCDF4
+    masks, and the same holds through an explicit unit transform.
+    """
+
+    import netCDF4
+
+    bridge = _bridge()
+    source = tmp_path / "packed.nc"
+    with netCDF4.Dataset(source, "w", format="NETCDF3_64BIT_OFFSET") as out:
+        out.createDimension("x", 5)
+        packed = out.createVariable("packed", "i2", ("x",))
+        packed.scale_factor = np.float32(0.01)
+        packed.add_offset = np.float32(273.15)
+        packed.set_auto_maskandscale(False)
+        packed[:] = np.array([100, -32767, 250, -200, 0], dtype=np.int16)
+    with netCDF4.Dataset(source) as reference:
+        expected = np.ma.getmaskarray(reference.variables["packed"][:])
+    assert expected.tolist() == [False, True, False, False, False]
+
+    dataset = netcdf_bridge.open_dataset(source, executable=bridge)
+    variable = dataset.variables["packed"]
+    record = {"applied": True,
+              "scale_factor": float(np.float32(0.01)),
+              "add_offset": float(np.float32(273.15))}
+    for transform in (None, (1.8, -459.67)):
+        # What a reader without the rule hands on: unpacked, nothing masked
+        # but declared markers, of which this variable has none.
+        handed, _ = dataset._decode("packed", raw=True, scale=True,
+                                    unit_transform=transform)
+        assert np.isfinite(handed).all()
+        masked = netcdf_bridge._mask_default_fill(
+            variable, handed, record, unit_transform=transform)
+        np.testing.assert_array_equal(np.isnan(masked), expected)
+        # the current reader agrees on its own
+        current, _ = dataset._decode("packed", unit_transform=transform)
+        np.testing.assert_array_equal(np.isnan(current), expected)

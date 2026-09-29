@@ -81,6 +81,9 @@ recursive-exclude tilestream test_*.py skeptic_*.py
 # here so the sdist and the public tree agree; the harness itself is not a
 # package in `packages.find` and never reached either artifact.
 exclude tests/test_n5s_toolchain.py
+# The branch-dispositions gate is development bookkeeping and RELEASE-EXCLUDE.txt
+# drops it from the public tree, so the sdist drops it too.
+exclude tests/test_branch_dispositions.py
 
 # Keep the user manuals and their directly linked workflow references
 # available to readers of the source distribution.

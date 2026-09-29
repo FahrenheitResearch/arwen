@@ -87,6 +87,33 @@ def test_the_hrrr_source_gate_admits_the_reported_value_and_refuses_a_bad_one():
         with pytest.raises(ValueError, match=name):
             _require_source_physical_ranges(source(**{name: 1.05}))
     # The plausibility windows are untouched: nothing real approaches
-    # them, so nothing about packing applies.
+    # them, so nothing about packing applies.  SOILT's window holds on
+    # source OPEN WATER; on source land the soil initializer rebuilds an
+    # out-of-band column TSK-to-TMN as real.exe does, so there it is
+    # admitted for that rebuild, as it is on an ice-covered water cell,
+    # where HRRR runs its land-ice column.
     with pytest.raises(ValueError, match="SOILT"):
-        _require_source_physical_ranges(source(SOILT=400.0000001))
+        _require_source_physical_ranges(
+            source(SOILT=400.0000001, LANDSEA=0.0))
+    for soilt in (400.0000001, 64.0):
+        with pytest.raises(ValueError, match="SOILT.*water"):
+            _require_source_physical_ranges(source(SOILT=soilt, LANDSEA=0.0))
+        _require_source_physical_ranges(source(SOILT=soilt, LANDSEA=1.0))
+    # One source window holding both: the land cell is admitted, the
+    # water cell still refuses the whole window.
+    window = dict(
+        LANDSEA=np.array([1.0, 0.0]), SOILW=np.full((2, 2), 0.3),
+        SOILT=np.array([[64.0, 280.0], [150.0, 280.0]]),
+        SPFH=np.full((2, 2), 0.01), Q2=np.full(2, 0.01))
+    _require_source_physical_ranges(window)
+    window["SOILT"][1, 1] = 64.0
+    with pytest.raises(ValueError, match="SOILT.*on 1 source open-water cell"):
+        _require_source_physical_ranges(window)
+    # The measured 2017-01-19 00Z shape: a one-cell frozen lake (LANDSEA
+    # 0, XICE 1) carrying the 158 K snowpack column of the land around it.
+    window["XICE"] = np.array([0.0, 1.0])
+    window["SOILT"][:, 1] = 157.6
+    _require_source_physical_ranges(window)
+    window["XICE"] = np.array([0.0, 0.0])
+    with pytest.raises(ValueError, match="SOILT.*on 1 source open-water cell"):
+        _require_source_physical_ranges(window)

@@ -159,25 +159,22 @@ never empty; `--vram-gib 6` is a realistic starting budget on a 10 GiB
 card with a desktop running. For grids larger than the card can hold, see
 [TILES.md](TILES.md).
 
-### 2. Turn restarts on -- the emitted default is 0
+### 2. Check that the parent will write checkpoints
 
-A single-domain emission writes:
-
-```toml
-restart_interval_s = 0.0
-```
-
-with no comment and no advisory. A parent that wrote no restart **cannot
-be downscaled** (precondition 1 above). Edit line 17 of `demo.toml`:
+Step 1 already wrote the checkpoint cadence into `demo.toml`:
 
 ```toml
 restart_interval_s = 3600.0
 ```
 
-This is a **workaround for an unfixed default**: the wizard should emit a
-nonzero interval and does not. One edit is sufficient on this route --
-`gpuwm run` honours it and writes `gpuwmrst_d01_*.npz` beside the wrfouts.
-Nest-ladder emissions already default to `3600.0`.
+Every configuration `gpuwm domain` writes, single domain or nest ladder,
+checkpoints hourly, or once at the end of a run shorter than an hour.
+`gpuwm run` honours it and writes `gpuwmrst_d01_*.npz` beside the wrfouts,
+which is the file precondition 1 above asks for. There is nothing to edit.
+
+A configuration written by hand, or by an older release, may carry
+`restart_interval_s = 0.0`. That run writes no checkpoint and cannot be a
+parent, so set a positive interval, such as `3600.0`, before running it.
 
 ### 3. Request the bytes
 
@@ -289,7 +286,16 @@ gpuwm go: demo.toml declares a [case_data] table, which is the ERA5 config-drive
   remedy: gpuwm check demo.toml && gpuwm run demo.toml
 ```
 
+That is the POSIX spelling. In Windows PowerShell the remedy prints as
+`gpuwm check demo.toml; if ($?) { gpuwm run demo.toml }`.
+
 ### 8. Derive and run the child
+
+Which domain to downscale from: `gpuwm downscale-parent demo-run` prints, as
+JSON, every domain the run wrote with its grid spacing and frame count
+(`domains: [{id, dx_m, frames}]`) and names the finest as `default_parent`.
+`gpuwm downscale` on a run with several domains still needs
+`--parent-domain`; its refusal lists the domains with their spacing.
 
 ```bash
 gpuwm downscale demo-run --parent-domain 1 \
@@ -309,6 +315,14 @@ the first attempt found. An `--out` that already holds a run's output is
 refused by name, saying what it holds and that you may pass a new `--out`
 or remove the old directory; nothing in it is ever overwritten or merged
 into, because the `report.json` a run publishes has to describe one run.
+
+**Two downscales never share one `--out`.** The run that claims `--out`
+holds `.gpuwm-output.owner` inside it until the run ends, whether it
+created the folder or found it empty, and a second `gpuwm downscale`
+aimed at that folder meanwhile is refused with the process that holds
+it. A refused run gives back only what it still owns: a folder it
+created is removed, an empty folder it adopted is left empty, and a
+folder another run has taken over is left alone.
 
 **Pass `--vram-gib` or `--card` here too.** `gpuwm downscale --card`
 defaults to `24gb` while `gpuwm domain` measures the local card, so a
@@ -391,18 +405,21 @@ Emit a config the same way, naming your source and a nest ladder:
 ```bash
 gpuwm domain --point 39.7,-84.0 --card 12gb --ladder 12-3 \
   --source gfs --cycle latest --hours 6 --history-interval 900 \
-  --geog-root C:\WPS_GEOG --out tree.toml --data-dir gfs-raw
+  --geog-root C:\WPS_GEOG --out tree.toml --data-dir gfs-raw --explain
 ```
 
-Ladder emissions set `restart_interval_s = 3600.0` already, so step 2 of
-Route 1 does not apply. The wizard closes by printing the rest of the
-chain with your values filled in. It is four commands, not one, and they
-run in this order:
+This config checkpoints hourly too, as step 2 of Route 1 describes. With
+`--explain` the wizard closes by printing
+the fetch line with your area, cycle and model top filled in, then the
+check, then the one `gpuwm go` line that runs everything after the
+fetch. Without `--explain` it prints only that `gpuwm go` line. Run by
+hand, the prepared chain is four commands, not one, in this order:
 
 ```bash
-# a. fetch the bytes, using the --area and --cycle the wizard printed
+# a. fetch the bytes, using the --area, --cycle and --p-top-pa the
+#    wizard printed (5000 is the config's own 50 hPa model top)
 gpuwm fetch --source gfs --cycle 2026-08-20T18 --hours 6 \
-  --area 14.95,-115.69,63.65,-52.31 --out gfs-raw
+  --area 14.95,-115.69,63.65,-52.31 --p-top-pa 5000 --out gfs-raw
 
 # b. confirm the sizing against the card that is actually present
 gpuwm check tree.toml
@@ -482,6 +499,83 @@ header).
 every archived frame is listed. The window lands in the derived config as
 `run_seconds`.
 
+### The lateral zone is sized for the parent
+
+A derived child does not copy its parent's lateral zone. WRF's zone
+(`spec_bdy_width = 5`, `spec_zone = 1`, `relax_zone = 4`) counts the
+domain's own cells: at ratio 20 it is 0.75 km wide, a quarter of one 3 km
+parent cell. And a root domain never relaxes `w`: its outer row copies the
+first interior row, so an updraft that forms in the zone is carried onto
+the boundary. The child's own storms and cold pools met the parent's state
+head on at the edge, and the children made storms there.
+
+`child.toml` therefore carries:
+
+- `relax_zone` = two parent cells (`2 x ratio` child cells: 24 at ratio 12,
+  40 at ratio 20), never less than WRF's 4 and never more than a quarter of
+  the child's shorter side per edge, with `spec_bdy_width = spec_zone +
+  relax_zone`;
+- `relax_w = true`: `w` is relaxed toward the parent's `w` and specified
+  from it on the outer row, as on a WRF nest, instead of being copied onto
+  the boundary from the first interior row;
+- `relax_timescale_s` = the time a 20 m/s flow takes to cross one child
+  cell (12.5 s at 250 m, 7.5 s at 150 m), never shorter than 10 of the
+  child's steps. It is set in seconds, so a step edited at review does not
+  change how hard the zone pulls;
+- `spec_exp = 0`: the zone ramps linearly whatever the parent's ramp. A
+  parent's exponential ramp counts its own rows, and inherited it would
+  cut the child's zone back to its outer few rows.
+
+All four are ordinary `[run]` keys ([CONFIGURATION.md](CONFIGURATION.md))
+and can be edited in the reviewed settings like any other. A `--child-config`
+you write yourself keeps whatever it says.
+
+Measured on a 2 h, 250 m child (300 x 300, ratio 12) of a 3 km HRRR parent
+over the Front Range, 21 June 2023 from 18Z, with 15-minute boundaries:
+the 99th percentile of column-maximum |w| within 5 cells of the edge
+against the same statistic 40 or more cells in, at 20Z.
+
+| zone | time scale | w on the edge | edge p99 (m/s) | interior p99 (m/s) | edge / interior |
+|---|---|---|---|---|---|
+| WRF's, 4 cells | 10 child steps | copied | 10.6 | 4.5 | 2.36 |
+| 24 cells | 150 s (10 parent steps) | copied | 10.9 | 3.8 | 2.87 |
+| 12 cells | 150 s | relaxed | 5.2 | 3.4 | 1.53 |
+| 24 cells | 150 s | relaxed | 5.5 | 3.8 | 1.45 |
+| 24 cells | 12.5 s | relaxed | 3.0 | 3.6 | 0.83 |
+
+A wide zone alone does nothing while the edge copies `w`, and a zone that
+relaxes slowly leaves the rows just inside the specified row free to part
+from it: on the 150 s arm, rows 1 to 3 carried 5.5 to 6.0 m/s where the
+parent has 3.1 to 3.3. The parent itself is not uniform over this ground:
+its own |w| within 5 cells of the child's edge is 1.4 to 3.2 times its
+interior value through the window, so a child that follows its parent at
+the edge is not expected to read 1.0 there.
+
+The shipped zone reads the same at the edge whatever the boundary cadence:
+3.0 m/s at the edge against 3.4 m/s inside at 20Z with 30-minute and with
+hourly boundaries. The cadence shows inside instead: after 2 h the mean
+2 m temperature difference 40 or more cells in was 0.11 K between the
+15-minute and 30-minute runs and 0.17 K between the 15-minute and hourly
+runs, against 0.42 K between the child and its parent.
+
+Where the relaxation lets go, the child makes some vertical motion of its
+own: on the same arm, pooled over 19Z to 20Z, the 99th percentile 24 to 28
+cells in was 4.4 to 4.9 m/s, against 3.0 to 3.4 on either side and 2.8 in
+the parent. An exponential ramp (`spec_exp` 0.1 or 0.2) moved that band
+outward and widened it without lowering it, so the derived zone keeps
+WRF's linear ramp (`spec_exp = 0`).
+
+A wider zone costs boundary memory in proportion to its width; the plan
+review prices it. Streamed, a tile's interior seams relax nothing, and a
+tile's own cells read everything within its halo each step, so a tile whose
+interior, widened by its halo, reaches a relaxation zone has to own that
+domain edge: its compute window has to reach the edge. Each seam therefore
+sits at least zone + halo cells from a forced edge (58 cells for a 40-cell
+zone under an 18-cell halo), or no more than the halo's width from it, where
+the window of the tile beside it runs out to that edge. The tile planner
+only proposes such tilings, and a pinned tile size that breaks the rule is
+refused before the first step.
+
 ### A drawn extent on the measured card
 
 `--child-size NX,NY` with `--auto-vram` prices the extent you drew on the
@@ -503,9 +597,12 @@ out.
 
 The plan review prices the child once with the itemized estimator and
 takes its `[tiles]` decision on that price, against the card it holds; the
-run calls the same function on a card measured cold, before the child's own state was built on the device. The plan document's `streaming`
+run calls the same function on a card measured cold, before the child's own state was built on the device. The run measures the card whatever
+`[tiles]` says, because the price is taken on it as well as the decision,
+so a run without `--tiles` records the price its review gave. The plan document's `streaming`
 block (`mode` resident or streamed, `why`, `budget_bytes`,
-`peak_envelope_bytes`, `tile` when streamed) sits beside the `memory`
+`peak_envelope_bytes`, `machine` and `machine_free_bytes` for the card it
+was priced on, `tile` when streamed) sits beside the `memory`
 block, and the child's `report.json` repeats it. With `[tiles]` set to
 `auto`, `memory.fits` is judged on the budget the streaming decision used,
 so `mode` resident comes with `fits` true and `mode` streamed with `fits`
@@ -527,19 +624,53 @@ the parent by `--point` derivation): it writes a checkpoint set at every
 interval inside its window and once more at its end, under the instant
 naming `--parent-restart latest` discovers
 (`gpuwmrst_d02_YYYY-MM-DD_HH_MM_SS.npz` beside its `wrfout_d02_*` frames).
-`restart_interval_s = 0` writes only the final set. So a finished
-downscale chains:
+`restart_interval_s = 0` writes only the final set. The child keeps one
+set, the newest: each new set is written whole before the older one is
+removed, so a finished child leaves its end state and nothing else.
+`--keep-checkpoints N` keeps the newest N (0 keeps every set), and
+`GPUWM_KEEP_CHECKPOINTS`, the variable `gpuwm run-plan` and `gpuwm go`
+export, decides when the flag is absent. A child is re-run rather than
+resumed, and the next downscale reads the newest set, so one is enough.
+So a finished downscale chains:
 
 ```bash
 gpuwm downscale CHILD_RUN --parent-domain 2 --parent-restart latest   --point 40.55,-103.60 --ratio 3 --child-size 60,60 --auto-vram   --hours 2 --out GRANDCHILD
 ```
 
 derives a grid 3 grandchild at a third of the child's spacing from the
-d02 frames at the run root and the d02 checkpoint sets beside them, named
-`Downscale of <child run> · d03 ×3 · 1.33 km`. With `--parent-domain N`
+d02 frames at the run root and the d02 checkpoint sets beside them. A
+child is named after its parent as the parent's `run-manifest.json` names
+it (the parent's run folder when it has none), so a child of the forecast
+`Front Range 12 km` is `Downscale of Front Range 12 km · d02 ×3 · 4 km`, and
+this grandchild adds its own grid to that name:
+`Downscale of Front Range 12 km · d02 ×3 · 4 km · d03 ×3 · 1.33 km`. With `--parent-domain N`
 the physics evidence is the d0N member of the newest checkpoint set, so a
 multi-domain run root serves its nest's frames with that nest's own
 physics; a set with no such member is refused naming the members it has.
+
+### The disk a child needs
+
+The plan's `disk` block is what the child will write, priced on its own
+clock before it starts: `history_bytes`, `checkpoint_bytes` (the sets
+held at once, one more than it keeps while a new set is written),
+`picture_bytes` and `total_bytes`, beside `free_bytes` on the disk that
+holds `--out`. A child and a forecast share one price per product from
+`gpuwm/data/picture-bytes.v1.json`, interpolated between its two
+horizontal-grid brackets and held outside them. A windowed product is
+charged only on the whole-hour frames that close its window.
+`pictures_per_frame` is still the count per frame: it
+is one for each product `--render-products` names, every product a local
+run of that length can draw for `all`, and none for `none`, so a shorter list is a
+smaller figure. Measured frame by frame, a 250 m child's pictures averaged
+0.36 MB and a 3 km parent's 0.68 MB. `download_bytes` and
+`preparation_bytes` are zero: a child reads its parent's files where they
+lie and builds its start and boundaries in memory. The review prints the
+block as one line, the page's review and the desktop's show the total
+beside the free space, `report.json` carries it beside `checkpoints_written` and
+`keep_checkpoints`, and a child whose total is larger than the free space
+is refused before it starts, naming both figures and only the flags that
+would shrink it; `--dry-run` prints the plan and says the same as a
+warning.
 
 ## The contract, in order
 
@@ -647,12 +778,16 @@ On the ERA5 route that means `--history-interval 900` in step 1.
 the way every other ArWen forecast door renders its forecast: the same
 stage, the same product catalog, the same folder shape. The pictures land
 in `<out>/png/<domain>/<product>/<valid-day>/`, beside the frames they
-came from, and
-the analysis frame is drawn while the rest of the child is still
-integrating, so the first picture is readable long before the run ends.
-The run's event stream carries the `finalize` stage and its render
-summary, which is what fills the rendered-picture count a run browser
-shows.
+came from, and each frame is drawn as it is written, one render at a time
+in the background beside the integration, so every hour of the child is
+readable while the rest is still integrating. The event stream carries
+`first_products_ready` for the analysis frame and `live_products_ready`
+for each frame after it. The end of the run draws only what is still
+missing: the windowed pictures (`qpf_1h`, `qpf_total`, run maxima), which
+need the whole series, and any frame whose pictures it cannot verify by
+digest. The run's event stream carries the `finalize` stage and its
+render summary, which is what fills the rendered-picture count a run
+browser shows.
 
 `--render-products` chooses the set, in `gpuwm render --products`'
 own spelling: a comma-separated list of catalog slugs, `all` (the
@@ -680,14 +815,16 @@ way to run the forecast anyway.
 
 **A child that does not finish keeps the pictures it drew.** A run that
 stops partway through -- non-finite, a refusal raised mid-run, an
-interrupt -- leaves every picture its early render had already published
-exactly where it published them, and adds the verdict those pictures
-cannot carry themselves:
+interrupt -- leaves every picture drawn while it ran exactly where it was
+published, and adds the verdict those pictures cannot carry themselves.
+A stop draws nothing more: the frame being drawn is abandoned and no
+queued frame is drawn. A child that failed on its own first finishes
+drawing the frames it had already written.
 
 * `DID-NOT-FINISH.txt` at the top of `<out>/png/` says where the forecast
   stopped (model second and step, of how many), why it stopped, how many
   pictures are in the folder, which frames were written before the stop,
-  and that everything there was drawn before it.
+  and that every picture there is of a frame written before it.
 * `render-summary.json` beside them carries `status: did-not-finish`
   with `pictures_on_disk` and the banner's path, so a run browser that
   reads that file finds the pictures rather than an absent folder.
@@ -732,32 +869,52 @@ A child's own health check samples the state every
 `--health-interval-seconds` of model time (60 s by default) and refuses the
 forecast the first time a field is not finite. That refusal is a capsule,
 not a step number. The climb in the example below is a real child's, read
-off its own health record; the cell and the count are whatever the survey
-finds in the run you are reading about:
+off its own health record; the places, the box and the count are whatever
+the run you are reading about records:
 
 ```
 The child blew up: w_max ran 10.73, 13.22, 15.77, 18.12, 21.05, 22.97 m/s
-over the 300 model seconds before W went non-finite at cell
-(k=12, j=401, i=388), at model second 2760 of 28800 and step 6624 of 69120.
-Non-finite carriers at that check:
-  W: 4,812 cells of 31,840,200, first at (k=12, j=401, i=388), all inside
-  k 10-14, j 398-404, i 385-391
+over the 300 model seconds before the health check after step 6624 of 69120
+(model second 2760 of 28800) found W non-finite in 4,812 cells, all inside
+k 10-14, j 398-404, i 385-391.
+Non-finite fields at that check, listed dynamics first and then moisture,
+which is not the order they failed in:
+  W: 4,812 cells of 31,840,200, all inside k 10-14, j 398-404, i 385-391
+The check after step 6480, 144 steps earlier, found u, w and theta' finite;
+the check reads only those three, and a survey taken afterwards cannot say
+which cell or which field went first. The last |w| maximum measured, 22.97
+m/s at the check after step 6480, was at (k=12, j=401, i=388), 388 cells in
+from the west edge.
 The last 7 health checks, 60 model seconds apart:
-  step 5760  model second 2400  w_max 10.73 m/s  CFL 0.1903
+  step 5760  model second 2400  w_max 10.73 m/s at (k=11, j=399, i=386)  CFL 0.1903
   ...
   step 6624  model second 2760  w_max non-finite  CFL not computed
 Next: every frame the run did reach is on disk and can be drawn by hand:
   gpuwm render <out> --series ...
 ```
 
-Four things are in there on purpose. The **carriers** say whether the
-dynamics went first or a moisture species did. The **cell** is one bad
-cell when there is one, and a count with the box it falls inside when
-there are many, which is the difference between a single point, a column
-and a field that has gone entirely. The **model second** says where in the
-forecast it happened, which the step alone does not. The **trend** is the
-health record read back over the window: a CFL that never left its band
-while `w_max` doubled says plainly that the time step was not what ran out.
+Here is what each part says, and what it cannot say. The **fields** are
+every carrier the survey found non-finite at that check. They are listed in
+a fixed order, dynamics first and then moisture, and that order is not the
+order they failed in: the check reads only the u, w and theta' maxima, once
+per health interval (48 to 144 steps of a typical child), so by the time it
+finds them gone the other fields have had that long, or longer, to go with
+them. The **box** is what the check measured: the k, j and
+i ranges every non-finite cell falls inside and how many cells there are,
+with a note when the box touches a lateral edge (j 0 is the south edge, the
+last j the north, i 0 the west, the last i the east). A single cell is
+named only when exactly one cell went; of many cells none is named, because
+a survey taken after they went cannot know which went first. The **last
+|w| maximum** is where |w| was largest at the last check
+that could measure it, and how many cells in from the nearest lateral edge;
+it is the nearest thing to where the climb started that the record holds.
+Every row of the trend carries the same place, and so does every
+`child_step` event line, as `w_max_cell` and `w_max_edge`, so a run's own
+record says where |w| was largest at each check. The **model
+second** says where in the forecast the check fell, which the step alone
+does not. The **trend** is the health record read back over the window: a
+CFL that never left its band while `w_max` doubled says plainly that the
+time step was not what ran out.
 
 Every document this outcome writes is JSON a strict reader can open.
 `NaN` is not a JSON token, so a reading that went travels as `null` beside
@@ -918,9 +1075,10 @@ atmosphere, so the parent's history is not read for ozone and needs no
   filled in with a uniform ladder.
 - **`gpuwm downscale --card` defaults to `24gb`** while `gpuwm domain`
   measures the local card.
-- **A single-domain `gpuwm domain` emission sets
-  `restart_interval_s = 0.0`**, so it produces a parent that cannot be
-  downscaled until you edit it.
+- **A parent needs a checkpoint from the history domain you downscale.**
+  Configurations from `gpuwm domain` checkpoint hourly; one written by
+  hand with `restart_interval_s = 0.0` writes none, so set a positive
+  interval before running a parent from it.
 - One fixed child per invocation; a downscaled run is itself a parent
   (its `restart_interval_s` checkpoints are discoverable), so repeat the
   command on the child's run directory with `--parent-domain 2` for the

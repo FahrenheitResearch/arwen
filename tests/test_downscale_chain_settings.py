@@ -62,3 +62,35 @@ def test_edited_child_roundtrip_keeps_geometry_and_hash(tmp_path):
     path.write_text(path.read_text() + '\n# changed after review\n')
     with pytest.raises(downscale.OfflineChildContractError, match='review.*again'):
         downscale._verify_child_config_hash(path, digest)
+
+
+def test_parent_query_lists_every_domain_and_defaults_to_the_finest(tmp_path):
+    """A two-domain run answers with both domains and picks the fine one.
+
+    Before this, the query door refused any directory holding more than one
+    domain, so a page had to guess which domain number was the fine grid.
+    `gpuwm downscale` itself still refuses without --parent-domain, and its
+    refusal now names each domain with its spacing.
+    """
+    import netCDF4
+    for domain, dx, size in ((1, 3000.0, 30), (2, 1000.0, 36)):
+        for hour in (12, 13):
+            frame = tmp_path / f'wrfout_d{domain:02d}_1974-04-03_{hour}_00_00'
+            _history(frame, datetime(1974, 4, 3, hour), ny=size, nx=size)
+            _give_the_parent_a_real_projection(frame, ny=size, nx=size)
+            with netCDF4.Dataset(frame, 'a') as dataset:
+                dataset.DX = dx
+                dataset.DY = dx
+    answer = downscale.inspect_downscale_parent(tmp_path, None)
+    assert answer['domains'] == [
+        {'id': 1, 'dx_m': 3000.0, 'frames': 2},
+        {'id': 2, 'dx_m': 1000.0, 'frames': 2}]
+    assert answer['default_parent'] == 2
+    assert answer['parent_domain'] == 2 and answer['dx_m'] == 1000.0
+    coarse = downscale.inspect_downscale_parent(tmp_path, 1)
+    assert coarse['parent_domain'] == 1 and coarse['default_parent'] == 2
+    with pytest.raises(downscale.OfflineChildContractError) as caught:
+        downscale._discover_parent_series([tmp_path], None)
+    text = str(caught.value)
+    assert 'd01 (3000 m, 2 frames)' in text and 'd02 (1000 m, 2 frames)' in text
+    assert '--parent-domain 2' in text

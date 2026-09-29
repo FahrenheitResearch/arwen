@@ -224,15 +224,17 @@ class TileHealthFold:
             vertical_cfl = cfg.dt * float(host[5])
             cfl = (vertical_cfl if not math.isfinite(vertical_cfl)
                    else max(horizontal_cfl, vertical_cfl))
+        # The |w| argmax on every record, as the resident decoder reads it:
+        # both kernels reduce it on every launch whatever the width.
+        index_words = np.asarray(host[6:8], dtype=np.float32).view(np.uint32)
+        w_argmax = int(index_words[0]) | (int(index_words[1]) << 32)
         report = {"u_max": u_max, "w_max": w_max, "th_max": th_max,
                   "cfl": cfl, "horizontal_cfl": horizontal_cfl,
-                  "vertical_cfl": vertical_cfl, "nan": nan}
+                  "vertical_cfl": vertical_cfl, "nan": nan,
+                  "w_argmax": w_argmax}
         if self.width > 0:
-            index_words = host[6:8].view(np.uint32)
-            w_argmax = int(index_words[0]) | (int(index_words[1]) << 32)
             report.update(boundary_w_max=float(host[3]),
-                          interior_w_max=float(host[4]),
-                          w_argmax=w_argmax)
+                          interior_w_max=float(host[4]))
         if self._have_swdown:
             import cupy as cp
 

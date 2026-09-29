@@ -75,6 +75,7 @@ whole assimilation record.  Values stay on the bridge; metadata does not.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import hashlib
 import json
 import os
@@ -655,11 +656,11 @@ def read_radar_grid(path: str | Path, *,
     what the DA read path always passes -- see
     :func:`gpuwm.da.obs_radar.read_document`, which requires it.  The
     identity attribute is a claim the file makes about arrays it does not
-    all contain: it is computed over ``lat``, ``lon``, ``z_w`` and terrain
-    at float64, and only the first, second and fourth are stored, at
-    float32.  A reader alone therefore cannot recompute it, so an attribute
-    relabelled to name a different grid is consistent with everything a
-    reader can check by itself.  Passing the consumer's own
+    all contain: it is computed over the projection's definition, ``z_w``
+    and terrain at float64, and the file stores only the coordinates and
+    terrain, at float32.  A reader alone therefore cannot recompute it, so
+    an attribute relabelled to name a different grid is consistent with
+    everything a reader can check by itself.  Passing the consumer's own
     :class:`TargetGrid` re-derives the whole digest chain from arrays in
     hand and compares it to what the file recorded, which is the only check
     that reaches ``z_w``.  It implies ``expected_grid_identity``.
@@ -678,7 +679,8 @@ def read_radar_grid(path: str | Path, *,
     if expected_grid is not None:
         demanded = expected_grid.identity_sha256()
         if (expected_grid_identity is not None
-                and expected_grid_identity != demanded):
+                and not expected_grid.matches_identity(
+                    expected_grid_identity)):
             raise GridMismatchError(
                 f"expected_grid hashes to {demanded} but "
                 f"expected_grid_identity demands {expected_grid_identity}; "
@@ -715,14 +717,18 @@ def read_radar_grid(path: str | Path, *,
                 "observation set without its grid identity cannot be "
                 "assimilated safely")
         if (expected_grid_identity is not None
-                and identity != expected_grid_identity):
+                and not (expected_grid.matches_identity(identity)
+                         if expected_grid is not None
+                         else identity == expected_grid_identity)):
             raise GridMismatchError(
                 f"{path.name} is bound to grid {identity}, the caller "
                 f"requires {expected_grid_identity}")
         _require_structure(path, dataset, schema)
         stored = _require_coordinates(path, dataset)
         if expected_grid is not None:
-            _require_grid(path.name, expected_grid, stored)
+            _require_grid(path.name, expected_grid, stored,
+                          {name: dataset.variables[name][:]
+                           for name in ("XLAT", "XLONG")})
 
         result = {
             "schema": schema,
@@ -1074,11 +1080,10 @@ def require_grid_binding(document, grid: TargetGrid, *,
     """
 
     identity = document.get("grid_identity_sha256")
-    demanded = grid.identity_sha256()
-    if identity != demanded:
+    if not grid.matches_identity(identity):
         raise GridMismatchError(
             f"{label} is bound to grid {identity}, the caller requires "
-            f"{demanded}")
+            f"{grid.identity_sha256()}")
     stored = document.get("grid_coordinate_sha256")
     expected_keys = {"XLAT", "XLONG", "HGT", "z_w"}
     if not isinstance(stored, dict) or set(stored) != expected_keys:
@@ -1088,21 +1093,70 @@ def require_grid_binding(document, grid: TargetGrid, *,
             f"expected {sorted(expected_keys)}. Without the per-array "
             "digests the identity string is an unbound claim and nothing "
             "here can be checked against the caller's grid")
-    _require_grid(label, grid, stored)
+    variables = document.get("variables")
+    coordinates = ({name: variables[name] for name in ("XLAT", "XLONG")}
+                   if isinstance(variables, Mapping)
+                   and all(name in variables for name in ("XLAT", "XLONG"))
+                   else None)
+    _require_grid(label, grid, stored, coordinates)
 
 
-def _require_grid(label: str, grid: TargetGrid, stored: dict) -> None:
+def _float32_coordinates_agree(stored, computed, *,
+                               longitude: bool) -> bool:
+    """Whether stored float32 coordinates are ``computed`` as the writer saw it.
+
+    The writer stored its own float64 coordinates rounded to float32.
+    This machine's float64 coordinates for the same grid differ from the
+    writer's in the last digits (projection arithmetic rounds differently
+    on different math libraries), and where the two straddle a float32
+    rounding midpoint they round one float32 step apart.  One step of the
+    stored value is therefore the allowance: under two metres anywhere on
+    the globe, so a grid displaced by one cell of any spacing ArWen runs
+    is outside it.
+    """
+
+    stored = np.asarray(stored, dtype=np.float32)
+    rounded = np.asarray(computed, dtype=np.float64).astype(np.float32)
+    if stored.shape != rounded.shape:
+        return False
+    offset = stored.astype(np.float64) - rounded.astype(np.float64)
+    if longitude:
+        offset = (offset + 180.0) % 360.0 - 180.0
+    step = np.spacing(np.abs(rounded)).astype(np.float64)
+    return bool(np.all(np.abs(offset) <= step))
+
+
+def _require_grid(label: str, grid: TargetGrid, stored: dict,
+                  coordinates: Mapping | None = None) -> None:
     """Bind the file's declared coordinates to a grid the caller holds.
 
     This is the check that reaches ``z_w``.  The file stores float32
     ``XLAT``/``XLONG``/``HGT`` and no vertical coordinate at all, so a
     reader alone can never recompute the writer's digest; a caller who
     brought the grid can.
+
+    ``HGT`` and ``z_w`` come from stored model fields and match to the
+    bit on every machine, so their digests are compared exactly.
+    ``XLAT``/``XLONG`` come out of projection arithmetic, so with the
+    stored arrays in hand (``coordinates``) they are required to be the
+    arrays the file's digest table names and to agree with this grid
+    within one float32 step (:func:`_float32_coordinates_agree`).
+    Without the arrays the digests are all there is to compare.
     """
 
     expected = _coordinate_digests(grid)
-    disagree = sorted(name for name in expected
-                      if expected[name] != stored.get(name))
+    exact = ("HGT", "z_w") if coordinates is not None else tuple(expected)
+    disagree = [name for name in exact
+                if expected[name] != stored.get(name)]
+    if coordinates is not None:
+        for name, computed, longitude in (("XLAT", grid.lat, False),
+                                          ("XLONG", grid.lon, True)):
+            values = np.asarray(coordinates[name])
+            if (_digest(values, np.float32) != stored.get(name)
+                    or not _float32_coordinates_agree(
+                        values, computed, longitude=longitude)):
+                disagree.append(name)
+    disagree = sorted(disagree)
     if disagree:
         raise GridMismatchError(
             f"{label}: the caller's target grid disagrees with the file "

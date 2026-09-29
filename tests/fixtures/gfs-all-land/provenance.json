@@ -1,0 +1,11 @@
+{
+  "source": "NOMADS grib-filter subregion crop fetched by gpuwm fetch --source gfs --area 40,-100,40.25,-99.75 --p-top-pa 5000",
+  "url": "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?file=gfs.t12z.pgrb2.0p25.f000&subregion=&leftlon=260&rightlon=260.25&toplat=40.25&bottomlat=40",
+  "source_file": "gfs.t12z.pgrb2.0p25.f000.subset.grib2",
+  "cycle": "2026-09-27T12:00:00Z",
+  "forecast_hour": 0,
+  "file_bytes": 24374,
+  "file_sha256": "a7f47bf20d4e5c51e5c65c769285fd4e2ce8b226449229d0a009d7b8e0e1e979",
+  "grid_cells_per_record": 4,
+  "note": "Every cell of the crop is land, so the crop carries no Section 6 bitmap on any record, including the soil and snow records that may have missing cells over water. The bytes are unchanged from the fetch."
+}

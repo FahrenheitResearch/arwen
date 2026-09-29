@@ -44,7 +44,8 @@ from pathlib import Path
 
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           cargo_build_one_liner, default_bridge_dir,
+                           default_bridge_dir, lazy_build_hints,
+                           rustwx_build_hint,
                            executable_name, packaged_bridge_dir)
 
 #: Environment variables naming prebuilt binaries.
@@ -55,9 +56,11 @@ OBSGRID_ENV = "GPUWM_RW_OBSGRID"
 ENSEMBLE_NAME = "rw_ensbatch"
 OBSGRID_NAME = "rw_obsgrid"
 
-#: The one-liner that builds them.  Same workspace as the batch renderer,
-#: so one cargo invocation produces all three.
-CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+#: ``CARGO_BUILD_HINT``: the one-liner that builds them.  Same workspace
+#: as the batch renderer, so one cargo invocation produces all three.
+#: Spelled for the shell rule when it is read.
+__getattr__ = lazy_build_hints(
+    __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
 #: The exact ``--abi`` lines these wrappers were written against.
 #:
@@ -144,7 +147,7 @@ def _find(env_var: str, name: str) -> Path | None:
                 f"{env_var} names a missing file: {candidate}.  Point it "
                 f"at a built {name} binary, unset {env_var} to use the "
                 f"vendored resolution ladder, or build it with: "
-                f"{CARGO_BUILD_HINT}")
+                f"{rustwx_build_hint()}")
     return None
 
 
@@ -160,14 +163,14 @@ def ensemble_remedy() -> str:
     return artifact_remedy(
         env_var=ENSEMBLE_ENV, filename=executable_name(ENSEMBLE_NAME),
         subject="the rust ensemble product engine",
-        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=CARGO_BUILD_HINT)
+        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=rustwx_build_hint())
 
 
 def obsgrid_remedy() -> str:
     return artifact_remedy(
         env_var=OBSGRID_ENV, filename=executable_name(OBSGRID_NAME),
         subject="the rust observation-grid engine",
-        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=CARGO_BUILD_HINT)
+        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=rustwx_build_hint())
 
 
 def _probe(path: Path, marker: str, name: str) -> tuple[bool, str]:
@@ -188,7 +191,7 @@ def _probe(path: Path, marker: str, name: str) -> tuple[bool, str]:
         return False, (
             f"launches, but --abi does not match the contract this gpuwm "
             f"expects ({detail}) -- it is a build from another checkout.  "
-            f"REBUILD it from this one: {CARGO_BUILD_HINT}")
+            f"REBUILD it from this one: {rustwx_build_hint()}")
     return True, "--abi matches the contract"
 
 
@@ -238,7 +241,7 @@ def _lane_refusal(name: str, failure: str, remedy: str,
     return layered(
         f"weather-field panels on this lane come from the rust engine "
         f"{name}, and it could not be resolved: {failure}.  Build it "
-        f"({CARGO_BUILD_HINT}), or draw them with {workaround}, which is "
+        f"({rustwx_build_hint()}), or draw them with {workaround}, which is "
         f"a named workaround and reports itself as one.",
         f"The render law permits ONE fallback and this is not it: an "
         f"--engine auto that quietly drew the same weather fields with "
@@ -332,7 +335,7 @@ def ensemble_workaround_notice() -> str:
             f"({', '.join(ENSEMBLE_FIELDS)}) by "
             f"{len(ENSEMBLE_PRODUCTS)} products "
             f"({', '.join(ENSEMBLE_PRODUCTS)}), so nothing is gained by "
-            f"drawing them here; build it with {CARGO_BUILD_HINT} and "
+            f"drawing them here; build it with {rustwx_build_hint()} and "
             f"drop --engine matplotlib.")
 
 
@@ -366,6 +369,9 @@ def _read_events(stdout: str, stderr: str, subject: str
         elif line.startswith("SKIPPED "):
             slug, _, reason = line[len("SKIPPED "):].partition(" ")
             skipped.append((slug, f"{subject}: {reason or 'no reason given'}"))
+    from gpuwm import rustwx
+
+    rustwx.relay_native_warnings(stderr)
     for line in (stderr or "").splitlines():
         if line.startswith("FAILED "):
             failures.append(f"{subject}: {line[len('FAILED '):]}")

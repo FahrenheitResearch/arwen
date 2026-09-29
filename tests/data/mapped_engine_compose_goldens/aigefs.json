@@ -136,7 +136,7 @@
       },
       "provenance": {
         "path": "rw-wps-aigefs-member-hybrid-grib2.provenance.json",
-        "sha256": "a0439034d605b6215c16445c3f2459d2f027b87ac4d7228d4f1118d3cbf15d23"
+        "sha256": "4050afea573ffa3b590deb6ef0f0e2a86f2d6feca25423b38cd31f4e025b6bb2"
       },
       "source_id": "gdas-pgrb2-0p25-analysis-donor-grib2-native"
     }
@@ -156,6 +156,21 @@
           "sha256": "35b1f2ed10d1ba38b855f88b5be6bfe987545da2d5eaa19345d167cca5d0da06",
           "shape": [
             13,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "air_pressure_at_mean_sea_level": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "e7acfbad69a894901246d8812e4558684b50fd33d2ce23f5aa6bfb7c7a5655e5",
+          "shape": [
             721,
             1440
           ],
@@ -361,7 +376,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "6e1ac25c5e49021890ce69b31f551600af02a22bb5eeb8d36cdc2ebd0e43510a",
+          "sha256": "5cb30c99e6915f1392ebfa02f0f4285e11c7155760c6ed4d414140b62b29eb9c",
           "shape": [
             721,
             1440
@@ -403,7 +418,6 @@
         }
       },
       "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
-      "header_sha256": "d754e01a5dc2c7eb501f8906cd0c3c31ebd91072800dc1202bdfb3390711a422",
       "inputs": [
         {
           "name": "gdas.t00z.pgrb2.0p25.f000",
@@ -435,6 +449,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": "1",
+      "portable_header_sha256": "fdc0b330a9ab8f18348f5250c1b4bdee4fa6278c0a185b43c58c75f7112bae78",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T00:00:00",
       "vertical": {
@@ -457,6 +472,21 @@
           "sha256": "35b1f2ed10d1ba38b855f88b5be6bfe987545da2d5eaa19345d167cca5d0da06",
           "shape": [
             13,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "Pa"
+        },
+        "air_pressure_at_mean_sea_level": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "0d9b81a579bccb135d9dda49f1ec4ea5fab920bd65a53aa7de56f1995179804a",
+          "shape": [
             721,
             1440
           ],
@@ -662,7 +692,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "662d8f8aa81cab8503d73209a74f02b887375ebee09f85d5b53b6811718dc9df",
+          "sha256": "3f9be2e3c32f9ff04405abe53ff43cd5e7c78bdbf980a792382b196dc3d45fe9",
           "shape": [
             721,
             1440
@@ -704,7 +734,6 @@
         }
       },
       "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
-      "header_sha256": "6dfe78307532e98f6d1050706cdf1621217a2d27bb3f2745cb341ce2946fd1bf",
       "inputs": [
         {
           "name": "gdas.t00z.pgrb2.0p25.f000",
@@ -736,6 +765,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": "1",
+      "portable_header_sha256": "3f8ec09217ad0a3c4eabf55f48290e97ada3d3c7be772043c7367974cd23d02b",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T06:00:00",
       "vertical": {
@@ -746,15 +776,16 @@
       "vertical_units": "Pa"
     }
   ],
+  "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
-    "sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc"
+    "sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
-  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
     "depth_units": "m",
     "missing": {
@@ -923,7 +954,7 @@
   ],
   "terrain_provenance": {
     "name": "rw-wps-aigefs-member-hybrid-grib2.provenance.json",
-    "sha256": "a0439034d605b6215c16445c3f2459d2f027b87ac4d7228d4f1118d3cbf15d23"
+    "sha256": "4050afea573ffa3b590deb6ef0f0e2a86f2d6feca25423b38cd31f4e025b6bb2"
   },
   "verdict": "COMPOSED"
 }

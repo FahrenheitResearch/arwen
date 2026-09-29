@@ -89,7 +89,11 @@ fn all_frames_and_selected_frame_use_their_actual_hour_with_baseline_context() {
         );
         assert!(path.is_file());
     }
-    assert!(stdout.contains("SKIPPED qpf_1h F000:"), "{stdout}");
+    // The skip names the file of ITS frame (F000), not the last input.
+    assert!(
+        stdout.contains(&format!("SKIPPED qpf_1h {}: F000:", inputs[0].display())),
+        "{stdout}"
+    );
 
     let selected = render(&scratch.0, "selected", "2", &inputs);
     let selected_stdout = String::from_utf8_lossy(&selected.stdout);
@@ -115,6 +119,9 @@ fn all_frames_and_selected_frame_use_their_actual_hour_with_baseline_context() {
 
 #[test]
 fn subhourly_ordinal_slots_are_not_treated_as_forecast_hours() {
+    // Frames every 15 minutes put the store on the exact-time axis: slot 4
+    // is the frame at +1 h.  Its 1 h window is drawn as F001, never as
+    // F004, and the frames between hours end no window and add no skip.
     let scratch = Scratch::new();
     let inputs: Vec<PathBuf> = (0..=4)
         .map(|slot| stored_plane_fixture::write_rain_frame(&scratch.0, slot * 900, slot as f32))
@@ -122,13 +129,22 @@ fn subhourly_ordinal_slots_are_not_treated_as_forecast_hours() {
     let output = render(&scratch.0, "exact", "all", &inputs);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    let paths = rendered(&stdout);
+    assert_eq!(paths.len(), 1, "{stdout}");
+    let name = paths[0].file_name().unwrap().to_string_lossy().to_string();
     assert!(
-        !output.status.success(),
-        "ordinal windows were accepted: {stdout}"
+        name.contains("_f001_") && !name.contains("_f004_"),
+        "{name}"
     );
-    assert!(rendered(&stdout).is_empty(), "{stdout}");
+    assert!(paths[0].is_file());
+    let skips: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("SKIPPED qpf_1h "))
+        .collect();
+    assert_eq!(skips.len(), 1, "only the analysis frame skips: {stdout}");
     assert!(
-        stderr.contains("exact-time ordinal axis"),
-        "{stdout}\n{stderr}"
+        skips[0].contains(&format!("{}: F000:", inputs[0].display())),
+        "{stdout}"
     );
 }

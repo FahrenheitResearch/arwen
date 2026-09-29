@@ -143,7 +143,7 @@ class TestGfsCycleSelection:
 class TestBackgroundSelection:
     """The window plan rides the gpuwm.da.background registry.
 
-    HRRR is the front door's default background (Drew ruling,
+    HRRR is the front door's default background (project ruling,
     2026-08-06); GFS remains for archival reproduction, and its answer
     through the registry is proved identical to ``latest_gfs_cycle`` by
     tests/test_da_background.py.
@@ -537,7 +537,7 @@ class TestParser:
         assert args.stop_after is None
 
     def test_hrrr_is_the_default_background(self):
-        """Drew ruling, 2026-08-06: HRRR default, permanent.
+        """Project ruling, 2026-08-06: HRRR default, permanent.
 
         GFS stays a choice for archival reproduction of pre-HRRR runs,
         and anything else must arrive as a gpuwm.da.background registry

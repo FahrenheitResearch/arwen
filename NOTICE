@@ -477,6 +477,20 @@ in the same pass.
 
 --------------------------------------------------------------------------
 
+WMO BUFR master tables, as distributed by ECMWF ecCodes
+
+tools/rustwx/crates/rw-obs/tables/bufr/element.table and sequence.def are
+Table B and Table D of the WMO FM 94 BUFR master tables, version 46, as
+distributed in ECMWF's ecCodes (definitions/bufr/tables/0/wmo/46/), which
+is licensed under the Apache License, Version 2.0, Copyright 2005- ECMWF.
+They are compiled into the rw-obs
+library, and the rw_wis2 decoder reads WIS2 BUFR messages through them. The provenance
+note beside them, tools/rustwx/crates/rw-obs/tables/bufr/NOTICE.md, says the
+same and travels with the tables; the Apache-2.0 text is this distribution's
+own LICENSE.
+
+--------------------------------------------------------------------------
+
 Source Sans 3 (Adobe) -- SIL Open Font License 1.1
 
 tools/rustwx/crates/rustwx-render/assets/fonts/SourceSans3-Regular.ttf
@@ -655,26 +669,45 @@ States Government, not subject to copyright under 17 U.S.C. 105).
 Neither carries a redistribution condition. Source URLs and status are
 recorded in the asset directories' README files.
 
+The web page's Create map (gpuwm/gui/static/map/basemap.json) is built
+by tools/build_gui_basemap.py from the Natural Earth 1:50m coastline,
+lakes, admin 0 boundary lines and admin 1 states and provinces lines
+(public domain, https://www.naturalearthdata.com/), simplified and
+delta-coded. The file carries the same notice in its "notice" field.
+
+The Weather Library's seed pages (gpuwm/gui/seed/wiki-seed.json) are built by
+tools/wiki_seed/build_seed.py from rows and statistics of public records:
+IBTrACS v04r01 (NOAA NCEI, a work of the United States Government; NCEI
+asks users to cite Knapp et al. 2010, doi:10.1175/2009BAMS2755.1, and
+the dataset, doi:10.25921/82ty-9e16), the SPC tornado database and the
+National Weather Service glossary (NOAA, works of the United States
+Government), the Census Bureau's 2020 county codes (a work of the United
+States Government) and Natural Earth 1:110m countries and states (public
+domain). Every record carries its source, licence and retrieval date in
+the file, and each Weather Library page shows them in its references.
+
+The map of the gpuwm gui page (gpuwm/gui/static/map/basemap.bin) is
+built from the same Natural Earth and Census layers by
+tools/gui_basemap.py: simplified and quantized, public domain and a US
+Government work as above.
+
 --------------------------------------------------------------------------
 
-Reference results under non-commercial terms
+RFMIP data
 
-The RFMIP clear-sky reference results in the gpuwm-data repository
-(rfmip-clear-sky-reference-{lw,sw}-{up,down}.nc) are CC-BY-NC-SA-4.0:
-NonCommercial and ShareAlike, which is incompatible with Apache-2.0.
-They are excluded from both the gpuwm-data wheel and its source
-distribution, by exclude-package-data and MANIFEST.in respectively, and
-the licence text ships beside them at
-gpuwm_data/data/rrtmgp/LICENSE-CC-BY-NC-SA-4.0.
+No RFMIP file is in this repository or in any gpuwm or gpuwm-data
+artifact. The four RFMIP clear-sky reference results are CC-BY-NC-SA-4.0
+(non-commercial) and the input file's embedded licence attribute names
+CC-BY-SA-4.0 while linking CC-BY-4.0; the tests that read them fetch them
+at test time from rrtmgp-data v1.9, SHA-256 verified
+(gpuwm/core/rfmip_upstream.py).
 
-They remain present in the public git repository as a verification
-fixture. The Apache-2.0 grant in the root LICENSE does not extend to
-them and is not offered over them; anyone taking them from the
-repository takes them under CC-BY-NC-SA-4.0 alone.
-
-The related rfmip-clear-sky-inputs.nc carries an internal attribute
-naming CC-BY-4.0 and a link to CC-BY-SA-4.0. The ambiguity is recorded
-in that directory's PROVENANCE.md and both texts ship beside the file.
+RRTMGP reads 136 numbers derived from that input file (produced by the
+University of Colorado for RFMIP, CMIP6 input4MIPs UColorado-RFMIP-1-2):
+gpuwm_data/data/rrtmgp/rrtmgp-trace-gas-climatology.json in gpuwm-data,
+offered under CC-BY-SA-4.0, the stricter of the two readings, with its
+text beside it. The Apache-2.0 grant in the root LICENSE does not extend
+to that table.
 
 --------------------------------------------------------------------------
 
@@ -699,3 +732,35 @@ Copernicus license and requires the user's own account), and relies on
 the user-staged NCAR WPS geographical dataset (WPS_GEOG) for static
 fields. None of these datasets are redistributed by this repository;
 their terms are between the user and the provider.
+
+`gpuwm fetch-geog` downloads WPS_GEOG by default from a byte-for-byte
+mirror of the NCAR tarballs (tools/publish_geog_mirror.py writes its
+provenance page). Two of its sources carry terms of their own:
+
+  * soilgrids.tar.bz2 (the Noah-MP soil archive, `gpuwm mesh` only) is
+    derived from SoilGrids250m by ISRIC -- World Soil Information (Hengl
+    T. et al. 2017, "SoilGrids250m: Global gridded soil information based
+    on machine learning", PLOS ONE 12(2): e0169748), licensed CC BY 4.0
+    (https://creativecommons.org/licenses/by/4.0/); NCAR generated the
+    WPS tiles and the mirror does not modify them.
+  * soiltype_top_30s and soiltype_bot_30s use the FAO-UNESCO Soil Map of
+    the World outside the United States (STATSGO, USDA public domain,
+    inside it). FAO applies CC BY 4.0 to its datasets unless their own
+    metadata says otherwise; the Digital Soil Map of the World catalogue
+    record states no licence. Credit: FAO/UNESCO Soil Map of the World.
+
+With `[static.highres]` enabled, ArWen downloads high-resolution static
+sources into the user's own cache_root; none is redistributed here and
+each run's receipt carries its source's attribution. The default land
+cover carries terms of its own:
+
+  * CGLC-MODIS-LCZ, the 100 m global land cover WRF and WPS ship from
+    version 4.5:
+    Demuzere M., He C., Martilli A. and Zonato A. (2023),
+    doi:10.5281/zenodo.7670653, licensed CC BY 4.0
+    (https://creativecommons.org/licenses/by/4.0/). It is built from the
+    Copernicus Global Land Service LC100 v3 (Buchhorn et al. 2020) and
+    the global Local Climate Zone map (Demuzere et al. 2022, Earth Syst.
+    Sci. Data 14, 3835). ArWen fetches the published GeoTIFF whole from
+    Zenodo, unmodified, and maps its classes into WRF's MODIS categories
+    at preparation time.

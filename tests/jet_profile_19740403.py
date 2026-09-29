@@ -2,7 +2,7 @@
 regenerate with tools/sase_smoke/extract_jet_profile.py; do
 not hand-edit).
 
-PROVENANCE: d03-box mean single-column state from Drew's
+PROVENANCE: d03-box mean single-column state from an
 independent spun-up CPU WRF frame
 wrfout_d02_1974-04-03_13_08_00 (3 km, 13:08 UTC 1974-04-03;
 box |lat-39.7|<2.3, |lon+84|<2.9 = 28080 columns; the

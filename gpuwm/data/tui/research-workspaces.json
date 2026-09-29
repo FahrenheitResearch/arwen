@@ -218,7 +218,7 @@
       "publisher": "ArWen source",
       "url": "tools/arwen-tui/src/scenario.rs",
       "accessed": "2026-09-06",
-      "supports": "Warm-bubble coordinates, theta amplitude >0 and <=10 K, radius, vertical half-depth and RH-preservation fields."
+      "supports": "Warm-bubble coordinates, theta amplitude >0 K, radius, vertical half-depth and RH-preservation fields."
     },
     {
       "id": "native-output",

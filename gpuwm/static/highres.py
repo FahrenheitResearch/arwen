@@ -11,6 +11,14 @@ WPS climatologies remain authoritative for LAI, green fraction, albedo, snow
 albedo, and deep-soil temperature.  When a higher-resolution water mask turns
 an old water cell into land, those climatologies are filled from the nearest
 old-land cell and the exact fallback count is reported.
+
+A source covers only where it is published.  Cells outside a source's
+coverage (the sea past a land-cover collection's edge, the far side of a
+national border, an unpublished terrain tile) take the 30-arc-second
+baseline the engine uses without this overlay, and the hand-over runs
+over :data:`COVERAGE_BLEND_CELLS` cells so the edge leaves no seam.  The
+count and the bounds of those cells are returned per field.  Only a cell
+that neither the source nor the baseline covers is refused.
 """
 from __future__ import annotations
 
@@ -184,6 +192,23 @@ def _merge_via_rust(bridge, baseline, overrides_or_hgt, *, mode: str):
 #: category here reads these two names rather than a literal.
 MODIS21_ISWATER = 17
 MODIS21_ISLAKE = 21
+#: The rest of the inventory's identity: its category count (the
+#: ``NUM_LAND_CAT`` every wrfout carries, :mod:`gpuwm.io.wrfout`) and the
+#: urban and ice categories the Noah tables key on.
+MODIS21_CATEGORY_COUNT = 21
+MODIS21_ISURBAN = 13
+MODIS21_ISICE = 15
+
+#: How a land-cover source's water reaches WRF ocean and lake.
+#: ``WATER_SPLIT_BY_BASELINE``: the crosswalk has one open-water class,
+#: sent to the lake category, and the domain's own 30-arc-second water
+#: field moves the sea back to ocean (:func:`_split_ocean_from_lake`).
+#: ``WATER_FROM_SOURCE``: the source already tells the sea (ocean
+#: category) from inland water (lake category) at its own resolution, so
+#: its classification stands.
+WATER_SPLIT_BY_BASELINE = "split-by-baseline"
+WATER_FROM_SOURCE = "from-source"
+WATER_RULES = (WATER_SPLIT_BY_BASELINE, WATER_FROM_SOURCE)
 
 NLCD_TO_MODIS21_INLAND = {
     11: 21,  # open water -> inland lake for the scoped CONUS pilot
@@ -198,6 +223,22 @@ NLCD_TO_MODIS21_INLAND = {
     81: 10,  # pasture / hay
     82: 12,  # cultivated crops
     90: 11, 95: 11,  # woody and herbaceous wetlands
+}
+
+#: CGLC-MODIS-LCZ (Demuzere et al. 2023) is already in WRF's MODIS legend:
+#: 1-20 are the Noah-modified IGBP classes, 17 is the sea, 21 inland
+#: water, and 51-61 are the built Local Climate Zones (LCZ 1-10 and LCZ E,
+#: bare rock or paved), which WRF numbers 51-61 since 4.4.2 (31-41 before)
+#: and reads as the ``LCZ_1``..``LCZ_11`` keys of VEGPARM.TBL.
+#: With no urban canopy scheme running, WRF's Noah and Noah-MP drivers
+#: treat LCZ_1..LCZ_11 as ISURBAN.  The engine runs no urban canopy
+#: scheme, so the collapse is made here, before the area fractions: the
+#: land-use category count stays 21, and every table and reader keyed on
+#: it (LANDUSE/VEGPARM/SOILPARM, Noah, Noah-MP, RUC, the wrfout
+#: attributes) is unchanged.
+CGLC_MODIS_LCZ_TO_MODIS21 = {
+    **{category: category for category in range(1, 22)},
+    **{lcz: MODIS21_ISURBAN for lcz in range(51, 62)},
 }
 
 SOILGRIDS_DEPTH_WEIGHTS = {
@@ -423,6 +464,11 @@ def resample_continuous(source: BoundRaster, grid: ProjectedGrid, *,
         values = dataset.read(1).astype(np.float64) * source.scale_factor
         nodata = (source.nodata_override
                   if source.nodata_override is not None else dataset.nodata)
+        if nodata is None and np.isnan(values).any():
+            # A derived window keeps the pixels outside its source's
+            # coverage as NaN (the crate's reader masks every non-finite
+            # pixel); say so to the warper so they count as no data.
+            nodata = np.nan
         reproject(
             source=values,
             destination=destination,
@@ -735,10 +781,215 @@ def soilgrids_category_fractions(
     }
 
 
-def _require_coverage(name: str, values: np.ndarray) -> None:
-    if not np.isfinite(values).all():
-        count = int(np.count_nonzero(~np.isfinite(values)))
-        raise ValueError(f"high-resolution {name} lacks {count} target values")
+#: Cells over which a high-resolution field hands over to the
+#: 30-arc-second baseline at the edge of its source's coverage.  It is
+#: the ramp WRF runs where a nest's terrain meets its parent's
+#: (``blend_terrain``, dyn_em/nest_init_utils.F:759-765, default
+#: ``blend_width`` 5, :func:`gpuwm.core.nest_interp.blend_terrain`): the
+#: k-th ring of covered cells in from the edge carries k/(width+1) of the
+#: high-resolution value and the rest from the baseline, so neither
+#: terrain nor land-use fractions step at the edge.
+COVERAGE_BLEND_CELLS = 5
+
+
+def _coverage_weight(covered: np.ndarray,
+                     width: int = COVERAGE_BLEND_CELLS) -> np.ndarray:
+    """The high-resolution weight of every cell near a coverage edge.
+
+    0 where the source does not cover the cell, ``k/(width+1)`` on the
+    k-th ring of covered cells in from the nearest uncovered one, and 1
+    beyond.  Rings are squares (a cell diagonal to an uncovered one is
+    on the first ring), the way the nest blend counts frames in from a
+    domain edge.  A plane with no uncovered cell comes back all ones, so
+    a fully covered domain is untouched by any of this.
+    """
+    covered = np.asarray(covered, dtype=bool)
+    weight = np.where(covered, 1.0, 0.0)
+    if covered.all() or not covered.any():
+        return weight
+    reach = ~covered
+    for ring in range(1, int(width) + 1):
+        rows = reach.copy()
+        rows[1:, :] |= reach[:-1, :]
+        rows[:-1, :] |= reach[1:, :]
+        grown = rows.copy()
+        grown[:, 1:] |= rows[:, :-1]
+        grown[:, :-1] |= rows[:, 1:]
+        weight[grown & ~reach] = ring / (int(width) + 1.0)
+        reach = grown
+    return weight
+
+
+def _mass_latlon(grid) -> tuple[np.ndarray, np.ndarray] | None:
+    """Mass-point latitude and longitude, or None for a grid without them."""
+    latlon_mass = getattr(grid, "latlon_mass", None)
+    if latlon_mass is None:
+        return None
+    lat, lon = latlon_mass()
+    return np.asarray(lat, dtype=np.float64), np.asarray(lon, dtype=np.float64)
+
+
+def _cell_bounds(mask: np.ndarray, latlon) -> dict[str, float] | None:
+    """Latitude/longitude bounds of the cell centres in ``mask``."""
+    if latlon is None or not np.any(mask):
+        return None
+    lat, lon = latlon
+    return {"lat_min": round(float(lat[mask].min()), 4),
+            "lat_max": round(float(lat[mask].max()), 4),
+            "lon_min": round(float(lon[mask].min()), 4),
+            "lon_max": round(float(lon[mask].max()), 4)}
+
+
+def _coverage_record(source_id: str | None, weight: np.ndarray,
+                     latlon, *, outside: np.ndarray | None = None,
+                     water: np.ndarray | None = None
+                     ) -> dict[str, object]:
+    """Per-field receipt entry: where the baseline stood in, and where
+    the two were blended.
+
+    ``cell_groups`` names what every cell of the field took: the source
+    alone, the source blended with the baseline, or the baseline alone
+    (and, for soil, water cells, which take the water category from the
+    land/water mask rather than from any soil source).  The groups
+    partition the domain, so their counts sum to ``cell_count``.
+    """
+    if outside is None:
+        outside = weight == 0.0
+    outside = np.asarray(outside, dtype=bool)
+    blended = (weight > 0.0) & (weight < 1.0) & ~outside
+    from_source = ~outside & ~blended
+    groups = {}
+    if water is not None:
+        water = np.asarray(water, dtype=bool) & ~outside
+        from_source &= ~water
+        blended &= ~water
+    name = source_id or "no source"
+    groups["source"] = {"takes": name,
+                        "cells": int(np.count_nonzero(from_source))}
+    groups["blended"] = {
+        "takes": f"{name} blended with the 30-arc-second baseline",
+        "cells": int(np.count_nonzero(blended))}
+    groups["baseline"] = {"takes": "30-arc-second baseline",
+                          "cells": int(np.count_nonzero(outside))}
+    if water is not None:
+        groups["water"] = {
+            "takes": "water category from the land/water mask",
+            "cells": int(np.count_nonzero(water))}
+    return {
+        "source": source_id,
+        "cell_count": int(weight.size),
+        "cells_from_source": int(np.count_nonzero(from_source)),
+        "cells_outside_coverage": int(np.count_nonzero(outside)),
+        "cells_blended": int(np.count_nonzero(blended)),
+        "outside_bounds": _cell_bounds(outside, latlon),
+        "outside_takes": "30-arc-second baseline",
+        "cell_groups": groups,
+    }
+
+
+def _baseline_where_uncovered(label: str, name: str, baseline,
+                              needed: np.ndarray, shape: tuple,
+                              source_id: str | None,
+                              latlon) -> np.ndarray:
+    """The baseline field the uncovered cells fall back to, or a refusal.
+
+    The refusal is the one case left: a cell the high-resolution source
+    does not reach AND the baseline does not supply.  It names the field,
+    the source, the count and where the cells are.
+    """
+    count = int(np.count_nonzero(needed))
+    where = _cell_bounds(needed, latlon)
+    located = f" at {where}" if where is not None else ""
+    field = None if baseline is None else baseline.get(name)
+    if field is None:
+        raise ValueError(
+            f"high-resolution {label} from {source_id or 'no source'} does "
+            f"not cover {count} cell(s) of this domain{located}, and no "
+            f"30-arc-second baseline {name} was supplied to stand in for "
+            "them, so neither source covers those cells")
+    field = np.asarray(field, dtype=np.float64)
+    if field.shape != tuple(shape):
+        raise ValueError(
+            f"baseline {name} shape {field.shape} differs from the "
+            f"high-resolution {label} grid {tuple(shape)}")
+    holed = needed & ~np.all(np.isfinite(field.reshape(-1, *needed.shape)),
+                             axis=0)
+    if holed.any():
+        raise ValueError(
+            f"high-resolution {label} from {source_id or 'no source'} does "
+            f"not cover {int(np.count_nonzero(holed))} cell(s) of this "
+            f"domain at {_cell_bounds(holed, latlon)}, and the "
+            f"30-arc-second baseline {name} is not finite there either, "
+            "so neither source covers those cells")
+    return field
+
+
+def _terrain_on_coverage(terrain_extended: np.ndarray | None, grid, *,
+                         halo: int, baseline, source_id: str | None,
+                         latlon) -> tuple[np.ndarray, dict[str, object]]:
+    """High-resolution terrain where the source covers, baseline elsewhere.
+
+    ``terrain_extended`` is the area-averaged source on the halo-extended
+    grid, NaN wherever no source pixel reached the cell (or ``None`` when
+    the source publishes nothing over this footprint).  Fully covered, it
+    is the unchanged path: one WPS smooth-desmooth pass, then the crop.
+    Otherwise the uncovered cells are filled from the baseline before
+    that pass (the halo ring from its nearest baseline edge cell), and
+    the result is blended onto the baseline with the nest terrain ramp.
+    """
+    ny, nx = grid.e_sn - 1, grid.e_we - 1
+    crop = (slice(halo, halo + ny), slice(halo, halo + nx))
+    shape_ext = (ny + 2 * halo, nx + 2 * halo)
+    if terrain_extended is None:
+        covered_ext = np.zeros(shape_ext, dtype=bool)
+    else:
+        covered_ext = np.isfinite(terrain_extended)
+    if covered_ext.all():
+        smoothed = smth_desmth_special(terrain_extended, passes=1)
+        hgt = smoothed[crop]
+        return hgt, _coverage_record(source_id, np.ones((ny, nx)), latlon)
+    weight = _coverage_weight(covered_ext)[crop]
+    base = _baseline_where_uncovered(
+        "terrain", "HGT_M", baseline, weight < 1.0, (ny, nx), source_id,
+        latlon)
+    if covered_ext.any():
+        padded = np.pad(base, halo, mode="edge")
+        filled = np.where(covered_ext, terrain_extended, padded)
+        high = smth_desmth_special(filled, passes=1)[crop]
+        hgt = weight * high + (1.0 - weight) * base
+    else:
+        hgt = np.array(base, copy=True)
+    return hgt, _coverage_record(source_id, weight, latlon)
+
+
+def coverage_warning(domain_id: int, coverage: Mapping[str, Mapping]
+                     ) -> str | None:
+    """One plain console line naming every field that took the baseline.
+
+    ``coverage`` is the ``fields`` mapping of an audit's ``coverage``
+    entry.  ``None`` when every field was fully covered.
+    """
+    parts = []
+    for key, record in coverage.items():
+        field = record.get("field", key)
+        outside = int(record.get("cells_outside_coverage", 0))
+        if not outside:
+            continue
+        bounds = record.get("outside_bounds") or {}
+        where = ""
+        if bounds:
+            where = (f", lat {bounds['lat_min']:.2f}..{bounds['lat_max']:.2f}"
+                     f" lon {bounds['lon_min']:.2f}..{bounds['lon_max']:.2f}")
+        parts.append(
+            f"{field} ({record.get('source') or 'no source'}) "
+            f"{outside} of {int(record['cell_count'])} cells{where}")
+    if not parts:
+        return None
+    return (f"[static.highres] d{int(domain_id):02d}: WARNING: part of this "
+            "domain lies outside the high-resolution sources and takes the "
+            "30-arc-second baseline there: " + "; ".join(parts)
+            + f" (blended over {COVERAGE_BLEND_CELLS} cells at each "
+            "coverage edge; counts and bounds are in the receipt)")
 
 
 def baseline_ocean_mask(baseline: Mapping[str, np.ndarray], *,
@@ -803,14 +1054,49 @@ def _split_ocean_from_lake(luf, baseline_ocean, *, iswater: int,
     }
 
 
+def _source_water_audit(luf, covered, *, iswater: int,
+                        islake: int) -> dict[str, object]:
+    """The water record of a source that separates the sea from lakes.
+
+    Nothing is moved: the source's own ocean and lake categories stand,
+    because they are drawn at the source's resolution and the baseline's
+    water field is coarser.  The counts are over the cells the source
+    covers.
+    """
+    covered = np.asarray(covered, dtype=bool)
+    ocean = np.asarray(luf[iswater - 1]) > 0.0
+    lake = np.asarray(luf[islake - 1]) > 0.0
+    return {
+        "method": (
+            "the land-cover source separates the sea (WRF ocean category "
+            f"{iswater}) from inland water (WRF lake category {islake}) "
+            "itself, so its own classification stands and no "
+            "30-arc-second split is made"),
+        "ocean_cells_from_source": int(np.count_nonzero(ocean & covered)),
+        "lake_cells": int(np.count_nonzero(lake & covered)),
+        "open_water_fraction_moved_to_ocean": 0.0,
+    }
+
+
+def _source_id(source) -> str | None:
+    """The receipt's source id of a bound raster, or None when absent."""
+    if source is None:
+        return None
+    receipt = source.receipt()
+    return str(receipt.get("source_id")) if isinstance(receipt, dict) else None
+
+
 def build_highres_overrides(
-        grid: ProjectedGrid, *, terrain: BoundRaster,
-        landcover: BoundRaster,
+        grid: ProjectedGrid, *, terrain: BoundRaster | None,
+        landcover: BoundRaster | None,
         soil_sources: Mapping[tuple[str, str], BoundRaster],
         baseline_ocean: np.ndarray,
         soil_fallback: Mapping[str, np.ndarray] | None = None,
         landcover_mapping: Mapping[int, int] = NLCD_TO_MODIS21_INLAND,
-        halo: int = HALO) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+        halo: int = HALO,
+        baseline: Mapping[str, np.ndarray] | None = None,
+        landcover_water: str = WATER_SPLIT_BY_BASELINE,
+        ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
     """Build terrain, land-use, and soil fields for one projected domain.
 
     ``baseline_ocean`` is REQUIRED and has no default: it is the domain's
@@ -824,28 +1110,93 @@ def build_highres_overrides(
     the returned audit.  The split is therefore what every caller gets; a
     footprint with no ocean in it passes an all-False array and reads the
     same audit saying so.
+
+    ``landcover_water`` is the source's water rule (:data:`WATER_RULES`),
+    read from its row in
+    :data:`gpuwm.static.highres_fetch.LANDCOVER_SOURCES`.  A source that
+    already separates the sea from inland water
+    (:data:`WATER_FROM_SOURCE`) keeps its own ocean and lake categories;
+    the split above is for a source with one open-water class.
+
+    ``baseline`` is the domain's 30-arc-second statics (``HGT_M``,
+    ``LANDUSEF``, ``LANDMASK``, ``LU_INDEX``, and the soil fractions when
+    ``soil_fallback`` is not given).  Every cell a source does not cover
+    takes the baseline value, handed over across
+    :data:`COVERAGE_BLEND_CELLS` cells at the coverage edge; the cells
+    past the edge keep the baseline land/water mask and land-use index
+    exactly, so water stays water there.  ``terrain`` or ``landcover`` is
+    ``None`` when its source publishes nothing over the footprint.  The
+    per-field counts and bounds are in ``audit["coverage"]``.
     """
 
     extended = _extended_grid(grid, halo)
-    crop = (slice(halo, halo + grid.e_sn - 1),
-            slice(halo, halo + grid.e_we - 1))
+    ny, nx = grid.e_sn - 1, grid.e_we - 1
+    crop = (slice(halo, halo + ny), slice(halo, halo + nx))
+    latlon = _mass_latlon(grid)
+    if soil_fallback is None and baseline is not None:
+        soil_fallback = {name: baseline[name]
+                         for name in ("SOILCTOP", "SOILCBOT")
+                         if name in baseline}
 
-    terrain_extended = resample_continuous(terrain, extended, method="average")
-    _require_coverage("terrain", terrain_extended)
-    terrain_extended = smth_desmth_special(terrain_extended, passes=1)
-    hgt = terrain_extended[crop]
+    terrain_extended = (
+        None if terrain is None
+        else resample_continuous(terrain, extended, method="average"))
+    hgt, terrain_coverage = _terrain_on_coverage(
+        terrain_extended, grid, halo=halo, baseline=baseline,
+        source_id=_source_id(terrain), latlon=latlon)
 
-    luf_extended = resample_mapped_categories(
-        landcover, extended, landcover_mapping, category_count=21)
-    _require_coverage("land cover", luf_extended)
-    luf = np.array(luf_extended[(slice(None),) + crop], copy=True)
-    water_split = _split_ocean_from_lake(
-        luf, baseline_ocean, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
+    if landcover_water not in WATER_RULES:
+        raise ValueError(
+            f"landcover_water {landcover_water!r} is not one of "
+            f"{list(WATER_RULES)}")
+    landcover_id = _source_id(landcover)
+    if landcover is None:
+        covered_ext = np.zeros((ny + 2 * halo, nx + 2 * halo), dtype=bool)
+        luf = np.zeros((MODIS21_CATEGORY_COUNT, ny, nx))
+    else:
+        luf_extended = resample_mapped_categories(
+            landcover, extended, landcover_mapping,
+            category_count=MODIS21_CATEGORY_COUNT)
+        covered_ext = np.all(np.isfinite(luf_extended), axis=0)
+        luf = np.array(luf_extended[(slice(None),) + crop], copy=True)
+    covered = covered_ext[crop]
+    if not covered.all():
+        luf[:, ~covered] = 0.0
+    if landcover_water == WATER_FROM_SOURCE:
+        water_split = _source_water_audit(
+            luf, covered, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
+    else:
+        water_split = _split_ocean_from_lake(
+            luf, baseline_ocean, iswater=MODIS21_ISWATER,
+            islake=MODIS21_ISLAKE)
+    luf_weight = _coverage_weight(covered_ext)[crop]
+    outside_landcover = luf_weight == 0.0
+    if (luf_weight < 1.0).any():
+        base_luf = _baseline_where_uncovered(
+            "land use", "LANDUSEF", baseline, luf_weight < 1.0, luf.shape,
+            landcover_id, latlon)
+        luf = luf_weight * luf + (1.0 - luf_weight) * base_luf
     landmask = landmask_from_landusef(
         luf, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
     lu_index = lu_index_from_landusef(
         luf, landmask, iswater=MODIS21_ISWATER, islake=MODIS21_ISLAKE)
+    if outside_landcover.any():
+        # Past the edge the cells ARE the baseline: its own mask and
+        # index, not a recomputation of them, so the sea the baseline
+        # calls ocean stays exactly that.
+        for name, plane in (("LANDMASK", landmask), ("LU_INDEX", lu_index)):
+            base = _baseline_where_uncovered(
+                "land use", name, baseline, outside_landcover, plane.shape,
+                landcover_id, latlon)
+            plane[outside_landcover] = base[outside_landcover]
+    coverage = {
+        "terrain": {"field": "terrain", **terrain_coverage},
+        "land_use": {"field": "land use",
+                     **_coverage_record(landcover_id, luf_weight, latlon)},
+    }
 
+    soil_id = next((_source_id(source) for _, source
+                    in sorted(soil_sources.items())), None)
     soil_fields: dict[str, np.ndarray] = {}
     soil_audit = {}
     for layer_name, weights in SOILGRIDS_DEPTH_WEIGHTS.items():
@@ -862,18 +1213,23 @@ def build_highres_overrides(
         fallback_name = (
             "SOILCTOP" if layer_name == "top_0_30cm" else "SOILCBOT")
         if np.any(missing_land):
-            if soil_fallback is None or fallback_name not in soil_fallback:
-                raise ValueError(
-                    f"SoilGrids {layer_name} lacks coverage over "
-                    f"{int(missing_land.sum())} target land cells and no "
-                    f"{fallback_name} fallback was supplied")
-            fallback = np.asarray(soil_fallback[fallback_name],
-                                  dtype=np.float64)
-            if fallback.shape != fractions.shape:
-                raise ValueError(
-                    f"{fallback_name} fallback shape {fallback.shape} differs "
-                    f"from {fractions.shape}")
+            fallback = _baseline_where_uncovered(
+                f"soil {layer_name}", fallback_name, soil_fallback,
+                missing_land, fractions.shape, soil_id, latlon)
             fractions[:, missing_land] = fallback[:, missing_land]
+        # A land cell whose soil is still water (the soil source does not
+        # cover it and the baseline calls it water, as with land the
+        # 100 m land cover finds on a coast the 30-arc-second maps call
+        # sea) takes the soil of its nearest land cell.  Left as water
+        # soil on land, initialization (as real.exe) gives it silty clay
+        # loam (8) whatever soil surrounds it.
+        water_soil = land & (np.argmax(np.nan_to_num(fractions), axis=0)
+                             == 13)
+        soil_donors = land & ~water_soil
+        if water_soil.any() and soil_donors.any():
+            donor_y, donor_x = _nearest_donors(soil_donors)
+            fractions[:, water_soil] = fractions[
+                :, donor_y[water_soil], donor_x[water_soil]]
         fractions[:, land] /= fractions[:, land].sum(axis=0)
         if layer_name == "top_0_30cm":
             soil_fields["SOILCTOP"] = fractions
@@ -884,7 +1240,13 @@ def build_highres_overrides(
         soil_audit[layer_name] = {
             **layer_audit,
             "fallback_land_cells": int(missing_land.sum()),
+            "water_soil_land_cells_from_nearest_land": int(
+                water_soil.sum()) if soil_donors.any() else 0,
         }
+        coverage[f"soil_{layer_name}"] = {
+            "field": _SOIL_LAYER_LABELS[layer_name],
+            **_coverage_record(soil_id, np.where(missing_land, 0.0, 1.0),
+                               latlon, outside=missing_land, water=water)}
 
     fields = {
         "HGT_M": hgt,
@@ -909,38 +1271,63 @@ def build_highres_overrides(
         "land_fraction": float(landmask.mean()),
         "water_split": water_split,
         "soil": soil_audit,
+        "coverage": _coverage_audit(coverage),
         "sources": [
-            terrain.receipt(), landcover.receipt(),
+            *([] if terrain is None else [terrain.receipt()]),
+            *([] if landcover is None else [landcover.receipt()]),
             *[source.receipt() for _, source in sorted(soil_sources.items())],
         ],
     }
     return fields, audit
 
 
-def build_terrain_override(grid: ProjectedGrid, *, terrain: BoundRaster,
-                           halo: int = HALO
+#: How the warning and the receipt name each soil layer.
+_SOIL_LAYER_LABELS = {"top_0_30cm": "soil 0-30 cm",
+                      "bottom_30_100cm": "soil 30-100 cm"}
+
+
+def _coverage_audit(fields: Mapping[str, Mapping]) -> dict[str, object]:
+    return {
+        "method": (
+            "a cell no source pixel reaches takes the 30-arc-second "
+            "baseline; the k-th ring of covered cells in from the edge "
+            f"carries k/{COVERAGE_BLEND_CELLS + 1} of the high-resolution "
+            "value (the nest terrain ramp); soil takes the baseline per "
+            "land cell with no ramp"),
+        "blend_cells": COVERAGE_BLEND_CELLS,
+        "fields": dict(fields),
+    }
+
+
+def build_terrain_override(grid: ProjectedGrid, *,
+                           terrain: BoundRaster | None,
+                           halo: int = HALO,
+                           baseline: Mapping[str, np.ndarray] | None = None,
                            ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
     """Build ONLY the terrain field for one domain, from one bound raster.
 
     This is the same terrain science :func:`build_highres_overrides` runs --
     area-average onto the halo-extended WPS grid, one WPS smooth-desmooth
     pass, crop -- with the land-cover and soil legs left out entirely.  It
-    exists because terrain is the one high-resolution field with a
-    near-global source: outside the United States there is no wired land
-    cover, and a terrain-only replacement is a real, useful product as long
-    as nobody is led to believe they also got high-resolution land use.
+    serves ``fields = "terrain"`` and domains no land-cover source reaches
+    (poleward of 78 N or 60 S for the global default): a terrain-only
+    replacement is a real, useful product as long as nobody is led to
+    believe they also got high-resolution land use.
 
     Because no land-use rule runs, this path never classifies water and
     therefore never needs the ocean/lake distinction that constrains the
-    full overlay.
+    full overlay.  Cells the source does not cover take ``baseline``'s
+    ``HGT_M`` exactly as in the full overlay (``terrain`` is ``None`` when
+    the source publishes no tile over the footprint).
     """
+    latlon = _mass_latlon(grid)
     extended = _extended_grid(grid, halo)
-    crop = (slice(halo, halo + grid.e_sn - 1),
-            slice(halo, halo + grid.e_we - 1))
-    terrain_extended = resample_continuous(terrain, extended, method="average")
-    _require_coverage("terrain", terrain_extended)
-    terrain_extended = smth_desmth_special(terrain_extended, passes=1)
-    hgt = terrain_extended[crop]
+    terrain_extended = (
+        None if terrain is None
+        else resample_continuous(terrain, extended, method="average"))
+    hgt, terrain_coverage = _terrain_on_coverage(
+        terrain_extended, grid, halo=halo, baseline=baseline,
+        source_id=_source_id(terrain), latlon=latlon)
     audit = {
         "method": (
             "hash-bound GeoTIFF reprojection to the WRF spherical "
@@ -950,7 +1337,9 @@ def build_terrain_override(grid: ProjectedGrid, *, terrain: BoundRaster,
         "halo_cells": halo,
         "terrain": {"min_m": float(hgt.min()), "max_m": float(hgt.max()),
                     "mean_m": float(hgt.mean())},
-        "sources": [terrain.receipt()],
+        "coverage": _coverage_audit(
+            {"terrain": {"field": "terrain", **terrain_coverage}}),
+        "sources": [] if terrain is None else [terrain.receipt()],
     }
     return {"HGT_M": hgt}, audit
 
@@ -1210,11 +1599,14 @@ def merge_highres_overrides(
 
 
 __all__ = [
-    "BoundRaster", "MODIS21_ISLAKE", "MODIS21_ISWATER",
+    "BoundRaster", "CGLC_MODIS_LCZ_TO_MODIS21", "COVERAGE_BLEND_CELLS",
+    "MODIS21_CATEGORY_COUNT", "MODIS21_ISICE", "MODIS21_ISLAKE",
+    "MODIS21_ISURBAN", "MODIS21_ISWATER",
     "NLCD_TO_MODIS21_INLAND", "SOILGRIDS_DEPTH_WEIGHTS",
+    "WATER_FROM_SOURCE", "WATER_RULES", "WATER_SPLIT_BY_BASELINE",
     "baseline_ocean_mask",
     "build_highres_overrides", "build_terrain_override",
-    "merge_highres_overrides", "merge_terrain_override",
+    "coverage_warning", "merge_highres_overrides", "merge_terrain_override",
     "resample_continuous", "resample_mapped_categories", "sha256_file",
     "soilgrids_category_fractions", "usda_texture_category",
 ]

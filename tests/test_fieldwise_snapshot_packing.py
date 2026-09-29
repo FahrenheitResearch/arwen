@@ -233,8 +233,18 @@ def test_fieldwise_does_not_hide_soil_gaps_or_default_zero_policy(frame, tmp_pat
     values[0, 0, 0] = np.nan
     fields["soil_temperature"] = replace(fields["soil_temperature"], values=values,
                                           missing_count=1)
-    with pytest.raises(ValueError, match="missing source-land"):
-        _pack(_stream(tmp_path, replace(frame, fields=fields)))
+    # The gap reaches the snapshot as the missing value it is, on both
+    # packing paths, for the masked mapping to keep from being a donor.
+    gapped = replace(frame, fields=fields)
+    packed = _pack(_stream(tmp_path / "gap", gapped))
+    assert np.isnan(packed.fields["RW_SOIL_TEMPERATURE"][0, 0, 0])
+    _assert_same_snapshot(packed, mapped_frames_to_regular_snapshots(
+        (gapped,), initialize_absent_hydrometeors=True)[0])
+    values[...] = np.nan
+    fields["soil_temperature"] = replace(fields["soil_temperature"], values=values,
+                                          missing_count=int(values.size))
+    with pytest.raises(ValueError, match="no soil temperature field"):
+        _pack(_stream(tmp_path / "none", replace(frame, fields=fields)))
     policies = dict(frame.header.initialization_policies)
     policies["cloud_water_mixing_ratio"] = "declared_but_not_implemented"
     frame = replace(frame, header=replace(frame.header, initialization_policies=policies))

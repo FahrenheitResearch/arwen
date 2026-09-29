@@ -45,12 +45,30 @@ def test_a_selection_that_cannot_fit_the_request_envelope_names_the_bound_it_mea
 
 
 def test_the_renderers_own_colon_selectors_reach_the_node():
-    named = viewer._products(["var:T2", "xsec:cloud:QCLOUD+QRAIN~log/QVAPOR@cold/wa=1,2,5,10@5",
-                              "mesh:qv:colmax", "2m_temperature"])
-    assert named == sorted(["var:T2", "xsec:cloud:QCLOUD+QRAIN~log/QVAPOR@cold/wa=1,2,5,10@5",
-                            "mesh:qv:colmax", "2m_temperature"])
+    named = viewer._products(["var:T2", "mesh:qv:colmax", "2m_temperature"])
+    assert named == sorted(["var:T2", "mesh:qv:colmax", "2m_temperature"])
     # The selection identity covers them like any other named product.
     assert viewer._selection(viewer.PROFILE, ["var:T2"])["selection_id"] != viewer._selection(viewer.PROFILE, ["var:t2"])["selection_id"]
+
+
+@pytest.mark.parametrize("profile", [viewer.PROFILE, viewer.SCIENCE_PROFILE])
+def test_viewer_without_a_line_refuses_explicit_sections(profile):
+    with pytest.raises(ValueError, match="cannot locate the slice"):
+        viewer._selection(profile, ["2m_temperature", "xsec:wa"])
+
+
+def test_viewer_catalog_excludes_sections_and_run_catalog_keeps_them(monkeypatch):
+    viewer._CATALOG.clear()
+    monkeypatch.setattr("gpuwm.runplan.render_catalog", lambda: {
+        "products": [{"name": "2m_temperature"}, {"name": "xsec:wa"}]})
+    maps = viewer.node_catalog()
+    assert maps["products"] == ["2m_temperature"] and maps["count"] == 1
+    assert not any(name.startswith("xsec:") for name in maps["selector_families"])
+    forecast = viewer.node_catalog(include_sections=True)
+    assert forecast["products"] == ["2m_temperature", "xsec:wa"] and forecast["count"] == 2
+    assert any(name.startswith("xsec:") for name in forecast["selector_families"])
+    assert viewer.node_catalog()["products"] == ["2m_temperature"]
+    viewer._CATALOG.clear()
 
 
 def test_the_product_bound_and_the_selector_families_come_from_the_nodes_catalog(monkeypatch):
@@ -135,6 +153,17 @@ def test_a_jobs_own_render_selection_is_what_its_watchers_prepare():
         "the node's own viewer profile default set, resolved on the node")
 
 
+def test_a_recorded_selection_keeps_each_section_term_whole():
+    """A section's level list is comma-separated too, and its pieces are no
+    selectors: ``0.1/wa`` and ``5@5`` fail ``SELECTOR``, so splitting the
+    recorded string on every comma refused a spelling the renderer draws."""
+    spec = "composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa,xsec:wa=1,2,5@5"
+    assert viewer.selectors(spec) == [
+        "composite_reflectivity", "xsec:QCLOUD=0.01,0.1/wa", "xsec:wa=1,2,5@5"]
+    assert viewer.job_selection({"products": spec})["products"] == ["composite_reflectivity"]
+    assert viewer.job_selection({"products": "xsec:wa"})["products"] == []
+
+
 def test_an_empty_selection_sends_no_products_and_publishes_the_nodes_answer(native):
     c = native.case
     value = viewer.catalog(query(c, products=[]), c.tmp_path)
@@ -185,3 +214,35 @@ def test_the_measured_byte_budget_is_still_the_one_that_refuses(native):
         viewer._prune(viewer._root(c.tmp_path), c.record["id"], 1024, incoming=4096)
     message = str(failure.value)
     assert "4096" in message and "1024" in message
+
+
+def test_a_sections_only_run_gets_no_map_selection_and_a_note_not_the_nodes_default_set():
+    """A run that asked only for sections read as an empty list, the node's default maps."""
+    sections = viewer.job_selection({"products": "xsec:wa,xsec:QCLOUD=0.01,0.1/wa"})
+    default = viewer.job_selection({"products": None})
+    assert sections["selection_id"] != default["selection_id"]
+    assert not viewer.has_map_products(sections) and viewer.has_map_products(default)
+    assert sections["products"] == [] and sections["note"] == viewer.NO_MAP_PRODUCTS_NOTE
+    assert "cross-section" in sections["note"] and "no map products" in sections["note"]
+
+
+def test_a_run_that_also_names_sections_keeps_the_identity_of_its_map_terms():
+    maps = viewer.job_selection({"products": "composite_reflectivity"})
+    both = viewer.job_selection({"products": "composite_reflectivity,xsec:wa=1,2,5@5"})
+    assert both == maps
+    # The map-only identity is the one the viewer has always published under.
+    assert maps["selection_id"] == viewer.ra._sha(viewer.ra._encoded(
+        {"profile": viewer.PROFILE, "products": ["composite_reflectivity"]}))
+
+
+def test_a_sections_only_run_prepares_no_default_maps_and_says_why(native):
+    from gpuwm import remote_preparation_v2 as preparation
+    c = native.case
+    c.record["products"] = "xsec:wa"
+    state = preparation.prepare(c.tmp_path, c.record["id"], start=False)
+    assert state["state"] == "no_map_products" and state["added"] == 0 and state["queued"] == 0
+    assert state["note"] == viewer.NO_MAP_PRODUCTS_NOTE and not state["done"]
+    assert not viewer._queue(viewer._root(c.tmp_path), c.record["id"])
+    c.status["state"] = "completed"
+    assert preparation.prepare(c.tmp_path, c.record["id"], start=False)["done"]
+    assert not native.calls

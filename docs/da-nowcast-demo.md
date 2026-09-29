@@ -70,7 +70,7 @@ Known limits, stated up front:
 - **No velocity dealiasing** -- the obs ladder masks fold-risk
   signatures and counts every rejection (`tools/obs_radar_grid_build.py`
   provenance), which is not the same thing as unwrapping.
-- **HRRR background by default** (Drew ruling, 2026-08-06: permanent;
+- **HRRR background by default** (project ruling, 2026-08-06: permanent;
   `--source gfs` is retained for archival reproduction of pre-HRRR
   runs), with the no-radiation WSM6/YSU demo profile.
 - **Prepared cases are host-bound** -- preparation runs on the local
@@ -333,6 +333,33 @@ door now; the other is not in this tree at all.
   byte-identity proof still open, and its extracted worker had three
   silent failures on the resume path.  There is nothing to enable.
 
+### On by default: the radial-velocity dispersion gate
+
+Radial velocity updates theta and vapour through the ensemble's
+cross-covariances.  Where the ensemble is under-dispersed in Vr (its
+innovations far larger than its spread and the observation error explain),
+those covariances are noise with a large gain.  On a storm-scale
+four-minute cycle (3 km parent, 1 km child, one radar) the first analysis
+put 6.44 Mt of vapour into a box where no radar saw a storm, and the model
+built storms there.  Keeping Vr off theta and vapour everywhere removed it
+but starved the cycled storm (footprint rain 0.083 against 0.396).
+
+So a Vr batch whose innovation variance over all its gates is more than 3
+times its ensemble plus observation error variance is withheld from theta
+and vapour in the columns whose local ratio exceeds 2; theta and vapour
+there come from the same analysis without that batch.  The first
+analysis's batches measured 4.68 (child) and 3.72 (parent) and every cycled
+batch at most 1.97, so once the ensemble has cycled nothing is withheld.
+`--velocity-dispersion-gate RATIO|none` and
+`--velocity-dispersion-batch-gate RATIO|none` set or switch off either
+condition, and every analysis receipt carries the ratios per batch under
+`velocity_dispersion`, gate on or off (`gpuwm/da/velocity_dispersion.py`).
+Any number of radars may be gated in one analysis (each radar is its own
+Vr batch, and a first analysis gates every one of them); each solve
+without a withheld set runs over the box around the columns it writes and
+the observations within their reach, so it costs what those columns cost
+and not what the domain does.
+
 ### The three findings that pick a cycle's configuration
 
 This page is where these belong: it is the one the quickstart names as the
@@ -531,6 +558,27 @@ A gap in the chunk sequence truncates the assembly at the last usable
 chunk and says so in `truncation`; a missing sequence-1 chunk or two
 objects claiming one sequence number refuse the volume outright.
 Nothing is padded, and nothing is skipped quietly.
+
+## Surface reports every minute
+
+A METAR reaches a cycle of a few minutes only at the few analyses after the
+top of the hour.  The archive's one-minute ASOS pages give the same
+stations a report every minute, through the same station table and seam:
+
+```
+python tools/obs_fetch_asos.py --product asos1min --networks IA_ASOS \
+    --bbox=-94.2,41.3,-93.2,42.2 --start 2024-05-21T12:00:00Z \
+    --end 2024-05-21T12:30:00Z --slack-minutes 5 --out CACHE/asos1min
+```
+
+writes `CACHE/asos1min/surface.json` (`gpuwm-obs.asos-surface.v2`,
+provenance `iem-asos-1min`), which `--surface-obs` takes as it takes a
+METAR record.  Decode strides the valid times by one minute and each report
+serves the minute it was taken; the seam assimilates the report nearest
+each analysis, once.  The route answers only by station, and not every
+ASOS site has one-minute pages for every day, so the decode names the
+stations that answered.  Raw commands: `rw_asos fetch --product asos1min`
+and `rw_asos decode --product asos1min` (`rw_asos --help`).
 
 ## Seam for tooling
 

@@ -403,8 +403,7 @@ def require_companion_member(relative: str | Path) -> Path:
             f"checkout always carries this member -- this one lost it.  "
             f"Restore the file from the repository, or install the "
             f"companion:\n    {companion_install_command()}")
-    remedy = companion_install_command().replace(
-        "pip install", "pip install --force-reinstall", 1)
+    remedy = companion_reinstall_command()
     raise CompanionDataMissing(
         f"gpuwm REFUSES to read packaged reference data: {posix} is "
         f"absent from the {COMPANION_DISTRIBUTION} data tree at "
@@ -452,8 +451,48 @@ def thompson_table_dir() -> Path:
     return data_path("thompson/tables")
 
 
-__all__ = ["COMPANION_DISTRIBUTION", "COMPANION_PACKAGE", "COMPANION_TREES",
-           "CompanionDataMissing", "companion_install_command",
-           "companion_root", "data_path", "package_data_root",
-           "require_companion_member", "rrtmgp_data_dir",
-           "thompson_table_dir"]
+#: The companion directory holding the renderer's map assets, relative to
+#: :func:`companion_root`.  Not a :data:`COMPANION_TREES` entry: those are
+#: trees that MOVED out of ``gpuwm/data``, and these shapefiles never lived
+#: there.  Their copy of record is ``tools/rustwx/assets/basemap`` in the
+#: source repository; the companion carries its three layer directories so
+#: that a wheel install draws coastlines, borders and state lines with no
+#: step after ``pip install``.
+COMPANION_BASEMAP = "basemap"
+
+
+def companion_basemap_dir() -> Path | None:
+    """The map assets the companion carries, or ``None`` when it has none.
+
+    Never raises.  A missing or mismatched companion is refused by name
+    wherever a physics table is read; a map is not a table load, and the
+    picture must still be drawn, so this answers ``None`` and the caller
+    says what the picture lacks (``gpuwm.render.missing_basemap_notice``).
+    """
+
+    try:
+        root = companion_root()
+    except ImportError:          # absent (ModuleNotFoundError) or skewed
+        return None
+    candidate = root / COMPANION_BASEMAP
+    return candidate if candidate.is_dir() else None
+
+
+def companion_reinstall_command() -> str:
+    """The pip line that restores a companion's files in place.
+
+    ``--force-reinstall`` because the state it answers is a companion that
+    imports and lost files (or an older one without the map assets); a
+    plain install of a version already present does nothing.
+    """
+
+    return companion_install_command().replace(
+        "pip install", "pip install --force-reinstall", 1)
+
+
+__all__ = ["COMPANION_BASEMAP", "COMPANION_DISTRIBUTION", "COMPANION_PACKAGE",
+           "COMPANION_TREES", "CompanionDataMissing",
+           "companion_basemap_dir", "companion_install_command",
+           "companion_reinstall_command", "companion_root", "data_path",
+           "package_data_root", "require_companion_member",
+           "rrtmgp_data_dir", "thompson_table_dir"]

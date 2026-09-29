@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import tempfile
 
+from gpuwm.filesystem_paths import publish_new
+
 
 _RECEIPT = "era5-acquisition.json"
 _SCHEMA = "arwen.era5-acquisition.v1"
@@ -249,13 +251,16 @@ def retrieve_era5(*, cycle: datetime | str, hours: int, area,
                             raise FileExistsError(f"ERA5 retrieval preserves the changed path: {path}")
                         aside = fetch_guard.quarantine(path, tag="era5-refetch")
                         progress(f"fetch era5: preserved previous {path.name} as {aside.name}")
-            # Atomic create-only links cannot overwrite a file that appeared
+            # Atomic create-only publication cannot overwrite a file that appeared
             # while CDS was working. The receipt is the final commit marker.
-            os.link(combined, target)
+            publish_new(combined, target)
+            # On a volume without hard links the stage's copy has moved, so the
+            # rollback below recognises the published file by its own stat.
+            published = target.stat()
             try:
-                os.link(staged_receipt, receipt_path)
+                publish_new(staged_receipt, receipt_path)
             except BaseException:
-                if target.is_file() and os.path.samestat(combined.stat(), target.stat()):
+                if target.is_file() and os.path.samestat(published, target.stat()):
                     target.unlink()
                 raise
             fetch_guard._fsync_dir(out)

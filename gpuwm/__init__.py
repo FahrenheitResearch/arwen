@@ -46,5 +46,13 @@ try:
 except PackageNotFoundError:  # pragma: no cover - uninstalled source tree
     __version__ = "0+unknown"
 
+# Before any gpuwm module imports CuPy: on Windows with the CUDA 12 toolkit
+# wheels, CuPy 14.2 warns on import that it cannot find CUDA when it can,
+# and that line headed every failed command's text in the desktop.  See
+# gpuwm/cupy_windows_warning.py.
+from gpuwm import cupy_windows_warning as _cupy_windows_warning  # noqa: E402
+
+_cupy_windows_warning.quiet_false_cuda_path_warning()
+
 __all__ = ["DISTRIBUTION_NAME", "LAUNCH_MONOTONIC", "LAUNCH_UNIX_MS",
            "__version__"]

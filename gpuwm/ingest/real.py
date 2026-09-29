@@ -13,6 +13,7 @@ import base64
 import binascii
 from collections.abc import Mapping, MutableMapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -44,6 +45,77 @@ def surface_fields_to_device(met, array_module):
             met.fields[name], dtype=array_module.float32)
         for name in ("T2", "U10", "V10")
     }
+
+
+def _available_cpu_count() -> int:
+    """The CPUs this process may run on (its affinity where the OS has one)."""
+    from gpuwm.ingest.cpu_backend import available_cpu_count
+    return available_cpu_count()
+
+
+def _default_column_workers(preprocess_backend, preprocess_workers) -> int:
+    """Setup column threads when the caller named none.
+
+    On the CPU preparation the columns take the preparation's own worker
+    count: the one it was given, else the automatic count
+    (:func:`gpuwm.ingest.cpu_backend.automatic_workers`), because the
+    host-RAM estimate that admits that preparation was measured there.
+    Sized from the machine, a 64-vCPU host peaked above that estimate.
+    The device road keeps every CPU this process may use.
+    """
+    if isinstance(preprocess_backend, str):
+        name = preprocess_backend.strip().lower()
+        workers = preprocess_workers
+    else:
+        name = str(getattr(preprocess_backend, "name", "")).strip().lower()
+        workers = (preprocess_workers if preprocess_workers is not None
+                   else getattr(preprocess_backend, "workers", None))
+    if name != "cpu":
+        return _available_cpu_count()
+    if workers is not None:
+        return workers
+    from gpuwm.ingest.cpu_backend import automatic_workers
+    return automatic_workers()
+
+
+_MALLOC_TRIM = None
+
+
+def _return_freed_host_memory() -> None:
+    """Hand the C allocator's free pages back to the operating system.
+
+    glibc gives each thread its own allocator arena and keeps what a thread
+    freed there resident, so the slab temporaries of a threaded setup column
+    stay in the process after its pool closes. ``malloc_trim(0)`` returns
+    the whole free pages every arena holds in its free lists (not the free
+    space at the top of a thread arena, which glibc keeps) and changes no
+    value. Where the C library has no ``malloc_trim`` this does nothing.
+    """
+    global _MALLOC_TRIM
+    if _MALLOC_TRIM is None:
+        trim = False
+        if sys.platform.startswith("linux"):
+            try:
+                import ctypes
+                trim = ctypes.CDLL(None).malloc_trim
+                trim.argtypes = (ctypes.c_size_t,)
+                trim.restype = ctypes.c_int
+            except (AttributeError, OSError):
+                trim = False
+        _MALLOC_TRIM = trim
+    if _MALLOC_TRIM:
+        _MALLOC_TRIM(0)
+
+
+@contextmanager
+def _column_pool(max_workers: int):
+    """Threads for one setup column helper; their freed memory is returned
+    to the operating system when the pool closes."""
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            yield executor
+    finally:
+        _return_freed_host_memory()
 
 
 def _column_worker_count(value) -> int:
@@ -325,9 +397,13 @@ WRF_REAL_MP28_AEROSOL_SOURCE_POLICY = {
         "gpuwm.core.microphysics.microphysics_init"),
     "not_initialized_here": ("nwfa", "nifa", "nwfa2d", "nifa2d"),
     "number_moments": (
-        "nc, nr, ni: zero, then closed over the analyzed mass through the "
-        "scheme's entry block (hydrometeor_initialization."
-        "cold_start_moment_closure)"),
+        "nc, nr, ni: where the mass is present and the number is at or "
+        "below zero, real.exe's make_DropletNumber (from the cloud water "
+        "and the aerosol), make_RainNumber and make_IceNumber (from the "
+        "mass and the temperature) seed them "
+        "(dyn_em/module_initialize_real.F:4829-4852, WRF v4.7.1), and the "
+        "scheme's entry block then closes them over the analyzed mass "
+        "(hydrometeor_initialization.cold_start_moment_closure)"),
 }
 
 
@@ -387,9 +463,172 @@ def _resolved_mp28_aerosol_source(cfg) -> str:
 COLD_START_MOMENT_CLOSURE_SCHEMA = "gpuwm-real-cold-start-moment-closure-v1"
 
 
+def _cold_start_droplet_number(qc, nc, inverse_density, aerosol_number,
+                               landmask):
+    """real.exe's cold-start droplet number, WRF v4.7.1
+    ``dyn_em/module_initialize_real.F:4829-4838``.
+
+    Where a cell has cloud water (``qc > 0``) and no droplet number
+    (``nc <= 0``), real.exe sets ``nc = make_DropletNumber(qc*rho,
+    nwfa*rho, xland) / rho`` with ``rho = 1./alt``, reading the aerosol
+    number the state holds at that point: the climatology or the analyzed
+    field when one was installed, zero when thompson_init's synthetic
+    profile is still to come.  With zero aerosol the droplet size is
+    set by the surface, so XLAND is taken from the target grid's
+    LANDMASK (1 land, 2 water, the assignment of :3249-3260).
+
+    Returns ``(seeded_nc, seed_mask, receipt)``; ``seeded_nc`` equals
+    ``nc`` outside ``seed_mask``.
+    """
+    from gpuwm.core.thompson_entry import (
+        MAKE_DROPLET_NUMBER_SOURCE, droplet_mean_diameter_m,
+        make_droplet_number,
+    )
+
+    alt = np.asarray(_host(inverse_density), dtype=np.float32)
+    # temp_rho = 1./grid%alt(i,k,j) is REAL (:4825).
+    temp_rho = (np.float32(1.0) / alt).astype(np.float32)
+    nwfa = np.broadcast_to(
+        np.asarray(_host(aerosol_number), dtype=np.float32), qc.shape)
+    seed = (qc > np.float32(0.0)) & (nc <= np.float32(0.0))
+    surface_needed = seed & (nwfa * temp_rho <= np.float32(0.0))
+    if landmask is None:
+        if bool(surface_needed.any()):
+            # A cloudy cell with no aerosol takes its droplet size from
+            # the surface: 11 um continental drops over land, 17 um
+            # maritime drops over water, about 3.7 times fewer.  Without
+            # the target LANDMASK the choice would be a guess that sets
+            # every such cell's droplet number wrong over one of the two.
+            raise ValueError(
+                "mp_physics=28 cold start: "
+                f"{int(np.count_nonzero(surface_needed))} cloudy cell(s) "
+                "carry no aerosol, and real.exe's make_DropletNumber then "
+                "sizes the droplets by land or water (XLAND), but this "
+                "initialization was given no target LANDMASK; pass "
+                "landmask=<static LANDMASK> to initialize_real")
+        xland = np.full(qc.shape[-2:], 1.0, dtype=np.float32)
+    else:
+        xland = np.where(np.asarray(_host(landmask), dtype=np.float64)
+                         >= 0.5, 1.0, 2.0).astype(np.float32)
+    xland3 = np.broadcast_to(xland, qc.shape)
+    seeded = np.array(nc, dtype=np.float32)
+    count = int(np.count_nonzero(seed))
+    receipt = {
+        "authority": MAKE_DROPLET_NUMBER_SOURCE,
+        "rule": ("qc > 0 and nc <= 0: nc = make_DropletNumber(qc*rho, "
+                 "nwfa*rho, xland) / rho, rho = 1/alt"),
+        "seeded_cells": count,
+    }
+    if count:
+        rho_seed = temp_rho[seed]
+        rc = (qc[seed] * rho_seed).astype(np.float32)
+        per_volume = make_droplet_number(
+            rc, (nwfa[seed] * rho_seed).astype(np.float32), xland3[seed])
+        seeded[seed] = (per_volume / rho_seed).astype(np.float32)
+        aerosol_cells = ~surface_needed[seed]
+        ocean_cells = surface_needed[seed] & (xland3[seed] > 1.5)
+        diameter = droplet_mean_diameter_m(rc, per_volume)
+        receipt.update({
+            "aerosol_branch_cells": int(np.count_nonzero(aerosol_cells)),
+            "land_branch_cells": int(np.count_nonzero(
+                surface_needed[seed] & ~(xland3[seed] > 1.5))),
+            "water_branch_cells": int(np.count_nonzero(ocean_cells)),
+            "number_per_cm3_min": float(per_volume.min() * 1.0e-6),
+            "number_per_cm3_max": float(per_volume.max() * 1.0e-6),
+            "mean_diameter_um_min": float(diameter.min() * 1.0e6),
+            "mean_diameter_um_max": float(diameter.max() * 1.0e6),
+        })
+    return seeded, seed, receipt
+
+
+def _cold_start_rain_ice_number(species, mass, number, inverse_density,
+                                temperature):
+    """real.exe's cold-start rain or ice number, WRF v4.7.1
+    ``dyn_em/module_initialize_real.F:4840-4852``.
+
+    Where a cell has rain (ice) mass and no number (``<= 0``), real.exe
+    sets ``nr = make_RainNumber(qr*rho, T) / rho`` (``ni =
+    make_IceNumber(qi*rho, T) / rho``) with ``rho = 1./alt`` and ``T``
+    the temperature it holds in ``grid%v_1``, the dry potential
+    temperature over ``(p00/p_hyd)**(Rd/Cp)`` (:4113-4118).  Both
+    arguments of the product and the quotient are REAL.
+
+    ``temperature`` is the array, or a callable returning it, so the
+    caller's temperature is built only when a cell is seeded.
+
+    Returns ``(seeded, seed_mask, receipt)``; ``seeded`` equals
+    ``number`` outside ``seed_mask``.
+    """
+    from gpuwm.core.thompson_entry import (
+        MAKE_RAIN_ICE_NUMBER_SOURCE, ice_mean_diameter_m, make_ice_number,
+        make_rain_number, rain_median_volume_diameter_m,
+    )
+
+    function, diameter_of, rule = {
+        "rain": (make_rain_number, rain_median_volume_diameter_m,
+                 "qr > 0 and nr <= 0: nr = make_RainNumber(qr*rho, T) / rho"),
+        "ice": (make_ice_number, ice_mean_diameter_m,
+                "qi > 0 and ni <= 0: ni = make_IceNumber(qi*rho, T) / rho"),
+    }[species]
+    alt = np.asarray(_host(inverse_density), dtype=np.float32)
+    # temp_rho = 1./grid%alt(i,k,j) is REAL (:4825).
+    temp_rho = (np.float32(1.0) / alt).astype(np.float32)
+    seed = (mass > np.float32(0.0)) & (number <= np.float32(0.0))
+    seeded = np.array(number, dtype=np.float32)
+    count = int(np.count_nonzero(seed))
+    receipt = {"authority": MAKE_RAIN_ICE_NUMBER_SOURCE, "rule": rule,
+               "seeded_cells": count}
+    if count:
+        if temperature is None:
+            raise ValueError(
+                f"Thompson cold start: {count} cell(s) carry {species} mass "
+                "and no number, and real.exe's make_"
+                f"{species.capitalize()}Number sizes them by temperature, "
+                "but the closure was given none")
+        if callable(temperature):
+            temperature = temperature()
+        rho_seed = temp_rho[seed]
+        per_mass = (mass[seed] * rho_seed).astype(np.float32)
+        temp_seed = np.asarray(temperature, dtype=np.float32)[seed]
+        per_volume = function(per_mass, temp_seed)
+        seeded[seed] = (per_volume / rho_seed).astype(np.float32)
+        diameter = diameter_of(per_mass, per_volume)
+        receipt.update({
+            "number_per_m3_min": float(per_volume.min()),
+            "number_per_m3_max": float(per_volume.max()),
+            "diameter_um_min": float(diameter.min() * 1.0e6),
+            "diameter_um_max": float(diameter.max() * 1.0e6),
+            "diameter": ("median volume diameter" if species == "rain"
+                         else "mean diameter 3/lambda"),
+        })
+        if species == "rain":
+            receipt["supercooled_cells"] = int(np.count_nonzero(
+                temp_seed <= np.float32(271.15)))
+    return seeded, seed, receipt
+
+
 def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
-                                        inverse_density) -> dict[str, object]:
+                                        inverse_density, *,
+                                        aerosol_number=None,
+                                        landmask=None,
+                                        temperature=None) -> dict[str, object]:
     """Close the scheme's number moments over the analyzed mass, once.
+
+    Every number moment the scheme carries is first set as real.exe sets
+    it where the mass is present and the number is not (WRF v4.7.1
+    ``module_initialize_real.F:4829-4852``): cloud droplets from
+    ``make_DropletNumber`` (:func:`_cold_start_droplet_number`, mp=28
+    only, the one package with a droplet number), rain from
+    ``make_RainNumber`` and ice from ``make_IceNumber``
+    (:func:`_cold_start_rain_ice_number`, mp=8 and mp=28).  The entry
+    block below then rediagnoses them.  A number the state already holds
+    above zero, an installed analysed NC/NR/NI, is kept as real.exe keeps
+    it.  Before the seed the entry block was handed zero numbers and
+    returned its limits: 0.02 to 0.7 drops per cm3 at a mean diameter
+    near 89 um for 0.01 to 0.3 g/kg of cloud water, 1 mm rain drops
+    whatever the temperature, and 5 um ice capped at 999e3 per m3, where
+    real.exe starts supercooled rain near 0.3 mm and sizes ice by
+    temperature.
 
     The scheme's own entry block (:mod:`gpuwm.core.thompson_entry`, the
     authority :func:`gpuwm.da.moments.repair_moments` applies after an
@@ -402,6 +641,10 @@ def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
     that is a refusal, not a clip.  The block is called here rather than
     through the assimilation repair because this module ships in the
     preparation-only distribution and that repair's module does not.
+
+    ``temperature`` is the array or a callable returning it; a callable
+    is called at most once, and only when a rain or ice seed mask is
+    non-empty, so a start with no seeded cell never builds it.
     """
     from gpuwm.core.thompson_entry import (
         R1, THOMPSON_ENTRY_AUTHORITY, THOMPSON_ENTRY_SOURCE,
@@ -419,8 +662,22 @@ def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
     species: list[dict[str, object]] = []
     written: list[str] = []
     total = 0
-    for name, mass_field, number_field in (
-            ("cloud", "qc", "nc"), ("rain", "qr", "nr"), ("ice", "qi", "ni")):
+    seeds: dict[str, object] = {}
+    built_temperature: list[object] = []
+
+    def seed_temperature():
+        if not built_temperature:
+            built_temperature.append(
+                temperature() if callable(temperature) else temperature)
+        return built_temperature[0]
+
+    # mp=8 carries no droplet number (its cloud number is the constant
+    # Nt_c), so real.exe's P_QNC test is false there and only rain and ice
+    # are seeded and closed.
+    pairs = (("rain", "qr", "nr"), ("ice", "qi", "ni"))
+    if int(cfg.mp_physics) == 28:
+        pairs = (("cloud", "qc", "nc"),) + pairs
+    for name, mass_field, number_field in pairs:
         mass = _host_float32(getattr(state, mass_field))
         number = _host_float32(getattr(state, number_field))
         offenders = (mass > R1) & (number <= 0.0)
@@ -430,9 +687,18 @@ def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
             "number_field": number_field, "offending_cells": count,
             "repaired_cells": 0,
         }
-        if count:
-            closed = np_thompson_entry_numbers(name, mass, number, density)
-            fixed = np.array(number, dtype=np.float32)
+        if name == "cloud":
+            seeded, seed_mask, seeds[name] = _cold_start_droplet_number(
+                mass, number, inverse_density,
+                0.0 if aerosol_number is None else aerosol_number,
+                landmask)
+        else:
+            seeded, seed_mask, seeds[name] = _cold_start_rain_ice_number(
+                name, mass, number, inverse_density,
+                None if temperature is None else seed_temperature)
+        if count or bool(seed_mask.any()):
+            closed = np_thompson_entry_numbers(name, mass, seeded, density)
+            fixed = np.array(seeded, dtype=np.float32)
             fixed[offenders] = np.asarray(closed, dtype=np.float32)[offenders]
             if not np.isfinite(fixed).all() or bool((fixed < 0.0).any()):
                 raise ValueError(
@@ -442,22 +708,31 @@ def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
             getattr(state, number_field)[...] = state_xp.asarray(
                 fixed, dtype=state_xp.float32)
             entry["repaired_cells"] = count
-            entry["repaired_number_min"] = float(fixed[offenders].min())
-            entry["repaired_number_max"] = float(fixed[offenders].max())
+            if count:
+                entry["repaired_number_min"] = float(fixed[offenders].min())
+                entry["repaired_number_max"] = float(fixed[offenders].max())
             total += count
             written.append(number_field)
         species.append(entry)
     return {
         "schema": COLD_START_MOMENT_CLOSURE_SCHEMA,
+        "droplet_number_seed": seeds.get("cloud"),
+        "rain_number_seed": seeds["rain"],
+        "ice_number_seed": seeds["ice"],
         "repaired": True,
         "repaired_cells_total": total,
         "authority": THOMPSON_ENTRY_AUTHORITY,
         "mp_physics": int(cfg.mp_physics),
         "q_threshold_kg_kg": float(R1),
         "species": species,
-        "note": ("cells with mass above the scheme's activity threshold "
-                 "and a number moment at or below zero were written; "
-                 "every other cell keeps the value real.exe writes"),
+        "note": ("cells with mass and a number at or below zero first take "
+                 "real.exe's make_DropletNumber, make_RainNumber and "
+                 "make_IceNumber (droplet_number_seed, rain_number_seed, "
+                 "ice_number_seed); cells with mass above the scheme's "
+                 "activity threshold and a number moment at or below zero "
+                 "were then written by the entry block; every other cell, "
+                 "an analysed number above zero included, keeps the value "
+                 "real.exe writes"),
         "written_state_fields": written,
         "density": "initializer moist specific volume, rho = 1/alt",
         "entry_block": THOMPSON_ENTRY_SOURCE
@@ -568,7 +843,11 @@ def _hrrr_operator_geometry(
     ``active_mask`` is the union of positive samples across retained source
     species.  Assembly is field-independent; restricting target-stencil
     searches to that union avoids turning sparse HRRR cloud evidence into a
-    dense ``nsource * ntarget * ny * nx`` temporary.
+    dense ``nsource * ntarget * ny * nx`` temporary.  ``log_tie`` marks the
+    active assembled samples whose support hinges on how a kernel rounds a
+    logarithm.  The result is a prediction: the caller reads which samples
+    the operator used from the operator itself, and uses this geometry to
+    name why the others were left out and to count where the two differ.
     """
 
     source = _host_float32(source_pressure)
@@ -663,68 +942,40 @@ def _hrrr_operator_geometry(
         raise AssertionError(
             "WRF hydrometeor column assembly left an unclassified level")
 
-    # All hydrometeor targets are in WRF's linear branch (vboundb=ntarget+1).
-    # Use FP32 log-pressure because both production implementations do.  A
-    # source sample influences a target only when its computed linear weight
-    # is nonzero; the strict endpoint inequalities below encode that fact.
-    previous_x = np.full(ncolumn, np.nan, dtype=np.float32)
-    has_previous = np.zeros(ncolumn, dtype=np.bool_)
-    surface_x = np.log(surface).reshape(ncolumn)
+    # All hydrometeor targets are in WRF's linear branch (vboundb=ntarget+1),
+    # so an assembled source point carries weight to exactly the targets
+    # strictly between its two assembled neighbours, and the deepest point
+    # also to every target below it by constant extrapolation.  In exact
+    # arithmetic that is a pressure comparison, made here on the FP32
+    # pressures themselves.  The production kernels compare FP32 logarithms
+    # instead, and each kernel's logarithm is its own (the C library's logf
+    # on the CPU bridge, CUDA's logf on the GPU), so where a target sits
+    # within an ulp or two of a neighbour's logarithm the kernel's rounding,
+    # not the pressure, decides whether the sample reaches it.  Those samples
+    # are returned in ``log_tie``; only the kernel can say which way they go.
+    # Below the deepest assembled point the lower neighbour is +inf, above
+    # the top one the upper neighbour is 0: every target is on their side.
+    below_pressure = np.full((nsource, ncolumn), np.inf, dtype=np.float32)
+    neighbour = np.full(ncolumn, np.inf, dtype=np.float32)
     for k in range(nsource):
-        insert_surface = first_above == k
-        previous_x = np.where(insert_surface, surface_x, previous_x)
-        has_previous |= insert_surface
-        relevant = active_column[k] & (operator_class[k] == 0)
-        columns = np.flatnonzero(relevant)
-        if columns.size:
-            if columns.size == ncolumn:
-                current_x = np.log(pd[k])
-                target_x_active = np.log(target_column)
-            else:
-                current_x = np.log(pd[k, columns])
-                target_x_active = np.log(target_column[:, columns])
-            prior = previous_x[columns]
-            prior_exists = has_previous[columns]
-            bracketed = np.any(
-                (target_x_active < prior[None, :])
-                & (target_x_active >= current_x[None, :]), axis=0)
-            deepest = np.any(
-                target_column[:, columns] >= pd[k, columns][None, :],
-                axis=0)
-            influences = np.where(prior_exists, bracketed, deepest)
-            operator_class[k, columns[influences]] = 1
-        accepted = operator_class[k] <= 1
-        current_x_all = np.log(pd[k])
-        previous_x = np.where(
-            accepted, current_x_all, previous_x)
-        has_previous |= accepted
-
-    next_x = np.full(ncolumn, np.nan, dtype=np.float32)
-    has_next = np.zeros(ncolumn, dtype=np.bool_)
+        neighbour = np.where(first_above == k, psfc, neighbour)
+        below_pressure[k] = neighbour
+        neighbour = np.where(operator_class[k] == 0, pd[k], neighbour)
+    tie_band = _logarithm_tie_band(source, surface, target)
+    log_tie = np.zeros((nsource, ncolumn), dtype=np.bool_)
+    neighbour = np.zeros(ncolumn, dtype=np.float32)
     for k in range(nsource - 1, -1, -1):
-        relevant = active_column[k] & (operator_class[k] <= 1)
-        columns = np.flatnonzero(relevant)
-        if columns.size:
-            if columns.size == ncolumn:
-                current_x = np.log(pd[k])
-                target_x_active = np.log(target_column)
-            else:
-                current_x = np.log(pd[k, columns])
-                target_x_active = np.log(target_column[:, columns])
-            following = next_x[columns]
-            following_exists = has_next[columns]
-            bracketed = np.any(
-                (target_x_active <= current_x[None, :])
-                & (target_x_active > following[None, :]), axis=0)
-            influences = following_exists & bracketed
-            operator_class[k, columns[influences]] = 1
-        accepted = operator_class[k] <= 1
-        current_x_all = np.log(pd[k])
-        next_x = np.where(accepted, current_x_all, next_x)
-        has_next |= accepted
-        insert_surface = first_above == k
-        next_x = np.where(insert_surface, surface_x, next_x)
-        has_next |= insert_surface
+        columns = np.flatnonzero(
+            active_column[k] & (operator_class[k] == 0))
+        for start in range(0, columns.size, _Q_STENCIL_COLUMN_CHUNK):
+            chunk = columns[start:start + _Q_STENCIL_COLUMN_CHUNK]
+            decided, reachable = _q_stencil_support(
+                target_column[:, chunk], below_pressure[k, chunk],
+                neighbour[chunk], tie_band)
+            operator_class[k, chunk[decided]] = 1
+            log_tie[k, chunk[reachable & ~decided]] = True
+        neighbour = np.where(operator_class[k] <= 1, pd[k], neighbour)
+        neighbour = np.where(first_above == k, psfc, neighbour)
 
     return {
         "source_pressure": source,
@@ -733,13 +984,152 @@ def _hrrr_operator_geometry(
         "first_above": first_above.reshape(ny, nx),
         "knext": knext.reshape(ny, nx),
         "operator_class": operator_class.reshape(source.shape),
+        "log_tie": log_tie.reshape(source.shape),
+        "logarithm_tie_band": tie_band,
+    }
+
+
+#: Columns per block when a source level's targets are compared with its two
+#: assembled neighbours; bounds the comparison temporaries.
+_Q_STENCIL_COLUMN_CHUNK = 65536
+
+
+def _logarithm_tie_band(*pressures) -> float:
+    """Relative pressure gap inside which two FP32 logarithms can tie or cross.
+
+    Each production logarithm is within one FP32 ulp of the exact value
+    (CUDA documents logf at 1 ulp; the C library's logf is tighter), counted
+    in the ulp of the result's binade, which is at most twice the ulp of the
+    largest logarithm magnitude present.  Two logarithms can therefore only
+    tie or cross when the exact ones are within four of those ulps.  Since
+    ``|ln(a) - ln(b)| >= |a - b| / max(a, b)``, a pressure pair whose gap
+    exceeds that many ulps times the larger pressure is ordered the same way
+    by every such kernel as by the pressures themselves.
+    """
+
+    lowest = min(float(np.min(value)) for value in pressures)
+    highest = max(float(np.max(value)) for value in pressures)
+    extent = max(abs(np.log(lowest)), abs(np.log(highest)))
+    return 4.0 * float(np.spacing(np.float32(extent)))
+
+
+def _q_stencil_support(target, below, above, tie_band):
+    """Which assembled samples reach a target, and which might.
+
+    ``target`` is (ntarget, n) FP32; ``below`` and ``above`` are the
+    pressures of each sample's assembled neighbours (higher and lower
+    pressure), +inf under the deepest point and 0 over the top one.  A
+    sample reaches the targets strictly between its neighbours.
+    ``decided`` is support that holds under every production logarithm: a
+    target inside the interval and farther than the tie band from both
+    ends.  ``reachable`` adds the samples whose only candidate targets lie
+    within the band of an end, other than exactly on it, where every
+    kernel takes the same logarithm and the sample's weight is exactly 0.
+    The band is a few thousandths of a percent of the pressure, far wider
+    than the half-ulp rounding of the FP32 thresholds below.
+    """
+
+    shrink = 1.0 - tie_band
+    lower = np.asarray(below, dtype=np.float64)
+    upper = np.asarray(above, dtype=np.float64)
+    t = np.asarray(target, dtype=np.float32)
+    decided = np.any(
+        (t > (upper / shrink).astype(np.float32))
+        & (t < (lower * shrink).astype(np.float32)), axis=0)
+    reachable = decided.copy()
+    undecided = np.flatnonzero(~decided)
+    if undecided.size:
+        candidate = t[:, undecided]
+        lower_end = lower[undecided]
+        upper_end = upper[undecided]
+        reachable[undecided] = np.any(
+            (candidate >= (upper_end * shrink).astype(np.float32))
+            & (candidate <= (lower_end / shrink).astype(np.float32))
+            & (candidate != upper_end.astype(np.float32))
+            & (candidate != lower_end.astype(np.float32)), axis=0)
+    return decided, reachable
+
+
+_HRRR_PRESSURE_PARTITION_SCHEMA = (
+    "gpuwm-wrf-q-pressure-partition-crosscheck-v1")
+_HRRR_PRESSURE_PARTITION_FIELDS = frozenset({
+    "schema", "support_authority", "logarithm_tie_band",
+    "active_sample_count", "logarithm_tie_sample_count",
+    "logarithm_tie_supported_count", "disagreeing_sample_count",
+    "geometry_only_count", "production_only_count",
+    "disagreement_mask_sha256", "disagreements"})
+
+
+def _pressure_partition_crosscheck(
+        geometry, active, production_support, order) -> dict[str, object]:
+    """Count where the pressure geometry and the operator disagree.
+
+    ``active`` and ``production_support`` are in WRF's ordered source-level
+    order.  A sample in the logarithm tie band is not a disagreement: the
+    geometry says only that the kernel's rounding decides it.  Every other
+    active sample whose predicted support differs from the operator's is
+    counted, and the first few are listed in decoded-source order so a
+    reader can find the column.  Nothing here can refuse.
+    """
+
+    predicted = geometry["operator_class"] == 1
+    log_tie = active & geometry["log_tie"]
+    disagreement = active & ~log_tie & (predicted != production_support)
+    raw_disagreement = np.zeros_like(disagreement)
+    raw_disagreement[order] = disagreement
+    records = []
+    for flat_index in np.flatnonzero(raw_disagreement.ravel())[
+            :_HRRR_DISPOSITION_EXAMPLE_LIMIT]:
+        raw_level, y, x = (int(value) for value in np.unravel_index(
+            int(flat_index), raw_disagreement.shape))
+        ordered_level = int(np.flatnonzero(order == raw_level)[0])
+        column = geometry["target_pressure"][:, y, x]
+        pressure = float(geometry["source_pressure"][ordered_level, y, x])
+        nearest = int(np.argmin(np.abs(
+            column.astype(np.float64) - pressure)))
+        assembly = int(geometry["operator_class"][ordered_level, y, x])
+        records.append({
+            "raw_source_index": [raw_level, y, x],
+            "wrf_ordered_source_level": ordered_level,
+            "geometry_support": bool(predicted[ordered_level, y, x]),
+            "production_support": bool(
+                production_support[ordered_level, y, x]),
+            "column_assembly": (
+                _HRRR_DISPOSITION_CLASS_BY_CODE[assembly]
+                if assembly >= 2 else "ASSEMBLED"),
+            "source_pressure_pa": pressure,
+            "surface_pressure_pa": float(
+                geometry["surface_pressure"][y, x]),
+            "nearest_target_index": nearest,
+            "nearest_target_pressure_pa": float(column[nearest]),
+        })
+    return {
+        "schema": _HRRR_PRESSURE_PARTITION_SCHEMA,
+        "support_authority": "production-operator-replay",
+        "logarithm_tie_band": float(geometry["logarithm_tie_band"]),
+        "active_sample_count": int(np.count_nonzero(active)),
+        "logarithm_tie_sample_count": int(np.count_nonzero(log_tie)),
+        "logarithm_tie_supported_count": int(np.count_nonzero(
+            log_tie & production_support)),
+        "disagreeing_sample_count": int(np.count_nonzero(disagreement)),
+        "geometry_only_count": int(np.count_nonzero(
+            disagreement & predicted)),
+        "production_only_count": int(np.count_nonzero(
+            disagreement & production_support)),
+        "disagreement_mask_sha256": _packed_mask_sha256(raw_disagreement),
+        "disagreements": records,
     }
 
 
 def _hrrr_disposition_example(
         *, raw_field, raw_labels, order, ordered_level, y, x,
-        geometry) -> dict[str, object]:
-    """Return inspectable pressure/stencil evidence for one source sample."""
+        geometry, influencing_targets) -> dict[str, object]:
+    """Return inspectable pressure/stencil evidence for one source sample.
+
+    ``influencing_targets`` are the target indices the production replay of
+    this sample's level wrote in its column, so a record states what the
+    kernel did rather than a re-derivation that could round differently.
+    """
 
     raw_level = int(order[ordered_level])
     source = geometry["source_pressure"][:, y, x]
@@ -766,30 +1156,6 @@ def _hrrr_disposition_example(
             "wrf_ordered_source_level": level,
             "pressure_pa": pressure,
         }
-
-    influencing_targets = []
-    if position is not None:
-        pressure_x = np.log(np.asarray(
-            [item[2] for item in assembled], dtype=np.float32))
-        target_x = np.log(np.asarray(target, dtype=np.float32))
-        for target_index, (pt, xt) in enumerate(zip(target, target_x)):
-            participants: set[int] = set()
-            found = None
-            for lower in range(len(assembled) - 1):
-                if ((xt - pressure_x[lower])
-                        * (xt - pressure_x[lower + 1]) <= 0.0):
-                    found = lower
-                    break
-            if found is None:
-                if pt > assembled[0][2] and assembled[0][0] == "source":
-                    participants.add(0)
-            else:
-                if xt != pressure_x[found + 1]:
-                    participants.add(found)
-                if xt != pressure_x[found]:
-                    participants.add(found + 1)
-            if position in participants:
-                influencing_targets.append(target_index)
 
     code = int(raw_labels[raw_level, y, x])
     return {
@@ -825,6 +1191,18 @@ def build_hrrr_hydrometeor_vertical_disposition(
     Labels are stored in decoded-source order and compressed losslessly; their
     nonzero mask must therefore reproduce the decoded field's independently
     published mask checksum.
+
+    Which samples influence a target is read from the production operator,
+    one binary replay per source level, never from the pressure geometry.
+    This receipt is written after the initial state exists and describes it;
+    it does not decide it.  The geometry names why an unused sample was left
+    out, and its own prediction of the support is kept as a cross-check
+    whose disagreements with the operator are counted in the receipt
+    (``geometry.pressure_partition``).  A cloudy column whose target sits
+    within a logarithm ulp of a source level or of the surface is decided by
+    the kernel's own ``logf``, which no host-side prediction can reproduce
+    on every backend, and refusing a valid state over that would make
+    preparation fail by weather.
     """
 
     if (not source_fields or set(source_fields) != set(initialized_fields)
@@ -839,11 +1217,13 @@ def build_hrrr_hydrometeor_vertical_disposition(
                    for value in source_fields.values())):
         raise ValueError("hydrometeor disposition source inventory is invalid")
     active = np.zeros(first_shape, dtype=np.bool_)
+    raw_positive = {}
     for name in sorted(source_fields):
         raw = _host_float32(source_fields[name])
         if not np.isfinite(raw).all() or np.any(raw < 0.0):
             raise ValueError(
                 f"hydrometeor disposition source {name} is invalid")
+        raw_positive[name] = raw != 0.0
         active |= _ordered_levels(raw, order) != 0.0
     geometry = _hrrr_operator_geometry(
         source_pressure, surface_pressure, target_pressure, active)
@@ -856,15 +1236,19 @@ def build_hrrr_hydrometeor_vertical_disposition(
         raise AssertionError(
             "WRF hydrometeor operator geometry is unclassified")
 
-    # Establish the exact production support of each source sample without
-    # trusting the symbolic pressure classifier.  Vertical interpolation is
+    # Establish the exact production support of each source sample from the
+    # operator that wrote the state.  Vertical interpolation is
     # column-local, linear, and nonnegative for this Q path, so replaying one
     # ordered source level of binary ones across every column identifies that
     # level's support exactly: a source cell participates iff any target in
     # its column is exact nonzero.  The nsource replays are shared by every
-    # retained hydrometeor species.
+    # retained hydrometeor species.  Each replay also records, per species,
+    # the targets it wrote for the first supported samples of that level in
+    # raw column order: the TARGET_INFLUENCING example records are the first
+    # of those in raw flat order, and they cite what the kernel wrote.
     production_support = np.zeros(first_shape, dtype=np.bool_)
     level_replays = []
+    influencing_targets: dict[tuple[str, int, int], list[int]] = {}
     level_input = np.zeros(first_shape, dtype=np.bool_)
     for ordered_level in range(first_shape[0]):
         level_input[ordered_level] = True
@@ -878,21 +1262,26 @@ def build_hrrr_hydrometeor_vertical_disposition(
                 f"failed at ordered level {ordered_level}")
         level_support = np.any(level_output != 0.0, axis=0)
         production_support[ordered_level] = level_support
+        raw_level = int(order[ordered_level])
+        written = level_output.reshape(level_output.shape[0], -1)
+        for name, positive_mask in raw_positive.items():
+            for column in np.flatnonzero(
+                    (positive_mask[raw_level] & level_support).ravel())[
+                        :_HRRR_DISPOSITION_EXAMPLE_LIMIT]:
+                influencing_targets[(name, raw_level, int(column))] = [
+                    int(index) for index in
+                    np.flatnonzero(written[:, column] != 0.0)]
         level_replays.append({
             "ordered_source_level": ordered_level,
-            "raw_source_level": int(order[ordered_level]),
+            "raw_source_level": raw_level,
             "supported_column_count": int(np.count_nonzero(level_support)),
             "support_mask_sha256": _packed_mask_sha256(level_support),
             "output": array_correspondence_fingerprint(level_output),
         })
-        del level_output, level_support
-    del level_input
-    if not np.array_equal(
-            active & (geometry["operator_class"] == 1),
-            active & production_support):
-        raise ValueError(
-            "hydrometeor disposition falsely excluded or included WRF "
-            "target support in its symbolic pressure partition")
+        del level_output, level_support, written
+    del level_input, raw_positive
+    pressure_partition_receipt = _pressure_partition_crosscheck(
+        geometry, active, production_support, order)
     del active
 
     raw_production_support = np.zeros_like(production_support)
@@ -922,6 +1311,7 @@ def build_hrrr_hydrometeor_vertical_disposition(
         "source_level_order": array_correspondence_fingerprint(order),
         "source_level_order_values": order.tolist(),
         "production_target_support": production_support_receipt,
+        "pressure_partition": pressure_partition_receipt,
     }
     species_receipts = {}
     for name in sorted(source_fields):
@@ -930,20 +1320,16 @@ def build_hrrr_hydrometeor_vertical_disposition(
         positive = ordered != 0.0
         labels = np.zeros(first_shape, dtype=np.uint8)
         operator_class = geometry["operator_class"]
-        excluded = positive & (operator_class >= 2)
+        # The operator's own support decides TARGET_INFLUENCING.  A sample
+        # it did not use keeps the geometry's reason: a column-assembly
+        # exclusion, or one of the three no-stencil reasons below.
+        target_influencing = positive & production_support
+        unused = positive & ~production_support
+        excluded = unused & (operator_class >= 2)
         labels[excluded] = operator_class[excluded]
-        included_positive = positive & (operator_class <= 1)
-        target_influencing = (
-            included_positive & (operator_class == 1))
-        production_target_influencing = positive & production_support
-        if not np.array_equal(
-                target_influencing, production_target_influencing):
-            raise ValueError(
-                "hydrometeor disposition falsely excluded or included WRF "
-                f"target support for {name}")
         labels[target_influencing] = _HRRR_DISPOSITION_CLASSES[
             "TARGET_INFLUENCING"]
-        unsupported = included_positive & ~target_influencing
+        unsupported = unused & (operator_class <= 1)
         labels[
             unsupported
             & (geometry["source_pressure"]
@@ -980,10 +1366,17 @@ def build_hrrr_hydrometeor_vertical_disposition(
                 raw_level, y, x = np.unravel_index(
                     int(flat_index), first_shape)
                 ordered_level = int(np.flatnonzero(order == raw_level)[0])
+                # A sample outside production support wrote no target.
+                written_targets = []
+                if class_name == "TARGET_INFLUENCING":
+                    written_targets = influencing_targets[(
+                        name, int(raw_level),
+                        int(y) * first_shape[2] + int(x))]
                 records.append(_hrrr_disposition_example(
                     raw_field=raw, raw_labels=raw_labels, order=order,
                     ordered_level=ordered_level, y=int(y), x=int(x),
-                    geometry=geometry))
+                    geometry=geometry,
+                    influencing_targets=written_targets))
             examples[class_name] = {
                 "complete": count <= _HRRR_DISPOSITION_EXAMPLE_LIMIT,
                 "total_count": count,
@@ -992,13 +1385,16 @@ def build_hrrr_hydrometeor_vertical_disposition(
         source_fingerprint = array_correspondence_fingerprint(raw)
         live_fingerprint = array_correspondence_fingerprint(
             initialized_fields[name])
-        # This is the independent production-authority check on the symbolic
-        # pressure partition above.  Q interpolation is linear with
-        # nonnegative weights and an exact-zero surface pseudo-level.  Thus a
-        # binary replay of every excluded sample must be identically zero,
-        # while replaying only TARGET_INFLUENCING samples must be byte-equal
-        # to replaying the complete decoded nonzero mask.  The callback uses
+        # The per-level support composes: Q interpolation is linear with
+        # nonnegative weights and an exact-zero surface pseudo-level, so a
+        # binary replay of every excluded sample is identically zero and
+        # replaying only TARGET_INFLUENCING samples is byte-equal to
+        # replaying the complete decoded nonzero mask.  The callback uses
         # the very same prepared backend plan/options as the analyzed field.
+        # Both facts are recorded as observed.  Neither is a property of
+        # the initial state, which the operator has already written, so an
+        # operator that ever broke them would be reported by this receipt
+        # rather than cost a valid preparation.
         source_replay = _host_float32(operator_replay(labels != 0))
         source_replay_fingerprint = array_correspondence_fingerprint(
             source_replay)
@@ -1019,10 +1415,6 @@ def build_hrrr_hydrometeor_vertical_disposition(
                 f"hydrometeor disposition operator replay failed for {name}")
         influencing_replay_fingerprint = array_correspondence_fingerprint(
             influencing_replay)
-        if source_replay_fingerprint != influencing_replay_fingerprint:
-            raise ValueError(
-                "hydrometeor disposition falsely excluded or included WRF "
-                f"target support for {name}")
         del influencing_replay
         excluded_replay = _host_float32(operator_replay(
             (labels != 0)
@@ -1033,10 +1425,6 @@ def build_hrrr_hydrometeor_vertical_disposition(
                 or np.any(excluded_replay < 0.0)):
             raise ValueError(
                 f"hydrometeor disposition operator replay failed for {name}")
-        if np.any(excluded_replay != 0.0):
-            raise ValueError(
-                "hydrometeor disposition classified target-influencing "
-                f"source mass as excluded for {name}")
         operator_replay_receipt = {
             "schema": "gpuwm-wrf-q-binary-mask-production-replay-v1",
             "source_mask_sha256": _packed_mask_sha256(raw != 0.0),
@@ -1051,9 +1439,12 @@ def build_hrrr_hydrometeor_vertical_disposition(
             "target_influencing_output": influencing_replay_fingerprint,
             "excluded_output": array_correspondence_fingerprint(
                 excluded_replay),
-            "source_target_outputs_byte_equal": True,
-            "excluded_output_all_exact_zero": True,
+            "source_target_outputs_byte_equal": (
+                source_replay_fingerprint == influencing_replay_fingerprint),
+            "excluded_output_all_exact_zero": not bool(
+                np.any(excluded_replay != 0.0)),
         }
+        del excluded_replay
         influencing_count = counts["TARGET_INFLUENCING"]
         if influencing_count > 0 and int(live_fingerprint["nonzero_count"]) == 0:
             raise ValueError(
@@ -1139,11 +1530,66 @@ def _decode_hrrr_production_support(
     return support
 
 
+def _validate_pressure_partition(partition: object) -> None:
+    """Check the cross-check block is well formed; its counts are facts.
+
+    A disagreement count of any size is a statement about the geometry,
+    not about the initial state, so only the shape of the block is
+    checked: the fields are present, the counts are non-negative integers
+    that add up, and the listed disagreements are bounded by the count.
+    """
+
+    def count(value):
+        return (not isinstance(value, bool) and isinstance(value, int)
+                and value >= 0)
+
+    if (not isinstance(partition, Mapping)
+            or set(partition) != _HRRR_PRESSURE_PARTITION_FIELDS
+            or partition.get("schema") != _HRRR_PRESSURE_PARTITION_SCHEMA
+            or partition.get("support_authority")
+            != "production-operator-replay"
+            or isinstance(partition.get("logarithm_tie_band"), bool)
+            or not isinstance(partition.get("logarithm_tie_band"),
+                              (int, float))
+            or not np.isfinite(float(partition["logarithm_tie_band"]))
+            or not all(count(partition.get(name)) for name in (
+                "active_sample_count", "logarithm_tie_sample_count",
+                "logarithm_tie_supported_count",
+                "disagreeing_sample_count", "geometry_only_count",
+                "production_only_count"))
+            or not isinstance(partition.get("disagreement_mask_sha256"), str)
+            or not isinstance(partition.get("disagreements"), list)):
+        raise ValueError(
+            "hydrometeor disposition pressure partition cross-check is "
+            "malformed")
+    disagreeing = partition["disagreeing_sample_count"]
+    if (partition["geometry_only_count"]
+            + partition["production_only_count"] != disagreeing
+            or partition["logarithm_tie_supported_count"]
+            > partition["logarithm_tie_sample_count"]
+            or disagreeing + partition["logarithm_tie_sample_count"]
+            > partition["active_sample_count"]
+            or len(partition["disagreements"])
+            != min(disagreeing, _HRRR_DISPOSITION_EXAMPLE_LIMIT)
+            or not all(isinstance(record, Mapping)
+                       for record in partition["disagreements"])):
+        raise ValueError(
+            "hydrometeor disposition pressure partition cross-check counts "
+            "do not add up")
+
+
 def validate_hrrr_hydrometeor_vertical_disposition(
         source_fingerprints: Mapping[str, object],
         initialized_fingerprints: Mapping[str, object],
         disposition: object) -> dict[str, object]:
-    """Fail closed over a producer's exhaustive WRF-support partition."""
+    """Fail closed over a producer's exhaustive WRF-support partition.
+
+    Closed over the receipt's integrity: its identity, its partition of the
+    decoded source mask, and its agreement with the operator's own replays.
+    Where the receipt records an observation about the geometry or about
+    how the replays composed, the observation is checked against the
+    fingerprints it summarises, never required to come out one way.
+    """
 
     if not isinstance(disposition, Mapping):
         raise ValueError("hydrometeor vertical disposition evidence is missing")
@@ -1163,11 +1609,16 @@ def validate_hrrr_hydrometeor_vertical_disposition(
     if observed_hash != _canonical_receipt_sha256(unsigned):
         raise ValueError("hydrometeor vertical disposition evidence was changed")
     geometry = disposition["geometry"]
-    if set(geometry) != {
+    # ``pressure_partition`` is the geometry's cross-check against the
+    # operator.  Receipts written before it existed carry none and are
+    # the same evidence otherwise, so its absence is accepted.
+    if set(geometry) - {"pressure_partition"} != {
             "source_pressure", "surface_pressure", "target_pressure",
             "source_level_order", "source_level_order_values",
             "production_target_support"}:
         raise ValueError("hydrometeor disposition geometry is incomplete")
+    if "pressure_partition" in geometry:
+        _validate_pressure_partition(geometry["pressure_partition"])
     for name in (
             "source_pressure", "surface_pressure", "target_pressure",
             "source_level_order"):
@@ -1425,6 +1876,12 @@ def validate_hrrr_hydrometeor_vertical_disposition(
             raise ValueError(
                 f"hydrometeor disposition {name} partition totals differ")
         replay = item.get("operator_replay")
+        # The two composition facts are recorded as observed; each must
+        # match the fingerprints it summarises, whichever way it came out.
+        outputs_byte_equal = (
+            isinstance(replay, Mapping)
+            and replay.get("source_output")
+            == replay.get("target_influencing_output"))
         if (not isinstance(replay, Mapping)
                 or set(replay) != {
                     "schema", "source_mask_sha256",
@@ -1446,14 +1903,15 @@ def validate_hrrr_hydrometeor_vertical_disposition(
                     (labels != 0)
                     & (labels != _HRRR_DISPOSITION_CLASSES[
                         "TARGET_INFLUENCING"]))
-                or replay.get("source_output")
-                != replay.get("target_influencing_output")
-                or replay.get("source_target_outputs_byte_equal") is not True
-                or replay.get("excluded_output_all_exact_zero") is not True):
+                or replay.get("source_target_outputs_byte_equal")
+                is not outputs_byte_equal
+                or not isinstance(
+                    replay.get("excluded_output_all_exact_zero"), bool)):
             raise ValueError(
                 f"hydrometeor disposition {name} production replay is invalid")
         excluded_output = replay.get("excluded_output")
         replay_output = replay.get("source_output")
+        influencing_output = replay.get("target_influencing_output")
         state_shape = initialized.get("shape")
         if (not isinstance(state_shape, list) or len(state_shape) != 3
                 or any(isinstance(value, bool) or not isinstance(value, int)
@@ -1471,23 +1929,27 @@ def validate_hrrr_hydrometeor_vertical_disposition(
             "minimum": 0.0,
             "maximum": 0.0,
         }
-        if (not isinstance(replay_output, Mapping)
-                or not required_fingerprint <= set(replay_output)
-                or replay_output.get("shape") != initialized.get("shape")
-                or replay_output.get("dtype") != "float32"
-                or isinstance(replay_output.get("nonzero_count"), bool)
-                or not isinstance(replay_output.get("nonzero_count"), int)
-                or int(replay_output.get("nonzero_count", -1)) < 0
-                or not np.isfinite(float(
-                    replay_output.get("minimum", np.nan)))
-                or not np.isfinite(float(
-                    replay_output.get("maximum", np.nan)))
-                or not isinstance(excluded_output, Mapping)
-                or any(isinstance(excluded_output.get(key), bool)
-                       for key in ("nonzero_count", "minimum", "maximum"))
-                or dict(excluded_output) != exact_zero_output):
+        def well_formed(output):
+            return (
+                isinstance(output, Mapping)
+                and required_fingerprint <= set(output)
+                and output.get("shape") == initialized.get("shape")
+                and output.get("dtype") == "float32"
+                and not any(isinstance(output.get(key), bool)
+                            for key in ("nonzero_count", "minimum",
+                                        "maximum"))
+                and isinstance(output.get("nonzero_count"), int)
+                and int(output["nonzero_count"]) >= 0
+                and bool(np.isfinite(float(output.get("minimum", np.nan))))
+                and bool(np.isfinite(float(output.get("maximum", np.nan)))))
+
+        if (not well_formed(replay_output)
+                or not well_formed(influencing_output)
+                or not well_formed(excluded_output)
+                or replay.get("excluded_output_all_exact_zero")
+                is not (dict(excluded_output) == exact_zero_output)):
             raise ValueError(
-                f"hydrometeor disposition {name} excluded replay is nonzero")
+                f"hydrometeor disposition {name} replay record is invalid")
         live_count = int(initialized.get("nonzero_count", -1))
         if live_count < 0:
             raise ValueError(
@@ -1532,8 +1994,10 @@ def _saturation_mixing_ratio_serial(temperature, pressure,
         np.clip(np.asarray(relative_humidity, dtype=np.float64), 0.0, 100.0),
     )
     # SVP1 is kPa in module_model_constants; convert to hPa to pair with p/100.
-    # rh_to_mxrat1 uses its own local EPS = 0.622, NOT module ep_2 = 0.62175
-    # (module_initialize_real.F:7379, q = MAX(eps*es/(p/100.-es), 1.E-6)).
+    # WRF v4.6.1 rh_to_mxrat1 uses its own local EPS = 0.622
+    # (module_initialize_real.F:7366), NOT module ep_2 = 0.62175.
+    # Its unconditional floor is at
+    # (module_initialize_real.F:7402, q = MAX(eps*es/(p/100.-es), 1.E-6)).
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
         es_hpa = (rh * 0.01) * (10.0 * c.SVP1) * np.exp(
             c.SVP2 * (temperature - c.SVPT0) / (temperature - c.SVP3))
@@ -1563,7 +2027,7 @@ def _saturation_mixing_ratio(temperature, pressure, relative_humidity=100.0,
 
     chunks = _axis0_chunks(temperature.shape[0], workers)
     output = np.empty(temperature.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -1604,7 +2068,7 @@ def _cap_stratospheric_qv(qv, pressure, *, column_workers=1):
 
     chunks = _axis0_chunks(qv.shape[0], workers)
     output = np.empty(qv.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -1726,7 +2190,7 @@ def _specific_humidity_to_mixing_ratio(
 
     chunks = _axis0_chunks(specific.shape[0], workers)
     output = np.empty(specific.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -1742,12 +2206,12 @@ def _specific_humidity_to_mixing_ratio(
     return output
 
 
-#: WRF's ``qv_min`` sanity floor and the pressure below which it applies
+#: WRF v4.6.1's ``qv_min`` sanity floor and the pressure below which it applies
 #: (Registry.EM_COMMON:2306-2308 defaults ``qv_min_p_safe = 110000`` Pa,
 #: ``qv_min_flag = qv_min_value = 1e-6``; applied at
 #: ``module_initialize_real.F:7499-7503``).  This is the SAME 1e-6 that
 #: :func:`_saturation_mixing_ratio` already applies unconditionally on the
-#: RH lane (:7379, ``q = MAX(eps*es/(p/100.-es), 1.E-6)``), named here so
+#: RH lane (:7402, ``q = MAX(eps*es/(p/100.-es), 1.E-6)``), named here so
 #: the FLAG_SH surface lane can share one floor with it instead of
 #: carrying none.
 _WRF_QV_MIN_P_SAFE = 110_000.0
@@ -1760,7 +2224,7 @@ _SURFACE_QV_FLOOR_WRF_REFERENCE = {
         "qv_gc = sh_gc/(1-sh_gc) at :1157, no floor), :1253-1259 "
         "(grid%q2 = qv_gc(i,1,j) verbatim); the qv_min sanity floor "
         "real.exe applies to every other moisture value lives in "
-        "rh_to_mxrat1 (:7379 unconditional 1e-6; :7499-7503 "
+        "rh_to_mxrat1 (:7402 unconditional 1e-6; :7499-7503 "
         "qv_min_p_safe/qv_min_flag/qv_min_value) and is called on the "
         "prognostic field only (:1837-1860), never on the surface "
         "pseudo-level of this branch"),
@@ -1879,10 +2343,12 @@ _PROGNOSTIC_QV_FLOOR_WRF_REFERENCE = {
         "rh_to_mxrat1 applies to the identical quantity on the RH lane and "
         "_floor_flag_sh_surface_mixing_ratio applies to this lane's "
         "surface value -- and the count, the levels and the minimum are "
-        "receipted on RealInitResult.prognostic_moisture_floor; a "
-        "non-finite value, or a negative one at or above qv_min_p_safe "
-        "where WRF's rule does not reach, is still refused, naming the "
-        "level, the column and the value"),
+        "receipted on RealInitResult.prognostic_moisture_floor.  A negative "
+        "at or above qv_min_p_safe, where WRF's conditional rule does not "
+        "reach, is floored the same way and counted apart in the receipt, "
+        "as rh_to_mxrat1's unconditional 1e-6 floor (:7421) does on the RH "
+        "lane; only a non-finite value is still refused, naming the level, "
+        "the column and the value"),
     "gpuwm_divergence_reason": (
         "a negative vapour mixing ratio is not a state any scheme "
         "integrates, and what reaches this operator was admitted against "
@@ -1941,8 +2407,12 @@ def _floor_sh_vertical_undershoot(qv, pressure):
     negative here is an interpolating polynomial's own -- this vertical
     operator's undershoot, the horizontal one's carried into it, or the
     surface undershoot carried up one layer -- and not evidence about the
-    forcing.  A negative at or above ``qv_min_p_safe``, where WRF's rule
-    does not reach, is refused by name.
+    forcing.  A negative at or above ``qv_min_p_safe``, where WRF's
+    conditional rule does not reach, is floored the same way and counted
+    apart (``floored_cells_at_or_above_qv_min_p_safe``): the RH lane's
+    ``rh_to_mxrat1`` floors at 1e-6 there too, unconditionally, and the
+    refusal this replaced named no breakage a floored value would cause,
+    only that the rule stopped at that pressure.
     """
     qv = np.asarray(qv, dtype=np.float64)
     pressure = np.asarray(pressure, dtype=np.float64)
@@ -1951,32 +2421,21 @@ def _floor_sh_vertical_undershoot(qv, pressure):
     negative = qv < 0.0
     if not negative.any():
         return qv, {}
-    below = negative & (pressure < _WRF_QV_MIN_P_SAFE)
-    unreached = negative & ~below
-    if unreached.any():
-        bad = np.argwhere(unreached)
-        k, j, i = (int(v) for v in bad[0])
-        raise ValueError(
-            "interpolated specific-humidity qv is invalid | observed: "
-            f"negative_cells_at_or_above_qv_min_p_safe={int(bad.shape[0])}, "
-            f"first at level {k} row {j} column {i} value "
-            f"{float(qv[k, j, i])!r} at {float(pressure[k, j, i]):.1f} Pa; "
-            f"WRF's qv_min floor (qv_min_p_safe {_WRF_QV_MIN_P_SAFE:g} Pa) "
-            "does not reach a level at that pressure, and a negative vapour "
-            "value is not a state to start from")
-    floored = np.where(below, _WRF_QV_MIN_VALUE, qv)
-    cells = np.argwhere(below)
+    unreached = int(np.count_nonzero(negative & ~(pressure < _WRF_QV_MIN_P_SAFE)))
+    floored = np.where(negative, _WRF_QV_MIN_VALUE, qv)
+    cells = np.argwhere(negative)
     levels = sorted({int(v) for v in cells[:, 0]})
     columns = int(np.unique(cells[:, 1:], axis=0).shape[0])
-    minimum = float(np.min(qv[below]))
+    minimum = float(np.min(qv[negative]))
     at = np.unravel_index(
-        int(np.argmin(np.where(below, qv, np.inf))), qv.shape)
+        int(np.argmin(np.where(negative, qv, np.inf))), qv.shape)
     receipt = {
         "policy": "use-sh-qv-vertical-undershoot-floored-to-wrf-qv-min-value",
         "wrf_reference": dict(_PROGNOSTIC_QV_FLOOR_WRF_REFERENCE),
         "qv_min_value": _WRF_QV_MIN_VALUE,
         "qv_min_p_safe": _WRF_QV_MIN_P_SAFE,
         "floored_cells": int(cells.shape[0]),
+        "floored_cells_at_or_above_qv_min_p_safe": unreached,
         "columns": columns,
         "levels": levels,
         "min_pre_floor": minimum,
@@ -1992,7 +2451,10 @@ def _floor_sh_vertical_undershoot(qv, pressure):
         f"{at[2]}, {float(pressure[at]):.0f} Pa) and are floored to WRF's "
         f"qv_min_value {_WRF_QV_MIN_VALUE:g}, the floor rh_to_mxrat1 applies "
         "on the RH lane and real.exe never applies on the use_sh_qv lane "
-        "(module_initialize_real.F:1744-1758, :1831)",
+        "(module_initialize_real.F:1744-1758, :1831)"
+        + (f"; {unreached} of them at or above qv_min_p_safe "
+           f"{_WRF_QV_MIN_P_SAFE:g} Pa, where only the RH lane's "
+           "unconditional floor reaches" if unreached else ""),
         file=sys.stderr)
     return floored, receipt
 
@@ -2054,7 +2516,7 @@ def _mixing_ratio_to_relative_humidity(
 
     chunks = _axis0_chunks(temperature.shape[0], workers)
     output = np.empty(temperature.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -2088,7 +2550,7 @@ def _potential_temperature_from_temperature(
             temperature, pressure)
     chunks = _axis0_chunks(temperature.shape[0], workers)
     output = np.empty(temperature.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -2118,7 +2580,7 @@ def _temperature_from_potential_temperature(
         return _temperature_from_potential_temperature_serial(theta, pressure)
     chunks = _axis0_chunks(theta.shape[0], workers)
     output = np.empty(theta.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -2149,7 +2611,7 @@ def _moist_specific_volume(theta, qv, pressure, *, column_workers=1):
         return _moist_specific_volume_serial(theta, qv, pressure)
     chunks = _axis0_chunks(theta.shape[0], workers)
     output = np.empty(theta.shape, dtype=np.float64)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fill_axis0_chunk, output, start, stop,
@@ -2396,7 +2858,7 @@ def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
         return pd, intq, order
 
     chunks = _axis0_chunks(pressure.shape[1], workers)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _integrate_moisture_vectorized_slab,
@@ -2514,7 +2976,7 @@ def _make_real_base(coord: VerticalCoord, terrain: np.ndarray, p_top: float,
     # More tiles than workers bounds live temporary BaseStates and avoids a
     # serial multi-gigabyte concatenate on large domains.
     chunks = _axis0_chunks(ny, min(ny, workers * 4))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    with _column_pool(workers) as executor:
         futures = [
             executor.submit(
                 _fill_real_base_rows, output, coord, terrain, start, stop,
@@ -2613,7 +3075,7 @@ def _rebalance_moist_pressure(pressure_guess, qtot, dry_mass, base, coord, *,
             pressure_guess, qtot, dry_mass, base, coord, out=pressure)
 
     chunks = _axis0_chunks(pressure_guess.shape[1], workers)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _rebalance_moist_pressure_serial,
@@ -2790,7 +3252,7 @@ def _fp32_geopotential_split(base, coord, dry_mass, alpha,
             base, coord, dry_mass, alpha, hypsometric_opt)
 
     chunks = _axis0_chunks(dry_mass.shape[0], workers)
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+    with _column_pool(len(chunks)) as executor:
         futures = [
             executor.submit(
                 _fp32_geopotential_split_serial,
@@ -2900,7 +3362,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     analyzed_species=None,
                     analyzed_number_fields=(),
                     analyzed_surface_fields=(),
-                    column_workers=1,
+                    column_workers=None,
                     preprocess_backend="cuda",
                     preprocess_workers=None,
                     cpu_bridge=None,
@@ -2912,7 +3374,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     initial_perturbation=None,
                     grid=None,
                     wif_grid_latlon=None,
-                    wif_valid_date=None) -> RealInitResult:
+                    wif_valid_date=None,
+                    boundary_only=False,
+                    landmask=None) -> RealInitResult:
     """Construct a moist, discretely hydrostatic :class:`DomainState`.
 
     ``analyzed_species`` optionally declares the actual analyzed mass inventory
@@ -2929,6 +3393,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     ``analyzed_surface_fields`` selects supplied NAME_SFC mass pseudo-levels.
     Native HRRR callers retain their established exact-zero surface policy.
 
+    ``landmask`` is the target grid's static LANDMASK (1 land, 0 water).
+    An mp=28 cold start reads it as WRF's XLAND where a cloudy cell holds
+    no aerosol, because real.exe's make_DropletNumber then sizes the
+    droplets by land or water; such a start without it is refused.
+
     The pressure-level/RH lane requires TT, RH, GHT, UU, VV, PSFC, T2,
     exactly one of D2 or RH2, U10, and V10.  Native HRRR requires
     per-column PRES, SPFH, and Q2, and for
@@ -2937,13 +3406,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     WRF-real's explicit active-moist-package discard of QI/QS/QG.  MP off is
     refused because it cannot faithfully retain the five analyzed species.
     Classic
-    Thompson's source-absent QNICE/QNRAIN moments are initialized to exact
-    zero, matching real.exe, while the five analyzed HRRR mass categories are
-    retained.  Aerosol-aware Thompson (mp_physics=28) retains the same five
+    Thompson retains the five analyzed HRRR mass categories, and its
+    source-absent QNICE/QNRAIN moments are seeded as real.exe seeds them:
+    make_RainNumber and make_IceNumber where rain or ice mass is present
+    and the number is at or below zero, exact zero where there is no mass.
+    Aerosol-aware Thompson (mp_physics=28) retains the same five
     categories -- its Registry moist package is character for character
-    mp=8's (Registry.EM_COMMON:3024 vs :3036) -- adds nc to the exact-zero
-    source-absent moments, and deliberately leaves nwfa/nifa/nwfa2d/nifa2d
-    at exact zero for ``microphysics_init`` to fill from thompson_init's
+    mp=8's (Registry.EM_COMMON:3024 vs :3036) -- adds nc, seeded from
+    make_DropletNumber the same way, and deliberately leaves
+    nwfa/nifa/nwfa2d/nifa2d at exact zero for ``microphysics_init`` to
+    fill from thompson_init's
     synthetic profile; ``RealInitResult.aerosol_initialization`` is the
     receipt for that hand-off.  WRF's default
     ``use_sh_qv = .false.`` vertically interpolates HRRR RH and then diagnoses
@@ -2970,7 +3442,18 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     em_quarter_ss convention) and the per-bubble application stats are
     returned as ``RealInitResult.initial_perturbation``.  ``None`` (the
     default) runs not one instruction of that path.
+    ``column_workers`` is how many host threads the float64 setup columns
+    use; ``None`` (the default) is every CPU this process may run on for a
+    card preparation, and the preparation's worker count (at most eight
+    unless named) for a CPU-backend one. Every count gives the same bytes.
+    ``boundary_only`` marks a forcing time whose state only feeds the
+    lateral boundaries: its caller keeps the state and drops the result's
+    receipts, so the hydrometeor vertical disposition receipt, one operator
+    replay per source level over the whole domain, is not built for it.
+    The state is the same either way.
     """
+    if not isinstance(boundary_only, (bool, np.bool_)):
+        raise TypeError("boundary_only must be boolean")
     if timing_report is not None:
         if not isinstance(timing_report, MutableMapping):
             raise TypeError("timing_report must be a mutable mapping")
@@ -3079,7 +3562,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     use_sh_qv = bool(use_sh_qv)
     if analyzed_species is None:
         analyzed_species = getattr(snapshot, "analyzed_species", None)
-    column_workers = _column_worker_count(column_workers)
+    # Every host column helper below splits its arrays into contiguous
+    # slabs whose results are byte-identical to the serial evaluation
+    # (tests/test_real_init.py), so the count changes only the wall time
+    # and, on the CPU preparation, the host RAM it peaks at.
+    # Serial by default left a 1792 x 1024 x 55 domain's float64 setup
+    # columns on one core while the rest of the machine, and the GPU,
+    # waited.
+    column_workers = _column_worker_count(
+        _default_column_workers(preprocess_backend, preprocess_workers)
+        if column_workers is None else column_workers)
     if cfg.nz != coord.dnw.size:
         raise ValueError("RunConfig.nz and vertical coordinate differ")
     finalize_vertical_coord(coord, float(p_top))
@@ -3513,7 +4005,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             mass_target_pd_f32,
             hydrometeors,
             operator_replay=replay_hydrometeor_support,
-        ) if retained_names and not supplied_mass_surfaces else {}
+        ) if (retained_names and not supplied_mass_surfaces
+              and not boundary_only) else {}
         # Which regular-grid operator carried each retained species to the
         # mass grid, read off the snapshot that mapped it (the mapped
         # profiles, ERA5 and GFS publish it; the native HRRR decoder and a
@@ -3729,10 +4222,12 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         }
         if cfg.mp_physics == 8:
             # HRRR provides the shared five WRF mass species but not classic
-            # Thompson's Registry scalar QNICE/QNRAIN fields.  Pin real.exe's
-            # source-absent policy explicitly rather than diagnosing a
-            # distribution here: both transported number moments begin at
-            # exact FP32 zero and Thompson owns their first physical update.
+            # Thompson's Registry scalar QNICE/QNRAIN fields.  Both number
+            # moments start from real.exe's source-absent zero; the
+            # cold-start closure below (after any analysed numbers are
+            # installed) then gives rain and ice mass real.exe's
+            # make_RainNumber / make_IceNumber where the number is still
+            # at or below zero, as module_initialize_real.F:4840-4852 does.
             state.ni[...] = state_xp.float32(0.0)
             state.nr[...] = state_xp.float32(0.0)
     else:
@@ -3769,14 +4264,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # scalars, not about analyzed condensate.  It splits into two
         # halves that must not be confused.
         #
-        # (a) THE NUMBER MOMENTS -- zero, then CLOSED over the analyzed
-        # mass.  mp=28 promotes cloud droplet number from the constant Nt_c
-        # to a prognostic scalar, so nc joins ni and nr as a transported
-        # moment the analysis does not carry.  real.exe leaves all three at
-        # exact zero and Thompson's entry block (module_mp_thompson.F:
-        # 1827-1899) sets them from the mass on the first call; between the
-        # cold start and that call the state carried mass with no number in
-        # every cloudy cell, and anything that read it there -- the
+        # (a) THE NUMBER MOMENTS -- zero, then SEEDED and CLOSED over the
+        # analyzed mass.  mp=28 promotes cloud droplet number from the
+        # constant Nt_c to a prognostic scalar, so nc joins ni and nr as a
+        # transported moment the analysis does not carry.  real.exe seeds
+        # all three where the mass is present and the number is not
+        # (make_DropletNumber, make_RainNumber, make_IceNumber,
+        # module_initialize_real.F:4829-4852, WRF v4.7.1), and Thompson's
+        # entry block (module_mp_thompson.F:1827-1899) rediagnoses them on
+        # the first call.  Before the seed the state carried mass with no
+        # number in every cloudy cell, and anything that read it there -- the
         # between-step reflectivity operator, an analysis at the start time,
         # a picture of the initial frame -- read a rain number at the
         # scheme's R2 floor and diagnosed a reflectivity burst.  So the same
@@ -3795,13 +4292,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         state.ni[...] = state_xp.float32(0.0)
         state.nr[...] = state_xp.float32(0.0)
         state.nc[...] = state_xp.float32(0.0)
-        # Only a lane that installed analyzed mass has anything to close;
-        # the RH lane carries no condensate and keeps real.exe's zeros and
-        # its empty hydrometeor receipt.
-        if hydrometeors:
-            hydrometeor_initialization["cold_start_moment_closure"] = (
-                _thompson_cold_start_moment_closure(
-                    state, state_xp, cfg, alpha))
+        # The closure itself runs after the supplied moments are
+        # installed, once the aerosol source is decided: real.exe sets the
+        # numbers (module_initialize_real.F:4829-4852) after its aerosol
+        # initialization (:2327-2740) and its analysed-number input, from
+        # the aerosol that left, and only where a number is still <= 0.
         # (b) THE AEROSOLS -- deliberately NOT written here, and the
         # deliberateness is the whole point.  WRF's own initializer, with
         # aer_init_opt=0, sets QNWFA and QNIFA to 0.0 and nothing else
@@ -4205,6 +4700,26 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             name: array_correspondence_fingerprint(getattr(state, name))
             for name in number_moments}
         hydrometeor_initialization["number_moments"] = number_receipt
+    # Thompson's cold-start numbers (module_initialize_real.F:4819-4855),
+    # which real.exe runs after every analysed field is in place and which
+    # fill only where the number is at or below zero: an installed
+    # analysed NC/NR/NI above zero is kept, a zero one is seeded.  Only a
+    # lane that installed analyzed mass has anything to close; the RH lane
+    # carries no condensate and keeps real.exe's zeros and its empty
+    # hydrometeor receipt.  The droplet number reads the aerosol real.exe
+    # would hold here: the analyzed QNWFA just installed, the climatology,
+    # or zero ahead of thompson_init's synthetic profile.
+    if hydrometeors and cfg.mp_physics in (8, 28):
+        hydrometeor_initialization["cold_start_moment_closure"] = (
+            _thompson_cold_start_moment_closure(
+                state, state_xp, cfg, alpha,
+                aerosol_number=(_host_float32(state.nwfa)
+                                if cfg.mp_physics == 28 else None),
+                landmask=landmask,
+                # Built only if a rain or ice cell is seeded.
+                temperature=lambda: _temperature_from_potential_temperature(
+                    theta_h, total_pressure_h,
+                    column_workers=column_workers).astype(np.float32)))
     # CUDA transforms may feed a host setup state. Transfer their FP32
     # wind arrays explicitly; NumPy cannot implicitly consume a CuPy array.
     if state_xp is np:
@@ -4223,6 +4738,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # already returned nothing below this floor.
     published_surface_qv, surface_qv_floor = (
         _floor_flag_sh_surface_mixing_ratio(surface_qv, fields["PSFC"]))
+    # The native and preprocessing workers above free on their own threads
+    # too; the next forcing time and the companion files start without it.
+    _return_freed_host_memory()
     if timing_report is not None:
         timing_report["total_seconds"] = perf_counter() - timing_start
     return RealInitResult(

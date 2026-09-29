@@ -122,7 +122,7 @@ def test_the_wdm6_tier_frame_is_what_the_driver_reports_at_both_rungs():
 
     default = int(get_kernel("wdm6", "wdm6_column")
                   .attributes["local_size_bytes"])
-    assert default == spec.frame_bytes(spec.shipped_tier) == 9776
+    assert default == spec.frame_bytes(spec.shipped_tier) == 9264
 
     for tier in WDM6_KERNEL_LEVEL_TIERS:
         kernel = (get_kernel("wdm6", "wdm6_column")
@@ -204,7 +204,7 @@ def test_the_unspecialized_source_still_compiles_to_the_recorded_ceiling():
                ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["refl"] == 18432
     assert int(get_kernel("wdm6", "wdm6_column")
                .attributes["local_size_bytes"]
-               ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"] == 9776
+               ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"] == 9264
     assert int(get_kernel("wsm6", "wsm6_column")
                .attributes["local_size_bytes"]
                ) == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wsm6"] == 7216

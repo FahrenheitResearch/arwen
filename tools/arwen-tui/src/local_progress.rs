@@ -198,6 +198,9 @@ pub(crate) fn pipeline_progress(events:&[Value],result:&Value,started:i64,ended:
 }
 fn table_number(table:&toml_edit::Table,key:&str)->Option<f64>{table.get(key).and_then(|v|v.as_float().or_else(||v.as_integer().map(|n|n as f64))).filter(|v|v.is_finite()&&*v>=0.)}
 fn planned(current:Option<f64>,interval:f64,total:f64)->Option<f64>{let now=current?;if interval<=0.||now>=total{return None;}let next=((now/interval+1e-9).floor()+1.)*interval;(next<=total+1e-7).then_some(next)}
+/// The run event `gpuwm.render.BASEMAP_MISSING_CODE`: the renderer has no
+/// map assets, so the pictures are drawn with no coastlines or borders.
+pub(crate) const RENDER_BASEMAP_MISSING:&str="render_basemap_missing";
 fn summarize(config:&[u8],config_sha:&str,manifest:&Value,manifest_bytes:&[u8],events:&[Value],heartbeat:Option<&Value>,root:&Path)->Result<Value,String>{
     let doc=std::str::from_utf8(config).map_err(|_|"Saved configuration is not UTF-8")?.parse::<toml_edit::DocumentMut>().map_err(|_|"Saved configuration is not valid TOML")?;
     let (start,total,restart,schedule)=if manifest["route"]=="downscale"{
@@ -248,6 +251,10 @@ fn summarize(config:&[u8],config_sha:&str,manifest:&Value,manifest_bytes:&[u8],e
             model=Some(event);result["model_elapsed_seconds"]=json!(elapsed.max(seconds(&result["model_elapsed_seconds"]).unwrap_or(0.)));
         }}
         if tag=="failed"{if let Some(message)=event["message"].as_str(){result["error"]=json!(message.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(1600).collect::<String>());}}
+        // The renderer drew without its map files: every picture lacks
+        // coastlines, borders and state lines. The engine says so once per
+        // run with this code, and the progress panel and the desktop show it.
+        if tag=="warning"&&event["code"]==RENDER_BASEMAP_MISSING{if let Some(message)=event["message"].as_str(){result["render_warning"]=json!(message.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(1600).collect::<String>());}}
         let summary=event.get("render_summary").or_else(||event["summary"].get("render_summary"));
         if let Some(summary)=summary{if summary["schema"]=="gpuwm.render-summary.v1"&&serde_json::to_vec(summary).is_ok_and(|v|v.len()<=64*1024){result["render_summary"]=summary.clone();}}
         if tag=="completed"{result["stage"]=json!("completed");}
@@ -411,6 +418,18 @@ mod tests{
         assert_eq!(value["render_summary"]["rendered_png_count"],146);
         assert_eq!(value["stage"],"completed");
         assert_eq!(value["phase"],"render");
+        assert!(value["render_warning"].is_null(),"a run that drew its maps carries no picture warning");
+        // A run whose renderer had no map files says so, and the status
+        // carries the engine's sentence for the panel and the desktop.
+        let mut stream=stream;
+        stream.insert(2,json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":3,"emitted_unix_ms":started+3,"event":"warning",
+            "code":"render_basemap_missing","message":"no map assets resolve for the renderer, so pictures are drawn with no coastlines, borders or state lines;\n  reinstall it: pip install --force-reinstall gpuwm-data==2.8.0",
+            "remedy":"pip install --force-reinstall gpuwm-data==2.8.0"}));
+        for (index,event) in stream.iter_mut().enumerate(){event["sequence"]=json!(index+1);}
+        fs::write(out.join("events.jsonl"),stream.iter().map(|e|serde_json::to_string(e).unwrap()+"\n").collect::<String>()).unwrap();
+        let value=read(&job,&command).unwrap();
+        assert_eq!(value["render_warning"],"no map assets resolve for the renderer, so pictures are drawn with no coastlines, borders or state lines; reinstall it: pip install --force-reinstall gpuwm-data==2.8.0");
+        assert!(crate::node_ui::job_progress_text(&value,false).contains("Pictures: no map assets resolve for the renderer"));
         fs::remove_dir_all(root).ok();
     }
     #[test]

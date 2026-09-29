@@ -114,6 +114,12 @@ class NoahSoilState:
     #: reader of the output must be able to answer without the config.  It
     #: is empty only for a route that declared no source mesh at all.
     soil_texture_downscale: Mapping[str, object] = field(default_factory=dict)
+    #: Ingest-repair receipt for real.exe's TSLB reasonableness rebuild
+    #: (:func:`unreasonable_land_soil_columns`): how many land columns were
+    #: rebuilt TSK-to-TMN, their pre-repair range and their bounding box.
+    #: EMPTY whenever no land column needed it, the ``moisture_floor``
+    #: discipline.
+    soil_temperature_repair: Mapping[str, object] = field(default_factory=dict)
 
 
 _TEMP_NAMES = ("ST000007", "ST007028", "ST028100", "ST100289")
@@ -206,7 +212,8 @@ def door_reconciled_soil_category(static, fields: Mapping[str, object],
     soil category under a land ``LU_INDEX`` reached RUC and evaluated
     ``0./0.`` into MAVAIL on the first surface call -- the exact death the
     retired refusal existed to avoid, now fixed where real.exe fixes it
-    (``module_initialize_real.F:3608-3650``), at initialization (ENG-009).
+    (``module_initialize_real.F:3108-3131``: silty clay loam, the land-use
+    category kept), at initialization (ENG-009).
 
     ``landuse_attrs`` is ``None`` only for a prebuilt static cache with no
     geography tree beside it: there is no ISWATER/ISLAKE/ISICE to reconcile
@@ -222,7 +229,7 @@ def door_reconciled_soil_category(static, fields: Mapping[str, object],
                 f"{route}: the prebuilt static cache carries no land-use "
                 "metadata (ISWATER/ISLAKE/ISICE), so the soil category is "
                 "not reconciled against LU_INDEX the way real.exe does "
-                "(module_initialize_real.F:3608-3650); a land column carrying "
+                "(module_initialize_real.F:3108-3131); a land column carrying "
                 "the water soil category would reach the land-surface scheme "
                 "as written.  Pass --geog-root, which is read only for the "
                 "land-use index, to reconcile it.", file=sys.stderr)
@@ -237,6 +244,121 @@ def door_reconciled_soil_category(static, fields: Mapping[str, object],
         isice=int(landuse_attrs["ISICE"]),
         soil_temperature=reconciler_soil_temperature(fields),
         sst=reconciler_sst(fields))
+
+
+#: Grids whose island soil columns were already announced, so a domain
+#: prepared at several forcing times says it once.
+_ANNOUNCED_ISLAND_SOIL: set = set()
+
+
+def island_soil_columns(fields: Mapping[str, object], *, no_source_land,
+                        soil_type, landmask=None, lake_mask=None):
+    """The soil column of land the source holds no land for.
+
+    An island in a source area of open sea: every soil search from its
+    cells ends without a source land cell
+    (:attr:`gpuwm.ingest.horiz.HorizontalSnapshot.soil_no_source_land`),
+    and WPS writes METGRID.TBL fill_missing there, a 285 K column saturated
+    at 1.0, which stock real.exe carries into the forecast.  The source's
+    state where the island lies is the sea's, so the column takes what the
+    source does hold there and what the soil itself determines:
+
+    * soil temperature, every layer: the skin temperature mapped onto the
+      cell (the source's skin on the other surface there), the value the
+      column is anchored to at 0 m and the one real.exe puts in an
+      unreasonable land deep temperature (TMN = TSK);
+    * soil moisture, every layer: the field capacity of the cell's own soil
+      category (``SOILPARM.TBL`` STAS ``REFSMC``), the water a drained soil
+      holds.  A land cell carrying the water category is silty clay loam
+      there, as real.exe makes it.
+
+    The cells are those of ``no_source_land`` that are land by ``landmask``
+    (``LANDSEA`` without one) and not an overridden lake.  Every soil
+    temperature and moisture field ``fields`` carries takes the column, in
+    whichever layer form it arrives, so each land-surface scheme builds its
+    own levels from it.  Returns ``(fields, receipt)``: a copy with the
+    columns in place and their counts and ranges, or ``fields`` and
+    ``None`` when there is no such cell.
+    """
+    from gpuwm.core.landuse import _LAND_SOIL_FOR_WATER
+    from gpuwm.core.noah import load_tables
+    from gpuwm.ingest.horiz import (_SOIL_MOISTURE_FIELDS,
+                                    _SOIL_TEMPERATURE_FIELDS)
+
+    if no_source_land is None:
+        return fields, None
+    decision = landmask if landmask is not None else fields.get("LANDSEA")
+    if decision is None:
+        return fields, None
+    cells = np.asarray(no_source_land, dtype=bool) & (_host(decision) >= 0.5)
+    if lake_mask is not None:
+        cells &= ~_host(lake_mask).astype(bool)
+    if not np.any(cells):
+        return fields, None
+    skin = _host(fields["SKINTEMP"])
+    categories = _host(soil_type)
+    if categories.shape != cells.shape or skin.shape != cells.shape:
+        raise ValueError(
+            "island soil columns: soil_type, SKINTEMP and the "
+            "no-source-land mask differ in shape")
+    tables = load_tables()
+    capacity_by_category = np.asarray(tables.refsmc, dtype=np.float64)
+    category = np.rint(categories[cells]).astype(np.int64)
+    if np.any((category < 1) | (category > capacity_by_category.size)):
+        raise ValueError(
+            "island soil columns: a soil category is outside SOILPARM.TBL "
+            f"{tables.sltype} 1..{capacity_by_category.size}")
+    capacity = capacity_by_category[category - 1]
+    # The water category holds no soil water at all (REFSMC 0); a land cell
+    # carrying it is silty clay loam (module_initialize_real.F:3108-3131).
+    capacity = np.where(capacity > 0.0, capacity,
+                        capacity_by_category[_LAND_SOIL_FOR_WATER - 1])
+    temperature = skin[cells]
+    patched = dict(fields)
+    touched = []
+    for name, value in fields.items():
+        if name in _SOIL_TEMPERATURE_FIELDS:
+            column = temperature
+        elif name in _SOIL_MOISTURE_FIELDS:
+            column = capacity
+        else:
+            continue
+        array = np.array(_host(value), dtype=np.float32, copy=True)
+        if array.shape == cells.shape:
+            array[cells] = column
+        elif array.ndim == 3 and array.shape[1:] == cells.shape:
+            array[:, cells] = column
+        else:
+            raise ValueError(
+                f"island soil columns: {name} has shape {array.shape} on a "
+                f"{cells.shape} grid")
+        patched[name] = array
+        touched.append(name)
+    count = int(np.count_nonzero(cells))
+    receipt = {
+        "cells": count,
+        "soil_temperature": "skin temperature mapped onto the cell",
+        "soil_moisture": f"field capacity, SOILPARM.TBL {tables.sltype} REFSMC",
+        "fields": sorted(touched),
+        "soil_temperature_range_k": [float(temperature.min()),
+                                     float(temperature.max())],
+        "soil_moisture_range": [float(capacity.min()), float(capacity.max())],
+    }
+    key = (cells.shape, count)
+    if touched and key not in _ANNOUNCED_ISLAND_SOIL:
+        _ANNOUNCED_ISLAND_SOIL.add(key)
+        print(
+            f"island soil: {count} land cell(s) of this "
+            f"{cells.shape[0]}x{cells.shape[1]} grid lie where the source "
+            "holds no land, so their soil column is their skin temperature "
+            f"({receipt['soil_temperature_range_k'][0]:.1f}.."
+            f"{receipt['soil_temperature_range_k'][1]:.1f} K) and their "
+            "soil's field capacity "
+            f"({receipt['soil_moisture_range'][0]:.3f}.."
+            f"{receipt['soil_moisture_range'][1]:.3f}); WPS writes "
+            "METGRID.TBL fill_missing there, a 285 K column saturated at 1.0",
+            file=sys.stderr)
+    return patched, receipt
 
 
 def _require_same_shape(fields: Mapping[str, object], names) -> tuple[int, int]:
@@ -389,14 +511,26 @@ def _soil_temperature_elevation_delta(terrain, source_orography, terrestrial):
     return np.where(usable, -0.0065 * difference, 0.0)
 
 
-#: How far below zero a bounded-stencil overshoot may carry a snow
-#: field before it stops being an interpolation artifact, as a fraction
-#: of that field's own positive maximum.  Mirrors the soil-moisture
-#: overshoot band a few dozen lines below, and for the same reason: the
-#: source fields are non-negative, the horizontal operators that carry
-#: them to the model grid are not monotone, and a snow line is the
-#: sharpest gradient either field has.
-_SNOW_OVERSHOOT_FRACTION = 0.25
+def _snow_undershoot_fraction() -> float:
+    """How far below zero interpolation can carry a non-negative snow field.
+
+    As a fraction of the field's own positive maximum: the overlapping
+    parabola's whole negative weight, 9/32
+    (:data:`gpuwm.ingest.horiz.WPS_PARABOLIC_NEGATIVE_WEIGHT`), widened by
+    its FP32 evaluation slack.  A 2x2 patch holding a trace of snow inside
+    snow at the maximum already reaches about 17/64 of it; the band that
+    used to sit here, one quarter, was inside that reach and refused it.  The masked mapping
+    carries snow with two weighted means and cannot go below zero, and the
+    native HRRR decoder puts its own parabola's undershoot at zero against
+    the source it mapped (gpuwm/ingest/hrrr.py), so a negative reaches
+    this band only from an input that carries one, such as a met_em file
+    made with a parabolic snow table.
+    """
+    from gpuwm.ingest.horiz import (_WPS_PARABOLIC_ENVELOPE_SLACK,
+                                    WPS_PARABOLIC_NEGATIVE_WEIGHT)
+
+    return WPS_PARABOLIC_NEGATIVE_WEIGHT * (1.0 + _WPS_PARABOLIC_ENVELOPE_SLACK)
+
 
 #: The other side of the same band: ceilings past which a snow field is
 #: a unit error rather than a snowpack.  There is no bounded-stencil
@@ -467,14 +601,82 @@ def _admitted_snow_field(name: str, value: np.ndarray, shape,
     smallest = float(np.min(value))
     if smallest >= 0.0:
         return value
-    floor = -_SNOW_OVERSHOOT_FRACTION * max(float(np.max(value)), 0.0)
+    fraction = _snow_undershoot_fraction()
+    floor = -fraction * max(largest, 0.0)
     if smallest < floor:
         raise ValueError(
-            f"{name} is negative beyond the interpolation-overshoot band: "
-            f"{int(np.count_nonzero(value < 0.0))} value(s) of "
+            f"{name} is negative beyond the interpolation-overshoot band, "
+            f"{fraction:.6g} of the field maximum, as far below zero as "
+            f"interpolating a non-negative field can reach: "
+            f"{int(np.count_nonzero(value < floor))} value(s) of "
             f"{value.size}, most negative {smallest:.6g}, field maximum "
-            f"{float(np.max(value)):.6g}")
+            f"{largest:.6g}; a fill value or a broken decode, not snow")
     return np.maximum(value, 0.0)
+
+
+def clamp_soil_moisture_overshoot(moisture, *, land=None, subject: str):
+    """Put interpolation overshoot outside 0..1 on the range; refuse the rest.
+
+    Volumetric soil moisture is a fraction of the soil volume, so a value
+    outside 0..1 is never data.  One thing makes such a value from real
+    soil moisture: an interpolation operator that is not a weighted mean
+    of its donors.  WPS's ``sixteen_pt`` overlapping parabolas swing past
+    the donors on a sharp soil-moisture edge (a reservoir, a river bottom,
+    an irrigated field beside dry range) by up to 9/32 of the step, so
+    from a 0..1 field they reach no further than
+    :func:`gpuwm.ingest.horiz.parabolic_reach` (about -0.297..1.297), and
+    every other operator in metgrid's chains is a weighted mean.  gpuwm's
+    own masked mapping makes none (it answers from a weighted mean
+    wherever ``sixteen_pt`` would leave the range), so what reaches here
+    arrived with the route's input, as a met_em file carries WPS's own.
+    Each such value goes on the range, counted, however sharp the edge
+    that made it.
+
+    A land value beyond that reach was not made by interpolating soil
+    moisture at all: it is a fill value (metgrid's -1e30) or the field in
+    another unit (percent, kg m-2).  Put on the range it would initialize
+    that land saturated or bone dry from a number that never was soil
+    moisture, so it is refused, with its count and extremes.
+
+    ``land`` (the target land mask, broadcast over leading layers) picks
+    the values judged and counted, since water columns are set to 1.0
+    later whatever they held; without it every value is.  Values already
+    inside 0..1 are untouched, and a non-finite value is left for the
+    caller's own refusal.  Returns ``(moisture, counted)``.
+    """
+    from gpuwm.ingest.horiz import parabolic_reach
+
+    moisture = np.asarray(moisture, dtype=np.float64)
+    finite = np.isfinite(moisture)
+    outside = finite & ((moisture < 0.0) | (moisture > 1.0))
+    if not outside.any():
+        return moisture, 0
+    counted = outside if land is None else (
+        outside & np.broadcast_to(np.asarray(land, dtype=bool),
+                                  moisture.shape))
+    where = "value(s)" if land is None else "land value(s)"
+    lowest, highest = parabolic_reach(0.0, 1.0)
+    beyond = counted & ((moisture < lowest) | (moisture > highest))
+    if beyond.any():
+        raise ValueError(
+            f"{subject}: {int(np.count_nonzero(beyond))} {where} outside "
+            f"{lowest:.4f}..{highest:.4f}, as far as interpolating a 0..1 "
+            "field can reach (smallest "
+            f"{float(np.min(moisture[beyond])):.6g}, largest "
+            f"{float(np.max(moisture[beyond])):.6g}); a fill value or soil "
+            "moisture in another unit, which put on 0..1 would initialize "
+            "that land saturated or bone dry")
+    moved = int(np.count_nonzero(counted))
+    if moved:
+        exceedance = float(np.max(np.where(
+            counted, np.maximum(-moisture, moisture - 1.0), 0.0)))
+        print(
+            f"{subject}: {moved} {where} outside 0..1 (largest "
+            f"exceedance {exceedance:.4f}) put on the range; interpolation "
+            "overshoot on a sharp soil-moisture edge, inside the "
+            f"{lowest:.4f}..{highest:.4f} a 0..1 field can be carried to",
+            file=sys.stderr)
+    return np.where(outside, np.clip(moisture, 0.0, 1.0), moisture), moved
 
 
 #: DIVERGENCE, deliberate (no-inherited-bugs): sub-physical LAND soil
@@ -519,6 +721,152 @@ _DEEP_SOIL_REPAIR_WRF_REFERENCE = {
         "pre-repair range, because a whole-domain deep-soil decode "
         "failure and one bad cell used to produce the same silence"),
 }
+
+
+#: real.exe's soil-temperature reasonableness band.
+SOIL_TEMPERATURE_BAND_K = (170.0, 400.0)
+
+_SOIL_TEMPERATURE_REPAIR_WRF_REFERENCE = {
+    "wrf_version": "v4.7.1",
+    "wrf_citation": (
+        "dyn_em/module_initialize_real.F:3521-3596 ('Is the grid%tslb "
+        "reasonable?'; first-time-level arm :3536-3595: land cell with "
+        "TSLB(1) outside 170..400 K :3539-3540, TSK and TMN both inside "
+        "the band :3560-3561, fake_soil_temp rebuild for LSMSCHEME, "
+        "NOAHMPSCHEME and RUCLSMSCHEME :3568-3573, moisture reset to 0.3 "
+        "only for schemes outside that list :3541-3558)"),
+    "wrf_behavior": (
+        "real.exe: a land column whose first-layer TSLB is outside "
+        "170..400 K has every layer rebuilt as (tsk*(3-zs) + tmn*(0-zs))/3 "
+        "and keeps its soil moisture under Noah, Noah-MP and RUC"),
+    "gpuwm_behavior": (
+        "the same rebuild on the land surface's own depths, linear from TSK "
+        "at 0 m to TMN at 3 m: (tsk*(3-zs) + tmn*zs)/3.  WRF's tmn*(0-zs) "
+        "sign takes the column below 170 K past about 0.6 m and to about "
+        "0 K at 1.5 m, so it is not reproduced.  A column is rebuilt when "
+        "ANY of its source samples is outside the band, not only the one "
+        "the top layer is read from, because a bad deeper sample reaches "
+        "the deeper layers; a column with a MISSING sample is not rebuilt "
+        "and is refused, as real.exe's comparisons never select a NaN"),
+}
+
+
+def unreasonable_land_soil_columns(temperature, land):
+    """``(ny, nx)`` land columns whose soil temperature real.exe rebuilds.
+
+    ``temperature`` is the source soil temperature samples on the target
+    grid, ``(samples, ny, nx)``, after the horizontal mapping and the
+    elevation lapse.  A land column is unreasonable when every sample is
+    finite and any lies outside :data:`SOIL_TEMPERATURE_BAND_K`.  A column
+    with a missing sample is not selected, so the refusal that names a
+    missing land sample still fires on it.
+
+    Named breakage: HRRRv2 analyses (January 2017, western snowpack) carry
+    land soil temperatures of 60 to 168 K beside a skin near 270 K, and
+    every preparation whose domain reached them was refused.
+    """
+    low, high = SOIL_TEMPERATURE_BAND_K
+    values = np.asarray(temperature, dtype=np.float64)
+    finite = np.isfinite(values)
+    outside = finite & ((values < low) | (values > high))
+    return (outside.any(axis=0) & finite.all(axis=0)
+            & np.asarray(land, dtype=bool))
+
+
+def tsk_tmn_soil_profile(depths_m, tsk, deep):
+    """real.exe's fake_soil_temp column, linear from TSK at 0 m to TMN at 3 m.
+
+    ``(depths, ny, nx)`` float64.  WRF writes the TMN term as
+    ``tmn*(0-zs)``; the sign is corrected here (see
+    ``_SOIL_TEMPERATURE_REPAIR_WRF_REFERENCE``).
+    """
+    z = np.asarray(depths_m, dtype=np.float64).reshape((-1, 1, 1))
+    tsk = np.asarray(tsk, dtype=np.float64)[None]
+    deep = np.asarray(deep, dtype=np.float64)[None]
+    return (tsk * (3.0 - z) + deep * z) / 3.0
+
+
+def soil_temperature_repair_receipt(temperature, columns, land):
+    """Counted receipt for the rebuilt columns; EMPTY when there are none.
+
+    The bounding box is the smallest block of the grid, as 0-based
+    inclusive ``rows`` (j) and ``columns`` (i), that holds every rebuilt
+    column.
+    """
+    columns = np.asarray(columns, dtype=bool)
+    count = int(np.count_nonzero(columns))
+    if count == 0:
+        return {}
+    before = np.asarray(temperature, dtype=np.float64)[:, columns]
+    low, high = SOIL_TEMPERATURE_BAND_K
+    outside = (before < low) | (before > high)
+    rows, cols = np.nonzero(columns)
+    land_cells = int(np.count_nonzero(np.asarray(land, dtype=bool)))
+    return {
+        "policy": "land-soil-column-outside-170..400K-rebuilt-tsk-to-tmn",
+        "wrf_reference": dict(_SOIL_TEMPERATURE_REPAIR_WRF_REFERENCE),
+        "repaired_land_columns": count,
+        "land_cells": land_cells,
+        "source_samples": int(before.shape[0]),
+        "samples_outside_band": int(np.count_nonzero(outside)),
+        "pre_repair_min_k": float(before.min()),
+        "pre_repair_max_k": float(before.max()),
+        "grid_shape": [int(value) for value in columns.shape],
+        "bounding_box": {
+            "rows": [int(rows.min()), int(rows.max())],
+            "columns": [int(cols.min()), int(cols.max())],
+        },
+    }
+
+
+def soil_temperature_repair_proof(soil, grid):
+    """The rebuilt-soil-column receipt with its box in degrees, or None.
+
+    What a preparation proof records: the soil state's
+    ``soil_temperature_repair`` with the bounding box's latitude and
+    longitude span over ``grid``'s mass points added.  ``None`` when
+    real.exe's TSLB reasonableness rebuild
+    (:func:`unreasonable_land_soil_columns`) touched no land column, so a
+    healthy preparation's proof and cache carry byte for byte what they
+    always did.  One function for every route that records it, so the
+    mapped and the native HRRR proofs spell it alike.
+    """
+    receipt = dict(getattr(soil, "soil_temperature_repair", None) or {})
+    if not receipt:
+        return None
+    latitude, longitude = (np.asarray(value) for value in grid.latlon_mass())
+    box = dict(receipt["bounding_box"])
+    (j0, j1), (i0, i1) = box["rows"], box["columns"]
+    block = (slice(j0, j1 + 1), slice(i0, i1 + 1))
+    box["latitude"] = [float(np.min(latitude[block])),
+                       float(np.max(latitude[block]))]
+    box["longitude"] = [float(np.min(longitude[block])),
+                        float(np.max(longitude[block]))]
+    receipt["bounding_box"] = box
+    return receipt
+
+
+def _announce_soil_temperature_repair(receipt):
+    """The one line that says which soil columns were rebuilt."""
+    box = receipt["bounding_box"]
+    ny, nx = receipt["grid_shape"]
+    whole = (" -- that is EVERY land column in the domain, so no source "
+             "soil temperature survives in it"
+             if receipt["repaired_land_columns"] == receipt["land_cells"]
+             else "")
+    print(
+        f"soil temperature rebuild: {receipt['repaired_land_columns']} of "
+        f"{receipt['land_cells']} land column(s) carried a source soil "
+        f"temperature outside 170..400 K "
+        f"({receipt['pre_repair_min_k']:.6g}..{receipt['pre_repair_max_k']:.6g}"
+        f" K, rows {box['rows'][0]}..{box['rows'][1]} and columns "
+        f"{box['columns'][0]}..{box['columns'][1]} of the {ny}x{nx} grid) and "
+        "were rebuilt linear in depth from the skin temperature at 0 m to "
+        "the deep soil temperature at 3 m, following WRF real.exe's "
+        "rebuild with its deep-temperature sign corrected (real.exe's "
+        "tmn*(0-zs) takes the column toward 0 K); "
+        f"their soil moisture is kept{whole}",
+        file=sys.stderr)
 
 
 def _count_land_deep_soil_repair(deep, land, valid_deep, tsk):
@@ -577,8 +925,8 @@ def _floor_land_moisture_at_smcdry(soil_m, pre_clip, terrestrial,
     """Floor sub-air-dry LAND soil moisture at the category's SMCDRY.
 
     An ERA5 swvl value a hair below zero (GRIB packing, horizontal
-    interpolation undershoot) is admitted by the overshoot band above and
-    clipped to EXACTLY 0.0.  Noah's thermal conductivity then divides by
+    interpolation undershoot) is put on the range by
+    :func:`clamp_soil_moisture_overshoot` and so becomes EXACTLY 0.0.  Noah's thermal conductivity then divides by
     SMC three times (kernels/noah.cu TDFCND: ``xunfroz = sh2o/smc`` 0/0,
     the ``ake`` divide, and ``powf(smcmax/smc, bexp)``), so ONE such land
     cell is NaN conductivity -> NaN ground heat flux -> NaN HFX and the
@@ -848,10 +1196,11 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
             raise ValueError(
                 "HRRR SOILT/SOILW must have shape "
                 f"{expected_node_shape}")
-        if (not np.isfinite(soil_temperature_nodes).all()
-                or np.any((soil_temperature_nodes < 170.0)
-                          | (soil_temperature_nodes > 400.0))):
-            raise ValueError("HRRR SOILT nodes are outside 170..400 K")
+        # A land column outside 170..400 K is rebuilt below, as real.exe
+        # rebuilds it; what is left outside the band after that is refused
+        # there.  A missing node is refused here.
+        if not np.isfinite(soil_temperature_nodes).all():
+            raise ValueError("HRRR SOILT nodes are non-finite")
         # Saturated soil is stored AT 1.0 and decodes a hair above it;
         # that is the decode rounding, not a broken node.
         soil_moisture_nodes, _ = clamp_bound_kissing(
@@ -1003,49 +1352,47 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     # sets water TMN to the selected SST/TSK before module_soil_pre consumes it.
     deep_repair = _count_land_deep_soil_repair(deep, land, valid_deep, tsk)
     deep = np.where(land & valid_deep, deep, tsk)
+    # real.exe's TSLB reasonableness rebuild, on every soil source alike:
+    # a land column carrying a source soil temperature outside 170..400 K
+    # is held at TSK through the vertical mapping below and rebuilt
+    # TSK-to-TMN on Noah's layers after it.
     if mapped_layers:
-        # Source-land gaps were rejected before horizontal interpolation.
-        # At this post-interpolation stage, only target-ocean values may be
-        # absent; the declared repair below replaces them. Target-land gaps
-        # and nonphysical values remain fatal.
-        # Same admission on the declarative route: a mapped saturated
-        # cell reaches here one rounding step above 1.0 for exactly the
-        # reasons the GFS bridge now clamps for.
+        samples = declared_temperature
+    elif hrrr_nodes:
+        samples = soil_temperature_nodes
+    else:
+        samples = np.stack(temperatures)
+    rebuilt_columns = unreasonable_land_soil_columns(samples, terrestrial)
+    temperature_repair = soil_temperature_repair_receipt(
+        samples, rebuilt_columns, terrestrial)
+    if temperature_repair:
+        _announce_soil_temperature_repair(temperature_repair)
+        samples = np.array(samples, copy=True)
+        samples[:, rebuilt_columns] = tsk[rebuilt_columns]
+        if mapped_layers:
+            declared_temperature = samples
+        elif hrrr_nodes:
+            soil_temperature_nodes = samples
+        else:
+            temperatures = list(samples)
+    if hrrr_nodes and np.any((soil_temperature_nodes < 170.0)
+                             | (soil_temperature_nodes > 400.0)):
+        raise ValueError("HRRR SOILT nodes are outside 170..400 K")
+    if mapped_layers:
+        # The horizontal mapping hands every target land cell a value: a
+        # source land cell with none is not a donor, and a target land cell
+        # with no source land near it takes the WPS search's nearest one
+        # (gpuwm/ingest/horiz.py).  Only target-ocean values may be absent
+        # here; the declared repair below replaces them.
+        # A mapped saturated cell reaches here one rounding step above 1.0
+        # for exactly the reasons the GFS bridge clamps for, and any
+        # overshoot the route's own operator made goes on the range with
+        # it (clamp_soil_moisture_overshoot).
         declared_moisture, _ = clamp_bound_kissing(
             declared_moisture, minimum=0.0, maximum=1.0)
-        # WPS's sixteen_pt operator genuinely overshoots on sharp source
-        # gradients -- a 3 km dryline can put one land cell a percent or
-        # two of volumetric moisture below zero.  The native HRRR route
-        # repairs this by construction (convex bilinear soil weights, a
-        # documented divergence from WPS); the mapped route keeps the
-        # WPS-parity operator and repairs its overshoot HERE, bounded and
-        # counted: within the margin the value clamps to the physical
-        # bound, beyond it the refusal below still stands, and any cell
-        # that would have prepared before this admission is untouched
-        # because genuine overshoot was a hard refusal, never a value.
-        overshoot_margin = 0.05
-        overshoot = (
-            (declared_moisture < 0.0) & (declared_moisture >= -overshoot_margin)
-        ) | (
-            (declared_moisture > 1.0)
-            & (declared_moisture <= 1.0 + overshoot_margin)
-        )
-        if bool(overshoot.any()):
-            land_count = int(np.count_nonzero(overshoot[:, terrestrial]))
-            exceedance = float(np.max(np.where(
-                overshoot,
-                np.maximum(-declared_moisture, declared_moisture - 1.0),
-                0.0)))
-            print(
-                "mapped soil moisture: WPS sixteen_pt overshoot clamped to "
-                f"[0, 1] on {land_count} land value(s) (largest exceedance "
-                f"{exceedance:.4f}); the interpolation operator is "
-                "WPS-parity and this repair is the mapped twin of the "
-                "native route's convex-bilinear soil divergence",
-                file=sys.stderr)
-            repaired = declared_moisture.copy()
-            repaired[overshoot] = np.clip(repaired[overshoot], 0.0, 1.0)
-            declared_moisture = repaired
+        declared_moisture, _ = clamp_soil_moisture_overshoot(
+            declared_moisture, land=terrestrial,
+            subject="mapped soil moisture")
         land_temperature = declared_temperature[:, terrestrial]
         land_moisture = declared_moisture[:, terrestrial]
         if not np.isfinite(land_temperature).all() \
@@ -1054,10 +1401,12 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                 "declarative mapped soil temperature is missing or outside "
                 "170..400 K on land"
             )
-        if not np.isfinite(land_moisture).all() \
-                or np.any((land_moisture < 0.0) | (land_moisture > 1.0)):
+        if not np.isfinite(land_moisture).all():
             raise ValueError(
-                "declarative mapped soil moisture is missing or outside 0..1 on land"
+                "declarative mapped soil moisture carries no value on "
+                f"{int(np.count_nonzero(~np.isfinite(land_moisture)))} land "
+                "value(s): the horizontal mapping gives every land cell one, "
+                "so these fields reached the initializer without it"
             )
         soil_t, soil_m = _remap_declared_soil(
             declared_temperature,
@@ -1092,6 +1441,10 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         moist_nodes = np.stack([moistures[0], *moistures, moistures[-1]])
         soil_t = _interp_nodes(temp_nodes, zsource, NOAH_LAYER_MIDPOINTS_M)
         soil_m = _interp_nodes(moist_nodes, zsource, NOAH_LAYER_MIDPOINTS_M)
+    if temperature_repair:
+        soil_t = np.array(soil_t, copy=True)
+        soil_t[:, rebuilt_columns] = tsk_tmn_soil_profile(
+            NOAH_LAYER_MIDPOINTS_M, tsk, deep)[:, rebuilt_columns]
     non_terrestrial = ~terrestrial
     soil_t[:, non_terrestrial] = tsk[non_terrestrial]
     soil_m[:, non_terrestrial] = 1.0
@@ -1123,26 +1476,26 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     # Sixteen-point source stencils overshoot the saturated ceiling
     # where source cells sit at exactly 1.0 next to dry land (GFS
     # glacier/ice at high latitude; module_soil_pre.F:298/:392 itself
-    # assigns 1.0 over ice and water) -- observed up to ~1.086 on the
-    # Fairbanks smoke domain.  Stock real.exe carries such columns with
-    # no upper clamp at all (the > 1.005 guard at
-    # module_initialize_real.F:3383 is commented out in the pinned
-    # source), so cap bounded Lagrange overshoot at the physical
-    # ceiling instead of refusing a domain stock WRF accepts.  Values
-    # already inside [0, 1] are untouched (every previously passing
-    # case is byte-identical).  The 0.25 band is far beyond what a
-    # sixteen-point stencil can produce from a 0..1-ranged field yet
-    # still catches genuinely broken inputs (fill values, unit errors).
-    if not np.isfinite(soil_m).all() \
-            or np.any((soil_m < -0.25) | (soil_m > 1.25)):
-        bad = soil_m[~np.isfinite(soil_m) | (soil_m < -0.25)
-                     | (soil_m > 1.25)]
+    # assigns 1.0 over ice and water) -- observed up to ~1.086 on a
+    # high-latitude smoke domain -- and the dry floor beside a reservoir.
+    # Stock real.exe carries such columns with no upper clamp at all
+    # (the > 1.005 guard at module_initialize_real.F:3383 is commented
+    # out in the pinned source).  gpuwm's masked mapping no longer makes
+    # any; a route whose input carries them (a met_em file) has each one
+    # inside the operator's reach from a 0..1 field put on the range.
+    # The band that used to sit here (0.25) was itself inside that reach
+    # (9/32 of the step) and refused genuine overshoot; the refusal now
+    # sits at the reach, so it still catches a fill value or a unit error
+    # on every route, the ones that never enter the masked mapping
+    # included.  Values already inside [0, 1] are untouched.
+    if not np.isfinite(soil_m).all():
         raise ValueError(
-            "soil moisture is outside 0..1 beyond the interpolation-"
-            f"overshoot band: {bad.size} value(s), range "
-            f"[{np.nanmin(soil_m):.6g}, {np.nanmax(soil_m):.6g}]")
+            "soil moisture carries no value on "
+            f"{int(np.count_nonzero(~np.isfinite(soil_m)))} of "
+            f"{soil_m.size} layer value(s) after the vertical mapping")
     pre_clip_moisture = soil_m
-    soil_m = np.clip(soil_m, 0.0, 1.0)
+    soil_m, _ = clamp_soil_moisture_overshoot(
+        soil_m, land=terrestrial, subject="soil moisture")
     if not np.isfinite(tmn).all() or np.any((tmn < 170.0) | (tmn > 400.0)):
         raise ValueError("deep soil temperature is outside 170..400 K")
 
@@ -1224,12 +1577,13 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
         moisture_floor=moisture_floor,
         deep_soil_repair=deep_repair,
         soil_texture_downscale=downscale_receipt,
+        soil_temperature_repair=temperature_repair,
     )
 
 
 __all__ = ["ERA5_LAYER_BOTTOMS_M", "HRRR_SOIL_NODE_DEPTHS_M",
-           "NOAH_LAYER_MIDPOINTS_M",
+           "NOAH_LAYER_MIDPOINTS_M", "clamp_soil_moisture_overshoot",
            "NOAH_LAYER_THICKNESS_M", "NoahSoilState",
            "SOIL_TEMPERATURE_RECONCILER_NAMES", "SST_RECONCILER_NAMES",
-           "preprocess_noah_soil", "reconciler_soil_temperature",
+           "island_soil_columns", "preprocess_noah_soil", "reconciler_soil_temperature",
            "reconciler_sst", "soil_source_orography"]

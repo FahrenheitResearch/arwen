@@ -78,7 +78,7 @@ def open_obs_grid_product(path: Path | str, *, engine: str | None = None):
             "shipped path against anything, and the 'default' writer would "
             "quietly stop being the one that is tested.\n\n"
             "Build it from a checkout:\n"
-            "  cd tools/rustwx && cargo build --release --offline\n"
+            f"  {nc_writer_bridge.checkout_build_command()}\n"
             f"or point {nc_writer_bridge.NCWRITE_BRIDGE_ENV} at a built "
             "library.\n"
             f"To write this product with netCDF4 instead, as an EXPLICIT "

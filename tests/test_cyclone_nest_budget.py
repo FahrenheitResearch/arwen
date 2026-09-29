@@ -350,11 +350,14 @@ def test_the_floor_refusal_prints_the_target_that_actually_binds(budget_gib):
 # The band above is measured on `--tiles off`.  On the DEFAULT `--tiles auto`
 # the tree walk withholds the following nest's rebuild transient before it
 # compares anything, so it refuses against a budget SMALLER than the fit
-# target, and the same contradiction survived one road over: 5.045 through
-# 5.06 GiB refuse while printing a fit target ABOVE the price, and 5.065
+# target, and the same contradiction survived one road over: 5.025 through
+# 5.045 GiB refuse while printing a fit target ABOVE the price, and 5.05
 # admits.  The number the sentence quotes has to be the one that bound, which
-# is at or under the price.
-TILE_BAND = [5.045, 5.05, 5.055, 5.06]
+# is at or under the price.  (Measured on the 50 hPa model top the GFS
+# emission carries; the band sat 0.01 GiB higher on the old 100 hPa top, and
+# at 5.035 through 5.05 while the RRTMGP solver's frame was priced at a stale
+# 5,152 B, which charged this tree 8,355,840 B more.)
+TILE_BAND = [5.025, 5.03, 5.035, 5.04, 5.045]
 
 
 @pytest.mark.parametrize("budget_gib", TILE_BAND)
@@ -383,7 +386,7 @@ def test_the_tile_roads_band_ends_where_its_own_budget_clears_the_price():
     """And it ends there rather than where the fit target does, which is the
     whole reason the target cannot be the number quoted."""
     plan = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
-                           tiles="auto", nest_budget_gib=5.065)
+                           tiles="auto", nest_budget_gib=5.05)
     assert plan["nest"]["dimensions"] == list(tc.CHILD_DIMS)
 
 
@@ -395,7 +398,7 @@ def test_the_bound_is_read_off_the_walk_rather_than_recomputed():
     sentence, or computing a second budget here, is the defect this carry
     exists to prevent.
     """
-    narrowed, bound_by = tc._budget_sizing(CARD, 5.06)
+    narrowed, bound_by = tc._budget_sizing(CARD, TILE_BAND[-1])
     assert bound_by == "request"
     floor = tc._nest_dimensions(tc.PRESET_NEST_PARENT_CELLS)
     _text, exp = tc.configuration_text(cycle=CYCLE, point=POINT, hours=3,

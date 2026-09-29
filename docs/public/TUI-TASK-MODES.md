@@ -81,8 +81,12 @@ Open or create an experiment configuration first. **I Scenario** opens the
 initial-state controls for that configuration. Add a warm bubble,
 then enter its latitude, longitude, height above ground, horizontal radius,
 vertical half-depth and peak potential-temperature increase. The supported
-increase is greater than zero and at most 10 K. **Preserve relative humidity**
+increase is greater than zero; above 10 K the engine warns and records the
+warning in the perturbation receipt. **Preserve relative humidity**
 adjusts water vapour within the bubble; false keeps water vapour unchanged.
+Before the forecast starts, the engine refuses a bubble that heats a layer
+past what the radiation accepts or, with **Preserve relative humidity**,
+builds more water vapour than a forecast has been measured to survive.
 
 Use **F2 Keep bubble**, **R Review**, then **Enter Apply to draft**. Applying
 changes the open draft; save it explicitly, preferably as a new scenario file,
@@ -160,7 +164,7 @@ not bypass these engine checks.
 
 ## What the plot picker saves
 
-The default stays **General: 25 products**. The original six selections keep their
+The default stays **General: 22 products**. The original six selections keep their
 order and stable IDs: `general`, `tornado`, `hurricane`, `snow`, `rain`, `wind`.
 Five additional selections have the stable IDs `fire`, `temperature`, `aviation`,
 `terrain` and `coastal`. The installed native renderer owns the available product

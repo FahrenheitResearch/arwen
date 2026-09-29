@@ -178,11 +178,10 @@ FROZEN_RUNOFF_REL = 1.0e-4
 #:                          trap, in a field that is diagnostic only: noahres
 #:                          feeds no prognostic variable.
 #:
-#:   snopcx          1141   SNOWMELT BOOKKEEPING, cases 13 and 14.  Both are
+#:   snopcx          1125   SNOWMELT BOOKKEEPING, cases 13 and 14.  Both are
 #:   acsnom           836   SNOMLT*1000 accumulations, and both inherit the
 #:                          same expf/powf gap through SNOPAC.  Neither moved
-#:                          with FRZX; snopcx's 1125 in the old record was
-#:                          already stale at a70ade37.
+#:                          with FRZX.
 #:
 #:   hfx              375   EVERYTHING ELSE: nvcc's FMA contraction plus
 #:   grdflx           170   CUDA/glibc libm.  Proved for LAI, which is 1 ULP on
@@ -193,12 +192,10 @@ FROZEN_RUNOFF_REL = 1.0e-4
 #:                          exactly what the kernel produces.  nvcc contracts
 #:                          by default; gfortran at -O0 does not.
 #:
-#: Thirteen fields are bit-identical to WRF on every column of every fixture:
-#: albbck, emiss, z0, snotime, acsnow, chklowq, tslb, snow, snowh, znt, and --
-#: newly, with FRZX restored -- sh2o, smcrel and smois.
-#: RE-MEASURED IN FULL on the device for the FRZX fix.  The previous table
-#: was stale in TWO independent ways and only one of them was this fix, so
-#: both are recorded here rather than folded together.
+#: Ten fields are bit-identical to WRF on every column of every fixture:
+#: albbck, emiss, z0, snotime, acsnow, chklowq, tslb, and -- newly, with FRZX
+#: restored -- sh2o, smcrel and smois.
+#: RE-MEASURED IN FULL for the FRZX fix, and again for 2.8 (item (2) below).
 #:
 #: (1) Improved by the FRZX repair -- six rows, every one of them a
 #:     reduction, and three of them to exactly bitwise:
@@ -211,44 +208,51 @@ FROZEN_RUNOFF_REL = 1.0e-4
 #:     SNOPAC as well.  They did not: both are byte-identical before and
 #:     after, so the FRZX chain does not reach them on these four fixtures.
 #:
-#: (2) ALREADY STALE at a70ade37, before any parity work -- nine rows whose
-#:     recorded value did not match what the shipped kernel produced.  These
-#:     are re-pinned to the measurement, NOT improved by anything here:
+#: (2) Eight rows the FRZX change also re-pinned, from a reading taken on its
+#:     own branch, came back into this tree with values the kernel here does
+#:     not produce: snow 0, snowh 0, tsk 1, znt 0, canwat 5, lh 4, qsfc 6 and
+#:     snopcx 1141.  MEASURED 2026-09-28 on sm_120, where every release gate
+#:     of this line runs: the RTX 5090 with NVRTC 12.9.86, 13.0.48 and
+#:     13.4.92 and the RTX 5070 Ti with 13.0.88 and 13.3.33 all give, to the
+#:     ULP, the values the table held before that merge --
 #:
-#:       snow      10 -> 0     snowh    9 -> 0     tsk       2 -> 1
-#:       znt        1 -> 0     canwat   8 -> 5     lh        3 -> 4
-#:       qsfc       3 -> 6     snopcx 1125 -> 1141
-#:       sfcrunoff 60640600 -> 60641303 (before the FRZX fix moved it again)
+#:       snow 10     snowh 9     tsk 2     znt 1
+#:       canwat 8    lh 3        qsfc 3    snopcx 1125
 #:
-#:     Three of those nine are REGRESSIONS against the old record (snopcx,
-#:     lh, qsfc) and nobody in this campaign caused them; they are pinned so
-#:     the next person to touch this file inherits a table that describes the
-#:     kernel instead of one that describes a kernel from some earlier tree.
+#:     -- together with the six FRZX rows in (1) exactly as that change
+#:     recorded them.  noah.cu at the branch head and at this tree's parent
+#:     differ only by the three FRZX call sites, so the other reading was
+#:     not of a different kernel source; no sm_120 compiler reproduces it,
+#:     and the card it came from is not recorded.  The development desktop's
+#:     RTX 3080 (sm_86, whose noah.cu frame is already known to differ:
+#:     224 B against sm_120's 176 B) is the one release platform this table
+#:     has not been read on, and it is read at the cut's Windows step; a
+#:     different answer there makes this table per-architecture.
 BASELINE_MAX_ULP = {
     "noahres": 164754,
     "sfcrunoff": 2812,
-    "snopcx": 1141,
+    "snopcx": 1125,
     "acsnom": 836,
     "hfx": 375,
     "grdflx": 170,
+    "snow": 10,
+    "snowh": 9,
     "snowc": 8,
-    "qsfc": 6,
-    "canwat": 5,
+    "canwat": 8,
     "qfx": 5,
     "potevp": 5,
-    "lh": 4,
+    "qsfc": 3,
+    "lh": 3,
     "albedo": 3,
     "smstav": 2,
-    "tsk": 1,
+    "tsk": 2,
+    "znt": 1,
     "lai": 1,
     "udrunoff": 1,
     "smstot": 1,
     "sh2o": 0,
     "smcrel": 0,
     "smois": 0,
-    "snow": 0,
-    "snowh": 0,
-    "znt": 0,
     "albbck": 0,
     "emiss": 0,
     "z0": 0,
@@ -256,6 +260,15 @@ BASELINE_MAX_ULP = {
     "acsnow": 0,
     "chklowq": 0,
     "tslb": 0,
+}
+
+#: sm_86 reads the eight rows (2) names differently, and exactly as the
+#: unrecorded reading did: MEASURED 2026-09-28 on the RTX 3080 (sm_86,
+#: NVRTC 13.4.92, Windows) at the 2.8.0 rehearsal.  Every other row equals
+#: the sm_120 table above.
+BASELINE_MAX_ULP_BY_ARCHITECTURE = {
+    "86": {**BASELINE_MAX_ULP, "snow": 0, "snowh": 0, "tsk": 1, "znt": 0,
+           "canwat": 5, "lh": 4, "qsfc": 6, "snopcx": 1141},
 }
 
 #: The absolute size of the SFLX_GLACIAL restriction on case 28, in each
@@ -515,7 +528,9 @@ def test_noah_cuda_column_holds_its_measured_distance_from_wrf():
         one = _measure(fixture, port, _arithmetic_mask(fixture))
         for name, value in one.items():
             measured[name] = max(measured.get(name, 0), value)
-    assert measured == BASELINE_MAX_ULP, (
+    recorded = BASELINE_MAX_ULP_BY_ARCHITECTURE.get(
+        cupy.cuda.Device().compute_capability, BASELINE_MAX_ULP)
+    assert measured == recorded, (
         "Noah's distance from the unmodified WRF driver changed.\n"
         f"  measured {measured}\n  recorded {BASELINE_MAX_ULP}\n"
         "If a field got worse, something regressed.  If it got better, say so:"

@@ -52,7 +52,7 @@ from gpuwm.ingest.prepared_cache import (
     prepared_domain_config_identity, write_prepared_cache,
 )
 from gpuwm.ingest.cpu_backend import resolve_cpu_bridge
-from gpuwm.core.grid import BaseState, make_vertical_coord
+from gpuwm.core.grid import BaseState, VerticalCoord
 from gpuwm.hrrr_native_static import _array_sha256, sha256_file
 from gpuwm.hrrr_hierarchy_direct import _expected_root_cache_identity
 from gpuwm.native_wrf_contract import native_geometry_contract
@@ -538,6 +538,67 @@ def test_the_consumer_accepts_an_exhaustive_wrf_exclusion_partition():
     assert summary["vacuous_species"] == ["QG", "QI", "QR", "QS"]
 
 
+def _cuda_preparation_receipt(requested=None, host_workers=8):
+    """The CUDA backend's receipt and budget as the benchmark writes them.
+
+    The masked surface fields run on the host under CUDA, on
+    ``requested`` threads (``auto``: every CPU, ``host_workers`` here).
+    """
+    return {
+        "preprocess_backend": {
+            "backend": "cuda",
+            "masked_surface_chain": {
+                "workers": "auto" if requested is None else requested},
+        },
+        "preprocess_worker_budget": {
+            "schema": "gpuwm-preprocess-worker-budget-v1",
+            "backend": "cuda",
+            "applicable": False,
+            "requested_total_native_workers": requested,
+            "host_step_native_workers": (
+                host_workers if requested is None else requested),
+            "pipeline_decoder_workers_included": False,
+            "peak_active_native_workers": (
+                host_workers if requested is None else requested),
+        },
+    }
+
+
+def test_cuda_worker_receipt_names_the_host_step_request():
+    """Under CUDA --preprocess-workers sets the host steps' threads.
+
+    The receipt check used to demand zero native workers under CUDA,
+    which stopped being true when the masked surface fields moved to the
+    Rust library on the host; it now holds the request against the
+    masked chain's receipt and the budget.
+    """
+    def report(preparation):
+        return {"status": "PASS", "preparation": preparation,
+                "pipeline": {"workers": {"requested": "4", "selected": 4}}}
+
+    for requested in (None, 1, 6):
+        prepare._validated_worker_receipts(
+            report(_cuda_preparation_receipt(requested)),
+            selected_backend="cuda", requested_preprocess_workers=requested,
+            requested_pipeline_workers="4", final_hour=1)
+    # A request the preparation did not honour, either way round.
+    for ran, asked in ((None, 6), (6, None), (5, 6)):
+        with pytest.raises(RuntimeError, match="differs from the request"):
+            prepare._validated_worker_receipts(
+                report(_cuda_preparation_receipt(ran)),
+                selected_backend="cuda", requested_preprocess_workers=asked,
+                requested_pipeline_workers="4", final_hour=1)
+    # The receipt the old budget wrote: no host-step count, peak zero.
+    stale = _cuda_preparation_receipt()
+    del stale["preprocess_worker_budget"]["host_step_native_workers"]
+    stale["preprocess_worker_budget"]["peak_active_native_workers"] = 0
+    with pytest.raises(RuntimeError, match="host-step worker budget"):
+        prepare._validated_worker_receipts(
+            report(stale), selected_backend="cuda",
+            requested_preprocess_workers=None,
+            requested_pipeline_workers="4", final_hour=1)
+
+
 def test_decoder_workers_are_independent_of_the_native_preprocess_budget():
     """The wrapper's own point: two worker budgets, separately accounted.
 
@@ -549,16 +610,7 @@ def test_decoder_workers_are_independent_of_the_native_preprocess_budget():
     workers = prepare.MAX_PIPELINE_WORKERS
     report = {
         "status": "PASS",
-        "preparation": {
-            "preprocess_backend": {"backend": "cuda"},
-            "preprocess_worker_budget": {
-                "schema": "gpuwm-preprocess-worker-budget-v1",
-                "backend": "cuda",
-                "applicable": False,
-                "pipeline_decoder_workers_included": False,
-                "peak_active_native_workers": 0,
-            },
-        },
+        "preparation": _cuda_preparation_receipt(),
         "pipeline": {"workers": {"requested": str(workers),
                                  "selected": workers}},
     }
@@ -626,6 +678,38 @@ def test_bridge_extension_hardlinks_prefix_and_one_absolute_new_hour(tmp_path):
         for row in (output / "gate.txt").read_text().splitlines())
     assert gate["forecast_hours"] == "0,1,2"
     assert gate["series_count"] == "3"
+    entries = prepare._manifest_entries(output / "SHA256SUMS")
+    prepare._verify_manifest_payloads(output, entries)
+
+
+def test_bridge_extension_copies_its_prefix_on_a_drive_without_hard_links(
+        tmp_path, monkeypatch):
+    """exFAT has no hard links: the prefix is copied and proven identical,
+    and the merged manifest verifies.  This refused, citing only the cost."""
+    import errno
+
+    def link(source, destination, *args, **kwargs):
+        if os.name == "nt":
+            raise OSError(errno.EINVAL, "Incorrect function", str(source), 1,
+                          str(destination))
+        raise OSError(errno.EPERM, "Operation not permitted", str(source),
+                      None, str(destination))
+
+    prior = _fake_sealed_bridge(tmp_path / "prior", [0, 1])
+    suffix = _fake_sealed_bridge(tmp_path / "suffix", [1, 2])
+    output = tmp_path / "merged"
+    monkeypatch.setattr(os, "link", link)
+
+    receipt = prepare._bridge_manifest_extension(
+        predecessor=prior, suffix=suffix, output=output,
+        old_hours=[0, 1], new_hours=[0, 1, 2])
+
+    assert receipt["new_source_forecast_hours"] == [0, 1, 2]
+    for name, origin in (("atmosphere-f00/field-00.f32le", prior),
+                         ("atmosphere-f01/field-00.f32le", prior),
+                         ("atmosphere-f02/field-00.f32le", suffix)):
+        assert (output / name).read_bytes() == (origin / name).read_bytes()
+        assert not (output / name).samefile(origin / name)
     entries = prepare._manifest_entries(output / "SHA256SUMS")
     prepare._verify_manifest_payloads(output, entries)
 
@@ -751,7 +835,13 @@ def test_extension_refuses_legacy_hydrometeor_cache_before_suffix_work(
 
 
 def _write_minimal_stream_tree_config(
-        path: Path, *, cycle: datetime, run_seconds: float) -> Path:
+        path: Path, *, cycle: datetime, run_seconds: float, root) -> Path:
+    # The tree's d01 is the wrapper's own domain (``root``, its
+    # HrrrTargetDomain) on the wrapper namelist's eta levels: the tree joins
+    # that domain's prepared boundaries, and boundaries only fit the grid
+    # they were prepared on.
+    eta = ", ".join(repr(float(value))
+                    for value in np.linspace(1.0, 0.0, root.nz + 1))
     path.write_text(textwrap.dedent(f"""
         [experiment]
         name = "stream-extension-tree"
@@ -769,20 +859,24 @@ def _write_minimal_stream_tree_config(
             "radiation-off-land-surface-v1",
             "constant-downward-longwave-v1",
         ]
+        # The wrapper's domain is small, so its 3:1 nest clears the
+        # parent's Davies zone and no terrain-blend band past it; the
+        # ground is flat, so there is no terrain to blend.
+        blend_width = 0
 
         [projection]
-        map_proj = "lambert"
-        ref_lat = 35.0
-        ref_lon = -97.0
-        truelat1 = 30.0
-        truelat2 = 60.0
-        stand_lon = -97.0
+        map_proj = "{root.map_proj}"
+        ref_lat = {float(root.ref_lat)}
+        ref_lon = {float(root.ref_lon)}
+        truelat1 = {float(root.truelat1)}
+        truelat2 = {float(root.truelat2)}
+        stand_lon = {float(root.stand_lon)}
 
         [shared]
-        nz = 4
+        nz = {int(root.nz)}
         ztop = 16000.0
         p_top = 10000.0
-        eta_levels = [1.0, 0.75, 0.5, 0.25, 0.0]
+        eta_levels = [{eta}]
         hybrid_opt = 2
         etac = 0.2
         map_proj = 1
@@ -802,17 +896,17 @@ def _write_minimal_stream_tree_config(
         j_parent_start = 1
         parent_grid_ratio = 1
         parent_time_step_ratio = 1
-        nx = 30
-        ny = 30
-        dx = 12000.0
-        time_step = 60
+        nx = {int(root.nx)}
+        ny = {int(root.ny)}
+        dx = {float(root.dx_m)}
+        time_step = {int(root.time_step_seconds)}
         history_interval_s = 3600.0
 
         [[domain]]
         grid_id = 2
         parent_id = 1
-        i_parent_start = 11
-        j_parent_start = 11
+        i_parent_start = 6
+        j_parent_start = 6
         parent_grid_ratio = 3
         parent_time_step_ratio = 3
         nx = 6
@@ -846,6 +940,19 @@ def _stream_tree_static(ny: int, nx: int) -> dict[str, np.ndarray]:
     }
 
 
+def _prepared_coord_and_base(reader):
+    """The vertical coordinate and base state a prepared cache restores."""
+
+    metadata = reader.header["metadata"]
+    coord = VerticalCoord(**dict(metadata["coord_scalars"]), **{
+        name: reader.read_array(f"coord/{name}")
+        for name in metadata["coord_arrays"]})
+    base = BaseState(**dict(metadata["base_scalars"]), **{
+        name: reader.read_array(f"base/{name}")
+        for name in metadata["base_arrays"]})
+    return coord, base
+
+
 def _build_and_preflight_stream_tree(
         root: Path, *, config: Path, wrapper: Path,
         cycle: datetime, forcing_hours: tuple[int, ...], root_cache_domain):
@@ -855,16 +962,6 @@ def _build_and_preflight_stream_tree(
         _domain_artifact_inputs()
     child_initial, child_met, child_soil, _static, _boundaries, _grid = \
         _domain_artifact_inputs()
-    for initial in (root_initial, child_initial):
-        initial.coord = make_vertical_coord(
-            4, hybrid_opt=2, etac=0.2,
-            eta_levels=(1.0, 0.75, 0.5, 0.25, 0.0))
-        initial.base = BaseState(
-            mub=np.full((2, 2), 90_000.0), p_top=10_000.0,
-            pb=np.full((4, 2, 2), 50_000.0),
-            alb=np.full((4, 2, 2), 0.8),
-            thb=np.full((4, 2, 2), 290.0),
-            phb=np.zeros((5, 2, 2)), terrain_z=np.zeros((2, 2)))
     wrapper_header = json.loads((
         wrapper / "native" / "prepared-cache" / "header.json"
     ).read_text(encoding="utf-8"))
@@ -880,6 +977,20 @@ def _build_and_preflight_stream_tree(
         expected_identity=expected_root_identity)
     wrapper_reader.verify_all()
     boundaries = _reader_boundaries(wrapper_reader)
+    # The root cache carries the wrapper's boundaries, which fit only the
+    # grid and base state they were prepared with, so the tree's root takes
+    # the wrapper's vertical coordinate and base state, and its nest a base
+    # state on its own grid under the same coordinate.
+    coord, root_initial.base = _prepared_coord_and_base(wrapper_reader)
+    nest = experiment.domains[1].run
+    nz, ny, nx = nest.nz, nest.ny, nest.nx
+    child_initial.base = BaseState(
+        mub=np.full((ny, nx), 90_000.0), p_top=10_000.0,
+        pb=np.full((nz, ny, nx), 50_000.0),
+        alb=np.full((nz, ny, nx), 0.8),
+        thb=np.full((nz, ny, nx), 290.0),
+        phb=np.zeros((nz + 1, ny, nx)), terrain_z=np.zeros((ny, nx)))
+    root_initial.coord = child_initial.coord = coord
     root_initial.state.lateral_boundaries = boundaries
     child_initial.state.lateral_boundaries = None
     child = SimpleNamespace(
@@ -1077,9 +1188,11 @@ def test_public_wrapper_extension_passes_production_tree_contracts(
     assert not (output / "native" / "extension-work").exists()
 
     prior_config = _write_minimal_stream_tree_config(
-        tmp_path / "tree-f001.toml", cycle=cycle, run_seconds=3600.0)
+        tmp_path / "tree-f001.toml", cycle=cycle, run_seconds=3600.0,
+        root=target)
     extended_config = _write_minimal_stream_tree_config(
-        tmp_path / "tree-f002.toml", cycle=cycle, run_seconds=7200.0)
+        tmp_path / "tree-f002.toml", cycle=cycle, run_seconds=7200.0,
+        root=target)
     prior_tree, prior_tree_reader, prior_boundaries = \
         _build_and_preflight_stream_tree(
             tmp_path / "tree-f001", config=prior_config, wrapper=prior,
@@ -1094,6 +1207,16 @@ def test_public_wrapper_extension_passes_production_tree_contracts(
     assert extended_tree.forcing_hours == (0, 1, 2)
     assert [bundle.grid_id for bundle in prior_tree.domains] == [1, 2]
     assert [bundle.grid_id for bundle in extended_tree.domains] == [1, 2]
+    # The preflight's time-step reading read the wrapper's boundaries
+    # against the tree's own base state, to the end of each window; the
+    # ground is flat, so every domain runs as configured.
+    for tree, last in ((prior_tree, "+1 h"), (extended_tree, "+2 h")):
+        rows = {row["grid_id"]: row for row in tree.terrain_clock["domains"]}
+        assert sorted(rows) == [1, 2]
+        for row in rows.values():
+            assert row["status"] == "AS_CONFIGURED", row
+            assert row["source"] == "d01", row
+            assert row["when"] == f"boundary at {last}", row
     assert prior_tree.domains[0].cache_identity[
         "source_manifest_sha256"] == prior_header["identity"][
             "source_manifest_sha256"]
@@ -1571,6 +1694,38 @@ def _legacy_public_wrapper_extends_one_hour_without_rebuilding_prefix(
 )
 def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
         tmp_path: Path, monkeypatch, physics_profile: str) -> None:
+    commands, output = _run_public_wrapper_on_fake_children(
+        tmp_path, monkeypatch, physics_profile)
+    _assert_source_leads_and_model_time(commands, output, physics_profile)
+
+
+def test_public_wrapper_forwards_cuda_host_workers(
+        tmp_path: Path, monkeypatch) -> None:
+    """--preprocess-workers under CUDA reaches the benchmark and is held.
+
+    It used to be refused here, after the front door had accepted and
+    forwarded it, although the CUDA backend runs the masked surface
+    fields on the host on exactly that many threads.
+    """
+    commands, output = _run_public_wrapper_on_fake_children(
+        tmp_path, monkeypatch, WSM6_PROFILE_ID,
+        extra_arguments=("--preprocess-backend", "cuda",
+                         "--preprocess-workers", "1"),
+        preparation=_cuda_preparation_receipt(1))
+    _assert_source_leads_and_model_time(commands, output, WSM6_PROFILE_ID)
+    benchmark = next(
+        command for command in commands
+        if any(value.endswith("hrrr_single_domain_benchmark.py")
+               for value in command))
+    assert benchmark[benchmark.index("--preprocess-backend") + 1] == "cuda"
+    assert benchmark[benchmark.index("--preprocess-workers") + 1] == "1"
+
+
+def _run_public_wrapper_on_fake_children(
+        tmp_path, monkeypatch, physics_profile, *, extra_arguments=(),
+        preparation=None, experiment_config=True):
+    if preparation is None:
+        preparation = _cuda_preparation_receipt()
     source = tmp_path / "source"
     source.mkdir()
     for hour in (12, 13):
@@ -1591,6 +1746,14 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
     monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
 
     commands: list[list[str]] = []
+    if experiment_config:
+        selection = load_experiment(authority).root.run
+    else:
+        # What the namelist route resolves, which is what the preparer
+        # checks the report's physics against on that route.
+        from gpuwm.hrrr_configuration import native_configuration_defaults
+        selection = native_configuration_defaults(
+            namelist_input=namelist, physics_profile=physics_profile).root.run
 
     def fake_run(command: list[str], _env: dict[str, str],
                  cwd=None) -> None:
@@ -1604,21 +1767,12 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
                 "history_interval_seconds": 3600.0,
                 "physics": {
                     "schema": "gpuwm-prepared-physics-profile-v1",
-                    "resolved": resolved_run_settings(load_experiment(authority).root.run),
+                    "resolved": resolved_run_settings(selection),
                     "profile": physics_profile,
                     "hrrr_initialization": _cold_start_receipt(
                         physics_profile),
                 },
-                "preparation": {
-                    "preprocess_backend": {"backend": "cuda"},
-                    "preprocess_worker_budget": {
-                        "schema": "gpuwm-preprocess-worker-budget-v1",
-                        "backend": "cuda",
-                        "applicable": False,
-                        "pipeline_decoder_workers_included": False,
-                        "peak_active_native_workers": 0,
-                    },
-                },
+                "preparation": preparation,
                 "pipeline": {"workers": {"requested": "8", "selected": 8}},
             }), encoding="utf-8")
         elif "gpuwm.wrf_direct" in command:
@@ -1638,7 +1792,7 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
                         _keeping_refusal(fake_run))
     output = tmp_path / "output"
     assert prepare.main([
-        "--experiment-config", str(authority),
+        *(("--experiment-config", str(authority)) if experiment_config else ()),
         "--source-root", str(source),
         "--source-manifest", str(source_manifest),
         "--source-manifest-sha256", "0" * 64,
@@ -1652,8 +1806,78 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
         "--run-seconds", "3600",
         "--history-interval-seconds", "3600",
         "--output-root", str(output),
+        *extra_arguments,
     ]) == 0
+    return commands, output
 
+
+def test_a_namelist_only_preparation_builds_the_static_the_benchmark_checks(
+        tmp_path: Path, monkeypatch) -> None:
+    """The breakage: a namelist-only preparation of a 1 km root was refused.
+
+    Without --experiment-config the static builder was handed no
+    configuration and built the 30-arc-second baseline, while the
+    benchmark resolved the grid-spacing default from the same namelist and
+    refused the static receipt for not binding it -- "rebuild the static
+    preparation with the declared experiment configuration", a
+    configuration the user never declared.  The builder now receives the
+    block the root configuration resolved, and a receipt applied under it
+    is the one the benchmark accepts.
+    """
+    from gpuwm.hrrr_configuration import resolve_root_experiment
+    from gpuwm.ingest.hrrr_target import HrrrTargetDomain
+    from gpuwm.static import highres_production as production
+
+    # A suite with both radiation streams: the namelist alone has no
+    # [experiment] table to carry a shortwave-only suite's night-window
+    # acknowledgement, and this preparation's window starts at night.
+    commands, _output = _run_public_wrapper_on_fake_children(
+        tmp_path, monkeypatch, MORRISON_PROFILE_ID, experiment_config=False)
+    builder = next(
+        command for command in commands
+        if any(value.endswith("hrrr_build_native_static.py")
+               for value in command))
+    assert "--experiment-config" not in builder
+    table = json.loads(builder[builder.index("--static-highres") + 1])
+    case_date = builder[builder.index("--case-date") + 1]
+    assert case_date == "2026-07-18"
+    built = production.parse_static_table(
+        table, source="--static-highres", base_dir=tmp_path)
+    assert production.default_row_of(built) is not None
+
+    # What the benchmark resolves for this same namelist-only preparation.
+    benchmark = next(
+        command for command in commands
+        if any(value.endswith("hrrr_single_domain_benchmark.py")
+               for value in command))
+    assert "--experiment-config" not in benchmark
+    namelist = Path(benchmark[benchmark.index("--namelist-input") + 1])
+    target = HrrrTargetDomain.legacy_500x500()
+    assert target.dx_m < 1000.0
+    vertical = explicit_vertical_from_wrf_namelist(
+        namelist, expected_nz=target.nz, context="namelist-only witness")
+    _exp, tables = resolve_root_experiment(
+        target=target, vertical=vertical, namelist_input=namelist,
+        start_time=datetime(2026, 7, 18, 17), run_seconds=3600.0,
+        physics_profile=MORRISON_PROFILE_ID)
+    checked = production.resolve_static_highres(
+        tables, source=str(namelist), base_dir=namelist.parent)
+    assert checked is not None and built.echo() == checked.echo()
+    grid = target.grid()
+    receipt = {"highres": {
+        "status": "APPLIED", "config": built.echo(), "case_date": case_date,
+        "grid": production._grid_identity(grid, 1)}}
+    production.require_prepared_highres(
+        receipt, grid, config=checked, domain_id=1,
+        case_date=datetime(2026, 7, 18, 17).date())
+    # The baseline receipt the old route built is what the benchmark refused.
+    with pytest.raises(ValueError, match="do not bind"):
+        production.require_prepared_highres(
+            {}, grid, config=checked, domain_id=1,
+            case_date=datetime(2026, 7, 18, 17).date())
+
+
+def _assert_source_leads_and_model_time(commands, output, physics_profile):
     series = output / "native" / "hrrr-f12-f13-series.tsv"
     assert [line.split("\t", 1)[0]
             for line in series.read_text(encoding="utf-8").splitlines()] \
@@ -1726,6 +1950,41 @@ def test_public_wrapper_rejects_mismatched_or_incomplete_physics_receipt():
     with pytest.raises(RuntimeError, match="cold-start evidence"):
         prepare._validated_physics_receipt(
             wrong_bits, requested_profile=MORRISON_PROFILE_ID)
+
+
+def test_public_wrapper_holds_thompson_numbers_to_the_seed_rule():
+    """nr and ni carry real.exe's seed evidence (A99, A110), every leg."""
+
+    complete = {
+        "physics": {
+            "schema": "gpuwm-prepared-physics-profile-v1",
+            "profile": THOMPSON_PROFILE_ID,
+            "hrrr_initialization": _cold_start_receipt(THOMPSON_PROFILE_ID),
+        },
+    }
+    fields = complete["physics"]["hrrr_initialization"][
+        "state_source_absent_fields"]
+    assert fields["nr"]["seeded_cells"] > 0
+    assert fields["ni"]["seeded_cells"] > 0
+    assert prepare._validated_physics_receipt(
+        complete, requested_profile=THOMPSON_PROFILE_ID) \
+        == complete["physics"]
+
+    for name, key, value in (
+            ("nr", "all_exact_expected_where_mass_is_zero", False),
+            ("ni", "seeded_all_finite_above_zero", False),
+            ("nr", "paired_mass_field", "qi"),
+            ("ni", "seed_receipt", "rain_number_seed"),
+            ("nr", "seeded_cells", -1),
+            ("nr", "seeded_cells", True),
+            ("ni", "expected_uint32_bits", 1),
+            ("nr", "all_exact_expected", True)):
+        broken = json.loads(json.dumps(complete))
+        broken["physics"]["hrrr_initialization"][
+            "state_source_absent_fields"][name][key] = value
+        with pytest.raises(RuntimeError, match="cold-start evidence"):
+            prepare._validated_physics_receipt(
+                broken, requested_profile=THOMPSON_PROFILE_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -1805,16 +2064,7 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0,
                     "hrrr_initialization": _cold_start_receipt(
                         WSM6_PROFILE_ID),
                 },
-                "preparation": {
-                    "preprocess_backend": {"backend": "cuda"},
-                    "preprocess_worker_budget": {
-                        "schema": "gpuwm-preprocess-worker-budget-v1",
-                        "backend": "cuda",
-                        "applicable": False,
-                        "pipeline_decoder_workers_included": False,
-                        "peak_active_native_workers": 0,
-                    },
-                },
+                "preparation": _cuda_preparation_receipt(),
                 "pipeline": {"workers": {"requested": "8", "selected": 8}},
             }), encoding="utf-8")
         elif "gpuwm.wrf_direct" in command and export_returncode:
@@ -2085,6 +2335,140 @@ def test_stock_wrf_export_pass_is_earned_by_manifested_outputs(tmp_path):
     assert "REFUSED" not in prepare.STOCK_WRF_EXPORT_STATES
 
 
+def test_cuda_native_preparation_runs_its_host_steps_on_the_requested_workers(
+        tmp_path, monkeypatch):
+    """Real CUDA native preparation with --preprocess-workers, end to end.
+
+    The wrapper used to refuse the pair after the front door forwarded
+    it.  Two forcing hours past the start on two preparation slots send
+    the boundary hours through the spawned worker pool, whose backends
+    must carry the same host-step count as the controller's for their
+    receipts to agree.
+    """
+    import cupy
+
+    try:
+        if cupy.cuda.runtime.getDeviceCount() < 1:
+            pytest.skip("no CUDA device")
+    except cupy.cuda.runtime.CUDARuntimeError:
+        pytest.skip("no CUDA device")
+    target, static_cache, static_receipt, domain, namelist = (
+        _real_wrapper_inputs(tmp_path))
+    vertical = explicit_vertical_from_wrf_namelist(
+        namelist, expected_nz=target.nz, context="cuda host workers test")
+    authority = _configured_wrapper_input(
+        tmp_path, namelist, target=target, write_namelist=False,
+        vertical=vertical)
+    source = tmp_path / "source"
+    source.mkdir()
+    for hour in (0, 1, 2):
+        for product in ("wrfnat", "soil"):
+            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
+                f"fixture:{product}:{hour}".encode())
+    manifest = source / "SHA256SUMS"
+    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
+                        for path in sorted(source.iterdir())), encoding="utf-8")
+    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    try:
+        resolve_cpu_bridge()
+    except FileNotFoundError:
+        pytest.skip("native CPU preprocessing bridge is not installed")
+    output = tmp_path / "prepared"
+    assert prepare.main([
+        "--source-root", str(source), "--source-manifest", str(manifest),
+        "--source-manifest-sha256", _file_sha256(manifest),
+        "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
+        "--domain-spec", str(domain), "--namelist-input", str(namelist),
+        "--experiment-config", str(authority), "--cycle", "2026-07-18_05:00:00",
+        "--run-seconds", "7200", "--pipeline-workers", "1", "--prepare-workers", "2",
+        "--preprocess-backend", "cuda", "--preprocess-workers", "2",
+        "--skip-stock-wrf-export", "--output-root", str(output)]) == 0
+    report = json.loads(
+        (output / "native/preparation-report/report.json").read_text())
+    preparation = report["preparation"]
+    assert preparation["preprocess_backend"]["backend"] == "cuda"
+    assert preparation["preprocess_backend"]["masked_surface_chain"][
+        "workers"] == 2
+    budget = preparation["preprocess_worker_budget"]
+    assert budget["host_step_native_workers"] == 2
+    assert budget["peak_active_native_workers"] == 2
+    assert budget["requested_total_native_workers"] == 2
+
+
+@pytest.mark.parametrize("selector", ("cpu", None))
+def test_cpu_native_preparation_checks_every_slot_against_the_controller(
+        tmp_path, monkeypatch, selector):
+    """Real CPU native preparation on two slots of the worker budget.
+
+    Two forcing hours past the start on two preparation slots split the
+    CPU budget, so every boundary hour runs on its slot's share: mapped
+    in the controller on that share and initialized in the spawned
+    pool.  Each slot's receipt was refused against the controller's at
+    the first boundary hour: the masked surface chain names the slot's
+    share where the controller's names the whole budget, the slot began
+    its own record of vertical routes, and a CPU that auto chose came
+    back from every slot as one "named by the caller".  ``None`` is the
+    bare default, auto, on a machine with no usable card.
+    """
+
+    target, static_cache, static_receipt, domain, namelist = (
+        _real_wrapper_inputs(tmp_path))
+    vertical = explicit_vertical_from_wrf_namelist(
+        namelist, expected_nz=target.nz, context="cpu slot receipt test")
+    authority = _configured_wrapper_input(
+        tmp_path, namelist, target=target, write_namelist=False,
+        vertical=vertical)
+    source = tmp_path / "source"
+    source.mkdir()
+    for hour in (0, 1, 2):
+        for product in ("wrfnat", "soil"):
+            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
+                f"fixture:{product}:{hour}".encode())
+    manifest = source / "SHA256SUMS"
+    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
+                        for path in sorted(source.iterdir())), encoding="utf-8")
+    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    # Auto must find no card, whether or not this box has one.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    try:
+        bridge = resolve_cpu_bridge()
+    except FileNotFoundError:
+        pytest.skip("native CPU preprocessing bridge is not installed")
+    selection = (() if selector is None else
+                 ("--preprocess-backend", selector,
+                  "--cpu-preprocess-bridge", str(bridge)))
+    output = tmp_path / "prepared"
+    assert prepare.main([
+        "--source-root", str(source), "--source-manifest", str(manifest),
+        "--source-manifest-sha256", _file_sha256(manifest),
+        "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
+        "--domain-spec", str(domain), "--namelist-input", str(namelist),
+        "--experiment-config", str(authority), "--cycle", "2026-07-18_05:00:00",
+        "--run-seconds", "7200", "--pipeline-workers", "1", "--prepare-workers", "2",
+        "--preprocess-workers", "4", *selection,
+        "--skip-stock-wrf-export", "--output-root", str(output)]) == 0
+    report = json.loads(
+        (output / "native/preparation-report/report.json").read_text())
+    preparation = report["preparation"]
+    receipt = preparation["preprocess_backend"]
+    assert receipt["backend"] == "cpu"
+    assert receipt["workers"] == 4
+    assert receipt["masked_surface_chain"]["workers"] == 4
+    assert receipt["selection"]["requested"] == (selector or "auto")
+    budget = preparation["preprocess_worker_budget"]
+    shares = sorted(
+        (job["forecast_hour"], job["phase"], job["slot"],
+         job["effective_native_workers"])
+        for job in budget["effective_allocation_per_job"])
+    assert shares == [
+        (0, "full_domain_initialization", None, 4),
+        (1, "boundary_initialization", 0, 2),
+        (1, "boundary_mapping", 0, 2),
+        (2, "boundary_initialization", 1, 2),
+        (2, "boundary_mapping", 1, 2),
+    ]
+
+
 @pytest.mark.parametrize("surface,layers,pbl,sfclay", [(2, 4, 1, 1), (3, 6, 5, 91), (3, 9, 5, 91)])
 def test_configured_native_preparation_publishes_selected_soil_and_physics(
         tmp_path, monkeypatch, surface, layers, pbl, sfclay):
@@ -2140,3 +2524,28 @@ def test_configured_native_preparation_publishes_selected_soil_and_physics(
         data = reader.read_array("surface/" + field)
         assert data.shape == (layers, target.ny, target.nx)
         assert np.isfinite(data).all()
+
+
+def test_the_root_preparer_says_each_of_its_steps(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """The breakage: a single-domain HRRR preparation wrote no step record.
+
+    `gpuwm go` reads this program's output live and puts each
+    ``GPUWM_PREP_EVENT`` line on the run's stream; with none written,
+    a plain single-domain HRRR run page showed only the stage for the
+    whole preparation.
+    """
+
+    from gpuwm.prep_progress import step_record
+
+    capsys.readouterr()
+    _run_public_wrapper_on_fake_children(tmp_path, monkeypatch, WSM6_PROFILE_ID)
+    records = [record for record in map(step_record, capsys.readouterr().err.splitlines())
+               if record is not None]
+
+    assert [(record["stage"], record["event"]) for record in records] == [
+        ("root_static", "started"), ("root_static", "finished"),
+        ("root_prepare", "started"), ("root_prepare", "finished"),
+        ("wrf_export", "started"), ("wrf_export", "finished"),
+    ]
+    assert records[-1]["outcome"] == "produced"

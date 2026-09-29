@@ -271,6 +271,34 @@ def editable_root(distribution) -> Path | None:
         return None
 
 
+def source_inventory(distribution, source_root: Path) -> list[str] | None:
+    """The file list of an ``.egg-info`` setuptools wrote INTO a source tree.
+
+    ``pip install -e .`` from a source archive, which has no ``.git``,
+    leaves ``gpuwm.egg-info`` beside ``pyproject.toml``, and its
+    ``SOURCES.txt`` names every file of the distribution: the source
+    tree's counterpart of a wheel's ``RECORD``.  Returns those relative
+    paths, or ``None`` unless all three hold: the metadata sits in
+    ``source_root`` itself, it carries a ``SOURCES.txt``, and a
+    ``pyproject.toml`` there declares this project with a static version.
+    The last one is what keeps an ``.egg-info`` in site-packages (a
+    legacy ``setup.py install``) from passing for a source tree.
+    """
+
+    if distribution is None:
+        return None
+    try:
+        located = Path(distribution.locate_file("")).resolve()
+        if located != Path(source_root).resolve():
+            return None
+        text = distribution.read_text("SOURCES.txt")
+    except Exception:                                   # noqa: BLE001
+        return None
+    if not text or pyproject_version(source_root)[0] is None:
+        return None
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 def providing_distribution(package_path: Path):
     """The distribution that provides the package at ``package_path``.
 
@@ -730,12 +758,17 @@ def describe_provenance(package_path, distribution, *,
             outside = not package_path.is_relative_to(site_dir)
         except Exception:                               # noqa: BLE001
             outside = False
-        # Two independent signals, because one is not enough: PEP 610
-        # covers a modern `pip install -e`, and "the package is not
-        # inside the directory its own metadata lives in" covers
-        # setup.py develop, a hand-written .pth, and anything else that
-        # resolves an import outside site-packages.
-        install_kind = "editable" if (editable_source or outside) else "wheel"
+        # Three independent signals, because one is not enough: PEP 610
+        # covers a modern `pip install -e`, "the package is not inside
+        # the directory its own metadata lives in" covers setup.py
+        # develop, a hand-written .pth, and anything else that resolves
+        # an import outside site-packages, and a source-local
+        # ``.egg-info`` covers the source tree itself standing first on
+        # the path, which is where an extracted source archive's
+        # editable install is found and was reported as a wheel.
+        local = source_inventory(distribution, source_root) is not None
+        install_kind = ("editable" if (editable_source or outside or local)
+                        else "wheel")
 
     # -- git -------------------------------------------------------------
     # The EXECUTING tree first: the checkout that owns the imported

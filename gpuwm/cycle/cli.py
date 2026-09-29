@@ -47,6 +47,14 @@ DEFAULT_TRACKER_FIELD = "composite_reflectivity"
 
 
 def register_cli(subparsers) -> None:
+    # Every duration, count, spacing and threshold is typed with its range:
+    # a NaN step used to leave as "Invalid literal for Fraction: 'nan'",
+    # and a NaN, infinite or negative offset, timeout or step count was
+    # accepted and planned.
+    from gpuwm.cli_numbers import (finite_float, nonnegative_float,
+                                   nonnegative_int, positive_float,
+                                   positive_int)
+
     parser = subparsers.add_parser(
         "cycle",
         help="run the coupled DA/forecast cycle: one clock, an anchor per "
@@ -58,30 +66,30 @@ def register_cli(subparsers) -> None:
                         help="the parent init's config_start_time (UTC); "
                              "the ONLY datetime in the cycling spine, every "
                              "other time is an integer tick from it")
-    parser.add_argument("--parent-dt-seconds", type=float, default=120.0,
+    parser.add_argument("--parent-dt-seconds", type=positive_float, default=120.0,
                         help="parent model step; must be a whole number of "
                              "milliseconds (default 120.0)")
-    parser.add_argument("--cycle-seconds", type=float, required=True,
+    parser.add_argument("--cycle-seconds", type=positive_float, required=True,
                         help="model seconds between cycle boundaries; must "
                              "be a whole number of parent steps")
-    parser.add_argument("--cycles", type=int, required=True,
+    parser.add_argument("--cycles", type=positive_int, required=True,
                         help="how many cycles to run")
     parser.add_argument("--parent-kind", required=True, choices=PARENT_KINDS,
                         help="which engine advances the parent")
-    parser.add_argument("--child-slots", type=int, default=0,
+    parser.add_argument("--child-slots", type=nonnegative_int, default=0,
                         help="identically shaped dormant nests reserved at "
                              "t=0 (default 0). The RESERVATION is fixed and "
                              "the PLACEMENT is arbitrary: that is what keeps "
                              "VRAM deterministic while a child can be "
                              "anywhere")
-    parser.add_argument("--child-dt-seconds", type=float, default=None,
+    parser.add_argument("--child-dt-seconds", type=positive_float, default=None,
                         help="child model step; must divide the parent step "
                              "exactly (default: the parent step)")
     parser.add_argument("--placement-provider", default="none",
                         choices=PLACEMENT_PROVIDERS,
                         help="where each cycle's child placements come from "
                              "(default none: parent-only cycling)")
-    parser.add_argument("--max-forecast-only-cycles", type=int, default=3,
+    parser.add_argument("--max-forecast-only-cycles", type=nonnegative_int, default=3,
                         help="consecutive cycles allowed with no analysis "
                              "before the run halts STALE_ANALYSIS_BUDGET_"
                              "EXHAUSTED (default 3): forecast-only is "
@@ -91,7 +99,7 @@ def register_cli(subparsers) -> None:
                         help="accept a placement clamped into the parent "
                              "instead of refusing it (default off; a clamp "
                              "is always receipted either way)")
-    parser.add_argument("--accept-snap-offset-seconds", type=float,
+    parser.add_argument("--accept-snap-offset-seconds", type=nonnegative_float,
                         default=0.0,
                         help="largest analysis-time offset from the parent-"
                              "step lattice this run will accept by name "
@@ -107,6 +115,17 @@ def register_cli(subparsers) -> None:
                         help="print the boundary lattice and the resolved "
                              "child ratios, refuse invalid combinations, and "
                              "write nothing")
+    parser.add_argument("--render-products", default=None, metavar="LIST",
+                        dest="render_products",
+                        help="which products each boundary is drawn into "
+                             "ROOT/png as it lands, from its frame in "
+                             "ROOT/wrfout: a comma-separated list of "
+                             "catalog slugs, 'all', or 'none' to draw "
+                             "nothing (default: the renderer's default "
+                             "set). A boundary is drawn when the parent's "
+                             "planes sit on a latitude/longitude grid: its "
+                             "own XLAT/XLONG, --parent-geo-file or the "
+                             "first --placement-obs-file")
 
     state = parser.add_argument_group(
         "parent state",
@@ -145,13 +164,13 @@ def register_cli(subparsers) -> None:
     port.add_argument("--port-config", default=None, metavar="PATH",
                       help="the port's case configuration JSON. Required "
                            "for a model parent kind")
-    port.add_argument("--port-steps", type=int, default=None,
+    port.add_argument("--port-steps", type=positive_int, default=None,
                       help="dycore steps per cycle boundary. Required for "
                            "a model parent kind; the step RECEIPTS the "
                            "worker returns are counted against this "
                            "number, and a leg that ran fewer steps than "
                            "asked cannot earn the mpas-cuda stamp")
-    port.add_argument("--port-timeout", type=float, default=None,
+    port.add_argument("--port-timeout", type=positive_float, default=None,
                       help="seconds to wait for one forecast segment "
                            "(default: no timeout)")
 
@@ -165,7 +184,7 @@ def register_cli(subparsers) -> None:
                             "Defaults to the first --placement-obs-file, "
                             "whose grid IS the target model grid by "
                             "contract")
-    place.add_argument("--parent-dx-m", type=float, default=None,
+    place.add_argument("--parent-dx-m", type=positive_float, default=None,
                        help="the parent's grid spacing in metres. Required "
                             "with a placement provider: the child/parent "
                             "refinement ratio is derived from it and a "
@@ -190,27 +209,27 @@ def register_cli(subparsers) -> None:
                        default=DEFAULT_TRACKER_FIELD, metavar="NAME",
                        help=f"which PARENT plane the tracker provider "
                             f"places on (default {DEFAULT_TRACKER_FIELD})")
-    place.add_argument("--placement-threshold", type=float, default=40.0,
+    place.add_argument("--placement-threshold", type=finite_float, default=40.0,
                        help="trigger value a peak must reach to earn a "
                             "child, in the placement field's own units "
                             "(default 40.0)")
-    place.add_argument("--retire-below-strength", type=float, default=None,
+    place.add_argument("--retire-below-strength", type=finite_float, default=None,
                        help="a child with less than this much signal under "
                             "it is retired and its reservation returns to "
                             "the pool. Required with a placement provider "
                             "and deliberately has NO default: its units are "
                             "the trigger field's, so a default would be a "
                             "hardcoded threshold for somebody else's field")
-    place.add_argument("--min-separation-km", type=float, default=40.0,
+    place.add_argument("--min-separation-km", type=nonnegative_float, default=40.0,
                        help="two children are never planted on one storm "
                             "(default 40.0). A request inside this radius "
                             "of an assigned child is REFUSED by name, never "
                             "silently dropped")
-    place.add_argument("--child-nx", type=int, default=199,
+    place.add_argument("--child-nx", type=positive_int, default=199,
                        help="child grid points west-east (default 199)")
-    place.add_argument("--child-ny", type=int, default=199,
+    place.add_argument("--child-ny", type=positive_int, default=199,
                        help="child grid points south-north (default 199)")
-    place.add_argument("--child-dx-m", type=float, default=1000.0,
+    place.add_argument("--child-dx-m", type=positive_float, default=1000.0,
                        help="child grid spacing in metres (default 1000.0); "
                             "must divide --parent-dx-m exactly")
     parser.set_defaults(func=cycle_main)
@@ -241,10 +260,15 @@ def cycle_main(args) -> int:
     advance_parent = _engine_for(args, clock)
 
     _print_plan(args, clock, ratio, provider)
+    from gpuwm.cycle import pictures as boundary_pictures
     from gpuwm.cycle.ledger import CycleLedger
     from gpuwm.cycle.supervisor import CycleSupervisor
 
     root = Path(args.root)
+    # Every boundary the cycle keeps is written as a frame and drawn while
+    # the next leg runs, as every other route that writes history draws
+    # each frame as it lands.  This door used to draw nothing at all.
+    drawing = boundary_pictures.arm(args, clock, root=root)
     supervisor = CycleSupervisor(
         clock=clock, ledger=CycleLedger(root), root=root,
         advance_parent=advance_parent,
@@ -252,12 +276,36 @@ def cycle_main(args) -> int:
         plan_children=provider,
         advance_children=_child_advance_for(clock, args),
         max_forecast_only_cycles=args.max_forecast_only_cycles,
-        allow_placement_clamp=args.allow_placement_clamp)
-    result = supervisor.run(resume=args.resume)
+        allow_placement_clamp=args.allow_placement_clamp,
+        on_cycle_completed=(None if drawing is None
+                            else drawing.boundary_completed))
+    try:
+        result = supervisor.run(resume=args.resume)
+    except BaseException as error:
+        if drawing is not None:
+            # A stop draws nothing more; a cycle that halted on its own
+            # still draws the boundaries it kept.
+            drawing.close(stopped=_stopped_by_user(error))
+        raise
     print(f"cycle: completed {result['cycles_completed']} "
           f"(resumed from {result['resumed_from_cycle']})")
     print(f"cycle: ledger {root / 'cycle_ledger.jsonl'}")
+    if drawing is not None and drawing.finish():
+        print(f"cycle: pictures {drawing.plan['render']}")
     return 0
+
+
+def _stopped_by_user(error: BaseException) -> bool:
+    """Whether the cycle ended because it was asked to stop.
+
+    The interrupt spellings the run-plan door recognises
+    (:func:`gpuwm.runplan._is_interrupt`), and an exit raised in this
+    process, which is what a stop handled as a signal becomes.
+    """
+
+    from gpuwm.runplan import _is_interrupt
+
+    return isinstance(error, SystemExit) or _is_interrupt(error)
 
 
 def _build_clock(args) -> CycleClock:

@@ -393,12 +393,14 @@ dependencies = [
  "bzip2",
  "chrono",
  "grib-core",
+ "libc",
  "ndarray",
  "netcrust",
  "rayon",
  "serde",
  "serde_json",
  "sha2",
+ "windows-sys",
 ]
 
 [[package]]

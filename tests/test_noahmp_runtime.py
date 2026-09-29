@@ -359,7 +359,7 @@ def test_runtime_does_not_execute_the_host_leaves(monkeypatch):
     monkeypatch.setattr(energy_module, "bare_flux", tripwire("BARE_FLUX"))
     step(state, cfg)
     assert driver.last_noahmp_census == {
-        "land": cfg.nx * cfg.ny, "water": 0, "sea_ice": 0}
+        "land": cfg.nx * cfg.ny, "water": 0, "sea_ice": 0, "glacier": 0}
 
 
 @requires_gpu

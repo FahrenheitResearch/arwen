@@ -163,6 +163,21 @@ fn netcdf_selector_stack_axis_constraints_match_the_engine() {
 }
 
 #[test]
+fn preserve_mask_admits_the_water_state_read_over_water_only() {
+    let mut mapping = load_fixture("rw-wps-gfs-pressure-grib2.mapping.json");
+    let mut field = mapping.fields["skin_temperature"].clone();
+    field.missing = MissingPolicy::PreserveMask;
+    mapping
+        .fields
+        .insert("sea_surface_temperature".to_owned(), field);
+    let report = validate_mapping(&mapping);
+    assert!(!report.errors.iter().any(|diagnostic| {
+        diagnostic.code == "preserve_mask_location"
+            && diagnostic.field.as_deref() == Some("sea_surface_temperature")
+    }));
+}
+
+#[test]
 fn preserve_mask_is_restricted_to_land_aware_soil_fields() {
     let mut mapping = load_fixture("rw-wps-gfs-pressure-grib2.mapping.json");
     mapping.fields.get_mut("surface_pressure").unwrap().missing = MissingPolicy::PreserveMask;

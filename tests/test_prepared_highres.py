@@ -332,7 +332,7 @@ def test_native_highres_declaration_is_bound_to_the_preparation_proof(tmp_path):
         runner._validate_hrrr_source_identity(identity, proof)
 
 
-@pytest.mark.parametrize("change", ["unchanged", "settings", "disable", "newly-enabled"])
+@pytest.mark.parametrize("change", ["unchanged", "relocated", "settings", "disable", "newly-enabled"])
 def test_sealed_extension_keeps_the_static_request_bound_before_suffix_work(tmp_path, monkeypatch, change):
     from datetime import datetime
     from types import SimpleNamespace
@@ -362,6 +362,8 @@ def test_sealed_extension_keeps_the_static_request_bound_before_suffix_work(tmp_
         domain_start=cycle, bridge="a" * 64, source_manifest="b" * 64)
     if change != "newly-enabled":
         identity["source_identity"]["static_highres"] = owner.static_highres_identity(config)
+    if change == "relocated":
+        identity["source_identity"]["static_highres"]["cache_root"] = "/preparation/source-cache"
     initial, met, boundaries = _fixture()
     # Real writer/reader and payload hashes; the unrelated process record is
     # supplied so this witness reaches the static request comparison.
@@ -386,7 +388,8 @@ def test_sealed_extension_keeps_the_static_request_bound_before_suffix_work(tmp_
         source_root=tmp_path, experiment_config=config_path)
     # The unchanged control must pass static binding and reach the separate
     # intentionally different namelist check; changed statics must fail first.
-    expected = "native namelist changes immutable" if change == "unchanged" else "changes high-resolution statics"
+    expected = ("native namelist changes immutable" if change in ("unchanged", "relocated")
+                else "changes high-resolution statics")
     with pytest.raises(ValueError, match=expected):
         prepare._sealed_extension(args, valid_time=cycle, source_forecast_hours=(0, 1, 2),
             output=tmp_path / "output", env={}, decoder=tmp_path / "decoder", started=0.,

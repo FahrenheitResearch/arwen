@@ -609,6 +609,13 @@ def _build_plan(request: Request, *, availability: Callable | None = None,
     from gpuwm.da.cadence import scaled_settings
     settings = scaled_settings(cycle_interval_s=rung['cadence_seconds'], rtps_alpha=.8,
         error_inflation=1., horizontal_loc_m=15000., vertical_loc_m=3000.)
+    # The radial-velocity dispersion gate's thresholds ride beside the
+    # relaxation, unscaled, so the analysis reads them from the reviewed
+    # plan and every analysis records them (gpuwm.da.velocity_dispersion).
+    from gpuwm.da.velocity_dispersion import (DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+                                              DEFAULT_VELOCITY_DISPERSION_RATIO)
+    settings['applied'].update(velocity_dispersion_ratio=DEFAULT_VELOCITY_DISPERSION_RATIO,
+                               velocity_dispersion_batch_ratio=DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO)
     from gpuwm.da.static_covariance import perturbation_options
     ensemble = {"ensemble": dict(base_config="experiment.toml", n_members=rung['members'],
         base_seed=request.base_seed, perturbation="none" if rung['members'] == 1 else "gpuwm.da.perturb",
@@ -856,10 +863,11 @@ def main(args) -> int:
                         satellite_grids=tuple(args.satellite_grid), base_seed=args.seed,
                         continuous_windows=args.continuous or 0)
                 from functools import lru_cache
-                from gpuwm.fetch import _head_ok
+                from gpuwm.fetch import _head_answer
                 # One review samples each URL once; launch keeps its exact
                 # selected cycle and rechecks payloads through the fetch owner.
-                result = build_plan(request, background_probe=lru_cache(maxsize=None)(_head_ok))
+                # A host not heard answers None, which is not "not published".
+                result = build_plan(request, background_probe=lru_cache(maxsize=None)(_head_answer))
                 if not args.dry_run:
                     if args.out is None:
                         raise PlanError("No output directory was declared; pass --out or use --dry-run for review only.")

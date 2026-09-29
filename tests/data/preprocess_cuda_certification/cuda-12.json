@@ -1,0 +1,369 @@
+{
+  "cuda_major": 12,
+  "parity_tests": {
+    "errors": 0,
+    "failed": 0,
+    "modules": [
+      "tests/test_atmospheric_window_gpu.py",
+      "tests/test_horiz.py",
+      "tests/test_mapped_atmospheric_writer_gpu.py",
+      "tests/test_metgrid_number_initialization_gpu.py",
+      "tests/test_preprocess_cpu_backend.py",
+      "tests/test_real_init.py",
+      "tests/test_wrf_vert_interp.py"
+    ],
+    "passed": [
+      "tests/test_atmospheric_window_gpu.py::test_cuda_actual_mapped_join_all_fields_on_two_domains",
+      "tests/test_atmospheric_window_gpu.py::test_cuda_pre_cropped_operand_keeps_original_fp32_coordinates[False-bilinear]",
+      "tests/test_atmospheric_window_gpu.py::test_cuda_pre_cropped_operand_keeps_original_fp32_coordinates[False-parabolic]",
+      "tests/test_atmospheric_window_gpu.py::test_cuda_pre_cropped_operand_keeps_original_fp32_coordinates[True-bilinear]",
+      "tests/test_atmospheric_window_gpu.py::test_cuda_pre_cropped_operand_keeps_original_fp32_coordinates[True-parabolic]",
+      "tests/test_horiz.py::test_a_source_with_flagged_land_never_reaches_the_second_chance",
+      "tests/test_horiz.py::test_bilinear_reference_is_exact_for_affine_field_and_descending_latitude",
+      "tests/test_horiz.py::test_canonical_psfc_bilinear_pins_single_rounding_bytes",
+      "tests/test_horiz.py::test_era5_rh_conversion_preserves_warm_values_and_reduces_cold_values",
+      "tests/test_horiz.py::test_era5_z_invariant_provider_is_cpu_bilinear_and_fail_loud",
+      "tests/test_horiz.py::test_gpu_masked_nearest_and_rotation_match_mirrors",
+      "tests/test_horiz.py::test_gpu_regular_interpolation_matches_float64_reference[bilinear]",
+      "tests/test_horiz.py::test_gpu_regular_interpolation_matches_float64_reference[parabolic]",
+      "tests/test_horiz.py::test_hydrometeor_mass_keeps_non_negativity_and_compact_support",
+      "tests/test_horiz.py::test_island_smaller_than_a_source_cell_takes_the_fractional_land_state",
+      "tests/test_horiz.py::test_lake_skin_search_expands_beyond_the_masked_field_radius",
+      "tests/test_horiz.py::test_lambert_rotation_uses_task4_mass_sinalpha_cosalpha",
+      "tests/test_horiz.py::test_masked_nearest_reference_selects_requested_surface_and_fill",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[northwestward-mercator-north]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[northwestward-mercator-south]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[northwestward-polar-north]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[northwestward-polar-south]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[southeastward-mercator-north]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[southeastward-mercator-south]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[southeastward-polar-north]",
+      "tests/test_horiz.py::test_new_projection_wind_rotation_both_directions[southeastward-polar-south]",
+      "tests/test_horiz.py::test_overlapping_parabolic_reference_is_exact_for_quadratic_field",
+      "tests/test_horiz.py::test_overlapping_parabolic_treats_physical_zero_as_data_not_missing",
+      "tests/test_horiz.py::test_regular_horizontal_method_routes_hydrometeor_mass_through_four_pt",
+      "tests/test_horiz.py::test_regular_reference_rejects_nonuniform_axes_and_outside_targets",
+      "tests/test_horiz.py::test_seaice_without_local_finite_support_zero_fills_open_water",
+      "tests/test_horiz.py::test_snapshot_coastal_mask_mismatch_uses_nearest_requested_surface",
+      "tests/test_horiz.py::test_snapshot_interpolates_every_field_to_expected_stagger_and_fp32",
+      "tests/test_horiz.py::test_sst_chain_excludes_search_so_a_landlocked_lake_keeps_its_own_water",
+      "tests/test_horiz.py::test_wps_search_is_queue_limited_not_global_nearest",
+      "tests/test_horiz.py::test_wps_sst_chain_is_metgrid_tbl_and_abandons_the_coast_to_the_fill",
+      "tests/test_horiz.py::test_wrf_wind_rotation_reference_round_trip",
+      "tests/test_mapped_atmospheric_writer_gpu.py::test_actual_native_writer_to_cuda_preserves_every_horizontal_field",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[10]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[16]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[18]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[28]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[50]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[8]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface[9]",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_mass_surface_reaches_first_pressure_recurrence",
+      "tests/test_metgrid_number_initialization_gpu.py::test_cuda_number_route_matches_existing_mass_q_operator_bitwise",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[12.3.0-12900-1-cpu]",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[13.1.0-12900-0-cpu]",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[13.1.0-12900-1-cuda]",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[13.1.0-13000-1-cpu]",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[14.2.0-11080-1-cpu]",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[14.2.0-13020-1-cuda]",
+      "tests/test_preprocess_cpu_backend.py::test_auto_backend_uses_only_the_certified_cuda_runtime_family[14.2.0-14000-1-cpu]",
+      "tests/test_preprocess_cpu_backend.py::test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda",
+      "tests/test_preprocess_cpu_backend.py::test_backend_workload_identity_excludes_backend_and_recomputes_parity",
+      "tests/test_preprocess_cpu_backend.py::test_cpu_env_override_fails_loud_and_wins_when_present",
+      "tests/test_preprocess_cpu_backend.py::test_cpu_library_candidates_share_the_bridge_resolution_order",
+      "tests/test_preprocess_cpu_backend.py::test_explicit_missing_cpu_bridge_reports_path",
+      "tests/test_preprocess_cpu_backend.py::test_full_horizontal_cpu_and_cuda_paths_satisfy_numeric_parity",
+      "tests/test_preprocess_cpu_backend.py::test_full_horizontal_cpu_path_is_parallel_byte_stable",
+      "tests/test_preprocess_cpu_backend.py::test_regular_rust_workers_are_byte_stable_and_match_authority",
+      "tests/test_preprocess_cpu_backend.py::test_reusable_regular_plan_is_worker_stable",
+      "tests/test_preprocess_cpu_backend.py::test_rust_cpu_and_cuda_transforms_satisfy_declared_numeric_parity",
+      "tests/test_preprocess_cpu_backend.py::test_rust_vertical_is_dynamic_worker_stable_and_matches_wrf_authority",
+      "tests/test_preprocess_cpu_backend.py::test_sealed_cpu_distribution_forces_auto_to_cpu_and_blocks_cuda",
+      "tests/test_real_init.py::test_base_and_rebalance_workers_are_byte_identical[1]",
+      "tests/test_real_init.py::test_base_and_rebalance_workers_are_byte_identical[2]",
+      "tests/test_real_init.py::test_cpu_real_state_and_lbc_materialization_do_not_call_cuda",
+      "tests/test_real_init.py::test_declared_analyzed_field_cannot_be_absent",
+      "tests/test_real_init.py::test_declared_analyzed_inventory_retains_only_file_supplied_mass[selected0]",
+      "tests/test_real_init.py::test_declared_analyzed_inventory_retains_only_file_supplied_mass[selected1]",
+      "tests/test_real_init.py::test_declared_analyzed_inventory_retains_only_file_supplied_mass[selected2]",
+      "tests/test_real_init.py::test_explicit_five_analyzed_species_preserves_native_state_bytes",
+      "tests/test_real_init.py::test_explicit_wrf_eta_levels_are_preserved",
+      "tests/test_real_init.py::test_flag_sh_surface_fallback_matches_wrf_whole_domain_decision",
+      "tests/test_real_init.py::test_flag_sh_surface_qv_floor_is_a_no_op_above_wrf_qv_min[0.00871458]",
+      "tests/test_real_init.py::test_flag_sh_surface_qv_floor_is_a_no_op_above_wrf_qv_min[3.043969e-05]",
+      "tests/test_real_init.py::test_flag_sh_surface_qv_floor_lifts_the_refusing_colorado_cells",
+      "tests/test_real_init.py::test_flag_sh_surface_qv_floor_refuses_mismatched_shapes",
+      "tests/test_real_init.py::test_gfs_exact_noah_layers_are_copied_without_era5_interpolation",
+      "tests/test_real_init.py::test_hrrr_defaults_to_rh_vertical_path_unless_use_sh_qv_is_explicit",
+      "tests/test_real_init.py::test_hrrr_relative_humidity_is_inverse_of_wrf_mixing_ratio_relation",
+      "tests/test_real_init.py::test_hrrr_soil_depth_nodes_are_interpolated_to_noah_midpoints",
+      "tests/test_real_init.py::test_hrrr_specific_humidity_uses_wrf_dry_air_conversion_without_floor",
+      "tests/test_real_init.py::test_humidity_elementwise_workers_are_byte_identical",
+      "tests/test_real_init.py::test_initialize_real_rejects_declared_and_catalog_orography_conflict",
+      "tests/test_real_init.py::test_logp_gpu_kernel_matches_float64_mirror",
+      "tests/test_real_init.py::test_logp_mirror_above_source_top_is_fatal",
+      "tests/test_real_init.py::test_logp_mirror_interpolation_and_wrf_extrapolation",
+      "tests/test_real_init.py::test_moisture_integral_uses_unadjusted_psfc_with_capped_source_qv",
+      "tests/test_real_init.py::test_mp28_cold_start_closes_the_number_moments_over_the_imported_mass",
+      "tests/test_real_init.py::test_mp28_pressure_level_lane_also_publishes_the_aerosol_policy",
+      "tests/test_real_init.py::test_mp28_pressure_level_lane_refuses_an_unreadable_aerosol_source",
+      "tests/test_real_init.py::test_mp28_real_ingest_does_not_call_the_profile_fill_itself",
+      "tests/test_real_init.py::test_mp28_real_ingest_leaves_the_aerosols_for_the_init_hook",
+      "tests/test_real_init.py::test_mp28_real_ingest_receipt_announces_the_synthetic_fallback",
+      "tests/test_real_init.py::test_mp28_real_ingest_refuses_an_aerosol_source_it_cannot_read",
+      "tests/test_real_init.py::test_mp28_real_ingest_requires_the_analyzed_inventory_by_name",
+      "tests/test_real_init.py::test_mp28_real_ingest_retains_every_analyzed_hydrometeor",
+      "tests/test_real_init.py::test_mp28_real_ingest_runs_on_the_production_cuda_preprocessing",
+      "tests/test_real_init.py::test_mp28_real_ingest_shape_checks_the_analyzed_inventory",
+      "tests/test_real_init.py::test_mp28_real_ingest_state_is_shaped_typed_and_physical",
+      "tests/test_real_init.py::test_mp28_real_ingest_then_microphysics_init_fills_exactly_once",
+      "tests/test_real_init.py::test_mp28_real_ingest_through_initialize_physics_fills_exactly_once",
+      "tests/test_real_init.py::test_mp50_real_ingest_discards_snow_and_graupel_by_name",
+      "tests/test_real_init.py::test_mp50_real_ingest_requires_even_the_species_it_discards",
+      "tests/test_real_init.py::test_mp50_real_ingest_requires_the_analyzed_inventory_by_name",
+      "tests/test_real_init.py::test_mp50_real_ingest_retains_the_condensate_p3_can_hold",
+      "tests/test_real_init.py::test_mp50_real_ingest_shape_checks_the_analyzed_inventory",
+      "tests/test_real_init.py::test_mp8_cold_start_keeps_the_zero_moment_contract_it_pins",
+      "tests/test_real_init.py::test_mp9_real_ingest_leaves_hail_and_the_moments_at_exact_zero",
+      "tests/test_real_init.py::test_mp9_real_ingest_requires_the_analyzed_inventory_by_name",
+      "tests/test_real_init.py::test_mp9_real_ingest_retains_every_analyzed_hydrometeor",
+      "tests/test_real_init.py::test_mp9_real_ingest_shape_checks_the_analyzed_inventory",
+      "tests/test_real_init.py::test_mp9_reverted_tuple_reproduces_the_condensate_free_start",
+      "tests/test_real_init.py::test_noah_exports_wrf_repaired_deep_soil_temperature",
+      "tests/test_real_init.py::test_noah_snow_state_follows_wrf_real_presence_invariants",
+      "tests/test_real_init.py::test_noah_soil_layer_interpolation_and_surface_consistency",
+      "tests/test_real_init.py::test_pressure_level_surface_humidity_requires_exactly_d2_or_rh2",
+      "tests/test_real_init.py::test_qv_construction_uses_wrf_floor_and_invalid_guard",
+      "tests/test_real_init.py::test_real74_d01_30min_gate_admits_complete_no_pbl_operator",
+      "tests/test_real_init.py::test_real_init_builds_nonnegative_balanced_fp32_domain_state",
+      "tests/test_real_init.py::test_real_init_cpu_backend_handles_hrrr_hydrometeor_inventory[6]",
+      "tests/test_real_init.py::test_real_init_cpu_backend_handles_hrrr_hydrometeor_inventory[8]",
+      "tests/test_real_init.py::test_real_init_parallel_cpu_backend_is_worker_stable_and_matches_cuda",
+      "tests/test_real_init.py::test_rh_lane_surface_qv_already_carries_the_same_floor",
+      "tests/test_real_init.py::test_stratospheric_qv_cap_pins_wrf_thresholds",
+      "tests/test_real_init.py::test_the_analyzed_inventory_tuple_and_its_moist_packages_agree",
+      "tests/test_real_init.py::test_the_hydrometeor_receipt_names_the_horizontal_owner_and_the_zero_w",
+      "tests/test_real_init.py::test_the_moist_pressure_recurrence_loads_total_water",
+      "tests/test_real_init.py::test_thermodynamic_elementwise_workers_are_byte_identical",
+      "tests/test_real_init.py::test_vectorized_moisture_integral_is_byte_identical_to_scalar_oracle",
+      "tests/test_wrf_vert_interp.py::TestColumnAssembly::test_below_ground_extrapolation_starts_at_deepest_column_entry",
+      "tests/test_wrf_vert_interp.py::TestColumnAssembly::test_below_ground_level_within_500pa_of_surface_is_zapped",
+      "tests/test_wrf_vert_interp.py::TestColumnAssembly::test_fifth_eta_level_uses_averaged_quadratic_pairs",
+      "tests/test_wrf_vert_interp.py::TestColumnAssembly::test_force_sfc_makes_surface_bound_the_lowest_layers",
+      "tests/test_wrf_vert_interp.py::TestColumnAssembly::test_surface_lowest_branch_iteratively_zaps_close_levels",
+      "tests/test_wrf_vert_interp.py::TestColumnAssembly::test_target_above_source_top_is_fatal",
+      "tests/test_wrf_vert_interp.py::TestLagrangeSemantics::test_pressure_field_space_is_linear_in_p_not_logp",
+      "tests/test_wrf_vert_interp.py::TestLagrangeSemantics::test_quadratic_logp_data_is_exact_above_the_linear_band",
+      "tests/test_wrf_vert_interp.py::test_a_137_level_source_prepares_on_the_cuda_backend",
+      "tests/test_wrf_vert_interp.py::test_a_column_deeper_than_the_top_tier_runs_on_the_cpu_bridge",
+      "tests/test_wrf_vert_interp.py::test_each_column_depth_names_its_engine_and_why",
+      "tests/test_wrf_vert_interp.py::test_the_column_tier_is_an_allocation_size_and_moves_no_bit",
+      "tests/test_wrf_vert_interp.py::test_wrf_vert_interp_gpu_matches_float64_authority"
+    ],
+    "skipped": [
+      {
+        "reason": "WRF_1974_MP55 reference bundle not present",
+        "test": "tests/test_horiz.py::test_d01_met_em_oracle_rmse_gates_and_wind_inverse"
+      },
+      {
+        "reason": "WRF real74 d04 surface oracle is not present",
+        "test": "tests/test_horiz.py::test_d04_raw_lakes_match_metgrid_source_water_skin_temperature"
+      },
+      {
+        "reason": "WRF_1974_MP55 reference bundle not present",
+        "test": "tests/test_real_init.py::test_met_em_soil_oracle_is_remapped_at_noah_midpoints"
+      },
+      {
+        "reason": "no QNWFA_QNIFA_SIGMA_MONTHLY.dat was found",
+        "test": "tests/test_real_init.py::test_mp28_real_ingest_defaults_to_the_wif_climatology"
+      },
+      {
+        "reason": "WRF_1974_MP55 reference bundle not present",
+        "test": "tests/test_wrf_vert_interp.py::test_real74_low_level_theta_error_vs_met_em_oracle_halved"
+      }
+    ]
+  },
+  "real_data_parity": {
+    "additional_cases": [
+      {
+        "case": {
+          "candidate_cuda_driver_version": 13030,
+          "candidate_device": "NVIDIA GeForce RTX 5090",
+          "cuda_runtime_version": null,
+          "cupy_version": null,
+          "cycle": "2026-09-27T21Z",
+          "forcing_hours": 6,
+          "grid": "448 x 256 x 59 at 6 km, Lambert",
+          "identity_unknown_reason": "recorded before certification cases carried the CUDA runtime and CuPy versions, and the candidate preparation's receipt is not in this record, so neither can be read back",
+          "source": "hrrr-prs"
+        },
+        "files": {
+          "wrfbdy_d01": {
+            "closest_to_its_bound": {
+              "field": "record004/current/qv/south",
+              "max_abs": 1.0067594238636485e-06,
+              "max_bound_ratio": 0.7397157884751939
+            },
+            "compared_fields": 371,
+            "exact_fields": 83,
+            "failed_fields": [],
+            "status": "PASS"
+          },
+          "wrfinput_d01": {
+            "closest_to_its_bound": {
+              "field": "AL",
+              "max_abs": 3.5762786865234375e-06,
+              "max_bound_ratio": 0.36854789040786895
+            },
+            "compared_fields": 185,
+            "exact_fields": 159,
+            "failed_fields": [],
+            "status": "PASS"
+          }
+        },
+        "inputs_sha256": {
+          "candidate": {
+            "wrfbdy_d01": "96a9429495fea7b6c86a886d3a63353a7b23f26a51cf70911a17946a5c3a736f",
+            "wrfinput_d01": "723a77235444688f2eda6592116076d5ef9db780c0ddb487008436c3aaa4d49b"
+          },
+          "reference": {
+            "wrfbdy_d01": "45e8ae6382765634ec3aaf95ffb8371fa2d7345ac533983fca01baf52629e560",
+            "wrfinput_d01": "6a89145d566399272af4ae2afdbd05287cef8973cde23516130d41e1e1d0558c"
+          }
+        },
+        "rules": {
+          "backend_inert": {
+            "atol": 0.0,
+            "mode": "byte_exact",
+            "rtol": 0.0
+          },
+          "geopotential_m2_s2": {
+            "atol": 0.1,
+            "mode": "numeric",
+            "rtol": 3e-05
+          },
+          "moisture_kg_kg": {
+            "atol": 1e-06,
+            "mode": "numeric",
+            "rtol": 3e-05
+          },
+          "pressure_pa": {
+            "atol": 0.005,
+            "mode": "numeric",
+            "rtol": 3e-05
+          },
+          "specific_volume_m3_kg": {
+            "atol": 5e-06,
+            "mode": "numeric",
+            "rtol": 3e-05
+          },
+          "temperature_k": {
+            "atol": 0.005,
+            "mode": "numeric",
+            "rtol": 3e-05
+          },
+          "wind_m_s": {
+            "atol": 0.005,
+            "mode": "numeric",
+            "rtol": 3e-05
+          }
+        },
+        "status": "PASS"
+      }
+    ],
+    "candidate_backend": "cuda",
+    "case": {
+      "candidate_cuda_driver_version": 13020,
+      "candidate_device": "NVIDIA GeForce RTX 5070 Ti",
+      "cycle": "2026-09-27T21Z",
+      "forcing_hours": 6,
+      "grid": "896 x 512 x 59 at 6 km, Lambert",
+      "source": "hrrr-prs"
+    },
+    "files": {
+      "wrfbdy_d01": {
+        "closest_to_its_bound": {
+          "field": "record000/current/qv/south",
+          "max_abs": 4.889552925636809e-07,
+          "max_bound_ratio": 0.30984459917015994
+        },
+        "compared_fields": 371,
+        "exact_fields": 86,
+        "failed_fields": [],
+        "status": "PASS"
+      },
+      "wrfinput_d01": {
+        "closest_to_its_bound": {
+          "field": "AL",
+          "max_abs": 3.5762786865234375e-06,
+          "max_bound_ratio": 0.5060124323424657
+        },
+        "compared_fields": 185,
+        "exact_fields": 159,
+        "failed_fields": [],
+        "status": "PASS"
+      }
+    },
+    "inputs_sha256": {
+      "candidate": {
+        "wrfbdy_d01": "83708fb68a46e1ae3e5d30d85021cb7b10c2bdba6d2f971febb6967e7e045321",
+        "wrfinput_d01": "a4fe627df52c228a47efa0fe86d8e95d0164ff80a9f04a29abf94ae004dbcd7f"
+      },
+      "reference": {
+        "wrfbdy_d01": "7020eb2c7efc66acf4d7a638aa98849c43c0cd919ff4c0cc711b0888c2e5a9d9",
+        "wrfinput_d01": "146efa5fc5f9ef03540be1f74320cd1cb57aa6f903d2c29b8c592b63f3210a12"
+      }
+    },
+    "instrument": "tools/verify_wrf_backend_parity.py",
+    "reference_backend": "cpu",
+    "rules": {
+      "backend_inert": {
+        "atol": 0.0,
+        "mode": "byte_exact",
+        "rtol": 0.0
+      },
+      "geopotential_m2_s2": {
+        "atol": 0.1,
+        "mode": "numeric",
+        "rtol": 3e-05
+      },
+      "moisture_kg_kg": {
+        "atol": 1e-06,
+        "mode": "numeric",
+        "rtol": 3e-05
+      },
+      "pressure_pa": {
+        "atol": 0.005,
+        "mode": "numeric",
+        "rtol": 3e-05
+      },
+      "specific_volume_m3_kg": {
+        "atol": 5e-06,
+        "mode": "numeric",
+        "rtol": 3e-05
+      },
+      "temperature_k": {
+        "atol": 0.005,
+        "mode": "numeric",
+        "rtol": 3e-05
+      },
+      "wind_m_s": {
+        "atol": 0.005,
+        "mode": "numeric",
+        "rtol": 3e-05
+      }
+    },
+    "status": "PASS"
+  },
+  "schema": "gpuwm-preprocess-cuda-certification-v1",
+  "stack": {
+    "compute_capability": "12.0",
+    "cuda_driver_version": 13020,
+    "cuda_runtime_version": 12090,
+    "cupy_version": "14.2.0",
+    "device": "NVIDIA GeForce RTX 5070 Ti",
+    "nvrtc_version": "12.9",
+    "python": "3.12.14"
+  },
+  "status": "PASS"
+}

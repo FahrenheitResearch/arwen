@@ -270,7 +270,7 @@ occupancy and register pressure, eliminating redundant loads, launch geometry
 within the descriptor's contract.
 
 **Measure before optimising.** `HOWTO-RUN-A-SIM.md` §13 and the 1-hour profile
-loop in `CLAUDE.md`. **Drop `cumulus` from the `microphysics + cumulus + pbl`
+loop in the project rules. **Drop `cumulus` from the `microphysics + cumulus + pbl`
 clock proxy** — the change is IN cumulus, so leaving it in measures itself.
 This box drifts ±20% run to run: ≥3 runs, take the median, and anything under
 ~3% is not measurable.
@@ -378,7 +378,7 @@ bash tools/ntiedtke_wrf461_oracle/check_no_forecast.sh && git commit ...
 
 It refuses, with the offending PID and command line, if any forecast entry
 point is running. This is the class-1 rule applied to the rule itself: the
-instruction was in CLAUDE.md the whole time and nothing re-checked it.
+instruction was in the project rules the whole time and nothing re-checked it.
 
 Commit only when asked. Do not push, open PRs, or post issues.
 

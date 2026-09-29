@@ -1,6 +1,6 @@
 {
   "schema": "arwen.zarr-vendor.v1",
-  "lock_sha256": "aea9798b4dc8d300c059ac01fde405f422345b1c9ef7e6c8ff7e01bb607be250",
+  "lock_sha256": "574f7e854ccc64316f7fe003702d2324a9975816d44fb214d1522bafa5b26068",
   "command": "cd tools/zarr_bridge && cargo vendor --locked --offline --versioned-dirs vendor/crates-io",
   "packages": [
     {

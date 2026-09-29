@@ -816,9 +816,10 @@ def _blown_up_report(outdir, *, pictures=0):
                 "fields": [{"field": "W", "carrier": "w",
                             "shape": [50, 798, 798], "size": 31840200,
                             "count": 1,
-                            "first_cell": {"k": 12, "j": 401, "i": 388},
                             "bounding_box": {"k": [12, 12], "j": [401, 401],
-                                             "i": [388, 388]}}]})
+                                             "i": [388, 388]},
+                            "edges": [],
+                            "cell": {"k": 12, "j": 401, "i": 388}}]})
     # The dict `keep_early_render` hands the publisher, in its own
     # shape: a count, whether the tree could be read, and the banner
     # standing over whatever is in it.
@@ -860,7 +861,7 @@ def test_a_child_that_blew_up_is_re_run_and_told_why(tmp_path):
     # And the capsule the run already wrote is quoted back, so the
     # reader learns why it stopped without opening the report.
     assert "The child blew up:" in action
-    assert "cell (k=12, j=401, i=388)" in action
+    assert "at one cell, (k=12, j=401, i=388)" in action
 
 
 def test_a_blown_up_child_is_recognised_without_a_plan_document(tmp_path):
@@ -1007,7 +1008,7 @@ def test_cli_resume_refuses_a_blown_up_child_that_recorded_no_config(
     err = capsys.readouterr().err
     assert "The child blew up:" in err
     assert "run `gpuwm downscale` again" in err
-    assert "cell (k=12, j=401, i=388)" in err
+    assert "at one cell, (k=12, j=401, i=388)" in err
     # The directory answered before the argument was judged, so neither
     # the checkpoint ladder nor the experiment ladder ran.
     assert "checkpoint files" not in err

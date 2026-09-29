@@ -17,6 +17,7 @@ route that happens to look like it.
 
 from __future__ import annotations
 
+import io
 import json
 import shlex
 import itertools
@@ -318,6 +319,72 @@ def test_the_legacy_stage_composer_refuses_other_input_formats(tmp_path):
     with pytest.raises(go_cli.GoRefusal) as refusal:
         go_cli.plan_from_config(hrrr, outdir=tmp_path / "o2")
     assert "--source hrrr" in str(refusal.value)
+
+
+#: The case_data refusal's remedy as each shell must receive it, written
+#: out rather than derived so a generator that loses its shell rule cannot
+#: also rewrite what it is judged against.  Windows PowerShell 5.1 rejects
+#: `&&` with a parser error, and a bare `;` would start the run after the
+#: check refused it; `$?` is false after a native command that failed.
+CASE_DATA_REMEDY_FOR_SHELL = {
+    False: "remedy: gpuwm check era5.toml && gpuwm run era5.toml",
+    True: "remedy: gpuwm check era5.toml; if ($?) { gpuwm run era5.toml }",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_case_data_refusal_spells_check_then_run_for_the_shell(
+        tmp_path, monkeypatch, windows):
+    """The remedy line pastes into the reader's shell and keeps the gate.
+
+    It printed `gpuwm check X && gpuwm run X` on every OS, which Windows
+    PowerShell 5.1 cannot parse.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.chdir(tmp_path)
+    Path("era5.toml").write_text(
+        '[case_data]\nschema = "gpuwm.case.v1"\n', encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.plan_from_config(Path("era5.toml"), outdir=tmp_path / "o")
+    message = str(refusal.value)
+    assert CASE_DATA_REMEDY_FOR_SHELL[windows] in message, message
+    if windows:
+        assert "&&" not in message, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {message}")
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_case_data_remedy_quotes_a_path_with_a_space_for_the_shell(
+        tmp_path, monkeypatch, windows):
+    """THE BREAKAGE: the remedy interpolated the config path bare, so a
+    config in a folder with a space reached `gpuwm check` as two
+    arguments in either shell.  Single quotes hold the path as one word
+    in both, and `$?` still gates the run in PowerShell."""
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.chdir(tmp_path)
+    config = Path("my runs") / "era5.toml"
+    config.parent.mkdir()
+    config.write_text('[case_data]\nschema = "gpuwm.case.v1"\n',
+                      encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.plan_from_config(config, outdir=tmp_path / "o")
+    remedy = next(line.strip() for line in str(refusal.value).splitlines()
+                  if line.strip().startswith("remedy:"))
+    quoted = f"'{config}'"
+    if windows:
+        assert remedy == (f"remedy: gpuwm check {quoted}; "
+                          f"if ($?) {{ gpuwm run {quoted} }}"), remedy
+    else:
+        assert remedy == (f"remedy: gpuwm check {quoted} && "
+                          f"gpuwm run {quoted}"), remedy
+        assert shlex.split(remedy.removeprefix("remedy: ")) == [
+            "gpuwm", "check", str(config), "&&", "gpuwm", "run", str(config)]
 
 
 def test_the_default_emission_is_what_the_default_runner_accepts(
@@ -657,6 +724,36 @@ def test_go_forwards_a_profile_only_when_the_whole_config_is_it(tmp_path):
         single, outdir=tmp_path / "go-single")["profile"] == PROFILE
 
 
+_BUBBLE = ("\n[[perturbation.bubbles]]\ncenter_lat = 35.3\n"
+           "center_lon = -97.5\ncenter_height_m = 1500.0\nradius_km = 10.0\n"
+           "depth_m = 1500.0\namplitude_k = 3.0\n")
+
+
+def test_a_tree_carries_a_warm_bubble_through_the_authority_stage(tmp_path):
+    """Stage 1 of `gpuwm go` publishes a tree's bubble for the tree runner.
+
+    GFS preparation defers [perturbation] to the prepared domain-tree
+    runner, which applies it to its restored states; only the
+    single-domain runner cannot.  Stage 1 refused the block on every
+    config, so `gpuwm go` ran no bubble on any tree.
+    """
+    from gpuwm.prepared_single_domain_forecast import (
+        _render_materialized_experiment)
+    tree = _emit(tmp_path, "tree", ladder="12-3")
+    rendered, exp, _receipt = _render_materialized_experiment(
+        tree.read_text(encoding="utf-8") + _BUBBLE, source="gfs",
+        profile=None)
+    assert len(exp.domains) == 2
+    assert exp.perturbation.bubbles[0].amplitude_k == 3.0
+    assert "[[perturbation.bubbles]]" in rendered
+    single = _emit(tmp_path, "single")
+    with pytest.raises(ValueError,
+                       match=r"prepared single-domain forecast"):
+        _render_materialized_experiment(
+            single.read_text(encoding="utf-8") + _BUBBLE, source="gfs",
+            profile=None)
+
+
 def test_the_forecast_stage_matches_what_the_front_door_prints(tmp_path,
                                                                gfs_config):
     """go's forecast line IS the line rw-wps tells you to copy.
@@ -767,30 +864,116 @@ def test_a_missing_proof_is_refused_rather_than_guessed(tmp_path):
 class _FakePopen:
     """A ``subprocess.Popen`` double over this file's ``fake_run`` doubles.
 
-    ``_run_stage`` spells ``subprocess.run`` out as ``Popen`` +
-    ``communicate`` -- byte for byte what ``run`` does internally --
-    because the interrupt path has to be able to NAME the pid of the
-    stage gpuwm was waiting on without signalling it.  The seam these
-    tests patch moved with it; nothing else about them changed.
+    ``_run_stage`` spells ``subprocess.run`` out as ``Popen`` because
+    the interrupt path has to be able to NAME the pid of the stage gpuwm
+    was waiting on without signalling it, and it reads the stage's two
+    pipes as the stage writes them, so a preparer's steps reach the run
+    while it runs.  The double's pipes hold the ``fake_run`` answer's
+    text; ``communicate`` stays for a ``subprocess.run`` made while it is
+    installed.
     """
 
     _pids = itertools.count(424242)
 
-    def __init__(self, completed):
+    def __init__(self, completed, command=None):
         self._completed = completed
+        self.args = command
         self.pid = next(self._pids)
         self.returncode = None
+        self.stdout = io.StringIO(completed.stdout or "")
+        self.stderr = io.StringIO(completed.stderr or "")
 
-    def communicate(self):
+    def communicate(self, input=None, timeout=None):
         self.returncode = self._completed.returncode
         return self._completed.stdout, self._completed.stderr
+
+    # The rest of the protocol ``subprocess.run`` drives: it opens a Popen
+    # as a context manager, so a ``run`` made while this double is
+    # installed died with "'_FakePopen' object does not support the
+    # context manager protocol".
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.returncode = self._completed.returncode
+        return self.returncode
+
+    def kill(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.wait()
+        return False
+
+
+#: The renderer as this file's Popen double answers it: its usage line, the
+#: render contract, and a listing of two products a wrfout carries (the
+#: products ``test_go_chain_events`` stands in for).
+_STAND_IN_LISTING = (
+    "group keywords: all, direct, derived, windowed\n"
+    "  composite_reflectivity\n"
+    "  2m_temperature\n"
+    "selectable_slugs=2\n"
+    "WRFOUT\tcomposite_reflectivity\tdirect\tdrawable\t0\tstored\n"
+    "WRFOUT\t2m_temperature\tdirect\tdrawable\t0\tstored\n")
+
+
+def _stand_in_renderer(command):
+    """The double's answer to a renderer probe, or ``None`` for any other command.
+
+    Disk admission and the product-spec check ask the renderer's own
+    catalog before the download (``runplan.render_catalog``): ``--help``
+    and ``--abi`` through ``subprocess.run``, then ``--list-products``.
+    On a box where a renderer resolves, those launches reached this
+    file's double and the test's own ``fake_run``, which answered them as
+    a chain stage or refused them as one.  The double answers them as the
+    renderer, so a chain stage's fake sees only chain stages.
+    """
+
+    from gpuwm import rustwx
+
+    if (len(command) != 2
+            or Path(str(command[0])).stem != rustwx.RENDERER_NAME):
+        return None
+    if command[1] == "--help":
+        return _FakeCompleted(
+            0, stdout="usage: rw_wrfbatch --store-root DIR --out-dir DIR "
+                      "wrfout...\n")
+    if command[1] == "--abi":
+        return _FakeCompleted(0, stdout=rustwx.RENDERER_ABI_MARKER + "\n")
+    if command[1] == "--list-products":
+        return _FakeCompleted(0, stdout=_STAND_IN_LISTING)
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _a_render_catalog_cache_of_its_own(monkeypatch):
+    """Each test reads the renderer catalog itself, never a cached answer.
+
+    The catalog is cached per process against the renderer binary, so a
+    chain test's outcome depended on whether an earlier test in the same
+    process had already asked: run alone, or on an xdist worker that had
+    not, the chains here reached the renderer through the Popen double.
+    The stand-in answer is kept out of the cache every later test reads.
+    """
+
+    from gpuwm import runplan
+
+    monkeypatch.setattr(runplan, "_RENDER_CATALOG_CACHE", {})
 
 
 def _popen_double(fake_run):
     """Adapt a ``(command, **kwargs) -> CompletedProcess`` double."""
 
     def factory(command, **kwargs):
-        return _FakePopen(fake_run(command, **kwargs))
+        answer = _stand_in_renderer(command)
+        if answer is None:
+            answer = fake_run(command, **kwargs)
+        return _FakePopen(answer, command)
 
     return factory
 
@@ -933,7 +1116,7 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
     def fake_run(command, **kwargs):
         # Materialize the artifacts the relay reads back.
         if "--author-front-door-manifest" in command:
-            manifest = Path(command[command.index("--out") + 1]) / "gfs-input-manifest.json"
+            manifest = Path(command[command.index("--manifest-out") + 1])
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
@@ -1005,7 +1188,7 @@ def test_a_passing_stages_note_survives_the_output_capture(
 
     def fake_run(command, **kwargs):
         if "--author-front-door-manifest" in command:
-            manifest = Path(command[command.index("--out") + 1]) / "gfs-input-manifest.json"
+            manifest = Path(command[command.index("--manifest-out") + 1])
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
@@ -1049,7 +1232,7 @@ def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
 
     def fake_run(command, **kwargs):
         if "--author-front-door-manifest" in command:
-            manifest = Path(command[command.index("--out") + 1]) / "gfs-input-manifest.json"
+            manifest = Path(command[command.index("--manifest-out") + 1])
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
@@ -1119,6 +1302,167 @@ def test_the_fetch_area_keeps_its_equals_form_for_a_negative_box(
     printed = capsys.readouterr().out
     assert "--area=-" in printed
     assert "--area -" not in printed
+
+
+def test_plan_review_reads_products_with_the_engine_tokenizer(
+        tmp_path, capsys, monkeypatch, gfs_config):
+    """A section's level list and the term that closes it are one product.
+
+    ``xsec:QCLOUD=0.01,0.1/wa`` is a spelling the renderer draws: its
+    level list is comma-separated too, and ``0.1/wa`` is the list's last
+    level plus the overlay that closes it.  Plan review read it with a
+    private splitter that joined only purely numeric tokens, so
+    ``0.1/wa`` became a product of its own and the request was refused
+    as unknown.  A misspelled product is still refused by name, before
+    anything is fetched or created: it would otherwise reach the
+    renderer only after the whole forecast.
+    """
+
+    import gpuwm.runplan as runplan
+
+    def explode(*args, **kwargs):
+        raise AssertionError("plan review must not run anything")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(go_cli, "resolve_bridge",
+                        lambda: tmp_path / "gfs_grib2_bridge")
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"},
+                     {"name": "2m_temperature"}],
+        "group_keywords": ["direct", "derived", "windowed"]})
+    out = tmp_path / "go"
+    for spec in ("composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa",
+                 "xsec:wa=1,2,5@5"):
+        capsys.readouterr()
+        assert cli_main(["go", str(gfs_config), "--dry-run", "--outdir",
+                         str(out), "--products", spec,
+                         "--section=38.3,-99.0,38.3,-98.4"]) == 0, spec
+        printed = capsys.readouterr()
+        assert "6. render" in printed.out, spec
+        assert "catalog does not carry" not in printed.err, spec
+    unmade = tmp_path / "refused"
+    assert cli_main(["go", str(gfs_config), "--dry-run", "--outdir", str(unmade),
+                     "--products", "composite_reflectivity,compsite_reflectivity,"
+                     "xsec:QCLOUD=0.01,0.1/wa",
+                     "--section=38.3,-99.0,38.3,-98.4"]) == 2
+    refused = capsys.readouterr()
+    assert "'compsite_reflectivity'" in refused.err
+    assert "catalog does not carry" in refused.err
+    assert "'0.1/wa'" not in refused.err
+    assert "6. render" not in refused.out
+    assert not unmade.exists()
+
+
+_SECTION_LINE = "38.3,-99.0,38.3,-98.4"
+
+
+def test_go_carries_its_section_line_to_every_render_it_runs(
+        tmp_path, capsys, monkeypatch, gfs_config):
+    """``gpuwm go --section`` reaches the runner's renders and the batch.
+
+    ``gpuwm go`` had no ``--section``: an ``xsec:`` term in ``--products``
+    passed review and every render dropped it with advice to add a flag
+    this command did not have.  The line is recorded in the plan, handed
+    to the runner (which draws each frame as it lands and the first
+    products) joined with ``=`` so a line starting with a minus sign is
+    not read as an option, and put on the end-of-run batch render.
+    """
+
+    import gpuwm.runplan as runplan
+    from gpuwm import prepared_single_domain_forecast as single
+
+    def explode(*args, **kwargs):
+        raise AssertionError("a dry run must not run anything")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(go_cli, "resolve_bridge",
+                        lambda: tmp_path / "gfs_grib2_bridge")
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"}],
+        "group_keywords": ["direct", "derived", "windowed"]})
+    spec = "composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa"
+    assert cli_main(["go", str(gfs_config), "--dry-run", "--outdir",
+                     str(tmp_path / "go"), "--products", spec,
+                     f"--section={_SECTION_LINE}"]) == 0
+    printed = capsys.readouterr().out
+    render = printed.split("6. render", 1)[1]
+    assert f"--section={_SECTION_LINE}" in render
+
+    plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "go2",
+                                   render_products=spec,
+                                   render_section=_SECTION_LINE)
+    assert plan["render_section"] == _SECTION_LINE
+    frames = [tmp_path / "wrfout_d01_2026-07-28_05_00_00"]
+    assert f"--section={_SECTION_LINE}" in go_cli.render_command(plan, frames)
+    command = go_cli.forecast_command(
+        plan, {"proof": "a" * 64, "source_manifest": "b" * 64,
+               "prepared_content": "c" * 64},
+        early_render=spec)
+    # The runner reads back exactly the line go composed.
+    parsed = single.build_parser().parse_args(command[3:])
+    assert parsed.render_section == _SECTION_LINE
+    assert parsed.render_products == spec
+    # And the plan the runner draws with carries it.
+    armed = single._route_owned_first_products(
+        parsed, outdir=tmp_path / "run", observer=None, started=0.0)
+    assert armed._plan["render_section"] == _SECTION_LINE
+    # A southern line keeps its sign on every command.
+    south = "-33.9,151.2,-34.1,151.3"
+    plan["render_section"] = south
+    assert f"--section={south}" in go_cli.render_command(plan, frames)
+    assert f"--render-section={south}" in go_cli.forecast_command(
+        plan, {"proof": "a" * 64, "source_manifest": "b" * 64,
+               "prepared_content": "c" * 64}, early_render=spec)
+
+
+def test_review_refuses_a_section_with_no_line_before_anything_runs(
+        tmp_path, capsys, monkeypatch, gfs_config):
+    """An ``xsec:`` term with no line is refused by name at review.
+
+    Before, a request of only section terms ran the whole forecast and
+    then the render stage refused with "nothing left to draw"; beside
+    other products the term was dropped after the forecast.  A line the
+    renderer cannot read is refused at review too, because the renderer
+    refuses it for the whole invocation.
+    """
+
+    import gpuwm.runplan as runplan
+
+    def explode(*args, **kwargs):
+        raise AssertionError("plan review must not run anything")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(go_cli, "resolve_bridge",
+                        lambda: tmp_path / "gfs_grib2_bridge")
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"}],
+        "group_keywords": ["direct", "derived", "windowed"]})
+    for number, (spec, section, expected) in enumerate((
+            ("xsec:QCLOUD=0.01,0.1/wa", None, "'xsec:QCLOUD=0.01,0.1/wa'"),
+            ("composite_reflectivity,xsec:wa=1,2,5@5", None,
+             "'xsec:wa=1,2,5@5'"),
+            ("composite_reflectivity,xsec:wa", "38.3,-99.0,38.3,-99.0",
+             "less than 1 km apart"),
+            ("composite_reflectivity,xsec:wa", "95,-99.0,38.3,-98.4",
+             "invalid geographic coordinate"),
+            ("composite_reflectivity,xsec:wa", str(tmp_path / "nope.json"),
+             "neither 'lat,lon,lat,lon' nor a readable JSON file"))):
+        out = tmp_path / f"refused-{number}"
+        capsys.readouterr()
+        argv = ["go", str(gfs_config), "--outdir", str(out),
+                "--products", spec]
+        if section is not None:
+            argv.append(f"--section={section}")
+        assert cli_main([*argv, "--dry-run"]) == 2, spec
+        refused = capsys.readouterr()
+        assert expected in refused.err, (spec, refused.err)
+        assert "--section" in refused.err
+        assert "6. render" not in refused.out
+        assert not out.exists()
 
 
 def test_the_cwd_relative_fetch_out_key_is_not_trusted(tmp_path, gfs_config):
@@ -1441,9 +1785,11 @@ def test_the_memory_gate_prices_both_phases_and_names_the_binding_one(
     phases = gate["phases"]
     assert phases.ingest_priced
     assert phases.ingest.n_forcing_times >= 2
-    # ONE resident forcing time: the adapters build the start time last
-    # (gpuwm/ingest/lateral_bc.py:start_last_forcing_order) so nothing is
-    # held across the loop.  The gate has to price what the adapters do.
+    # ONE resident forcing time: a single-domain adapter builds the start
+    # time first, writes it into the prepared head and releases it before
+    # the next time (gpuwm/ingest/boundary_stream.py); a domain tree builds
+    # it last (gpuwm/ingest/lateral_bc.py:start_last_forcing_order).  Either
+    # way nothing is held across the loop, and the gate prices that.
     assert phases.ingest.resident_times == 1
     assert phases.binding_phase in ("forecast", "ingest")
     assert phases.binding_phase in gate["verdict"]
@@ -1930,6 +2276,45 @@ def test_the_real_run_folder_line_agrees_with_the_dry_run(
     # Same shape up to the stamp (the two invocations claim different
     # stamped names on a shared case root).
     assert dry[0].split("run-", 1)[0] == real[0].split("run-", 1)[0]
+
+
+def test_a_go_whose_gates_take_two_seconds_announces_one_folder_that_exists(
+        gfs_config, tmp_path, monkeypatch, capsys):
+    """F10: every run announced two run folders, and the first never existed.
+
+    The plan named ``run-<launch>Z`` before the gates and the claim read
+    the clock again after them.  The memory and geography gates take more
+    than a second on a real card, so the "correction" line fired on every
+    run and the first path printed was a folder nobody made.  Here the
+    gate really takes two seconds; the chain is stopped at its first stage,
+    just after the claim.
+    """
+
+    import time
+
+    def slow_gate(plan, **kw):
+        time.sleep(2.1)
+        return {"verdict": "fits", "refuse": False, "warn": False,
+                "free_bytes": 30 * 1024 ** 3}
+
+    def stop_at_first_stage(label, command, **kw):
+        raise go_cli.GoRefusal(f"test stops the chain before {label}")
+
+    monkeypatch.setattr(go_cli, "memory_gate", slow_gate)
+    monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: Path("bridge"))
+    monkeypatch.setattr(go_cli, "_run_stage", stop_at_first_stage)
+    case_root = tmp_path / "out"
+    with pytest.raises(go_cli.GoRefusal, match="before authority"):
+        go_cli.go_main(_args(gfs_config, case_root))
+    lines = [line for line in capsys.readouterr().out.splitlines()
+             if line.startswith("go: run folder")]
+    assert len(lines) == 1, lines
+    name = lines[0].split("go: run folder ", 1)[1].split(" ", 1)[0]
+    assert (case_root / name).is_dir(), (name, sorted(
+        path.name for path in case_root.iterdir()))
+    assert [path.name for path in case_root.iterdir()
+            if path.name.startswith("run-")] == [name]
 
 
 # ---------------------------------------------------------------------------

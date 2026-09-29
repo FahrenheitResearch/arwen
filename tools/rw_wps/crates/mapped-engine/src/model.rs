@@ -148,6 +148,14 @@ impl Mapping {
         }
     }
 
+    /// The N+1 interface ladder, empty when the mapping declares none.
+    pub fn interface_levels(&self) -> Result<Vec<f64>> {
+        let Some(values) = self.vertical()?.get("interface_levels").filter(|v| v.is_array()) else {
+            return Ok(Vec::new());
+        };
+        values.items().iter().map(|value| value.as_f64().ok_or_else(|| mapping_invalid("interface_levels must be numeric"))).collect()
+    }
+
     /// The declared vertical ladder, in the mapping's own order.  Empty
     /// means "take the levels the file offers" (`_assemble_grib`).
     pub fn declared_levels(&self) -> Result<Vec<f64>> {
@@ -162,6 +170,34 @@ impl Mapping {
                 item.as_f64().ok_or_else(|| {
                     mapping_invalid("mapping.coordinates.vertical.levels must be numbers")
                 })
+            })
+            .collect()
+    }
+
+    /// `vertical.era_ladders`: the whole ladders other publications of
+    /// the product carry, each drawn from `levels`.  Empty when the
+    /// mapping declares none (`mapped_source._carried_ladder`).
+    pub fn era_ladders(&self) -> Result<Vec<Vec<f64>>> {
+        let vertical = self.vertical()?;
+        let Some(ladders) = vertical.field("era_ladders") else {
+            return Ok(Vec::new());
+        };
+        ladders
+            .items()
+            .iter()
+            .map(|ladder| {
+                ladder
+                    .items()
+                    .iter()
+                    .map(|item| {
+                        item.as_f64().ok_or_else(|| {
+                            mapping_invalid(
+                                "mapping.coordinates.vertical.era_ladders must be \
+                                 lists of numbers",
+                            )
+                        })
+                    })
+                    .collect()
             })
             .collect()
     }
@@ -403,8 +439,28 @@ impl<'a> FieldSpec<'a> {
         self.raw.field("provider").and_then(Node::as_str)
     }
 
+    /// `fields.<name>.when_absent`: how the field is derived when the
+    /// files that should carry it carry none of its records.
+    pub fn when_absent(&self) -> Option<&'a Node> {
+        self.raw.field("when_absent").filter(|node| node.is_object())
+    }
+
     pub fn time_binding(&self) -> Option<&'a str> {
         self.raw.field("time_binding").and_then(Node::as_str)
+    }
+
+    /// `fields.<name>.dependency_only`: the field is decoded only so a
+    /// derivation can read it, and the frame does not publish it.
+    pub fn dependency_only(&self) -> Result<bool> {
+        match self.raw.field("dependency_only") {
+            None => Ok(false),
+            Some(node) => node.as_bool().ok_or_else(|| {
+                mapping_invalid(format!(
+                    "fields.{}.dependency_only must be true or false",
+                    self.name
+                ))
+            }),
+        }
     }
 
     pub fn selector_stack_axis(&self) -> Option<&'a str> {

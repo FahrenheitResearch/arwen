@@ -58,9 +58,9 @@ def stage_relocation_continuation(captured, new_dc, static, *, plan=None):
     if not verdict["pass"]:
         raise RelocationRefusal(
             "footprint-rebuilt statics differ from the outgoing "
-            "child's on shared ground (identical source + identical "
-            "cells must give identical bytes); this is a statics-"
-            "build defect, not an input error: "
+            "child's on shared ground beyond one-ulp rounding; "
+            "transplanting would combine the carried "
+            "state with different land-surface statics: "
             f"{verdict['mismatched_fields'] or verdict}")
     fill = donor_fill_plan(overlap_mask=overlap_mask_for_plan(plan, (cfg.ny, cfg.nx)),
                            landmask=np.asarray(static["LANDMASK"]))

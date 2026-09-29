@@ -578,8 +578,9 @@ def test_native_static_rotation_accepts_cross_platform_witnesses(
     stored_sine = np.full((3, 4), stored)
     assert abs(stored - regenerated) > 16 * np.spacing(abs(regenerated))
     result = native_static_export_fields({"SINALPHA": stored_sine}, grid)
-    # Admission never substitutes the producer's rounded field.
-    assert result["SINALPHA"] is sine
+    # The admitted copy is the prepared bytes, so the machine that runs a
+    # tree builds the state the preparing machine sealed.
+    assert result["SINALPHA"].tobytes() == stored_sine.tobytes()
     np.testing.assert_array_equal(stored_sine, np.full((3, 4), stored))
 
 
@@ -592,7 +593,7 @@ def test_native_static_rotation_rounding_is_bounded_at_zero(
     monkeypatch.setattr(grid, "rotation_m", lambda: tuple(rotation))
     rounded = np.full((3, 4), 8 * np.spacing(1.0))
     result = native_static_export_fields({field: rounded}, grid)
-    assert result[field] is rotation[index]
+    assert result[field].tobytes() == rounded.tobytes()
     with pytest.raises(ValueError, match=field):
         native_static_export_fields(
             {field: np.full((3, 4), 32 * np.spacing(1.0))}, grid)

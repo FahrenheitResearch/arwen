@@ -173,12 +173,18 @@ pub fn selector_matches(
 /// `mapped_source._declared_vertical_admits`.
 pub fn declared_vertical_admits(
     declared_levels: &[f64],
+    interface_levels: &[f64],
     field: &FieldSpec<'_>,
     level_value: f64,
 ) -> Result<bool> {
-    if !field.source_axes()?.iter().any(|axis| axis == "vertical") {
+    if !field.source_axes()?.iter().any(|axis| axis == "vertical" || axis == "half_level") {
         return Ok(true);
     }
+    let declared_levels = if field.source_axes()?.iter().any(|axis| axis == "half_level") {
+        interface_levels
+    } else {
+        declared_levels
+    };
     if declared_levels.is_empty() {
         return Ok(true);
     }
@@ -262,6 +268,47 @@ pub fn grid_fingerprint(message: &Grib2Message) -> String {
     crate::digest::bytes_sha256(text.as_bytes())
 }
 
+/// The canonical longitude axis of a regular GDT-0 grid and, for each
+/// canonical column, the stored column it reads: the x-axis half of
+/// [`regular_latlon_frame`] (`mapped_source._regular_latlon_frame`).
+fn regular_longitude_axis(lon1: f64, dx: f64, nx: usize) -> (Vec<f64>, Vec<usize>) {
+    let mut wrapped: Vec<f64> = (0..nx)
+        .map(|column| {
+            let raw_longitude = lon1 + column as f64 * dx;
+            (raw_longitude + 180.0).rem_euclid(360.0) - 180.0
+        })
+        .collect();
+    // `mapped_source._regular_latlon_frame`: a regional crop across the
+    // antimeridian (the GDT-101 remap writes one whenever the domain
+    // crosses it) is continuous in its own column order.  Wrapping and
+    // sorting it put a jump of nearly a full turn inside the axis and every
+    // such domain was refused as "not a regular axis"; the columns past the
+    // seam are carried one turn on instead.  A crop clear of the seam has
+    // no descending step and is untouched.  A grid within half a cell of
+    // the full circle is a whole ring whose spacing was rounded to the
+    // octets' micro-degrees (a 1/12-degree ring stores 4320 x 0.083333),
+    // and it keeps the -180 origin it always had.
+    if (nx as f64 + 0.5) * dx.abs() < 360.0 {
+        let seams: Vec<usize> = (1..nx).filter(|k| wrapped[*k] < wrapped[*k - 1]).collect();
+        if seams.len() == 1 {
+            for value in wrapped.iter_mut().skip(seams[0]) {
+                *value += 360.0;
+            }
+        }
+    }
+    // `np.argsort` is a STABLE sort for the default kind on ties; equal
+    // longitudes keep their original order, which matters on a grid whose
+    // first and last column alias after the wrap.
+    let mut order: Vec<usize> = (0..nx).collect();
+    order.sort_by(|left, right| {
+        wrapped[*left]
+            .total_cmp(&wrapped[*right])
+            .then(left.cmp(right))
+    });
+    let longitude: Vec<f64> = order.iter().map(|index| wrapped[*index]).collect();
+    (longitude, order)
+}
+
 /// `mapped_source._regular_latlon_frame`: one canonical ascending-latitude
 /// frame from a regular GDT-0 record.
 pub fn regular_latlon_frame(
@@ -291,22 +338,7 @@ pub fn regular_latlon_frame(
             }
         })
         .collect();
-    let wrapped: Vec<f64> = (0..nx)
-        .map(|column| {
-            let raw_longitude = grid.lon1 + column as f64 * grid.dx;
-            (raw_longitude + 180.0).rem_euclid(360.0) - 180.0
-        })
-        .collect();
-    // `np.argsort` is a STABLE sort for the default kind on ties; equal
-    // longitudes keep their original order, which matters on a grid whose
-    // first and last column alias after the wrap.
-    let mut order: Vec<usize> = (0..nx).collect();
-    order.sort_by(|left, right| {
-        wrapped[*left]
-            .total_cmp(&wrapped[*right])
-            .then(left.cmp(right))
-    });
-    let longitude: Vec<f64> = order.iter().map(|index| wrapped[*index]).collect();
+    let (longitude, order) = regular_longitude_axis(grid.lon1, grid.dx, nx);
     let mut values = vec![0.0f64; nx * ny];
     for row in 0..ny {
         for (column, source_column) in order.iter().enumerate() {
@@ -414,6 +446,7 @@ pub fn grib2_identities(messages: &[Grib2Message]) -> Vec<RecordIdentity> {
 /// `mapped_source._grib2_wanted_indices`.
 pub fn wanted_indices(mapping: &Mapping, identities: &[RecordIdentity]) -> Result<Vec<usize>> {
     let declared_levels = mapping.declared_levels()?;
+    let interface_levels = mapping.interface_levels()?;
     let fields = mapping.fields()?;
     let mut wanted = Vec::new();
     for identity in identities {
@@ -422,13 +455,194 @@ pub fn wanted_indices(mapping: &Mapping, identities: &[RecordIdentity]) -> Resul
                 .selectors()
                 .iter()
                 .any(|selector| selector_matches(selector, identity, "grib2"));
-            if matched && declared_vertical_admits(&declared_levels, field, identity.level_value)? {
+            if matched && declared_vertical_admits(&declared_levels, &interface_levels, field, identity.level_value)? {
                 wanted.push(identity.index);
                 break;
             }
         }
     }
     Ok(wanted)
+}
+
+/// One `mapping.record_aliases` entry (`mapped_source._record_aliases`).
+///
+/// A publisher can change how it spells a record between releases of one
+/// product while the record itself stays the same: ECMWF's open data
+/// wrote its four soil layers as depth-below-land layers on WMO and
+/// local parameters before it moved them to its own ordinal soil levels.
+/// `record` names the earlier spelling by the keys it declares (a key it
+/// leaves out is not compared) and `reads_as` the spelling the mapping's
+/// selectors read, so every later check -- the selectors, the soil
+/// layer contract, the duplicate refusals -- sees one spelling.
+#[derive(Debug, Clone)]
+pub struct RecordAlias {
+    pub record: crate::node::Node,
+    pub reads_as: crate::node::Node,
+}
+
+/// `mapping.record_aliases`, in declared order; empty when there are none.
+pub fn record_aliases(mapping: &Mapping) -> Result<Vec<RecordAlias>> {
+    let Some(raw) = mapping.doc.get("record_aliases") else {
+        return Ok(Vec::new());
+    };
+    if !raw.is_array() {
+        return Err(crate::refusal::mapping_invalid(
+            "mapping.record_aliases must be a list",
+        ));
+    }
+    raw.items()
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let part = |key: &str| {
+                entry
+                    .get(key)
+                    .filter(|node| node.is_object())
+                    .cloned()
+                    .ok_or_else(|| {
+                        crate::refusal::mapping_invalid(format!(
+                            "mapping.record_aliases[{index}].{key} must be an object"
+                        ))
+                    })
+            };
+            Ok(RecordAlias {
+                record: part("record")?,
+                reads_as: part("reads_as")?,
+            })
+        })
+        .collect()
+}
+
+/// The identity keys an alias compares and rewrites.
+struct AliasKeys {
+    discipline: Option<i64>,
+    category: Option<i64>,
+    parameter: i64,
+    level_type: i64,
+    level_value: f64,
+    second_level_type: Option<i64>,
+    second_level_value: Option<f64>,
+    pdt: Option<i64>,
+}
+
+impl AliasKeys {
+    fn of_identity(identity: &RecordIdentity) -> Self {
+        AliasKeys {
+            discipline: identity.discipline,
+            category: identity.category,
+            parameter: identity.parameter,
+            level_type: identity.level_type,
+            level_value: identity.level_value,
+            second_level_type: identity.second_level_type,
+            second_level_value: identity.second_level_value,
+            pdt: identity.time_semantics.first().copied(),
+        }
+    }
+
+    fn of_record(record: &GribRecord) -> Self {
+        AliasKeys {
+            discipline: record.discipline,
+            category: record.category,
+            parameter: record.parameter,
+            level_type: record.level_type,
+            level_value: record.level_value,
+            second_level_type: record.second_level_type,
+            second_level_value: record.second_level_value,
+            pdt: record.time_semantics.first().copied(),
+        }
+    }
+
+    /// Whether `pattern` (an alias's `record`) names these keys.
+    fn named_by(&self, pattern: &crate::node::Node) -> bool {
+        selector_int(pattern, "discipline").is_none_or(|value| self.discipline == Some(value))
+            && selector_int(pattern, "category").is_none_or(|value| self.category == Some(value))
+            && selector_int(pattern, "parameter").is_none_or(|value| self.parameter == value)
+            && selector_int(pattern, "level_type").is_none_or(|value| self.level_type == value)
+            && selector_float(pattern, "level_value")
+                .is_none_or(|value| close(self.level_value, value))
+            && selector_int(pattern, "second_level_type")
+                .is_none_or(|value| self.second_level_type == Some(value))
+            && selector_float(pattern, "second_level_value").is_none_or(|value| {
+                self.second_level_value
+                    .is_some_and(|observed| close(observed, value))
+            })
+            && selector_int(pattern, "pdt").is_none_or(|value| self.pdt == Some(value))
+    }
+
+    /// The keys `reads_as` declares, written over these.  A `reads_as`
+    /// without a second surface reads as a record that has none.
+    fn rewritten(mut self, reads_as: &crate::node::Node) -> Self {
+        if let Some(value) = selector_int(reads_as, "discipline") {
+            self.discipline = Some(value);
+        }
+        if let Some(value) = selector_int(reads_as, "category") {
+            self.category = Some(value);
+        }
+        if let Some(value) = selector_int(reads_as, "parameter") {
+            self.parameter = value;
+        }
+        if let Some(value) = selector_int(reads_as, "level_type") {
+            self.level_type = value;
+        }
+        if let Some(value) = selector_float(reads_as, "level_value") {
+            self.level_value = value;
+        }
+        match selector_int(reads_as, "second_level_type") {
+            Some(value) => {
+                self.second_level_type = Some(value);
+                self.second_level_value = selector_float(reads_as, "second_level_value");
+            }
+            None => self.second_level_type = Some(255),
+        }
+        self
+    }
+}
+
+/// The alias that names `keys`, if any.  Validation refuses two aliases
+/// that can name one record, so the first hit is the only one.
+fn alias_for<'a>(aliases: &'a [RecordAlias], keys: &AliasKeys) -> Option<&'a RecordAlias> {
+    aliases.iter().find(|alias| keys.named_by(&alias.record))
+}
+
+/// Rewrite every identity an alias names; returns which were rewritten.
+pub fn alias_identities(aliases: &[RecordAlias], identities: &mut [RecordIdentity]) -> Vec<bool> {
+    identities
+        .iter_mut()
+        .map(|identity| {
+            let keys = AliasKeys::of_identity(identity);
+            let Some(alias) = alias_for(aliases, &keys) else {
+                return false;
+            };
+            let keys = keys.rewritten(&alias.reads_as);
+            identity.discipline = keys.discipline;
+            identity.category = keys.category;
+            identity.parameter = keys.parameter;
+            identity.level_type = keys.level_type;
+            identity.level_value = keys.level_value;
+            identity.second_level_type = keys.second_level_type;
+            identity.second_level_value = keys.second_level_value;
+            true
+        })
+        .collect()
+}
+
+/// Rewrite every decoded record an alias names, exactly as
+/// [`alias_identities`] rewrote its inventory identity.
+pub fn alias_records(aliases: &[RecordAlias], records: &mut [GribRecord]) {
+    for record in records.iter_mut() {
+        let keys = AliasKeys::of_record(record);
+        let Some(alias) = alias_for(aliases, &keys) else {
+            continue;
+        };
+        let keys = keys.rewritten(&alias.reads_as);
+        record.discipline = keys.discipline;
+        record.category = keys.category;
+        record.parameter = keys.parameter;
+        record.level_type = keys.level_type;
+        record.level_value = keys.level_value;
+        record.second_level_type = keys.second_level_type;
+        record.second_level_value = keys.second_level_value;
+    }
 }
 
 /// `mapped_source._require_declared_grib2_grid`.
@@ -702,6 +916,118 @@ mod tests {
         assert!(selector_matches(&selector, &identity, "grib2"));
         identity.subcenter = Some(0);
         assert!(!selector_matches(&selector, &identity, "grib2"));
+    }
+
+    fn depth_layer(parameter: i64, discipline: i64, category: i64, top: f64, bottom: f64) -> RecordIdentity {
+        RecordIdentity {
+            index: 0,
+            member: None,
+            parameter,
+            level_type: 106,
+            level_value: top,
+            table_version: None,
+            center: Some(98),
+            subcenter: Some(0),
+            master_table_version: Some(27),
+            local_table_version: Some(0),
+            discipline: Some(discipline),
+            category: Some(category),
+            second_level_type: Some(106),
+            second_level_value: Some(bottom),
+            time_semantics: vec![0],
+        }
+    }
+
+    fn soil_alias_mapping() -> Mapping {
+        let text = br#"{"schema": "rw-wps.mapping.v1", "name": "t", "format": "grib2",
+            "record_aliases": [
+              {"record": {"discipline": 192, "category": 128, "parameter": 170,
+                          "level_type": 106, "level_value": 7},
+               "reads_as": {"discipline": 2, "category": 3, "parameter": 18,
+                            "level_type": 151, "level_value": 1,
+                            "second_level_type": 151, "second_level_value": 2}},
+              {"record": {"discipline": 192, "category": 128, "parameter": 236,
+                          "level_type": 106, "level_value": 100},
+               "reads_as": {"discipline": 2, "category": 3, "parameter": 18,
+                            "level_type": 151, "level_value": 3,
+                            "second_level_type": 151, "second_level_value": 4}}
+            ]}"#;
+        Mapping {
+            sha256: crate::digest::bytes_sha256(text),
+            doc: Node::parse(text).unwrap(),
+            path: "<test>".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_aliased_record_reads_as_the_spelling_the_selectors_name() {
+        let aliases = record_aliases(&soil_alias_mapping()).unwrap();
+        let mut identities = vec![
+            depth_layer(170, 192, 128, 7.0, 28.0),
+            // The deepest layer's bottom is written as the all-ones
+            // missing value; the alias leaves it out and still names it.
+            depth_layer(236, 192, 128, 100.0, 4294967295.0),
+            // Not named by any alias: untouched.
+            depth_layer(39, 192, 128, 0.0, 7.0),
+        ];
+        let aliased = alias_identities(&aliases, &mut identities);
+        assert_eq!(aliased, vec![true, true, false]);
+        let selector = Node::parse(
+            br#"{"discipline": 2, "category": 3, "parameter": 18, "level_type": 151,
+                 "level_value": 3, "second_level_type": 151, "second_level_value": 4}"#,
+        )
+        .unwrap();
+        assert!(selector_matches(&selector, &identities[1], "grib2"));
+        assert!(!selector_matches(&selector, &identities[0], "grib2"));
+        assert_eq!(identities[0].level_value, 1.0);
+        assert_eq!(identities[0].second_level_value, Some(2.0));
+        assert_eq!(identities[2].parameter, 39);
+        assert_eq!(identities[2].discipline, Some(192));
+    }
+
+    #[test]
+    fn a_mapping_without_aliases_reads_every_record_as_spelled() {
+        let text = br#"{"schema": "rw-wps.mapping.v1", "name": "t", "format": "grib2"}"#;
+        let mapping = Mapping {
+            sha256: crate::digest::bytes_sha256(text),
+            doc: Node::parse(text).unwrap(),
+            path: "<test>".to_owned(),
+        };
+        let aliases = record_aliases(&mapping).unwrap();
+        let mut identities = vec![depth_layer(170, 192, 128, 7.0, 28.0)];
+        assert_eq!(alias_identities(&aliases, &mut identities), vec![false]);
+        assert_eq!(identities[0].parameter, 170);
+    }
+
+    #[test]
+    fn a_regional_crop_across_the_antimeridian_keeps_its_column_order() {
+        // The GDT-101 remap's crop for a domain on the seam: west 175,
+        // 0.5 degree, 41 columns, so its stored columns run 175..195.
+        let (longitude, order) = regular_longitude_axis(175.0, 0.5, 41);
+        assert_eq!(order, (0..41).collect::<Vec<usize>>());
+        assert_eq!(longitude.first(), Some(&175.0));
+        assert_eq!(longitude.last(), Some(&195.0));
+        assert!(longitude.windows(2).all(|pair| pair[1] - pair[0] == 0.5));
+    }
+
+    #[test]
+    fn a_crop_clear_of_the_seam_and_a_whole_ring_read_as_before() {
+        // Clear of the seam: the wrapped values, in stored order.
+        let (longitude, order) = regular_longitude_axis(336.5, 0.5, 11);
+        assert_eq!(order, (0..11).collect::<Vec<usize>>());
+        assert_eq!(longitude.first(), Some(&-23.5));
+        assert_eq!(longitude.last(), Some(&-18.5));
+        // A whole ring keeps the -180..180 cut its decode has always stored.
+        let (longitude, order) = regular_longitude_axis(0.0, 1.0, 360);
+        assert_eq!(longitude.first(), Some(&-180.0));
+        assert_eq!(longitude.last(), Some(&179.0));
+        assert_eq!(order[0], 180);
+        // A 1/12-degree ring whose octets round the spacing to micro-degrees
+        // spans a hair under 360 degrees; it is still a ring, not a crop.
+        let (longitude, order) = regular_longitude_axis(0.0, 0.083333, 4320);
+        assert_eq!(order[0], 2161);
+        assert!(longitude[0] >= -180.0 && longitude[0] < -179.9);
+        assert!(longitude[4319] > 179.9 && longitude[4319] < 180.0);
     }
 
     #[test]

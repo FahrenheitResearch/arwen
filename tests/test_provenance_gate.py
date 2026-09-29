@@ -361,6 +361,60 @@ def test_a_wheel_install_with_a_staged_bridge_is_silent(tmp_path,
         bridge, env_var=ENV, prov=prov) is None
 
 
+def test_a_renderer_inside_an_installed_wheel_is_not_called_in_tree(
+        tmp_path, monkeypatch):
+    """hrrr-full-09 (c): a pip install printed "engine bridge in-tree (the
+    renderer is inside the executing source root .../site-packages)".
+
+    A wheel has no source tree; site-packages is where pip put it.  The
+    renderer the wheel ships under ``gpuwm/libexec/bridges`` is said to be
+    inside the installed wheel's package, and it still passes.
+    """
+
+    monkeypatch.delenv(ENV, raising=False)
+    prov = _wheel(tmp_path)
+    assert prov.install_kind == "wheel"
+    bridge = _stamped(Path(prov.package_path) / "libexec" / "bridges"
+                      / "rw_wrfbatch", REV_B)
+
+    match = provenance_gate.bridge_tree_match(bridge, env_var=ENV, prov=prov)
+    assert match.verdict == "in-package"
+    assert match.verdict in provenance_gate.BRIDGE_VERDICTS
+    assert match.matched is True
+    assert "in-tree" not in match.verdict
+    assert "source root" not in match.basis
+    assert "installed gpuwm wheel" in match.basis
+    assert str(Path(prov.package_path)) in match.basis
+    assert provenance_gate.renderer_bridge_refusal(
+        bridge, env_var=ENV, prov=prov) is None
+
+    # Elsewhere in site-packages is not the wheel's own package: the
+    # question stays unanswerable, never "in-tree".
+    beside = _stamped(Path(prov.package_path).parent / "other"
+                      / "rw_wrfbatch", REV_B)
+    assert provenance_gate.bridge_tree_match(
+        beside, env_var=ENV, prov=prov).verdict == "unanswerable"
+
+
+def test_doctor_names_a_wheel_install_as_a_wheel_install(tmp_path, monkeypatch):
+    """The doctor row said "vs this checkout" on a pip install too."""
+
+    from gpuwm import doctor, provenance, rustwx
+
+    monkeypatch.delenv(ENV, raising=False)
+    monkeypatch.delenv(rustwx.RENDERER_ENV, raising=False)
+    prov = _wheel(tmp_path)
+    bridge = _stamped(Path(prov.package_path) / "libexec" / "bridges"
+                      / "rw_wrfbatch", REV_B)
+    monkeypatch.setattr(provenance, "resolve", lambda **_: prov)
+    monkeypatch.setattr(rustwx, "find_renderer", lambda: bridge)
+    check = doctor._renderer_tree_check()
+    assert "vs this wheel install" in check.name
+    assert "checkout" not in check.name
+    assert check.status == "verified"
+    assert check.detail.startswith("in-package: ")
+
+
 def test_a_source_tree_with_no_git_is_silent(tmp_path, monkeypatch):
     """An unpacked sdist has a crate but no history to compare against."""
 

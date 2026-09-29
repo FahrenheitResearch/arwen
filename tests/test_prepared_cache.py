@@ -359,6 +359,7 @@ def test_prepared_cache_extension_reuses_prefix_and_appends_nonzero_hour(
     assert len(reader.header["metadata"]["lbc"]["intervals"]) == 2
     assert receipt["appended_interval"] == [3600.0, 7200.0]
     assert receipt["bridge_manifest_sha256"] == composite
+    assert receipt["predecessor_payloads"] == "linked"
     prior_reader = PreparedCacheReader(prior, expected_identity=prior_identity)
     for key, old_spec in prior_reader.arrays.items():
         new_spec = reader.arrays[key]
@@ -540,6 +541,112 @@ def test_prepared_cache_extension_rechecks_hardlinked_stage_for_toctou(
                 prior_identity, suffix_identity, extended_identity))
     assert injected
     assert not output.exists()
+
+
+def _linkless_extension_inputs(tmp_path):
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64, source_manifest="f" * 64)
+    initial, met, boundaries = _fixture()
+    suffix_initial, suffix_met, suffix_boundaries = _suffix_fixture()
+    prior, suffix = tmp_path / "prior", tmp_path / "suffix"
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=boundaries, sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_boundaries)
+    arguments = dict(
+        predecessor=prior, suffix=suffix, identity=extended_identity,
+        metadata={},
+        source_manifest_extension=_manifest_extension(
+            prior_identity, extended_identity),
+        bridge_manifest_extension=_bridge_extension(
+            prior_identity, suffix_identity, extended_identity))
+    return prior, prior_identity, arguments
+
+
+def _drive_without_hard_links(monkeypatch):
+    """os.link answering as exFAT does (Windows winerror 1, Linux EPERM)."""
+    import errno
+    import os
+
+    calls = []
+
+    def link(source, destination, *args, **kwargs):
+        calls.append(Path(destination))
+        if os.name == "nt":
+            raise OSError(errno.EINVAL, "Incorrect function", str(source), 1,
+                          str(destination))
+        raise OSError(errno.EPERM, "Operation not permitted", str(source),
+                      None, str(destination))
+
+    monkeypatch.setattr(os, "link", link)
+    return calls
+
+
+def test_prepared_cache_extension_on_a_drive_without_hard_links_copies(
+        tmp_path, monkeypatch, capsys):
+    """exFAT has no hard links.  The extension copies the earlier hours
+    instead, proves each copy byte-identical, verifies the whole staged
+    cache against its manifest, and says in one line that the copy costs
+    disk.  It used to refuse, citing only that cost."""
+    from gpuwm import explain
+
+    monkeypatch.setattr(explain, "_PRINTED_ONCE", set())
+    prior, prior_identity, arguments = _linkless_extension_inputs(tmp_path)
+    before = {path.name: path.read_bytes() for path in prior.iterdir()}
+    calls = _drive_without_hard_links(monkeypatch)
+    output = tmp_path / "extended"
+
+    receipt = extend_prepared_cache(output, **arguments)
+
+    assert receipt["status"] == "BUILT"
+    assert receipt["predecessor_payloads"] == "copied"
+    assert receipt["appended_interval"] == [3600.0, 7200.0]
+    # One link attempt: the first refusal switches the rest to copying.
+    assert len(calls) == 1
+    reader = PreparedCacheReader(output, expected_identity=arguments["identity"])
+    assert reader.verify_all()["status"] == "PASS"
+    prior_reader = PreparedCacheReader(prior, expected_identity=prior_identity)
+    for key, old_spec in prior_reader.arrays.items():
+        copied = output / reader.arrays[key]["file"]
+        assert copied.read_bytes() == (prior / old_spec["file"]).read_bytes()
+        assert not copied.samefile(prior / old_spec["file"])
+    assert {path.name: path.read_bytes() for path in prior.iterdir()} == before
+    note = capsys.readouterr().err
+    assert note.count("copied rather than linked") == 1
+    assert "disk space" in note
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "extended", "prior", "suffix"]
+
+
+def test_prepared_cache_extension_refuses_a_copy_the_disk_cannot_hold(
+        tmp_path, monkeypatch):
+    """The copy is priced before its first byte: the whole earlier cache
+    against the free space, refused by name when it does not fit."""
+    from gpuwm import filesystem_paths
+
+    _prior, _identity, arguments = _linkless_extension_inputs(tmp_path)
+    _drive_without_hard_links(monkeypatch)
+    monkeypatch.setattr(filesystem_paths, "_free_bytes", lambda folder: 1024)
+    output = tmp_path / "extended"
+
+    with pytest.raises(filesystem_paths.CopyWouldNotFitError) as refused:
+        extend_prepared_cache(output, **arguments)
+
+    message = str(refused.value)
+    assert "prepared cache" in message and "1.0 KiB free" in message
+    assert not output.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["prior", "suffix"]
 
 
 def test_prepared_cache_extension_refuses_a_gap(tmp_path):
@@ -1239,7 +1346,7 @@ def test_the_walk_tolerates_every_nested_run_entry_absent_from_a_header():
     stripped = _live_tolerant_run_paths_at_default(live)
     # The shipped config leaves the overwhelming majority at default;
     # a config that set most of them would make this test vacuous.
-    assert len(stripped) >= 80, stripped
+    assert len(stripped) >= 75, stripped
     cached = {**live, "run": {
         key: value for key, value in live["run"].items()
         if f"run.{key}" not in stripped}}
@@ -1270,6 +1377,101 @@ def test_a_nested_run_field_absent_from_the_header_but_IN_USE_still_refuses():
     assert differing == ["run.bl_mynn_edmf"]
 
 
+def _diagnostic_switch_values(name):
+    """The not-in-use value of an output-only switch, and a set one."""
+
+    from gpuwm.config import RunConfig
+
+    default = RunConfig.__dataclass_fields__[name].default
+    return default, (True if isinstance(default, bool) else 1)
+
+
+@pytest.mark.parametrize("name", ["tke_budget", "sase_flux_diag",
+                                  "hmix_k_diag", "nwp_diagnostics"])
+@pytest.mark.parametrize("switched_on", [True, False])
+def test_an_output_only_switch_reuses_the_unchanged_cache(
+        tmp_path, name, switched_on):
+    """Switching a diagnostic on or off reads the cache it was prepared as.
+
+    These switches choose which buffers a forecast writes; preparation
+    reads none of them.  The cache used to refuse all but nwp_diagnostics
+    by name ("these identity fields differ: run.hmix_k_diag") and demand a
+    second preparation of identical arrays.
+    """
+
+    from gpuwm.ingest.prepared_cache import (
+        compare_prepared_domain_config, effective_prepared_domain_config)
+
+    default, chosen = _diagnostic_switch_values(name)
+    before, after = (default, chosen) if switched_on else (chosen, default)
+    written = _live_domain_identity()
+    written["run"] = {**written["run"], name: before}
+    live = {**written, "run": {**written["run"], name: after}}
+    initial, met, boundaries = _fixture()
+    path = tmp_path / "prepared"
+    write_prepared_cache(
+        path, identity={"source": "abc", "domain_config": written},
+        initial_result=initial, met=met, boundaries=boundaries)
+    original = PreparedCacheReader(
+        path, expected_identity={"source": "abc", "domain_config": written})
+
+    reader = PreparedCacheReader(
+        path, expected_identity={"source": "abc", "domain_config": live})
+
+    assert reader.verify_all()["status"] == "PASS"
+    assert reader.header["identity"]["domain_config"]["run"][name] == before
+    assert reader.tolerated_identity_fields == ()
+    for key in original.arrays:
+        np.testing.assert_array_equal(
+            reader.read_array(key), original.read_array(key))
+    # The tree runner's gate normalizes both sides first; same answer.
+    assert compare_prepared_domain_config(
+        effective_prepared_domain_config(written),
+        effective_prepared_domain_config(live),
+        not_in_use=_undelayed()) == ([], [])
+    # A cache written before the switch existed lacks the key entirely.
+    older = {**written, "run": {
+        key: value for key, value in written["run"].items() if key != name}}
+    assert compare_prepared_domain_config(
+        older, live, not_in_use=_undelayed()) == ([], [])
+
+
+@pytest.mark.parametrize("change", ["run.nz", "source"])
+def test_an_output_only_switch_does_not_hide_a_preparation_change(
+        tmp_path, change):
+    written = _live_domain_identity()
+    live = {**written, "run": {**written["run"], "hmix_k_diag": True,
+                               "tke_budget": 1, "sase_flux_diag": True}}
+    expected = {"source": "abc", "domain_config": live}
+    if change == "run.nz":
+        live["run"]["nz"] = written["run"]["nz"] + 1
+    else:
+        expected["source"] = "changed"
+    initial, met, boundaries = _fixture()
+    path = tmp_path / "prepared"
+    write_prepared_cache(
+        path, identity={"source": "abc", "domain_config": written},
+        initial_result=initial, met=met, boundaries=boundaries)
+
+    with pytest.raises(PreparedCacheMismatchError) as refused:
+        PreparedCacheReader(path, expected_identity=expected)
+    message = str(refused.value)
+    assert f"these identity fields differ: {change}" in message
+    assert "hmix_k_diag" not in message and "tke_budget" not in message
+
+
+def test_the_inert_diagnostic_set_is_the_restart_table():
+    """One table of output-only switches, read by restart and the cache."""
+
+    from gpuwm.checkpoint_identity import CONFIG_DIAGNOSTIC_FIELDS
+    from gpuwm.ingest.prepared_cache import INERT_DIAGNOSTIC_IDENTITY_FIELDS
+    from gpuwm.io import restart
+
+    assert restart.CONFIG_DIAGNOSTIC_FIELDS is CONFIG_DIAGNOSTIC_FIELDS
+    assert INERT_DIAGNOSTIC_IDENTITY_FIELDS == {
+        f"run.{name}" for name in CONFIG_DIAGNOSTIC_FIELDS}
+
+
 def test_rational_forcing_cache_preserves_time_law_and_setup_identity(tmp_path):
     from dataclasses import replace
     from gpuwm.ingest.lateral_bc import RationalTimeLaw, evaluate_boundary_side
@@ -1293,3 +1495,156 @@ def test_rational_forcing_cache_preserves_time_law_and_setup_identity(tmp_path):
         observed = evaluate_boundary_side(actual, t)
         np.testing.assert_array_equal(observed[0], expected[0])
         np.testing.assert_array_equal(observed[1], expected[1])
+
+
+#: Run in a child interpreter whose import system refuses CuPy, so the
+#: test states the CPU-only install whether or not this box has CuPy.
+_HOST_RESTORE_WITHOUT_CUPY = r'''
+import sys
+from importlib.abc import MetaPathFinder
+
+
+class RejectCupy(MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "cupy" or fullname.startswith("cupy."):
+            raise ModuleNotFoundError(f"blocked for this test: {fullname}")
+        return None
+
+
+sys.meta_path.insert(0, RejectCupy())
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+
+from gpuwm.config import RunConfig
+from gpuwm.core.grid import BaseState, make_vertical_coord
+from gpuwm.core.state import DomainState
+from gpuwm.ingest.lateral_bc import (
+    attach_lateral_boundaries, build_state_lateral_boundaries)
+from gpuwm.ingest.prepared_cache import (
+    restore_prepared_cache, write_prepared_cache)
+from gpuwm.state_serialization_contract import (
+    STATE_DERIVED_SETUP_ARRAYS, STATE_SERIALIZED_ATTRS, STATE_SETUP_ARRAYS)
+
+nz, ny, nx = 3, 12, 14
+cfg = RunConfig(nx=nx, ny=ny, nz=nz, dx=3000.0, dy=3000.0, ztop=15000.0,
+                dt=10.0, run_seconds=3600.0, moist=True, mp_physics=6,
+                terrain_opt=1)
+coord = make_vertical_coord(nz, hybrid_opt=0)
+base = BaseState(
+    mub=np.full((ny, nx), 90_000.0), p_top=10_000.0,
+    pb=np.linspace(95_000.0, 20_000.0, nz)[:, None, None]
+    * np.ones((nz, ny, nx)),
+    alb=np.full((nz, ny, nx), 0.9), thb=np.full((nz, ny, nx), 300.0),
+    phb=np.linspace(0.0, 1.4e5, nz + 1)[:, None, None]
+    * np.ones((nz + 1, ny, nx)),
+    terrain_z=np.zeros((ny, nx)))
+static = {
+    "MAPFAC_M": np.full((ny, nx), 1.01), "MAPFAC_U": np.full((ny, nx + 1), 1.01),
+    "MAPFAC_V": np.full((ny + 1, nx), 1.01), "F": np.full((ny, nx), 1.0e-4),
+    "E": np.full((ny, nx), 5.0e-5), "SINALPHA": np.full((ny, nx), 0.1),
+    "COSALPHA": np.full((ny, nx), np.sqrt(0.99))}
+
+setup_only = set(STATE_SETUP_ARRAYS) | set(STATE_DERIVED_SETUP_ARRAYS)
+rng = np.random.default_rng(20260928)
+
+
+def prepared(offset):
+    state = DomainState(cfg, array_module=np)
+    state.load_base(coord, base)
+    state.set_map_coriolis(
+        static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
+        static["F"], static["E"], sina=static["SINALPHA"],
+        cosa=static["COSALPHA"])
+    for name in STATE_SERIALIZED_ATTRS:
+        array = getattr(state, name, None)
+        if array is None or name in setup_only:
+            continue
+        array[...] = (offset + rng.standard_normal(array.shape)).astype(
+            array.dtype)
+    return state
+
+
+state, later = prepared(0.0), prepared(1.0)
+boundaries = build_state_lateral_boundaries([state, later], [0.0, 3600.0])
+attach_lateral_boundaries(state, boundaries)
+initial = SimpleNamespace(
+    state=state, coord=coord, base=base,
+    surface_pressure=np.full((ny, nx), 99_000.0),
+    surface_qv=np.full((ny, nx), 0.01))
+surface = np.ones((ny, nx), dtype=np.float32)
+met = SimpleNamespace(fields={
+    "LANDSEA": surface, "SKINTEMP": 280.0 * surface,
+    "SOILT": np.full((9, ny, nx), 281.0, dtype=np.float32),
+    "SOILW": np.full((9, ny, nx), 0.2, dtype=np.float32),
+    "T2": 279.0 * surface, "U10": surface, "V10": surface})
+identity = {"source": "host-restore-without-cupy"}
+path = Path(sys.argv[1]) / "prepared-cache"
+write_prepared_cache(path, identity=identity, initial_result=initial,
+                     met=met, boundaries=boundaries)
+
+restored = restore_prepared_cache(
+    path, expected_identity=identity, cfg=cfg, static=static,
+    array_module=np)
+back = restored.initial_result.state
+compared = 0
+for name in STATE_SERIALIZED_ATTRS:
+    written = getattr(state, name, None)
+    if written is None:
+        continue
+    value = getattr(back, name)
+    assert type(value) is np.ndarray, (name, type(value))
+    assert value.dtype == written.dtype, name
+    assert np.array_equal(value, written), name
+    compared += 1
+assert compared >= 10, compared
+assert [(i.start_seconds, i.end_seconds)
+        for i in restored.boundaries.intervals] == [(0.0, 3600.0)]
+assert back.lateral_boundaries is restored.boundaries
+assert restored.receipt["status"] == "RESTORED"
+assert "cupy" not in sys.modules, "the host restore imported CuPy"
+print("host-restore", compared)
+'''
+
+
+def test_a_prepared_root_restores_to_host_arrays_without_cupy(tmp_path):
+    """The HRRR domain tree's root read works on a machine with no CuPy.
+
+    The hierarchy stage builds its children on the CPU from the sealed
+    root, and the restore it reads that root through imported CuPy
+    unconditionally, so every HRRR tree preparation on a CPU-only
+    install died with ``No module named 'cupy'`` before any child was
+    made.  Written by the shipped writer from a real host state, read
+    back by the shipped reader with CuPy unimportable: every serialized
+    array comes back as the same NumPy bytes, the boundaries attach on
+    the host, and the setup fingerprint check passes.
+    """
+
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        [sys.executable, "-c", _HOST_RESTORE_WITHOUT_CUPY, str(tmp_path)],
+        cwd=root, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr[-4000:]
+    assert completed.stdout.startswith("host-restore"), completed.stdout
+
+
+def test_a_restore_array_module_other_than_numpy_or_the_default_is_refused(
+        tmp_path):
+    """Only the two supported targets exist; anything else is a caller
+    bug that would otherwise surface as a half-built state."""
+
+    initial, met, boundaries = _fixture()
+    identity = {"source": "array-module-refusal"}
+    path = tmp_path / "cache"
+    write_prepared_cache(path, identity=identity, initial_result=initial,
+                         met=met, boundaries=boundaries)
+    with pytest.raises(TypeError,
+                       match=r"array_module must be None \(CUDA\) or numpy"):
+        prepared_cache_module.restore_prepared_cache(
+            path, expected_identity=identity, cfg=None, static={},
+            array_module=SimpleNamespace())

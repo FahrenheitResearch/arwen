@@ -510,5 +510,9 @@ def test_a_streamed_forecast_never_prices_above_its_resident_run(
     # The arithmetic is carried on every road, itemized or measured rung.
     terms = dict(env.terms)
     assert terms["vram_bytes"] == env.vram_bytes
-    assert terms["host/pinned_bytes"] == env.host_bytes
+    # host_bytes is the pinned store and arena plus the domain's lateral
+    # forcing series, each a named term.
+    assert terms["host/pinned_bytes"] == env.pinned_bytes
+    assert (terms["host/pinned_bytes"] + terms["host/boundary_table_bytes"]
+            == env.host_bytes)
     assert "rung" in terms

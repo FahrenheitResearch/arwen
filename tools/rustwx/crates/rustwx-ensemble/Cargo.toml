@@ -1,9 +1,9 @@
 # Ensemble product mathematics -- no I/O, no rendering, no model identity.
 #
-# gpuwm-authored (not in Drew's rusty-weather workspace): a direct
-# transcription of `gpuwm/da/enprod.py`'s reduction layer, which CLAUDE.md's
+# gpuwm-authored (not in the project's rusty-weather workspace): a direct
+# transcription of `gpuwm/da/enprod.py`'s reduction layer, which the project's
 # 2.5.0 Python boundary puts on the Rust side of the line ("all data-path
-# processing ... is Drew's Rust or seeded from it").  Kept free of I/O so
+# processing ... is the project's Rust or seeded from it").  Kept free of I/O so
 # every documented policy in that module is unit-testable against the exact
 # probes its docstrings name.
 

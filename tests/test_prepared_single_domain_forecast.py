@@ -156,18 +156,41 @@ def _mapped_proof_literals() -> tuple[dict[str, set[str]],
     tree = ast.parse(source)
     found: dict[str, set[str]] = {}
     conditional: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
+    # A chained preparation writes its proof in two parts: ``proof_head``,
+    # everything the start time knows, and ``proof = {**proof_head, ...}``
+    # at the seal.  The head is read first so the seal's spread of it
+    # contributes the head's keys, schema and opt-ins.
+    heads = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Assign)
+             and isinstance(node.value, ast.Dict)
+             and len(node.targets) == 1
+             and isinstance(node.targets[0], ast.Name)
+             and node.targets[0].id == "proof_head"]
+    head_parts: dict[str, object] = {}
+    for node in heads + [node for node in ast.walk(tree)
+                         if node not in heads]:
         if not isinstance(node, ast.Assign) or not isinstance(
                 node.value, ast.Dict):
             continue
         if not (len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "proof"):
+                and node.targets[0].id in {"proof", "proof_head"}):
             continue
         keys: set[str] = set()
         opted_in: set[str] = set()
         schema_name = None
+        is_head = node.targets[0].id == "proof_head"
         for key, value in zip(node.value.keys, node.value.values):
+            if (key is None and isinstance(value, ast.Name)
+                    and value.id == "proof_head"):
+                if "keys" not in head_parts:
+                    raise AssertionError(
+                        "gpuwm/mapped_direct.py spreads proof_head before "
+                        "defining it; teach this gate the new shape")
+                keys |= head_parts["keys"]
+                opted_in |= head_parts["opted_in"]
+                schema_name = head_parts["schema_name"]
+                continue
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
                 keys.add(key.value)
                 if key.value == "schema" and isinstance(value, ast.Name):
@@ -212,6 +235,10 @@ def _mapped_proof_literals() -> tuple[dict[str, set[str]],
                 raise AssertionError(
                     "gpuwm/mapped_direct.py grew a proof key this gate "
                     "cannot read statically; teach it, do not delete it")
+        if is_head:
+            head_parts = {"keys": keys, "opted_in": opted_in,
+                          "schema_name": schema_name}
+            continue
         # `proof_content_sha256` is assigned on the next statement, not
         # inside the literal, and both documents carry it.
         keys.add("proof_content_sha256")
@@ -265,8 +292,8 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == [
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
         "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
-        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-eu", "icon-global",
-        "mapped", "rap", "rrfs"]
+        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-d2", "icon-eu",
+        "icon-global", "mapped", "rap", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -287,6 +314,7 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         "gefs": "uniform-positive-whole-hour",
         "gem-gdps": "uniform-positive-whole-hour",
         "icon-eu": "uniform-positive-whole-hour",
+        "icon-d2": "uniform-positive-whole-hour",
         "rap": "uniform-positive-whole-hour",
         "rrfs": "uniform-positive-whole-hour",
     }
@@ -2058,6 +2086,37 @@ def test_prepared_highres_request_must_be_bound_to_source_identity(tmp_path, mon
         assert inputs.cache_identity["source_identity"]["static_highres"]["enabled"] is True
 
 
+@pytest.mark.parametrize("changed_fields", [False, True])
+@pytest.mark.parametrize("recorded_cache", [None, r"C:\preparation\source-cache"])
+def test_prepared_highres_preflight_accepts_relocated_config(
+        tmp_path, monkeypatch, changed_fields, recorded_cache):
+    if recorded_cache is not None:
+        original = prepared_cache_identity
+
+        def recorded_identity(**kwargs):
+            result = original(**kwargs)
+            result["source_identity"]["static_highres"]["cache_root"] = recorded_cache
+            return result
+
+        monkeypatch.setitem(globals(), "prepared_cache_identity", recorded_identity)
+    fixture = _prepared_fixture(tmp_path, "gfs", highres={
+        "enabled": True, "cache_root": "highres-cache", "fields": "terrain"})
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    relocated = tmp_path / "relocated" / fixture.experiment.name
+    relocated.parent.mkdir()
+    shutil.copyfile(fixture.experiment, relocated)
+    assert relocated.read_bytes() == fixture.experiment.read_bytes()
+    fixture.experiment = relocated
+    if changed_fields:
+        relocated.write_text(relocated.read_text().replace(
+            'fields = "terrain"', 'fields = "all"'), encoding="utf-8")
+        with pytest.raises(ValueError, match="experiment_config differs from the portable source manifest"):
+            _preflight_fixture(fixture)
+    else:
+        inputs = _preflight_fixture(fixture)
+        assert inputs.cache_reader.verify_all()["status"] == "PASS"
+
+
 def _bind_synthetic_preflight_geometry(monkeypatch, *, hierarchy: bool):
     grid = SimpleNamespace(source="20crv3")
     if hierarchy:
@@ -3359,6 +3418,42 @@ def test_gfs_v3_export_must_repeat_exact_preparation_physics(
         _preflight_fixture(fixture)
 
 
+@pytest.mark.parametrize("mode,status", [("optional", "REFUSED"),
+                                         ("off", "NOT_REQUESTED")])
+def test_a_gfs_forecast_without_its_wrf_files_still_binds_its_preprocessing(
+        tmp_path, monkeypatch, mode, status):
+    """A GFS domain whose unchanged-WRF files were refused or declined
+    runs from its prepared cache, and the receipt of how that cache was
+    preprocessed is still checked: it was checked only beside a written
+    export, so a bundle without one ran on a preprocessing receipt that
+    nothing held to its digest."""
+    from gpuwm.wrf_direct import (StockWrfExportUnsupported,
+                                  stock_wrf_export_not_requested,
+                                  stock_wrf_export_refused)
+
+    fixture = _prepared_fixture(tmp_path, "gfs", physics_profile=None)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    schema = "gpuwm-native-direct-wrf-export-v3"
+    proof["stock_wrf_export"] = mode
+    proof["export"] = (
+        stock_wrf_export_refused(StockWrfExportUnsupported(
+            "unsupported direct-export microphysics: no package for "
+            "mp_physics=1", unsupported={"mp_physics": (1, None)}),
+            schema=schema)
+        if status == "REFUSED" else
+        stock_wrf_export_not_requested(schema=schema))
+    proof["initialization_artifacts"]["wrf_files"] = {}
+    _write_json(fixture.proof, proof)
+    _preflight_fixture(fixture, physics_profile=None)
+
+    proof["preprocessing_receipt_sha256"] = "0" * 64
+    _write_json(fixture.proof, proof)
+    with pytest.raises(ValueError,
+                       match="preprocessing receipt hash differs"):
+        _preflight_fixture(fixture, physics_profile=None)
+
+
 def test_gfs_unknown_future_proof_schema_fails_closed(tmp_path):
     fixture = _prepared_fixture(tmp_path, "gfs")
     proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
@@ -4640,6 +4735,44 @@ def test_a_bundle_that_really_used_the_feature_is_still_refused(tmp_path):
     observed["domain_config"]["run"]["use_adaptive_time_step"] = True
 
     with pytest.raises(ValueError, match="use_adaptive_time_step"):
+        runner._resolve_cache_identity_compatibility(
+            source="20crv3", observed=observed, expected=expected)
+
+
+@pytest.mark.parametrize("name", ["tke_budget", "sase_flux_diag",
+                                  "hmix_k_diag", "nwp_diagnostics"])
+def test_an_output_only_switch_keeps_the_single_domain_cache(tmp_path, name):
+    """This route drops what the tree route's walk drops.
+
+    The four switches choose which buffers a forecast writes and are the
+    output-only table (gpuwm.checkpoint_identity.CONFIG_DIAGNOSTIC_FIELDS)
+    the tree route skips at any value.  This route read only
+    PREPARATION_INERT_RUN_FIELDS, which sase_flux_diag left for that one
+    table, and which never held the other three: switching any of them
+    refused a bundle whose arrays none of them touches.  A field
+    preparation reads still refuses beside it.
+    """
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    header = json.loads(
+        (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
+            encoding="utf-8"))
+    expected = header["identity"]
+    assert name in expected["domain_config"]["run"], (
+        "instrument blind: the fixture header does not carry the switch")
+    observed = json.loads(_canonical(expected))
+    run = observed["domain_config"]["run"]
+    run[name] = (not run[name] if isinstance(run[name], bool)
+                 else 0 if run[name] else 1)
+
+    selected, receipt = runner._resolve_cache_identity_compatibility(
+        source="20crv3", observed=observed, expected=expected)
+
+    assert selected == observed
+    assert receipt["status"] == "COMPATIBLE_LEGACY_DEFAULT"
+    assert [entry["field"] for entry in receipt["compatibility_overrides"]] \
+        == [f"domain_config.run.{name}"]
+    run["mp_physics"] = 10
+    with pytest.raises(ValueError, match=r"mp_physics \(prepared 10"):
         runner._resolve_cache_identity_compatibility(
             source="20crv3", observed=observed, expected=expected)
 

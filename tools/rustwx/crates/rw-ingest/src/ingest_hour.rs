@@ -2524,8 +2524,10 @@ mod tests {
             .chain(store_heavy_recipe_slugs())
         {
             let marker = serde_json::json!({ "derived": slug });
+            // The units this ingest stores each derived grid in.
+            let units = rustwx_products::derived::derived_product_units(slug).unwrap_or("units");
             assert!(
-                operational_style_for_store_variable(slug, &marker, "units", model).is_some(),
+                operational_style_for_store_variable(slug, &marker, units, model).is_some(),
                 "derived/heavy slug '{slug}' must resolve to production styling"
             );
         }

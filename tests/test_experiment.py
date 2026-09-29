@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import gpuwm.cli as cli
-from conftest import requires_cupy
+from conftest import requires_cupy, requires_case_inputs
 from gpuwm.experiment import (ExperimentConfig, ProjectionConfig,
                               VerticalConfig, _assert_derived_copies,
                               experiment_from_run_config,
@@ -31,6 +31,12 @@ def _fp32_bits(value: float) -> int:
     return struct.unpack("<I", np.float32(value).tobytes())[0]
 
 REPO = Path(__file__).resolve().parents[1]
+
+#: These tests load configs/real74_4dom.toml with its declared inputs
+#: required, so they run only where the WRF 1974 reference bundle its
+#: [case_data] names is on disk, and skip naming the absent file elsewhere.
+requires_4dom_inputs = requires_case_inputs(
+    Path(__file__).resolve().parents[1] / "configs" / "real74_4dom.toml")
 
 #: Synthetic two-domain experiment: d01 100x80 at 12 km / 60 s, child
 #: ratio (3,3) at (40,30) with 60x60 mass cells (span 20 parent rows,
@@ -186,6 +192,7 @@ def test_column_chunk_is_positive_experiment_integer(tmp_path):
                             f"column_chunk = {str(value).lower()}")))
 
 
+@requires_4dom_inputs
 def test_load_real74_4dom_derived_chain_pins():
     """THE gate pins: the committed bundle-resolved TOML derives the
     exact rational chain dx 12000/3000/1000/(1000/3) m and dt
@@ -1132,6 +1139,7 @@ def test_rejects_moving_nest_keys_in_experiment_table(tmp_path):
                                  "num_moves = 4"))
 
 
+@requires_4dom_inputs
 def test_fingerprint_semantics_of_value_objects():
     """F1: frozen/hashable value objects inside the experiment identity
     -- experiments differing in one eta level or one projection
@@ -1148,6 +1156,7 @@ def test_fingerprint_semantics_of_value_objects():
     assert dataclasses.replace(exp, projection=proj) != exp
 
 
+@requires_4dom_inputs
 def test_derived_copy_assertions_fire_on_divergence():
     """F14 timing authority: a diverged compatibility copy is a loud
     error (by construction the loader cannot produce one; the assertion

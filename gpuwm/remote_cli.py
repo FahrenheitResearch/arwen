@@ -343,7 +343,7 @@ def remote_main(args) -> int:
             # fresh attempt, so running one configuration again is a new run;
             # a retry that names the attempt reconciles with the job it created.
             request["request_id"] = attempt_identity(getattr(args, "request_id", None))
-        for name in ("config", "outdir", "geog_root", "prepared_root", "wps_namelist", "products", "device", "job", "cursor",
+        for name in ("config", "outdir", "geog_root", "prepared_root", "wps_namelist", "products", "section", "device", "job", "cursor",
                      "limit", "from_checkpoint", "dry_run", "expected_config_sha256",
                      "expected_wps_sha256", "expected_input_sha256", "expected_checkpoint_sha256",
                      "expected_checkpoint_set_sha256", "expected_prepared_sha256", "bundle_id",
@@ -510,6 +510,7 @@ def register_cli(subparsers) -> None:
             command.add_argument("--prepared-root", help="existing absolute remote prepared bundle; reuse it without fetch or preparation")
             command.add_argument("--wps-namelist", help="with --prepared-root: exact absolute remote WPS authority required by a single-domain bundle")
             command.add_argument("--products", help="render catalog selectors, all, or none")
+            command.add_argument("--section", help="line for xsec: products: --section=LAT,LON,LAT,LON or a JSON file on the node; relative paths use the configuration directory (the source job's working directory on resume)")
             command.add_argument("--device", help="card index or full GPU UUID on the node; omit to take the node's own default")
         if action == "resume":
             command.add_argument("--from", dest="from_checkpoint", default="latest", help="latest valid checkpoint, or its absolute remote path")

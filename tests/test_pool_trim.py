@@ -11,10 +11,10 @@ from unittest import mock
 from gpuwm.core import model as model_mod
 
 
-def test_pool_trim_defaults_on():
+def test_pool_trim_defaults_to_platform_policy():
     signature = inspect.signature(model_mod.execute_experiment)
     parameter = signature.parameters["pool_trim_per_period"]
-    assert parameter.default is True
+    assert parameter.default is None
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 

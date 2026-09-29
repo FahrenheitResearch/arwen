@@ -39,6 +39,32 @@ path = "src/bin/asos.rs"
 name = "rw_opera"
 path = "src/bin/opera.rs"
 
+# The global data-assimilation streams (design item 2 of the Arwen Global
+# DA program): each writes the neutral observation table
+# `gpuwm-obs.table.v1` (src/table.rs) that gpuwm.arwen_global.obs_table
+# reads without conversion.
+[[bin]]
+name = "rw_igra2"
+path = "src/bin/igra2.rs"
+
+[[bin]]
+name = "rw_amv"
+path = "src/bin/amv.rs"
+
+[[bin]]
+name = "rw_ndbc"
+path = "src/bin/ndbc.rs"
+
+[[bin]]
+name = "rw_gnssro"
+path = "src/bin/gnssro.rs"
+
+# The WIS2 subscriber: MQTT over TLS to the WMO global broker, framed by
+# hand on rustls (six packet types; no MQTT crate is in the vendor closure).
+[[bin]]
+name = "rw_wis2"
+path = "src/bin/wis2.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # `rust_backend` rather than the zlib C shim, matching rustwx-io and
@@ -61,5 +87,18 @@ hdf5-reader = "0.3"
 # addressed cache, SHA-256 receipts).  MRMS needs it; writing a second one
 # would re-earn the bugs that client's audit already fixed.
 rw-nexrad = { path = "../rw-nexrad" }
+# The GOES open-data S3 client and the ABI NetCDF reader, for the derived
+# motion winds (`rw_amv`); the DMW decode itself lives in rw-sat's `dmw`
+# module beside the cloud products.  netcrust by path for the radio
+# occultation profiles (`rw_gnssro`), the same pure-Rust NetCDF-4 facade.
+rw-sat = { path = "../rw-sat" }
+netcrust = { path = "../../vendor/netcrust" }
+# `rw_wis2`: the TLS stack every HTTPS door here already uses (rustls with
+# the RustCrypto provider and the webpki roots), reached directly for a raw
+# MQTT stream, and base64 for the notifications' integrity digests.
+rustls.workspace = true
+rustls-rustcrypto.workspace = true
+webpki-roots = "1"
+base64 = "0.22"
 rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }

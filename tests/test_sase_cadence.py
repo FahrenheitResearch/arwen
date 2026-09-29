@@ -61,10 +61,12 @@ def test_positive_cadence_moves_raw_w_and_recouples_on_new_geometry(monkeypatch)
     assert not driver.pbl_tendencies.rw[..., -1].any()
 
 
-def _restart_fixture(monkeypatch, *, cadence=0.1, diagnostics=False, flux=None):
+def _restart_fixture(monkeypatch, *, cadence=0.1, diagnostics=False, flux=None,
+                     viscosity=None):
     ph, state, cfg, driver = _sase_shim_driver(monkeypatch, [],
         bldt=cadence, dt=1.0, run_seconds=20.0,
-        sase_flux_diag=diagnostics if flux is None else flux, hmix_k_diag=diagnostics,
+        sase_flux_diag=diagnostics if flux is None else flux,
+        hmix_k_diag=diagnostics if viscosity is None else viscosity,
         mix_rates=(3.e-5, 1.e-7, -1.e-8, 2.e-9)*3)
     state.alt[...] = np.float32(1.0)
     return ph, state, cfg, driver
@@ -148,6 +150,49 @@ def test_output_only_flux_toggle_preserves_restart_state(monkeypatch,tmp_path,en
     np.testing.assert_array_equal(target_driver.pbl_tendencies.rw,driver.pbl_tendencies.rw)
     if enabled:
         assert all(not value.any() for value in target_driver.sase_flux_diag.values())
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_output_only_viscosity_toggle_preserves_restart_state(monkeypatch, tmp_path, enabled):
+    """hmix_k_diag switched at a restart, both ways, under a positive PBL
+    cadence: the carried state restores exactly and a newly enabled pair
+    starts from its cold zeros.  The config walk admitted the switch while
+    the held-diagnostic check still demanded the pair from a checkpoint
+    that never had it, so switching it on refused the resume."""
+    from gpuwm.io import restart
+    _, source, cfg, driver = _restart_fixture(
+        monkeypatch, diagnostics=True, viscosity=not enabled)
+    driver.compute(source, cfg)
+    source.elapsed_seconds = 2.
+    path = restart.write_restart(tmp_path/'source.npz', source, cfg)
+    _, target, target_cfg, target_driver = _restart_fixture(
+        monkeypatch, diagnostics=True, viscosity=enabled)
+    restart.restore_restart(path, target, target_cfg)
+    np.testing.assert_array_equal(target.w, source.w)
+    np.testing.assert_array_equal(
+        target_driver.pbl_tendencies.rw, driver.pbl_tendencies.rw)
+    if enabled:
+        assert set(target_driver.hmix_k_diag) == {'SASE_KMH', 'SASE_KHH'}
+        assert all(not value.any() for value in target_driver.hmix_k_diag.values())
+    else:
+        assert target_driver.hmix_k_diag is None
+
+
+def test_a_carried_viscosity_pair_is_still_required_when_it_was_on(monkeypatch, tmp_path):
+    """The exemption covers a pair the checkpoint never had, nothing more."""
+    from gpuwm.io import restart
+    from test_restart import _rewrite_restart_archive
+    _, source, cfg, driver = _restart_fixture(monkeypatch, diagnostics=True)
+    driver.compute(source, cfg)
+    source.elapsed_seconds = 2.
+    path = restart.write_restart(tmp_path/'source.npz', source, cfg)
+    bad = _rewrite_restart_archive(path, tmp_path/'bad.npz',
+        lambda payload, header: payload.pop('pbl/diagnostics/hmix_k_diag/SASE_KMH'))
+    _, target, _, _ = _restart_fixture(monkeypatch, diagnostics=True)
+    before = target.w.tobytes()
+    with pytest.raises(restart.RestartMismatchError, match='hmix_k_diag/SASE_KMH'):
+        restart.restore_restart(bad, target, cfg)
+    assert target.w.tobytes() == before
 
 
 def test_missing_or_unknown_held_diagnostic_is_not_silently_dropped(monkeypatch,tmp_path):

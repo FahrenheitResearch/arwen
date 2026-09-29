@@ -113,12 +113,16 @@ leg 1's relocation convention, clamped so every side keeps
 `gpuwm.experiment.validate_spawn_placement`).
 
 Two nests, two storms: a watch **ignores signal inside another active
-nest's footprint** (the exclusion rule — the masked cells are filled
-with an infinity of the losing sign, so they lose the extremum search on
-either convention), and
+nest's footprint on the same parent grid** (the exclusion rule: the
+masked cells are filled with an infinity of the losing sign, so they
+lose the extremum search on either convention), and
 `SpawnController.evaluate_all` feeds each event fired at a boundary
-into the exclusion set of the watches evaluated after it, so two
-triggers crossing threshold at one boundary cannot claim one storm.
+into the exclusion set of the watches on the same parent grid evaluated
+after it, so two triggers crossing threshold at one boundary cannot
+claim one storm.  A footprint is cell numbers on one grid
+(`NestFootprint.parent_id`), so it never masks a watch on another grid:
+a permanent d02 placed on d01 says nothing about which cells of d02 a
+dormant d03 may fire on.
 
 ## Spawn initialization (decision 3)
 

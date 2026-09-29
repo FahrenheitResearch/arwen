@@ -6,6 +6,9 @@ import argparse
 import json
 from pathlib import Path
 
+from gpuwm.cli_numbers import (float_between, int_between, nonnegative_float,
+                               positive_float, positive_int)
+
 from .adaptive import BandObservation, fit_hyperdiffusion
 from .benchmark import run_benchmark
 from .pins import registration
@@ -100,25 +103,32 @@ def register_cli(subparsers) -> None:
     pins.set_defaults(func=_pins)
     bench = commands.add_parser("benchmark", help="run analytic scalar/vector/elliptic controls")
     bench.add_argument("--backend", choices=("numpy", "cupy"), default="numpy")
-    bench.add_argument("--nx", type=int, default=512)
-    bench.add_argument("--ny", type=int, default=384)
-    bench.add_argument("--levels", type=int, default=32)
-    bench.add_argument("--dx-m", type=float, default=3000.0)
-    bench.add_argument("--dy-m", type=float, default=3000.0)
-    bench.add_argument("--repeats", type=int, default=5)
+    bench.add_argument("--nx", type=positive_int, default=512)
+    bench.add_argument("--ny", type=positive_int, default=384)
+    bench.add_argument("--levels", type=positive_int, default=32)
+    bench.add_argument("--dx-m", type=positive_float, default=3000.0)
+    bench.add_argument("--dy-m", type=positive_float, default=3000.0)
+    bench.add_argument("--repeats", type=positive_int, default=5)
     bench.add_argument("--output", type=Path, default=None)
     bench.set_defaults(func=_benchmark)
-    response = commands.add_parser("response", help="print the exact wavelength response")
-    response.add_argument("--order", type=int, default=3)
-    response.add_argument("--reference-wavelength-m", type=float, required=True)
-    response.add_argument("--e-fold-time-s", type=float, required=True)
-    response.add_argument("--protect-wavelength-m", type=float, default=None)
-    response.add_argument("--maximum-damping-fraction", type=float, default=1.0)
-    response.add_argument("--dt-s", type=float, required=True)
-    response.add_argument("--wavelength-m", action="append", type=float, default=[])
-    response.add_argument("--minimum-wavelength-m", type=float, default=3000.0)
-    response.add_argument("--maximum-wavelength-m", type=float, default=3000000.0)
-    response.add_argument("--samples", type=int, default=64)
+    response = commands.add_parser(
+        "response", help="print the exact wavelength response",
+        description="Print the per-call response of the hyperdiffusion operator "
+                    "at each wavelength as JSON.  calls_to_e_fold is null on a "
+                    "row whose amplitude gain is one: the operator leaves that "
+                    "wavelength untouched, so no number of calls reaches an "
+                    "e-fold decrease.")
+    response.add_argument("--order", type=int_between(1, 8), default=3)
+    response.add_argument("--reference-wavelength-m", type=positive_float, required=True)
+    response.add_argument("--e-fold-time-s", type=positive_float, required=True)
+    response.add_argument("--protect-wavelength-m", type=positive_float, default=None)
+    response.add_argument("--maximum-damping-fraction", type=float_between(0.0, 1.0),
+                          default=1.0)
+    response.add_argument("--dt-s", type=nonnegative_float, required=True)
+    response.add_argument("--wavelength-m", action="append", type=positive_float, default=[])
+    response.add_argument("--minimum-wavelength-m", type=positive_float, default=3000.0)
+    response.add_argument("--maximum-wavelength-m", type=positive_float, default=3000000.0)
+    response.add_argument("--samples", type=positive_int, default=64)
     response.add_argument("--output", type=Path, default=None)
     response.set_defaults(func=_response)
     check = commands.add_parser("check", help="validate a hash-bound step receipt")
@@ -128,8 +138,8 @@ def register_cli(subparsers) -> None:
         "calibrate", help="fit a damping-only proposal from Level-1 band power ratios")
     calibrate.add_argument("--input", type=Path, required=True)
     calibrate.add_argument("--output", type=Path, required=True)
-    calibrate.add_argument("--dt-s", type=float, required=True)
-    calibrate.add_argument("--protect-wavelength-m", type=float, default=None)
+    calibrate.add_argument("--dt-s", type=positive_float, required=True)
+    calibrate.add_argument("--protect-wavelength-m", type=positive_float, default=None)
     calibrate.set_defaults(func=_calibrate)
 
 

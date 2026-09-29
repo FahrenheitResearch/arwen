@@ -41,7 +41,7 @@ def prepare_20crv3_wrf(
     geog_root: str | Path,
     experiment_config: str | Path,
     output_root: str | Path,
-    preprocess_backend: str = "cuda",
+    preprocess_backend: str = "auto",
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: str | Path | None = None,
     hierarchy_workers: int | None = None,
@@ -220,7 +220,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument(
-        "--preprocess-backend", choices=("cpu", "cuda"), default="cuda",
+        "--preprocess-backend", choices=("cpu", "cuda", "auto"),
+        default="auto",
     )
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)

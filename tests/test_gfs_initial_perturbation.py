@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from gpuwm import gfs_direct, stage_cli, wrf_direct
+from gpuwm import fetch, gfs_direct, stage_cli, wrf_direct
 from gpuwm.experiment import load_experiment
 from gpuwm.ingest.prepared_cache import prepared_cache_identity
 
@@ -56,6 +56,16 @@ rh_preserve = true
     return result
 
 
+def _fetched_ladder(config):
+    """The pressure ladder `gpuwm go` fetches for CONFIG, as its manifest records it."""
+    from gpuwm.source_adapters import fetch_model_top_pa
+
+    top = fetch_model_top_pa("gfs", load_experiment(config).vertical.p_top)
+    levels = [float(level) for level in
+              fetch.container_subset_levels("gfs", top_pressure_pa=top)]
+    return {"pressure_levels_hpa": levels, "top_pressure_pa": min(levels) * 100.0}
+
+
 def _inputs(tmp_path, config, name):
     root = tmp_path / name
     root.mkdir()
@@ -71,7 +81,7 @@ def _inputs(tmp_path, config, name):
     manifest.write_text(json.dumps({
         "schema": gfs_direct.INPUT_MANIFEST_SCHEMA,
         "source": {"model": "GFS", "product": "pgrb2.0p25",
-                   "cycle": "2026-09-05T00:00:00Z"},
+                   "cycle": "2026-09-05T00:00:00Z", **_fetched_ladder(config)},
         "files": {role: {"name": path.name, "sha256": _sha(path)}
                   for role, path in roles.items()},
     }))
@@ -134,7 +144,7 @@ def _cpu_preparation(monkeypatch, exp):
     monkeypatch.setattr(gfs_direct, "_source_coverage_receipt", lambda *_a: {})
     monkeypatch.setattr(gfs_direct, "interpolate_era5_to_lambert", lambda source, *_a, **_k: source)
     monkeypatch.setattr(gfs_direct, "interpolate_lake_skin_temperature",
-                        lambda *_a: np.zeros((3, 3)))
+                        lambda *_a, **_k: np.zeros((3, 3)))
     monkeypatch.setattr(gfs_direct, "soil_source_orography", lambda *_a: None)
     monkeypatch.setattr(gfs_direct, "soil_mesh_plan_from_case", lambda *_a: None)
     monkeypatch.setattr(gfs_direct, "preprocess_land_surface_soil",
@@ -152,6 +162,11 @@ def _cpu_preparation(monkeypatch, exp):
     monkeypatch.setattr(gfs_direct, "initialize_real", initialize)
 
     class Boundaries:
+        inventory = ("thp",)
+        # What one written interval holds in host RAM, which a chained
+        # head prices the forecast's boundary series from.
+        interval_host_bytes = 1 << 20
+
         def __init__(self, **_kwargs):
             self.frames = {}
 
@@ -160,6 +175,17 @@ def _cpu_preparation(monkeypatch, exp):
 
         def build(self, times):
             return self.frames
+
+        # A single domain writes each interval as soon as its two times
+        # exist (chained preparation) instead of building the whole set.
+        def interval(self, index, times):
+            return SimpleNamespace(
+                start_seconds=(times[index] - times[0]).total_seconds(),
+                end_seconds=(times[index + 1] - times[0]).total_seconds(),
+                fields={"thp": (self.frames[index], self.frames[index + 1])})
+
+        def release(self, index):
+            pass
 
     monkeypatch.setattr(gfs_direct, "StateBoundaryFrames", Boundaries)
     monkeypatch.setattr(gfs_direct, "attach_lateral_boundaries",

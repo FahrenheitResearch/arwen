@@ -62,6 +62,7 @@ class FakeRun:
     starting_time_step_den: int = 0
     cu_physics: int = 0
     bldt: float = 0.0
+    min_time_step_sound: int = 0
 
 
 @dataclass
@@ -191,6 +192,21 @@ def test_the_first_period_takes_the_configured_step():
     d(0, clocks)
     assert clocks[1].step_ticks == 30 * TICK_DEN
     assert model.node(1).cfg.run.dt == 30.0
+
+
+@pytest.mark.parametrize("alarm", ["history_ticks", "restart_ticks", "lbc_interval_ticks", "run_ticks"])
+def test_first_adaptive_step_lands_on_earlier_alarm(alarm):
+    model = _tree(root_dt_s=30)
+    root = model.root.clock
+    if alarm == "run_ticks":
+        root.run_ticks = 10 * TICK_DEN
+    else:
+        setattr(root.spec, alarm, 10 * TICK_DEN)
+    driver = _driver(model, {1: (0., 0.), 2: (0., 0.)})
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    driver(0, clocks)
+    assert root.step_ticks == 10 * TICK_DEN
+    assert root.step_ticks % clocks[2].step_ticks == 0
 
 
 def test_all_three_move_together():
@@ -800,3 +816,77 @@ def test_a_checkpoint_without_the_cumulus_key_still_resumes():
         "started": True, "radiation_seen": None, "radiation_actual": None}
     d = _driver(model, {1: (0.5, 0.1), 2: (0.5, 0.1)})
     assert 1 not in d._cumulus_fired
+
+
+# ---------------------------------------------------- the substep floor
+
+def _km_tree(root_floor=0, child_floor=0):
+    """A 1 km root on a 3 s step over a 3:1 nest: WRF's derived count is
+    4 on both, as it is at 1 km for any step under about 3.3 s."""
+    root = FakeNode(
+        cfg=FakeCfg(1, FakeRun(1, 3.0, dx=1000.0, dy=1000.0,
+                               min_time_step_sound=root_floor)),
+        clock=FakeClock(FakeSpec(1, 3 * TICK_DEN)))
+    child = FakeNode(
+        cfg=FakeCfg(2, FakeRun(2, 1.0, dx=1000.0 / 3, dy=1000.0 / 3,
+                               min_time_step_sound=child_floor), 3),
+        clock=FakeClock(FakeSpec(2, TICK_DEN)), parent=root)
+    root.children = [child]
+    return FakeModel(root)
+
+
+@pytest.mark.parametrize("period", [0, 1, 2])
+def test_a_substep_floor_reaches_the_dynamics_on_its_own_domain(period):
+    """The count a steep-terrain rule raised survives every root step.
+
+    The clock rewrites time_step_sound from the live step every period,
+    and at 1 km that is 4 below about 3.3 s: the six substeps the rule
+    chose for a 67 m/s crest-level jet over the Andes never reached the
+    dynamics, and the run stopped at model second 135 while its line and
+    report said six.  The floor holds on the domain that carries it; the
+    domain beside it keeps WRF's count.
+    """
+    model = _km_tree(root_floor=6)
+    d = _driver(model, {1: (0.5, 0.1), 2: (0.5, 0.1)})
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    for n in range(period + 1):
+        d(n, clocks)
+    root, nest = model.node(1).cfg.run, model.node(2).cfg.run
+    assert root.dt < 3.4
+    assert root.time_step_sound == 6
+    assert nest.time_step_sound == 4
+    assert root.min_time_step_sound == 6 and nest.min_time_step_sound == 0
+
+
+def test_without_a_floor_the_count_is_wrfs_to_the_bit():
+    model = _km_tree()
+    d = _driver(model, {1: (0.5, 0.1), 2: (0.5, 0.1)})
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    from gpuwm.core.adaptive_clock import wrf_num_sound_steps
+    for n in range(3):
+        d(n, clocks)
+        for gid in (1, 2):
+            run = model.node(gid).cfg.run
+            assert run.time_step_sound == wrf_num_sound_steps(
+                run.dt, run.dx, run.dy), (n, gid)
+
+
+def test_the_floor_never_lowers_the_count_a_long_step_needs():
+    from gpuwm.core.adaptive_clock import adaptive_sound_steps
+
+    run = FakeRun(1, 12.0, dx=1000.0, dy=1000.0, min_time_step_sound=6)
+    assert adaptive_sound_steps(Fraction(12), run) == 8
+    assert adaptive_sound_steps(Fraction(3), run) == 6
+    assert adaptive_sound_steps(
+        Fraction(3), FakeRun(1, 3.0, dx=1000.0, dy=1000.0)) == 4
+
+
+def test_the_tile_halo_is_planned_for_the_floor():
+    """A streamed domain's halo grows with the substep count; a floor above
+    anything the step would give is priced before the run allocates."""
+    from gpuwm.core.adaptive_clock import acoustic_step_ceiling
+
+    run = FakeRun(1, 3.0, dx=1000.0, dy=1000.0, max_time_step=3,
+                  min_time_step_sound=8)
+    run.use_adaptive_time_step = True
+    assert acoustic_step_ceiling(run) == 8

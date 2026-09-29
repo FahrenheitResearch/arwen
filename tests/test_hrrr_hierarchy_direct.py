@@ -32,7 +32,9 @@ def test_atomic_staging_sibling_keeps_deep_windows_publication_short(tmp_path):
     parent = tmp_path
     while len(str(parent)) < 125:
         parent /= "deep-path-budget-segment"
-    parent.mkdir(parents=True)
+    # exist_ok: a temporary folder already 125 characters deep takes no
+    # segment, and then ``parent`` is tmp_path itself.
+    parent.mkdir(parents=True, exist_ok=True)
     output = parent / ("hrrr-six-domain-z80-" + "x" * 72)
 
     staging = _atomic_staging_sibling(output)
@@ -52,6 +54,611 @@ def test_atomic_staging_sibling_keeps_deep_windows_publication_short(tmp_path):
     assert payload.read_bytes() == b"path-budget-pass"
 
 
+@pytest.mark.parametrize("cache_kind", ["foreign", "local", "unwritable"])
+def test_join_highres_cache_survives_publication_and_reuses_tiles(
+        tmp_path, monkeypatch, cache_kind):
+    from io import BytesIO
+    import os
+    from types import SimpleNamespace
+    from gpuwm import stage_reuse
+    from gpuwm.static import highres_production as owner
+    from gpuwm.static.highres_fetch import fetch_file
+    from test_hrrr_native_static import _fixture
+
+    join = hrrr_hierarchy_direct
+    preparation = tmp_path / "sealed"
+    preparation.mkdir()
+    target, cache, static_receipt = _fixture(preparation)
+    local_cache = tmp_path / "local-cache"
+    if cache_kind == "foreign":
+        recorded_cache = ("/preparation/source-cache" if os.name == "nt"
+                          else r"C:\preparation\source-cache")
+    else:
+        recorded_cache = str(local_cache)
+    if cache_kind == "unwritable":
+        local_cache.write_bytes(b"occupied by a file")
+    config = owner.HighresStaticConfig(enabled=True, cache_root=Path(recorded_cache))
+    day = datetime(2026, 9, 5)
+    receipt = json.loads(static_receipt.read_text(encoding="utf-8"))
+    receipt["highres"] = {"status": "APPLIED", "config": config.echo(),
+        "case_date": day.date().isoformat(), "grid": owner._grid_identity(target.grid(), 1)}
+    receipt["highres"]["config"]["cache_root"] = recorded_cache
+    static_receipt.write_text(json.dumps(receipt), encoding="utf-8")
+    sealed_files = {str(p.relative_to(preparation)): p.read_bytes() if p.is_file() else None
+                    for p in preparation.rglob("*")}
+    authority = tmp_path / "authority"
+    authority.write_text("fixture", encoding="utf-8")
+    digest = join.sha256_file(authority)
+    identity = {"source_identity": {"static_highres": owner.static_highres_identity(config)},
+                "source_manifest_sha256": digest, "bridge_manifest_sha256": digest,
+                "static_cache_sha256": join.sha256_file(cache), "namelist_sha256": digest,
+                "forcing_hours": [0, 1]}
+    identity["source_identity"]["static_highres"]["cache_root"] = recorded_cache
+    header = {"schema": "gpuwm-prepared-real-cache-v1", "status": "READY",
+              "identity": identity, "content_sha256": digest,
+              "metadata": {"user": {"initial_valid_time": day.isoformat()}}}
+    report = {"status": "PASS", "source_identity": identity["source_identity"],
+              "prepared_cache": {"content_sha256": digest}}
+    monkeypatch.setattr(join, "_root_paths", lambda root: {
+        "static_cache": cache, "static_receipt": static_receipt,
+        "prepared_cache": preparation, "bridge": preparation,
+        "bridge_manifest": authority, "preparation_report": authority})
+    monkeypatch.setattr(join, "_json", lambda path:
+                        header if path.name == "header.json" else report)
+    monkeypatch.setattr(join, "resolve_cpu_bridge", lambda path: authority)
+    monkeypatch.setattr(join, "_require_raw_stock_delta", lambda *a:
+                        {"certified_native_runtime": {"domains.sfcp_to_sfcp": [True]}})
+    run = SimpleNamespace(sf_surface_physics=2, num_soil_layers=4, mp_physics=6)
+    root = SimpleNamespace(run=run, grid_id=1)
+    exp = SimpleNamespace(root=root, domains=[root, root], start_time=day, run_seconds=60.)
+    monkeypatch.setattr(join, "_native_experiment", lambda *a, **k: (exp, "fixture", _Run()))
+    monkeypatch.setattr(join, "load_hrrr_target_domain", lambda path: target)
+    monkeypatch.setattr(join, "_supported_hierarchy_slice", lambda *a, **k: None)
+    monkeypatch.setattr(join, "validated_corridor_selection", lambda *a: None)
+    monkeypatch.setattr(join, "_require_raw_wps_contract", lambda *a: {})
+    monkeypatch.setattr(join, "_expected_root_cache_identity", lambda *a, **k: identity)
+    monkeypatch.setattr(join, "PreparedCacheReader", lambda *a, **k:
+                        SimpleNamespace(verify_all=lambda: None))
+    restored = SimpleNamespace(initial_result=SimpleNamespace(state=None),
+                               met=None, boundaries=None, receipt={"content_sha256": digest})
+    def restore(*args, **kwargs):
+        # The stage builds its children on the CPU, so its read of the
+        # root must not need CUDA: a CuPy restore here stopped every
+        # HRRR tree preparation on a CPU-only install.
+        import numpy
+
+        assert kwargs.get("array_module") is numpy
+        return restored
+
+    monkeypatch.setattr(join, "restore_prepared_cache", restore)
+    monkeypatch.setattr(join, "_surface_state", lambda *a, **k: None)
+    monkeypatch.setattr(join, "sealed_source_leads", lambda *a: (0, 1))
+    monkeypatch.setattr(join, "load_hrrr_native_series", lambda *a, **k: (object(),))
+    monkeypatch.setattr(join, "verified_static_catalog", lambda *a:
+                        (SimpleNamespace(files=()), {"selections": {"d01": None}}))
+    monkeypatch.setattr(join, "grids_from_projection_config", lambda exp: (target.grid(),))
+    monkeypatch.setattr(join, "ParentInitView", lambda **k: SimpleNamespace(**k))
+    monkeypatch.setattr(join, "NestedInputCatalog", lambda **k: SimpleNamespace(**k))
+    monkeypatch.setattr(join, "_source_identity", lambda *a: {})
+    checked = []
+    original_require = owner.require_prepared_highres
+
+    def require(*args, **kwargs):
+        original_require(*args, **kwargs)
+        checked.append(True)
+
+    monkeypatch.setattr(owner, "require_prepared_highres", require)
+    observed = []
+    receipts = []
+    downloads = []
+
+    def opener(url, offset):
+        assert offset == 0
+        downloads.append(url)
+        return BytesIO(b"stand-in source tile")
+
+    def highres_receipt(config, role):
+        # Use the real fetch sidecars and receipt writer; only the source
+        # bytes and the expensive hierarchy/warp operations are stand-ins.
+        fetched = [fetch_file(
+            f"https://source.invalid/{name}", config.cache_root / name,
+            urlopen=opener).receipt() for name in (f"{role}-tile", "landcover")]
+        receipt = {"status": "APPLIED", "config": config.echo(),
+                   "grid": owner._grid_identity(target.grid(), 2),
+                   "case_date": day.date().isoformat(), "files": fetched}
+        owner._write_receipt(config, receipt)
+        receipts.append(receipt)
+        return receipt
+
+    def initialize(**kwargs):
+        config = kwargs["catalog"].static_highres
+        assert checked == [True] * (len(observed) + 1)
+        receipt = highres_receipt(config, "child")
+        path = kwargs["artifact_output"] / "domains" / "d02" / "geometry-receipt.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"highres": receipt}), encoding="utf-8")
+        observed.append(config.cache_root)
+        return SimpleNamespace(timings_seconds={}, artifacts=SimpleNamespace(receipt={}),
+                               wrf_manifest={})
+
+    def corridor(**kwargs):
+        config = kwargs["static_highres"]
+        assert config.cache_root == observed[-1]
+        receipt = highres_receipt(config, "corridor")
+        path = kwargs["directory"] / "receipt.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"highres": receipt}), encoding="utf-8")
+        return {"highres": receipt}
+
+    monkeypatch.setattr(join, "initialize_and_export_native_hierarchy", initialize)
+    monkeypatch.setattr(join, "emit_statics_corridor_set", corridor)
+    output = tmp_path / "joined"
+    arguments = dict(
+        root_preparation=preparation, root_domain_spec=authority,
+        wps_namelist=authority, namelist_input=authority,
+        stock_wrf_namelist_input=authority, geog_root=preparation,
+        source_manifest=authority, source_manifest_sha256=digest,
+        valid_time=day, output_root=output, workers=1, statics_corridor="all")
+    resolved = (local_cache if cache_kind == "local"
+                else join._highres_cache_sibling(output))
+    for attempt in range(2):
+        result = join.prepare_hrrr_hierarchy(**arguments)
+        artifacts = output / "hierarchy-artifacts"
+        transient = [str(path.relative_to(output)) for path in artifacts.rglob("*")
+                     if path.is_file() and b".d-" in path.read_bytes()]
+        missing = [str(path) for receipt in receipts for path in (
+            Path(receipt["config"]["cache_root"]), Path(receipt["receipt_path"]))
+            if not path.exists()]
+        assert not transient and not missing, {"staging_references": transient,
+                                              "missing_receipt_paths": missing}
+        assert observed[-1] == resolved
+        assert not resolved.is_relative_to(output)
+        for name in ("child-tile", "corridor-tile", "landcover"):
+            assert (resolved / name).read_bytes() == b"stand-in source tile"
+        assert result["provenance"]["static_highres_cache"] == {
+            "recorded_cache_root": recorded_cache, "cache_root": str(resolved),
+            "substituted": cache_kind != "local"}
+        # Reuse hashes the published artifacts, without traversing fetched tiles.
+        hashed = []
+        original_sha256 = stage_reuse._sha256
+        with monkeypatch.context() as tracking:
+            def sha256(path):
+                hashed.append(path)
+                return original_sha256(path)
+
+            tracking.setattr(stage_reuse, "_sha256", sha256)
+            stage_reuse._published_files(output, ())
+        assert hashed
+        assert all(not path.is_relative_to(resolved) for path in hashed)
+        assert len(downloads) == 3
+        if attempt == 0:
+            assert [file["cache_hit"] for receipt in receipts
+                    for file in receipt["files"]] == [False, False, False, True]
+            stage_reuse.supersede(output)
+            assert resolved.is_dir()
+        else:
+            assert all(file["cache_hit"] for receipt in receipts[2:]
+                       for file in receipt["files"])
+    assert {str(p.relative_to(preparation)): p.read_bytes() if p.is_file() else None
+            for p in preparation.rglob("*")} == sealed_files
+    assert not list(tmp_path.glob(".d-*"))
+
+
+def test_highres_cache_sibling_is_short_stable_and_beside_the_output(
+        tmp_path, monkeypatch):
+    sibling_of = hrrr_hierarchy_direct._highres_cache_sibling
+    long_name = "hrrr-six-domain-z80-" + "x" * 72
+
+    sibling = sibling_of(tmp_path / long_name)
+
+    digest = hashlib.sha256(long_name.encode("utf-8")).hexdigest()[:6]
+    assert sibling == tmp_path / f"hrrr-six-d-{digest}.highres"
+    assert len(sibling.name) == 25
+    short = sibling_of(tmp_path / "joined")
+    assert short.name == (
+        "joined-" + hashlib.sha256(b"joined").hexdigest()[:6] + ".highres")
+    # A rebuild names the same output root however it spells it, and finds
+    # the same folder; the recorded path is absolute either way.
+    monkeypatch.chdir(tmp_path)
+    assert sibling_of(Path(long_name)) == sibling
+    assert sibling_of(Path(long_name)).is_absolute()
+    assert sibling_of(tmp_path / long_name.upper()).name.casefold() == (
+        sibling.name.casefold())
+    # Two outputs that share the first ten characters keep separate folders.
+    assert sibling_of(tmp_path / (long_name[:-1] + "y")) != sibling
+
+
+def test_highres_fetch_receipts_stay_under_the_windows_path_limit_at_depth(
+        tmp_path, monkeypatch):
+    """A long output name under a deep folder keeps every receipt writable.
+
+    The shape of the staging test above: a 125-character parent and a
+    92-character output name.  Repeating that name in the fetch folder put
+    the receipts at 295 characters and more, past the 259 Windows accepts.
+    """
+    import os
+    from test_hrrr_native_static import _target
+    from gpuwm.static import highres_production as owner
+
+    join = hrrr_hierarchy_direct
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = tmp_path / ("p" * (125 - len(str(tmp_path)) - 1))
+    parent.mkdir()
+    assert len(str(parent)) == 125
+    output = parent / ("hrrr-six-domain-z80-" + "x" * 72)
+    recorded = ("/preparation/source-cache" if os.name == "nt"
+                else r"C:\preparation\source-cache")
+    config = owner.HighresStaticConfig(enabled=True, cache_root=Path(recorded))
+    from gpuwm import fetch_guard
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: None)
+
+    resolved, record = join._local_highres_cache(
+        config, recorded_cache_root=recorded, output_root=output)
+
+    replaced = []
+    original_replace = os.replace
+
+    def replace_spy(source, target):
+        replaced.extend((str(source), str(target)))
+        return original_replace(source, target)
+
+    grid = _target().grid()
+    receipts = []
+    with monkeypatch.context() as spying:
+        spying.setattr(os, "replace", replace_spy)
+        # Every source a configuration can name enters the receipt name.
+        for terrain in owner._TERRAIN_SOURCE_CHOICES:
+            for landcover in owner._LANDCOVER_SOURCE_CHOICES:
+                asked = replace(resolved, terrain_source=terrain,
+                                landcover_source=landcover)
+                receipt = {"status": "APPLIED", "config": asked.echo(),
+                           "grid": owner._grid_identity(grid, 6),
+                           "case_date": "2026-09-05"}
+                owner._write_receipt(asked, receipt)
+                receipts.append(receipt["receipt_path"])
+
+    written = [str(path) for path in Path(resolved.cache_root).rglob("*")]
+    assert len(receipts) == len(set(receipts)) == (
+        len(owner._TERRAIN_SOURCE_CHOICES)
+        * len(owner._LANDCOVER_SOURCE_CHOICES))
+    over = {path: len(path) for path in (*receipts, *replaced, *written)
+            if len(path) > 259}
+    assert not over, over
+    assert record == {"recorded_cache_root": recorded,
+                      "cache_root": str(resolved.cache_root),
+                      "substituted": True}
+    assert resolved.cache_root == join._highres_cache_sibling(output)
+    again, _record = join._local_highres_cache(
+        config, recorded_cache_root=recorded, output_root=output)
+    assert again.cache_root == resolved.cache_root
+
+
+def _prepare_without_inputs(output, tmp_path, monkeypatch):
+    """Run the stage on absent inputs: it refuses or reaches the input check."""
+    from gpuwm import hrrr_hierarchy_direct as join
+
+    monkeypatch.setattr(join, "resolve_cpu_bridge", lambda path: tmp_path)
+    missing = tmp_path / "absent-input"
+    return join.prepare_hrrr_hierarchy(
+        root_preparation=missing, root_domain_spec=missing,
+        wps_namelist=missing, namelist_input=missing,
+        stock_wrf_namelist_input=missing, geog_root=missing,
+        source_manifest=missing, source_manifest_sha256="0" * 64,
+        valid_time=datetime(2026, 9, 5), output_root=output)
+
+
+def _deepest_published(output):
+    return (output / "hierarchy-artifacts" / "domains" / "d01"
+            / "prepared-cache" / "header.json")
+
+
+def test_a_deep_output_root_is_refused_before_any_work_where_windows_limits_paths(
+        tmp_path, monkeypatch):
+    """The deep shape publishes a bundle the forecast cannot open.
+
+    A 125-character folder and a 92-character output name: the tree is
+    written under short staging names and published by one rename, so
+    the preparation ran to the end and the forecast then found its own
+    header at 277 characters, past the 259 Windows opens.  The stage now
+    refuses before reading an input, naming that path.
+    """
+    from gpuwm import fetch_guard
+
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = tmp_path / ("p" * (125 - len(str(tmp_path)) - 1))
+    output = parent / ("hrrr-six-domain-z80-" + "x" * 72)
+    deepest = _deepest_published(output)
+    assert len(str(deepest)) == 277
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    with pytest.raises(ValueError) as caught:
+        _prepare_without_inputs(output, tmp_path, monkeypatch)
+
+    message = str(caught.value)
+    assert "277 characters" in message
+    assert "259" in message
+    assert "18 characters shorter" in message
+    assert "--output-root" in message
+    assert "LongPathsEnabled" in message
+    assert message.endswith(f"Longest path: {deepest}")
+    assert not parent.exists()
+
+
+def test_the_path_limit_refusal_binds_only_where_windows_limits_paths(
+        tmp_path, monkeypatch):
+    """Off Windows, or with long paths on, the deep shape prepares."""
+    from gpuwm import fetch_guard
+
+    parent = tmp_path / ("p" * 125)
+    output = parent / ("hrrr-six-domain-z80-" + "x" * 72)
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: None)
+
+    with pytest.raises(FileNotFoundError):
+        _prepare_without_inputs(output, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("length,refused", [(259, False), (260, True)])
+def test_the_path_limit_refusal_starts_one_character_past_the_limit(
+        tmp_path, monkeypatch, length, refused):
+    from gpuwm import fetch_guard
+    from gpuwm.native_domain_artifacts import published_path_refusal
+
+    tail = len(str(_deepest_published(Path("x")))) - 1
+    width = length - tail - len(str(tmp_path)) - 1
+    if width < 1:
+        pytest.skip("temporary root too deep for this boundary")
+    output = tmp_path / ("b" * width)
+    assert len(str(_deepest_published(output))) == length
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    assert (published_path_refusal(output) is not None) is refused
+    if refused:
+        with pytest.raises(ValueError, match="1 character shorter"):
+            _prepare_without_inputs(output, tmp_path, monkeypatch)
+    else:
+        with pytest.raises(FileNotFoundError):
+            _prepare_without_inputs(output, tmp_path, monkeypatch)
+
+
+_EXTENDED = "\\\\?\\"
+
+
+def _windows_spelling(monkeypatch):
+    """``is_extended`` as it answers on Windows, where the spelling exists."""
+    import os
+
+    from gpuwm import filesystem_paths
+
+    monkeypatch.setattr(filesystem_paths, "is_extended",
+                        lambda path: os.fspath(path).startswith(_EXTENDED))
+
+
+def test_the_extended_spelling_of_a_deep_root_prepares_and_the_plain_one_is_refused(
+        tmp_path, monkeypatch):
+    """``gpuwm go`` and ``gpuwm run-plan`` hand a deep run folder over in
+    the extended spelling, which Windows opens at any length.  The refusal
+    measured that spelling like a plain one and stopped every run folder
+    of 176 characters or more; it now lets it through and still refuses
+    the plain spelling of the same folder."""
+    from gpuwm import fetch_guard
+
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = tmp_path / ("p" * (125 - len(str(tmp_path)) - 1))
+    output = parent / ("hrrr-six-domain-z80-" + "x" * 72)
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+    _windows_spelling(monkeypatch)
+
+    with pytest.raises(FileNotFoundError):
+        _prepare_without_inputs(
+            Path(_EXTENDED + str(output)), tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="277 characters"):
+        _prepare_without_inputs(output, tmp_path, monkeypatch)
+    assert not parent.exists()
+
+
+def test_a_short_output_name_is_refused_on_the_export_it_stages(
+        tmp_path, monkeypatch):
+    """The staged export, not the published tree, is deepest under a short name.
+
+    ``wrf-native-input.tmp-<pid>/.root-export.tmp-<pid>/manifest.json``
+    sits in the stage's staging sibling, 88 characters below the folder
+    whatever the output is called, so a one-character output name in a
+    176-character folder published a tree at 237 characters and failed
+    writing its export at 264.
+    """
+    from gpuwm import fetch_guard
+
+    if len(str(tmp_path)) >= 170:
+        pytest.skip("temporary root already exceeds the 176-character folder")
+    folder = tmp_path / ("p" * (176 - len(str(tmp_path)) - 1))
+    output = folder / "o"
+    assert len(str(_deepest_published(output))) == 237
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    with pytest.raises(ValueError) as caught:
+        _prepare_without_inputs(output, tmp_path, monkeypatch)
+
+    message = str(caught.value)
+    assert "264 characters" in message
+    assert "in a folder at least 5 characters shorter" in message
+    assert message.replace("\\", "/").endswith(
+        ".root-export.tmp-4294967295/manifest.json")
+    assert not folder.exists()
+
+
+def _highres_config(recorded, terrain_source="auto",
+                    landcover_source="auto"):
+    from gpuwm.static import highres_production as owner
+
+    return owner.HighresStaticConfig(
+        enabled=True, cache_root=Path(recorded),
+        terrain_source=terrain_source, landcover_source=landcover_source)
+
+
+def _widest_source_pair(cache_root):
+    """The terrain and land-cover sources whose receipt name is longest."""
+    from gpuwm.static import highres_production as owner
+
+    return max(
+        ((terrain, landcover)
+         for terrain in owner._TERRAIN_SOURCE_CHOICES
+         for landcover in owner._LANDCOVER_SOURCE_CHOICES),
+        key=lambda pair: len(str(owner.deepest_receipt_path(
+            cache_root, *pair))))
+
+
+def test_the_substituted_highres_receipts_are_measured_before_the_fetch_folder_exists(
+        tmp_path, monkeypatch):
+    """A join that fetches beside the output root writes its receipts there.
+
+    In a folder where the tree and its staging fit, the widest receipt's
+    partial name in ``<name[:10]>-<hash6>.highres/receipts/`` reaches 262
+    characters, so the join failed writing it after the restore and
+    decode.  It is now refused before that folder or any staging exists,
+    naming the receipt path.  The join is configured with the widest
+    source pair, whose receipt is the one measured.
+    """
+    from gpuwm import fetch_guard
+    from gpuwm.static.highres_production import deepest_receipt_path
+
+    join = hrrr_hierarchy_direct
+    output = tmp_path / "joined"
+    sibling = join._highres_cache_sibling(output)
+    terrain, landcover = _widest_source_pair(sibling)
+    extra = len(str(deepest_receipt_path(
+        sibling, terrain, landcover))) - len(str(tmp_path))
+    width = 259 - extra + 3 - len(str(tmp_path)) - 1
+    if width < 1:
+        pytest.skip("temporary root too deep for this shape")
+    folder = tmp_path / ("q" * width)
+    output = folder / "joined"
+    sibling = join._highres_cache_sibling(output)
+    receipt = deepest_receipt_path(sibling, terrain, landcover)
+    assert len(str(receipt)) == 262
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+    from gpuwm.native_domain_artifacts import published_path_refusal
+    assert published_path_refusal(output) is None
+
+    recorded = "relative/source-cache"
+    with pytest.raises(ValueError) as caught:
+        join._local_highres_cache(
+            _highres_config(recorded, terrain, landcover),
+            recorded_cache_root=recorded, output_root=output)
+
+    message = str(caught.value)
+    assert "262 characters" in message
+    assert "in a folder at least 3 characters shorter" in message
+    assert message.endswith(f"Longest path: {receipt}")
+    assert not folder.exists()
+
+
+def test_a_recorded_fetch_folder_is_not_measured_as_the_substitute(
+        tmp_path, monkeypatch):
+    """The sibling's receipts count only when the join fetches into it."""
+    from gpuwm import fetch_guard
+    from gpuwm.static.highres_production import deepest_receipt_path
+
+    join = hrrr_hierarchy_direct
+    output = tmp_path / "joined"
+    extra = len(str(deepest_receipt_path(
+        join._highres_cache_sibling(output)))) - len(str(tmp_path))
+    width = 259 - extra + 3 - len(str(tmp_path)) - 1
+    if width < 1:
+        pytest.skip("temporary root too deep for this shape")
+    output = tmp_path / ("q" * width) / "joined"
+    recorded = tmp_path / "recorded-cache"
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    resolved, record = join._local_highres_cache(
+        _highres_config(recorded), recorded_cache_root=str(recorded),
+        output_root=output)
+
+    assert record["substituted"] is False
+    assert resolved.cache_root == recorded
+    assert not join._highres_cache_sibling(output).exists()
+
+
+def test_deepest_receipt_path_is_the_longest_partial_a_receipt_writes(
+        tmp_path, monkeypatch):
+    """The measure is the real writer's: each source pair as that pair's
+    receipt spells it, the widest pid.  Only the 16-character identity,
+    a hash of the payload, differs from the measured name."""
+    import os
+    import re
+
+    from test_hrrr_native_static import _target
+    from gpuwm.fetch_guard import WINDOWS_WIDEST_PID
+    from gpuwm.static import highres_production as owner
+
+    config = _highres_config(tmp_path / "cache")
+    grid = _target().grid()
+    written = []
+    original_replace = os.replace
+
+    def replace_spy(source, target):
+        written.append(str(source))
+        return original_replace(source, target)
+
+    with monkeypatch.context() as spying:
+        spying.setattr(os, "replace", replace_spy)
+        spying.setattr(os, "getpid", lambda: WINDOWS_WIDEST_PID)
+        for terrain in owner._TERRAIN_SOURCE_CHOICES:
+            for landcover in owner._LANDCOVER_SOURCE_CHOICES:
+                asked = replace(config, terrain_source=terrain,
+                                landcover_source=landcover)
+                del written[:]
+                owner._write_receipt(asked, {
+                    "status": "APPLIED", "config": asked.echo(),
+                    "grid": owner._grid_identity(grid, 21),
+                    "case_date": "2026-09-05"})
+                assert len(written) == 1
+                measured = str(owner.deepest_receipt_path(
+                    config.cache_root, terrain, landcover))
+                assert re.sub(
+                    r"static_highres_[0-9a-f]{16}_",
+                    "static_highres_" + "f" * 16 + "_",
+                    written[0]) == measured, (terrain, landcover)
+
+
+def test_a_default_config_join_in_a_125_character_folder_is_not_refused(
+        tmp_path, monkeypatch):
+    """The join measures the receipts its configuration writes.
+
+    Measuring the widest source pair refused a default-configuration
+    join, whose ``auto``/``auto`` receipts fit, in run folders of about
+    119 to 149 characters.  In a 125-character folder with a short
+    output name of ten characters, which already gives the fetch folder
+    its widest name, the widest pair's receipt would pass the limit, and
+    the default join fetches beside the output root all the same.
+    """
+    from gpuwm import fetch_guard
+    from gpuwm.static.highres_production import deepest_receipt_path
+
+    join = hrrr_hierarchy_direct
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character folder")
+    folder = tmp_path / ("p" * (125 - len(str(tmp_path)) - 1))
+    output = folder / "short-name"
+    sibling = join._highres_cache_sibling(output)
+    assert len(str(folder)) == 125
+    assert len(str(deepest_receipt_path(
+        sibling, *_widest_source_pair(sibling)))) > 259
+    assert len(str(deepest_receipt_path(sibling))) <= 259
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    recorded = "relative/source-cache"
+    resolved, record = join._local_highres_cache(
+        _highres_config(recorded), recorded_cache_root=recorded,
+        output_root=output)
+
+    assert record["substituted"] is True
+    assert resolved.cache_root == sibling
+    assert sibling.is_dir()
+
+
 @dataclass(frozen=True)
 class _Run:
     grid_id: int = 1
@@ -63,6 +670,8 @@ class _Run:
     ra_lw_physics: int = 0
     ra_sw_physics: int = 1
     cu_physics: int = 0
+    clos_choice: int = 0
+    ishallow: int = 0
     radt: float = 1.0
     radt_minutes: float = 1.0
     cudt_minutes: float = 0.0
@@ -253,8 +862,10 @@ def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
         _slice(replace(
             generic, domains=(generic.domains[0], generic.domains[2],
                               generic.domains[1], generic.domains[3])), target)
-    with pytest.raises(ValueError, match="one-way"):
-        _slice(replace(_native(), feedback=1), target)
+    # Two-way trees are admitted: feedback is a runtime coupling the tree
+    # executor runs, not a property of anything this stage prepares.
+    _slice(replace(_native(), feedback=1), target)
+    _slice(replace(_native(), feedback=1, smooth_option=2), target)
     # A mixed WSM6 -> Morrison edge that names no transition policy.
     #
     # This used to refuse as "unsupported mixed" (before v1.3.1 the only
@@ -575,6 +1186,57 @@ def test_public_gate_accepts_a_child_only_inflow_perturbation():
     ))
     with pytest.raises(ValueError, match="trajectory controls differ"):
         _slice(drifted, _target())
+
+
+def test_public_gate_accepts_a_grell_freitas_root_over_a_cumulus_off_child():
+    """The Grell-family keys ride with cu_physics.
+
+    The importer writes clos_choice and ishallow only on a domain whose
+    cu_physics is 3, so a Grell-Freitas root set to clos_choice = 1 has a
+    cumulus-off child holding 0 for both, and this drift check refused
+    the tree after the fetch and the root preparation with
+    "{'clos_choice': (0, 1)}".  Preparation reads neither key.
+    """
+
+    native = _native()
+    root = replace(native.domains[0], run=replace(
+        native.domains[0].run, cu_physics=3, clos_choice=1, ishallow=1))
+    tree = replace(native, domains=(root, native.domains[1]))
+
+    _slice(tree, _target())
+
+    # The control: a field preparation does read still refuses.
+    drifted = replace(tree, domains=(
+        root, replace(tree.domains[1], run=replace(
+            tree.domains[1].run, sf_surface_physics=3))))
+    with pytest.raises(ValueError, match="trajectory controls differ"):
+        _slice(drifted, _target())
+
+
+def test_root_binding_ignores_the_grell_selectors_a_namelist_cannot_carry():
+    """A root prepared from the TOML binds the namelist's d01.
+
+    A namelist written without clos_choice and ishallow imports them at
+    0 while the sealed root was prepared with the TOML's values, and the
+    hierarchy stage stopped with "native namelist d01 trajectory controls
+    differ from the sealed root preparation: run.clos_choice".
+    """
+
+    native = _native()
+    grell = replace(native.domains[0], run=replace(
+        native.domains[0].run, cu_physics=3))
+    sealed = asdict(grell)
+    sealed["run"]["clos_choice"] = 1
+    sealed["run"]["ishallow"] = 1
+    identity = {"domain_config": sealed, "namelist_sha256": "c" * 64}
+
+    digest, prepared = _validated_root_preparation_binding(identity, grell)
+    assert digest == "c" * 64
+    assert prepared == sealed
+
+    drifted = replace(grell, run=replace(grell.run, cu_physics=1))
+    with pytest.raises(ValueError, match="run.cu_physics"):
+        _validated_root_preparation_binding(identity, drifted)
 
 
 def test_root_binding_ignores_write_cadence_and_inert_diagnostics():

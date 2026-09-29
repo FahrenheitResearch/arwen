@@ -1,6 +1,6 @@
 # The 2016-05-24 HRRR cycle is publishable but not yet decodable
 
-> **PARKED, 2026-08-06 — not adjudicated.** Drew moved attempt #1 to Mayfield,
+> **PARKED, 2026-08-06 — not adjudicated.** Attempt #1 moved to Mayfield,
 > KY 2021-12-10 (an HRRRv4 cycle that ADMITS outright) specifically so this
 > question would not need a ruling in order to proceed. Nothing below has been
 > decided, no alias was added, and the Dodge City config and case module stay
@@ -90,7 +90,7 @@ content.
 **This is evidence for a ruling, not the ruling.** It is one level at one
 valid time, and it is a bound derived from packing parameters rather than a
 decoded field. It is recorded here so the decision is cheap to make, and the
-decision itself belongs to Drew:
+decision itself belongs to the project lead:
 
 - **Admit** — teach the native contract that HRRRv1 spells hybrid cloud ice as
   category 6 / parameter 0, as a *decode-table* entry with this receipt cited,
@@ -102,6 +102,13 @@ decision itself belongs to Drew:
 Nothing in this lane makes that change. The probe is staged as **stage 0** of
 the attempt #1 queue: it re-measures, writes its receipt, and halts the ladder
 before any transfer or card time is spent.
+
+**Update 2026-09-28 (2.8.0): admitted.** The native bridge's QI row now takes
+category 6 / parameter 0 as its earlier code, a decode-table entry as proposed
+above, read only from a file that publishes no `CIMIXR`; the idx-subset alias
+table selects `CIMIXR|CICE`. A real 2017-01-19 00Z wrfnat decoded that way
+peaks at 7.03e-4 kg/kg on level 20, the same order as a current cycle's
+`CIMIXR`, and the loader reads it.
 
 ### The route cannot emit this config's namelists
 

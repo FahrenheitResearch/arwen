@@ -2,8 +2,12 @@
 //!
 //! Defined behaviour (the spec the parity tolerance gates against):
 //!
-//! * **mosaic**: rasterio-`merge` grid arithmetic (output width/height
-//!   = `round((extent)/res)`, origin at the declared west/north), then
+//! * **mosaic**: whole pixels of a fixed lattice covering the bounds
+//!   (the first tile's own pixel grid when the resolution is inherited,
+//!   pixel centres on whole multiples of a declared resolution), so every
+//!   footprint cut from a source agrees on shared ground; this is
+//!   rasterio-`merge` on the lattice-snapped bounds, the Python
+//!   fallback's own arithmetic.  Then
 //!   first-writer-wins painting in tile list order with nearest
 //!   sampling of each source at the output pixel centre — no
 //!   elevation is invented; coarser latitude bands replicate, and the
@@ -80,26 +84,95 @@ const ROW_BLOCK: usize = 256;
 // Mosaic
 // ---------------------------------------------------------------------------
 
-/// Mosaic tiles onto a uniform grid over `bounds = [west, south, east,
-/// north]`.  `resolution` `None` inherits the first tile's pixel size
-/// (the staged-tile contract, where all tiles share one grid);
-/// `Some(r)` declares a square output resolution (the latitude-banded
-/// contract).  Returns the NaN-holed mosaic and the hole count after
-/// `source_nodata` masking; the caller decides the fill.
+/// Mosaic tiles over `bounds = [west, south, east, north]` on the
+/// source's terrain lattice ([`terrain_lattice`]).  `resolution` `None`
+/// inherits the first tile's pixel grid (the staged-tile contract, where
+/// all tiles share one grid); `Some(r)` declares a square output
+/// resolution (the latitude-banded contract).  Returns the NaN-holed
+/// mosaic and the hole count after `source_nodata` masking; the caller
+/// decides the fill.
+///
+/// The output covers the bounds with whole lattice pixels.  It used to
+/// start at each footprint's own west/north edge (rasterio's rule on the
+/// raw bounds), which gave a moving nest's statics corridor and the nest
+/// itself a different sub-pixel sampling of the same ground, so the
+/// nest's first move was refused with "footprint-rebuilt statics differ".
 pub fn mosaic(
     tiles: &[Raster],
     bounds: [f64; 4],
     resolution: Option<f64>,
     source_nodata: Option<f64>,
 ) -> Result<(Raster, usize)> {
+    check_mosaic_tiles(tiles)?;
+    let (pixel, origin) = terrain_lattice(tiles, resolution);
+    mosaic_on_lattice(tiles, bounds, pixel, origin, source_nodata)
+}
+
+/// The fixed pixel lattice a terrain crop is cut on, `([res_x, res_y],
+/// [origin_x, origin_y])`, with pixel edges at `origin + k * res`.
+///
+/// An inherited resolution keeps the first tile's own lattice, so each
+/// output pixel IS a source pixel.  A declared resolution puts pixel
+/// centres on whole multiples of that resolution, which is where the
+/// point-sampled DEMs (GLO-30, SRTM) put their own samples; a lattice
+/// with EDGES there would centre every output pixel on a source pixel
+/// boundary, where the nearest pick is a tie.  `gpuwm.static.
+/// highres_fetch._terrain_lattice` is the same rule for the fallback.
+fn terrain_lattice(tiles: &[Raster], resolution: Option<f64>) -> ([f64; 2], [f64; 2]) {
+    match resolution {
+        Some(r) => ([r, r], [-0.5 * r, 0.5 * r]),
+        None => {
+            let t = tiles[0].transform;
+            ([t[0], -t[4]], [t[2], t[5]])
+        }
+    }
+}
+
+/// Mosaic tiles onto a FIXED pixel lattice: pixel edges at
+/// `origin + k * resolution` for whole `k`, covering `bounds = [west,
+/// south, east, north]` with whole lattice pixels.
+///
+/// Two footprints cut from the same tiles on the same lattice sample
+/// the same source pixel for the same ground and give it the same
+/// georeferencing, so their shared ground is identical byte for byte.
+/// Pixel centres are computed from their whole lattice index, never from
+/// the crop's edge, so the same ground pixel gets the same coordinates
+/// to the last bit in every crop.
+pub fn mosaic_on_lattice(
+    tiles: &[Raster],
+    bounds: [f64; 4],
+    resolution: [f64; 2],
+    origin: [f64; 2],
+    source_nodata: Option<f64>,
+) -> Result<(Raster, usize)> {
+    check_mosaic_tiles(tiles)?;
+    let [res_x, res_y] = resolution;
+    let [ox, oy] = origin;
+    if !(res_x > 0.0 && res_y > 0.0) || !ox.is_finite() || !oy.is_finite() {
+        return Err(StaticError::Invalid(format!(
+            "mosaic lattice resolution {resolution:?} / origin {origin:?} \
+             is not a positive finite lattice"
+        )));
+    }
+    let [west, south, east, north] = bounds;
+    // Columns count east from the origin, rows count south from it.
+    let col0 = ((west - ox) / res_x).floor() as i64;
+    let col1 = ((east - ox) / res_x).ceil() as i64;
+    let row0 = ((oy - north) / res_y).floor() as i64;
+    let row1 = ((oy - south) / res_y).ceil() as i64;
+    paint_mosaic(tiles, bounds, [res_x, res_y], [ox, oy], [col0, row0],
+                 [col1 - col0, row1 - row0], source_nodata)
+}
+
+fn check_mosaic_tiles(tiles: &[Raster]) -> Result<()> {
     if tiles.is_empty() {
         return Err(StaticError::Invalid(
             "terrain window derivation requires >= 1 tile".into(),
         ));
     }
-    let crs = tiles[0].crs.clone();
+    let crs = &tiles[0].crs;
     for tile in tiles {
-        if tile.crs != crs {
+        if &tile.crs != crs {
             return Err(StaticError::Invalid(
                 "mosaic tiles disagree on CRS".into(),
             ));
@@ -111,22 +184,36 @@ pub fn mosaic(
             )));
         }
     }
-    let (res_x, res_y) = match resolution {
-        Some(r) => (r, r),
-        None => (tiles[0].transform[0], -tiles[0].transform[4]),
-    };
-    let [west, south, east, north] = bounds;
-    // rasterio.merge: output covers the bounds completely.
-    let out_w = ((east - west) / res_x).round() as i64;
-    let out_h = ((north - south) / res_y).round() as i64;
+    Ok(())
+}
+
+/// Paint `size = [width, height]` output pixels whose centres are
+/// `origin + (index + 0.5) * resolution` east and south, starting at
+/// lattice index `first = [col, row]`.  First-writer-wins over the tiles
+/// in list order, nearest sampling at the centre.
+fn paint_mosaic(
+    tiles: &[Raster],
+    bounds: [f64; 4],
+    resolution: [f64; 2],
+    origin: [f64; 2],
+    first: [i64; 2],
+    size: [i64; 2],
+    source_nodata: Option<f64>,
+) -> Result<(Raster, usize)> {
+    let [res_x, res_y] = resolution;
+    let [ox, oy] = origin;
+    let [col0, row0] = first;
+    let [out_w, out_h] = size;
     if out_w <= 0 || out_h <= 0 {
         return Err(StaticError::Invalid(format!(
             "mosaic bounds {bounds:?} at resolution {res_x}x{res_y} \
              yield an empty grid"
         )));
     }
+    let crs = tiles[0].crs.clone();
     let (out_w, out_h) = (out_w as usize, out_h as usize);
-    let transform = [res_x, 0.0, west, 0.0, -res_y, north];
+    let transform = [res_x, 0.0, ox + col0 as f64 * res_x,
+                     0.0, -res_y, oy - row0 as f64 * res_y];
 
     let values: Vec<f64> = (0..out_h)
         .collect::<Vec<_>>()
@@ -134,9 +221,9 @@ pub fn mosaic(
         .map(|rows| {
             let mut block = vec![f64::NAN; rows.len() * out_w];
             for (block_row, row) in rows.iter().enumerate() {
-                let y = north - (*row as f64 + 0.5) * res_y;
+                let y = oy - ((row0 + *row as i64) as f64 + 0.5) * res_y;
                 for col in 0..out_w {
-                    let x = west + (col as f64 + 0.5) * res_x;
+                    let x = ox + ((col0 + col as i64) as f64 + 0.5) * res_x;
                     let slot = &mut block[block_row * out_w + col];
                     for tile in tiles {
                         let t = &tile.transform;
@@ -520,4 +607,96 @@ pub fn reproject_category_fractions(
         }
     }
     Ok(Stack3 { planes: category_count, ny: dst_ny, nx: dst_nx, data })
+}
+
+#[cfg(test)]
+mod mosaic_lattice_regression {
+    use super::*;
+
+    /// A 40x40 point-sampled source: pixel centres on whole multiples of
+    /// 0.125 degrees, value = its own index.
+    fn source() -> Raster {
+        Raster {
+            ny: 40,
+            nx: 40,
+            values: (0..1600).map(|i| i as f64).collect(),
+            transform: [0.125, 0.0, -1.0625, 0.0, -0.125, 2.0625],
+            crs: Crs::Geographic,
+        }
+    }
+
+    /// Two footprints whose edges sit at different sub-pixel offsets.
+    const FOOTPRINTS: [[f64; 4]; 2] =
+        [[-0.93, -1.71, 1.37, 1.83], [-0.61, -1.52, 2.19, 1.64]];
+
+    fn assert_shared_ground_agrees(a: &Raster, b: &Raster, res: f64) {
+        let dx = (b.transform[2] - a.transform[2]) / res;
+        let dy = (a.transform[5] - b.transform[5]) / res;
+        assert_eq!(dx, dx.round(), "column offset is whole pixels");
+        assert_eq!(dy, dy.round(), "row offset is whole pixels");
+        let (dx, dy) = (dx.round() as usize, dy.round() as usize);
+        let mut shared = 0usize;
+        for j in 0..b.ny.min(a.ny - dy) {
+            for i in 0..b.nx.min(a.nx - dx) {
+                let (va, vb) = (a.values[(j + dy) * a.nx + i + dx],
+                                b.values[j * b.nx + i]);
+                assert_eq!(va.to_bits(), vb.to_bits(), "value at {i},{j}");
+                let (ca, cb) = (a.centre(i + dx, j + dy), b.centre(i, j));
+                assert_eq!(ca.0.to_bits(), cb.0.to_bits(), "x at {i},{j}");
+                assert_eq!(ca.1.to_bits(), cb.1.to_bits(), "y at {i},{j}");
+                shared += 1;
+            }
+        }
+        assert!(shared > 100, "the footprints must overlap ({shared})");
+    }
+
+    #[test]
+    fn declared_resolution_crops_agree_on_shared_ground() {
+        let r = 0.125;
+        let windows: Vec<Raster> = FOOTPRINTS
+            .iter()
+            .map(|bounds| mosaic(&[source()], *bounds, Some(r), None).unwrap().0)
+            .collect();
+        assert_shared_ground_agrees(&windows[0], &windows[1], r);
+        // Every output centre IS a source sample: nothing is a tie.
+        let src = source();
+        let w = &windows[0];
+        for j in 0..w.ny {
+            for i in 0..w.nx {
+                let (x, y) = w.centre(i, j);
+                let col = ((x + 1.0) / r).round() as usize;
+                let row = ((2.0 - y) / r).round() as usize;
+                assert_eq!(w.values[j * w.nx + i], src.values[row * 40 + col]);
+            }
+        }
+    }
+
+    #[test]
+    fn inherited_resolution_crops_keep_the_source_lattice() {
+        let src = source();
+        let t = src.transform;
+        let windows: Vec<Raster> = FOOTPRINTS
+            .iter()
+            .map(|bounds| mosaic(&[src.clone()], *bounds, None, None).unwrap().0)
+            .collect();
+        assert_shared_ground_agrees(&windows[0], &windows[1], t[0]);
+        for w in &windows {
+            let col = (w.transform[2] - t[2]) / t[0];
+            let row = (t[5] - w.transform[5]) / t[0];
+            assert_eq!(col, col.round());
+            assert_eq!(row, row.round());
+        }
+    }
+
+    #[test]
+    fn a_crop_covers_its_whole_footprint() {
+        let r = 0.125;
+        for bounds in FOOTPRINTS {
+            let (w, _) = mosaic(&[source()], bounds, Some(r), None).unwrap();
+            let [west, south, east, north] = w.bounds();
+            assert!(west <= bounds[0] && south <= bounds[1]);
+            assert!(east >= bounds[2] && north >= bounds[3]);
+            assert!(bounds[0] - west < r && north - bounds[3] < r);
+        }
+    }
 }

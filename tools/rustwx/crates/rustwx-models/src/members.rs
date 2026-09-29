@@ -36,14 +36,98 @@ pub struct DeclaredMember {
     pub id: String,
     pub token: String,
     pub product_definition_templates: Vec<u16>,
-    pub ensemble_type: u8,
+    /// Every declared typeOfEnsembleForecast value: a grammar declares a
+    /// list when the same member arrives stamped differently by each door.
+    pub ensemble_types: Vec<u8>,
     pub encoded_ensemble_size: u8,
     pub generating_process: u8,
     pub forecast_generating_process_id: u8,
+    /// Copies of this member a front door serves under another writer's
+    /// octets, in the order the grammar declares them.
+    pub rewrites: Vec<DeclaredRewrite>,
+}
+
+/// One declared rewrite of a member class, read from the same grammar the
+/// preparation verifies with: selected only for bytes whose every message
+/// carries its writer (Section 1) octets, then held to its whole contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredRewrite {
+    pub name: String,
+    /// (centre, subcentre, master table, local table) values the writer
+    /// stamps; an empty list pins nothing for that octet.
+    pub centers: Vec<u16>,
+    pub subcenters: Vec<u16>,
+    pub master_table_versions: Vec<u8>,
+    pub local_table_versions: Vec<u8>,
+    pub product_definition_templates: Vec<u16>,
+    /// None when the writer dropped the ensemble octets and the member's
+    /// path component is its only identity; the bytes a caller verifies
+    /// were then fetched by that member's own declared path.
+    pub ensemble_types: Option<Vec<u8>>,
+    pub encoded_ensemble_size: Option<u8>,
+    pub generating_process: Option<u8>,
+    pub forecast_generating_process_id: Option<u8>,
 }
 
 fn grammar(model: ModelId) -> Option<&'static SourceGrammar> {
     GRAMMARS.iter().find(|grammar| grammar.model == model)
+}
+
+fn ensemble_types(value: &Value) -> Vec<u8> {
+    match value.as_array() {
+        Some(values) => values
+            .iter()
+            .map(|value| value.as_u64().expect("ensemble type") as u8)
+            .collect(),
+        None => vec![value.as_u64().expect("ensemble type") as u8],
+    }
+}
+
+fn integers(value: &Value) -> Vec<u64> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| value.as_u64().expect("declared integer"))
+            .collect(),
+        other => vec![other.as_u64().expect("declared integer")],
+    }
+}
+
+fn rewrites(class: &Value) -> Vec<DeclaredRewrite> {
+    let Some(declared) = class.get("rewrites").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    declared
+        .iter()
+        .map(|rewrite| {
+            let writer = &rewrite["writer"];
+            let by_path = rewrite["perturbation_number"] == "path";
+            DeclaredRewrite {
+                name: rewrite["name"].as_str().expect("rewrite name").to_string(),
+                centers: integers(&writer["center"]).into_iter().map(|v| v as u16).collect(),
+                subcenters: integers(&writer["subcenter"]).into_iter().map(|v| v as u16).collect(),
+                master_table_versions: integers(&writer["master_table_version"])
+                    .into_iter()
+                    .map(|v| v as u8)
+                    .collect(),
+                local_table_versions: integers(&writer["local_table_version"])
+                    .into_iter()
+                    .map(|v| v as u8)
+                    .collect(),
+                product_definition_templates: integers(&rewrite["product_definition_templates"])
+                    .into_iter()
+                    .map(|v| v as u16)
+                    .collect(),
+                ensemble_types: (!by_path).then(|| ensemble_types(&rewrite["type_of_ensemble_forecast"])),
+                encoded_ensemble_size: rewrite["ensemble_size"].as_u64().map(|v| v as u8),
+                generating_process: rewrite["type_of_generating_process"].as_u64().map(|v| v as u8),
+                forecast_generating_process_id: rewrite["forecast_generating_process_id"]
+                    .as_u64()
+                    .map(|v| v as u8),
+            }
+        })
+        .collect()
 }
 
 fn expand_ordinal(template: &str, ordinal: u8) -> String {
@@ -87,9 +171,7 @@ pub fn declared_member(model: ModelId, ordinal: u8) -> Result<Option<DeclaredMem
                     .iter()
                     .map(|value| value.as_u64().expect("PDT") as u16)
                     .collect(),
-                ensemble_type: verification["type_of_ensemble_forecast"]
-                    .as_u64()
-                    .expect("ensemble type") as u8,
+                ensemble_types: ensemble_types(&verification["type_of_ensemble_forecast"]),
                 encoded_ensemble_size: verification["ensemble_size"]
                     .as_u64()
                     .expect("ensemble size") as u8,
@@ -100,6 +182,7 @@ pub fn declared_member(model: ModelId, ordinal: u8) -> Result<Option<DeclaredMem
                     .as_u64()
                     .expect("forecast process")
                     as u8,
+                rewrites: rewrites(class),
             }));
         }
     }
@@ -231,6 +314,25 @@ mod tests {
                 .encoded_ensemble_size,
             31
         );
+        assert_eq!(
+            declared_member(ModelId::Aigefs, 0).unwrap().unwrap().ensemble_types,
+            vec![3, 6]
+        );
+        assert_eq!(
+            declared_member(ModelId::Gefs, 0).unwrap().unwrap().ensemble_types,
+            vec![1]
+        );
+        // The mirror's two archive rewrites, read from the same table the
+        // preparation verifies with; GEFS declares none.
+        let rewrites = declared_member(ModelId::Aigefs, 17).unwrap().unwrap().rewrites;
+        assert_eq!(rewrites.len(), 2);
+        assert_eq!(rewrites[0].ensemble_types, None);
+        assert_eq!(rewrites[0].product_definition_templates, vec![0, 8]);
+        assert_eq!(rewrites[0].centers, vec![74, 7]);
+        assert_eq!((rewrites[0].master_table_versions.clone(), rewrites[0].local_table_versions.clone()), (vec![4], vec![0]));
+        assert_eq!(rewrites[1].ensemble_types, Some(vec![3]));
+        assert_eq!(rewrites[1].generating_process, Some(255));
+        assert!(declared_member(ModelId::Gefs, 0).unwrap().unwrap().rewrites.is_empty());
         assert!(declared_member(ModelId::Aigefs, 31).is_err());
         assert!(product_member(ModelId::Aigefs, "sfc/not-a-member001").is_none());
         assert!(product_member(ModelId::Aigefs, "foo/mem001").is_none());

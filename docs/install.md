@@ -28,16 +28,25 @@ renderer build; until a render engine exists `gpuwm render` REFUSES,
 naming `gpuwm fetch-bridges` — weather-field product plots come from
 `rw_wrfbatch`, and `--engine matplotlib` is a named workaround that
 announces itself, not an automatic fallback), build the terminal workspace
-in `tools/arwen-tui` with the same locked offline command, and
+in `tools/arwen-tui`, the Zarr reader in `tools/zarr_bridge`, the default
+mapped-source decode engine in `tools/rw_wps` and the default velocity
+dealiasing library in `tools/region_global_dealias` with the same locked
+offline command, and
 finish with `gpuwm doctor`, whose exit status the script propagates.
 
-A pip install needs no toolchain for either half: `gpuwm fetch-bridges`
-(or `gpuwm setup`, which runs it first) stages this release's prebuilt
-GRIB bridges and render engine under the SHA-256 pins the wheel carries,
-together with the renderer's Natural Earth and US Census map assets. The
-assets ride in the same bundle as the binary that reads them so the two
-cannot arrive separately -- a renderer without them draws plots with no
-coastlines or borders and reports success. Both scripts are idempotent: re-running reuses the existing
+A pip install on Windows x86-64 or Linux x86-64 needs no toolchain for
+either half: the platform wheels for those two carry all of the prebuilt
+native tools, the GRIB bridges and the render engine among them. A
+pure-Python wheel or an sdist install on those two platforms carries none,
+and `gpuwm fetch-bridges` (or `gpuwm setup`, which runs it first) stages
+this release's prebuilt bundle under the SHA-256 pins the package
+carries. Other platforms have no published bundle and build the native
+tools from a source clone, as described below. The renderer's Natural
+Earth and US Census map assets arrive with the `gpuwm-data` package every
+install pulls, and `gpuwm` hands them
+to the renderer, because a renderer without them draws plots with no
+coastlines or borders and reports success. A run that finds none says so
+in a `render_basemap_missing` warning event. Both scripts are idempotent: re-running reuses the existing
 `.venv` and the incremental cargo build. Run them from the checkout
 root, or standalone (piped from the raw URL), in which case they clone
 https://github.com/FahrenheitResearch/arwen into `./gpuwm`
@@ -46,7 +55,10 @@ overrides the interpreter used to create the venv.
 
 ### Manual steps
 
-Use Python 3.11 or newer. An editable developer checkout still installs the
+Use Python 3.11 or newer and Rust 1.94 or newer (`rustc --version`). The
+terminal and Zarr reader workspaces refuse an older compiler, and a
+distribution's packaged Rust can be older; `rustup update stable` brings a
+rustup install up to date. An editable developer checkout still installs the
 monorepo metadata and its forecast/plot dependencies. The sealed release
 builder instead creates a dedicated `rw-wps` wheel containing the source
 adapters, initialization/export state, required setup kernels, and HRRR
@@ -60,10 +72,12 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
+python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-(cd tools/grib1_bridge && cargo build --release --locked --offline)
-(cd tools/rustwx && cargo build --release --locked --offline)
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
+  (cd "$workspace" && cargo build --release --locked --offline)
+done
 gpuwm doctor
 ```
 
@@ -74,10 +88,12 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm; cd gpuwm
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
+python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
-cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
-cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
+  Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
+}
 gpuwm doctor
 ```
 
@@ -96,8 +112,8 @@ no Rust costs seconds:
 ./install.sh          # Windows (PowerShell): .\install.ps1
 ```
 
-They build four cargo workspaces, and the gate below judges each one it
-finds built:
+They build six cargo workspaces, one for every compiled artifact a
+bundle carries, and the gate below judges each one it finds built:
 
 | Workspace | What it builds |
 |---|---|
@@ -105,15 +121,13 @@ finds built:
 | `tools/rustwx` | the render engine, `rw_netcdf`, and the rest of the Rust data path |
 | `tools/arwen-tui` | the terminal workspace |
 | `tools/zarr_bridge` | `rw_zarr` |
-
-`tools/rw_wps` builds `gpuwm_mapped_engine` and is not one of the
-installer's steps; if you build it in this checkout, rebuild it after a
-pull as well.
+| `tools/rw_wps` | `gpuwm_mapped_engine`, the default mapped-source decode engine |
+| `tools/region_global_dealias` | the default velocity dealiasing library |
 
 By hand, POSIX:
 
 ```bash
-for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge; do
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
   (cd "$workspace" && cargo build --release --locked --offline)
 done
 ```
@@ -121,7 +135,7 @@ done
 Windows (PowerShell):
 
 ```powershell
-foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge') {
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
   Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
 }
 ```
@@ -131,6 +145,10 @@ is older than the sources that build it is refused before the run
 starts, naming the binary, when it was built, the source revision it
 was built from, the file that moved past it and the exact command for
 the workspace that builds it. `gpuwm doctor` reports the same line.
+The sources are the files cargo recorded for that binary in the `.d`
+file it writes beside it, plus the crate manifests and the lock, so a
+change to a file only another binary of the same crate reads does not
+condemn this one.
 
 The judgement is about the file, not about how it was named. A wheel or
 bundle install has no sources here to be compared with and is untouched,
@@ -227,14 +245,18 @@ python -m pytest -q \
   tests/test_native_wrf_distribution.py
 ```
 
-**Wheel installs need two more commands for the data routes.**  A pip
-wheel deliberately contains no compiled Rust, so `gpuwm check`/`run`
-(ERA5 route) and the `rw-wps` GFS/HRRR front doors have nothing to
-decode GRIB with until the artifacts are on the machine:
+**A pip install needs the tables, and sometimes the native bundle.**  A
+platform wheel (Windows x86-64, Linux x86-64) already contains all of
+the compiled Rust tools and needs no `gpuwm fetch-bridges`. A
+pure-Python wheel or an sdist install contains none, so until
+`gpuwm fetch-bridges` stages them, `gpuwm check`/`run` (ERA5 route) and
+the `rw-wps` GFS/HRRR front doors have nothing to decode GRIB with.
+Every pip install needs `gpuwm fetch-tables`, and `gpuwm doctor` says
+which of the two is still missing:
 
 ```bash
 pip install 'gpuwm[all-cu12]'   # or 'gpuwm[all-cu13]' on a CUDA-13-only box
-gpuwm fetch-bridges
+gpuwm fetch-bridges   # pure-Python wheel or sdist only
 gpuwm fetch-tables
 gpuwm doctor
 ```
@@ -250,7 +272,12 @@ alone), an interrupted download resumes or restarts, and `--from DIR`
 stages the same bundle -- or the loose artifacts -- from a local
 directory with identical verification, for air-gapped installs.
 `--dest DIR` stages elsewhere; `GPUWM_BRIDGE_ASSET_URL_BASE` points it
-at a mirror.
+at a mirror. Two setups aimed at one folder (two terminals, or a run's
+automatic refresh beside a manual `gpuwm fetch-bridges`) take turns: the
+second waits for the first to finish, then finds the bundle staged and
+fetches nothing. A folder you cannot write is only checked: a complete
+estate there is reported as verified, and an incomplete one is refused
+with the reason.
 
 The release workflow generates those pins before it builds the supported
 PyPI wheel and sdist. The GitHub-generated source `.zip` and `.tar.gz`
@@ -402,13 +429,29 @@ GPUWM_PYTHON=/opt/rw-wps-venv/bin/python ./install.sh --skip-gpu
 
 `--skip-gpu` skips only CuPy/device verification. All wheel RECORD hashes,
 archive hashes, decoder identities, GRIB2 tabular ABIs, CPU-library ABI,
-helper inventories, and an actual serial-versus-parallel FP32 interpolation
-through the native CPU library remain checked. ERA5, GFS, and mapped runs with
+helper inventories, an actual serial-versus-parallel FP32 interpolation
+through the native CPU library, and the library's masked surface chain (soil,
+snow, skin temperature and sea ice, which every backend maps through it) and
+the native HRRR route's soil stencil and the lake search and water blends at
+one and three workers remain checked. ERA5, GFS, and mapped runs with
 explicit `--preprocess-backend cpu` can retain setup/export state in NumPy and
 do not import CuPy. `--preprocess-backend auto` selects CUDA only when a device
-and the certified CUDA 12.x runtime family are available; otherwise it uses
-the Rust/NumPy path. HRRR's public driver does not yet expose the common
+and a certified CUDA runtime major (12.x with CuPy 13 or newer, 13.x with CuPy
+14 or newer) are available; otherwise it uses the Rust/NumPy path, prints one
+line saying why, and records the same reason in the preparation receipt's
+`selection` block. HRRR's public driver does not yet expose the common
 backend selector.
+
+Auto also reads live card load through the fit probe. It selects CPU when
+GPU utilization is at least 50%, or free device memory is at most 25% of
+total memory. The receipt records the measurements, thresholds, and reason.
+A card CUDA cannot open in the probe (too full for a context, or held by
+another program in exclusive-process mode) also selects CPU; the receipt
+names the CUDA error and the NVML reading taken before it. In a GFS domain
+tree, each child prepared on the root's backend carries the root selection.
+An idle card keeps the CUDA choice. Unavailable load readings keep the prior
+runtime-based choice.
+CUDA preparation receipts include the measured runtime and CuPy versions.
 
 For the CUDA path, prepare the environment with the CuPy wheel matching
 the box's CUDA major -- `cupy-cuda12x[ctk]>=14.0` on CUDA 12.x,

@@ -1029,7 +1029,7 @@
     "47d4eb1fae1c10f6a6038d64aca27c65779fd89feea0aaa4fdd6a1dc27795193"
   ],
   "mapping": "gpuwm/authorities/rw-wps-icon-eu-regular-grib2.mapping.json",
-  "mapping_sha256": "141c635c9adc6690719fd52ff0fbcfe78d478a14e18cea8bb13df812359b3fc1",
+  "mapping_sha256": "ae8075c069206c4f3917830aa769a2c4ef8f39a03ae31b3d7ee8c31c63f23cea",
   "materialization": {
     "verdict": "INCOMPLETE"
   },

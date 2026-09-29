@@ -1,7 +1,7 @@
 # Source replacement: every crates.io and git dependency resolves to the
 # checked-in vendor/crates-io directory (emitted by `cargo vendor --locked`),
 # so a clean clone builds with --offline and without touching the network.
-# The three git sources are all FahrenheitResearch (Drew's own) repositories,
+# The three git sources are all FahrenheitResearch (the project's own) repositories,
 # pinned to the exact revisions the campaign renderer was built against.
 
 [source.crates-io]

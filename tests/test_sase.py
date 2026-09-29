@@ -1425,10 +1425,10 @@ def test_sase_moist_n2_defaults_on_and_is_fail_closed():
 
 def test_sase_moist_n2_is_run_wide_not_a_per_domain_override():
     """A PHYSICS selector, so -- unlike the output-only sase_flux_diag --
-    it is deliberately NOT a [[domain]] key: a nest whose domains ran
-    different closures could not be compared across its own boundary, and
-    the paired M1-on/M1-off experiment would be unreadable.  It stays
-    settable in [shared], which is what applies it to every domain."""
+    it is deliberately NOT a [[domain]] key: every SASE domain of a tree
+    runs one variant, so the paired M1-on/M1-off experiment compares two
+    whole trees.  It stays settable in [shared], which applies it to
+    every SASE domain of the tree."""
     from gpuwm import experiment
 
     assert "sase_moist_n2" not in experiment._DOMAIN_RUN_OVERRIDES
@@ -1452,11 +1452,13 @@ def test_sase_moist_n2_is_not_exempt_from_the_restart_config_match(tmp_path):
     assert "sase_moist_n2" not in restart.CONFIG_RUN_LENGTH_FIELDS
     # This head already had a trajectory-inert toggle set of its own, so
     # sase_flux_diag JOINS it rather than founding a second one; the
-    # closed-world assertion below therefore names both members.
+    # closed-world assertion below therefore names every member.
     assert restart.CONFIG_DIAGNOSTIC_FIELDS == frozenset(
-        {"nwp_diagnostics", "tke_budget", "sase_flux_diag"}), (
+        {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag"}), (
         # tke_budget joined on the LES lane with its own inertness proof
-        # (tests/test_tke_budget.py); the closed world stays closed.
+        # (tests/test_tke_budget.py); hmix_k_diag joined with its own
+        # (tests/test_sase_gpu.py, both producers, every prognostic
+        # byte-identical); the closed world stays closed.
         "the output-selector exemption gained a member -- every member "
         "must be provably absent from the model")
     # Functional: the stored/live mismatch is a hard restart failure.
@@ -2337,19 +2339,28 @@ def test_dycore_admits_km_opt_zero_only_with_sase():
     assert "km_opt" not in str(excinfo.value)
 
 
-def test_sase_specified_boundary_e_floor_and_masks(monkeypatch):
+@pytest.mark.parametrize("edge", [dict(specified=True),
+                                  dict(nested=True)],
+                         ids=["specified", "nested"])
+def test_sase_specified_boundary_e_floor_and_masks(monkeypatch, edge):
     """Registered adjudication (S3-6 review): on a specified domain the
     driver (a) holds e_sgs at the E_MIN floor across the outer
     spec_bdy_width rows after every fused step -- covering the widest
     test-filter halo so wrapped-neighbor contamination never reaches the
     interior through e -- (b) passes spec_bdy_width to the solve as the
     reduction-exclusion width, and (c) keeps the coupled tendencies
-    boundary-masked as built."""
+    boundary-masked as built.
+
+    A nested child's edges are no more periodic than a specified
+    domain's, so it takes the same policy.  With the width at 0 there
+    (the behaviour before SASE was admitted on a nest) the child's test
+    filters would wrap the far edge's air into the near edge's e and the
+    solve would average those wrapped cells."""
     from gpuwm.verify.sase_ref import E_MIN
 
     calls = []
     physics, state, cfg, driver = _sase_shim_driver(monkeypatch, calls,
-                                                    specified=True)
+                                                    **edge)
     tend = driver.compute(state, cfg)
     bw = cfg.spec_bdy_width
     assert bw == 5                              # covers the 4-cell halo
@@ -4664,7 +4675,7 @@ def _jet_u10_diag(u, v, z):
 
 def _run_jet_column(steps=60, dt=60.0, apply_drag=True):
     """The registered jet-decoupling column (ledger 2026-07-21 ~01:0x):
-    single column from the d03-box mean of Drew's spun-up CPU WRF
+    single column from the d03-box mean of a spun-up CPU WRF
     frame (tests/jet_profile_19740403.py -- theta/u/v/thickness AND
     the frame's own MYNN turbulence energy E0 = QKE/2, so the closure
     is presented with the REAL 13:08Z state), u* = the frame's
@@ -4799,7 +4810,7 @@ def test_jet_decoupling_stable_coefficient_holds_obs_band():
     test below preserves the BL89-inertness finding).
 
     THIS IS THE EXECUTABLE C_KS CALIBRATION GATE.  Provenance
-    (S3-9c restoration; codex S3-6h/6i/6j review IMPORTANT-2): S3-6i
+    (S3-9c restoration; S3-6h/6i/6j review IMPORTANT-2): S3-6i
     (527db8e) introduced this test exactly as it stands; S3-6j
     (cd024be) REPLACED it with the drag-on equilibrium fixture (now
     the separately named test_jet_decoupling_drag_mixing_equilibrium
@@ -4904,7 +4915,7 @@ def test_jet_decoupling_stable_dissipation_exits_obs_band():
 def test_jet_decoupling_drag_mixing_equilibrium():
     """GREEN -- the S3-6j drag-on/PGF-free equilibrium fixture
     (registered re-derivation, cd024be; renamed from the obs-band
-    gate's slot in S3-9c -- codex review IMPORTANT-2 -- so it runs
+    gate's slot in S3-9c -- review IMPORTANT-2 -- so it runs
     ALONGSIDE the restored drag-free calibration gate above, replacing
     nothing).  With the driver's implicit surface stress live
     (frame-anchored Cd; _run_jet_column docstring) and NO synoptic PGF
@@ -5009,7 +5020,7 @@ def test_stable_limit_coefficient_closed_forms():
     * BOUNDS + CLIP: C_r in [C_KS/LS_COEF, C_KV] for any l_rans, the
       floor attained exactly at rho = 1 (and by the clip for any
       l_rans > l_s);
-    * LINEAR-ONSET WITNESS (claim narrowed in S3-9c per the codex
+    * LINEAR-ONSET WITNESS (claim narrowed in S3-9c per the
       review, Minor 3): with the length fixed (l_B-binding regime),
       the coefficient deficit C_KV - C_r is LINEAR in the input n2
       (quadratic in N = sqrt(n2), CKS_BLEND_EXP = 2).  In N the
@@ -5586,7 +5597,7 @@ def test_sase_config_id_binds_s3_6j_constants(monkeypatch):
     monkeypatch.setattr(sase_ref, "SFC_WSPD_FLOOR", 0.5)
     assert sase_ref.sase_config_id() != before
     # The VALUE transcribes sfclay's 0.1 floor; its ROLE (S3-9c
-    # clarification, codex review IMPORTANT-1) is the resolved-speed
+    # clarification, review IMPORTANT-1) is the resolved-speed
     # regularizer of the linearization -- sfclay's own floor lives on
     # the gust-enhanced wspd, which enters as the S3-9c correction
     # denominator (constant docstring at SFC_WSPD_FLOOR).
@@ -5738,7 +5749,7 @@ def test_split_step_drag_applies_in_les_limb_f1(monkeypatch):
     assert abs(led_b["residual"]) / scale < 1e-11
 
 
-# --- S3-9c gustiness-corrected surface drag (codex review IMPORTANT-1) -----
+# --- S3-9c gustiness-corrected surface drag (review IMPORTANT-1) -----
 
 
 def test_split_step_gustiness_correction_identity_no_gust():
@@ -5799,7 +5810,7 @@ def test_split_step_gustiness_correction_exact_audited_form():
     uncorrected (gustiness inflates u*; the factor backs it off
     against the resolved wind).  A CALM-GUSTY witness column
     (|V1| < SFC_WSPD_FLOOR, wspd driven by vconv) carries factor
-    (SFC_WSPD_FLOOR/wspd)^2 -- the over-damping class the codex
+    (SFC_WSPD_FLOOR/wspd)^2 -- the over-damping class the
     review isolated (stress ratio > 2 in 10.3% of d01 interior
     cells) is exactly what the factor removes.  Validation:
     ``wspd_sfc`` without ``ust`` is rejected."""
@@ -5856,7 +5867,7 @@ EKMAN_NZ, EKMAN_DZ = 60, 50.0                  # 3 km column
 EKMAN_DT = 60.0
 EKMAN_Z0 = 0.1                                 # land roughness [m]
 #: Derived GREEN band for the steady level-1 (z1 = 25 m) speed.
-#: (Arithmetic corrected in S3-9c per the codex review, Minor 4; the
+#: (Arithmetic corrected in S3-9c per the review, Minor 4; the
 #: GATES below are unchanged -- only this derivation record was
 #: wrong.)  Rossby-number similarity: solving the neutral geostrophic
 #: drag law (kappa*G/u*)^2 = (ln(u*/(f*z0)) - A)^2 + B^2 at surface
@@ -5961,7 +5972,7 @@ def test_ekman_balance_column_red_drag_off_unbounded_drift():
 
 
 # ---------------------------------------------------------------------------
-# S3-6h: G2b-v3 volume-growth excusal fail-closed (codex 6g review
+# S3-6h: G2b-v3 volume-growth excusal fail-closed (6g review
 # IMPORTANT finding; fix registered ledger 2026-07-21 ~01:0x)
 # ---------------------------------------------------------------------------
 
@@ -12162,75 +12173,362 @@ def test_the_tree_runner_emits_the_sentence_from_its_own_main(
     assert line in page
 
 
-def test_the_closure_is_run_wide_and_a_per_domain_pbl_key_is_refused(
-        tmp_path):
-    """Selectable is not usable at nest width, and the page now says so.
+def _sase_tree_toml(shared_pbl: int, child_pbl: int | None = None,
+                    parent_pbl: int | None = None) -> str:
+    """A minimal moist two-domain tree for the SASE nest tests.
 
-    The registry lists ``sase`` among the domain-tree route
-    allowed_component_options, and the page read that as "selectable on
-    a nest".  The experiment loader -- which is what the runner
-    actually reads -- has no per-domain ``bl_pbl_physics`` at all, for
-    ANY scheme.  A key that parsed and was then ignored would be a
-    silently-wrong run, so the refusal is the correct behaviour and
-    this pins it.
+    ``shared_pbl`` goes in [shared]; ``parent_pbl``/``child_pbl``, when
+    given, are per-domain ``bl_pbl_physics`` keys.  A SASE domain runs
+    km_opt = 0, the only mixing SASE is admitted with, and a YSU domain
+    km_opt = 4, the horizontal Smagorinsky every PBL-on template pins.
+    """
+    def km(pbl):
+        return 0 if pbl == 900 else 4
+
+    def pbl_lines(value):
+        if value is None:
+            return ""
+        return f"bl_pbl_physics = {value}\nkm_opt = {km(value)}\n"
+
+    return f"""[experiment]
+name = "sase_tree"
+start_time = 2026-08-01T00:00:00
+run_seconds = 60.0
+restart_interval_s = 0.0
+[projection]
+map_proj = "lambert"
+ref_lat = 40.0
+ref_lon = -100.0
+truelat1 = 30.0
+truelat2 = 60.0
+stand_lon = -100.0
+[shared]
+nz = 30
+ztop = 16000.0
+p_top = 10000.0
+moist = true
+mp_physics = 6
+sf_sfclay_physics = 1
+km_opt = {km(shared_pbl)}
+bl_pbl_physics = {shared_pbl}
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 60
+ny = 60
+dx = 3000.0
+time_step = 12
+specified = true
+nested = false
+history_interval_s = 3600.0
+{pbl_lines(parent_pbl)}[[domain]]
+grid_id = 2
+parent_id = 1
+i_parent_start = 15
+j_parent_start = 15
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 30
+ny = 30
+specified = false
+nested = true
+history_interval_s = 3600.0
+{pbl_lines(child_pbl)}"""
+
+
+def _sase_warning_rows(said: str) -> list[str]:
+    return [row for row in said.splitlines()
+            if "(SASE) runs on grid_id" in row]
+
+
+def test_a_two_domain_tree_runs_sase_on_every_domain_and_says_so(
+        tmp_path, capsys):
+    """SASE selected in [shared] reaches both domains of a tree.
+
+    The subgrid energy is per domain and is not a nest-forced field, so
+    the child cold-starts its own and nothing crosses the edge.  The load
+    says the tree is implemented but not yet verified; it does not
+    refuse, and it does not raise NotImplementedError past the run-plan
+    door as it did before.
+    """
+    from gpuwm.config import SASE_PBL_SCHEME
+    from gpuwm.core.nest_fields import nest_field_kinds
+    from gpuwm.experiment import load_experiment
+
+    path = tmp_path / "tree.toml"
+    path.write_text(_sase_tree_toml(SASE_PBL_SCHEME), encoding="utf-8")
+    exp = load_experiment(path)
+    assert [d.run.bl_pbl_physics for d in exp.domains] == [
+        SASE_PBL_SCHEME, SASE_PBL_SCHEME]
+    assert exp.domains[1].run.nested
+    for dom in exp.domains:
+        kinds = nest_field_kinds(dom.run)
+        assert "e_sgs" not in kinds and "e" not in kinds
+    rows = _sase_warning_rows(capsys.readouterr().err)
+    assert len(rows) == 1, rows
+    assert "grid_id 1, 2 of a 2-domain tree" in rows[0]
+    assert "cold-starts its own subgrid energy" in rows[0]
+    assert "not yet verified" in rows[0]
+
+
+@pytest.mark.parametrize("parent_pbl,child_pbl", [(1, 900), (900, 1)])
+def test_a_per_domain_sase_key_is_honoured_on_its_domain(
+        tmp_path, capsys, parent_pbl, child_pbl):
+    """``bl_pbl_physics = 900`` in a [[domain]] table selects SASE there.
+
+    Per-domain bl_pbl_physics is honoured for every scheme; SASE was the
+    one value refused, for a reason that named no breakage (a comparison
+    across the nest edge).  Each domain runs its own closure on its own
+    state, so the key now takes effect on the domain that carries it and
+    the other domain keeps its own scheme.
     """
     from pathlib import Path
 
-    import pytest
-
     from gpuwm import experiment as exp_mod
 
-    # The structural fact this test used to pin -- no per-domain
-    # bl_pbl_physics for ANY scheme -- is retired on the 1.5 line: the
-    # LES lane made bl_pbl_physics per-domain and MEASURED the tree that
-    # needs it (a PBL parent carrying a PBL-off LES child).  What
-    # survives of this test's claim is the part that was about SASE:
-    # the closure is run-wide, never per-nest, and a per-domain 900 is
-    # refused BY NAME below rather than parsing into an incomparable
-    # mixed-closure tree.
     assert "bl_pbl_physics" in exp_mod._DOMAIN_RUN_OVERRIDES
-    assert "bl_pbl_physics" in exp_mod._DOMAIN_KEYS
-    # POSITIVE CONTROL: the one SASE key that IS per-domain, so this
-    # test cannot pass by asserting that nothing at all is per-domain.
-    assert "sase_flux_diag" in exp_mod._DOMAIN_RUN_OVERRIDES
-    assert "sase_flux_diag" in exp_mod._DOMAIN_KEYS
-    # ... and the two physics selectors deliberately are not.
+    # The closure's physics selectors stay whole-tree keys: every SASE
+    # domain of a tree runs the same closure variant.
     assert "sase_moist_n2" not in exp_mod._DOMAIN_KEYS
     assert "sase_stable_dissipation" not in exp_mod._DOMAIN_KEYS
 
-    text = (
-        "[experiment]\n"
-        'name = "synth"\n'
-        "start_time = 1970-01-01T00:00:00\n"
-        "run_seconds = 60.0\n"
-        "restart_interval_s = 0\n"
-        "\n"
-        "[shared]\n"
-        "nz = 8\n"
-        "ztop = 12000.0\n"
-        "\n"
-        "[[domain]]\n"
-        "grid_id = 1\n"
-        "parent_id = 0\n"
-        "i_parent_start = 1\n"
-        "j_parent_start = 1\n"
-        "parent_grid_ratio = 1\n"
-        "parent_time_step_ratio = 1\n"
-        "nx = 40\n"
-        "ny = 40\n"
-        "time_step = 60\n"
-        "dx = 12000.0\n"
-        "history_interval_s = 3600.0\n"
-        "bl_pbl_physics = 900\n"
-    )
     path = tmp_path / "tree.toml"
-    path.write_text(text, encoding="utf-8")
-    with pytest.raises(Exception) as caught:
-        exp_mod.load_experiment(path)
-    assert "bl_pbl_physics" in str(caught.value)
+    path.write_text(_sase_tree_toml(1, child_pbl=child_pbl,
+                                    parent_pbl=parent_pbl),
+                    encoding="utf-8")
+    exp = exp_mod.load_experiment(path)
+    assert [d.run.bl_pbl_physics for d in exp.domains] == [
+        parent_pbl, child_pbl]
+    sase_id = 1 if parent_pbl == 900 else 2
+    rows = _sase_warning_rows(capsys.readouterr().err)
+    assert len(rows) == 1, rows
+    assert f"grid_id {sase_id} of a 2-domain tree" in rows[0]
 
-    # The page must not promise per-nest selection.
+    # The page says what the loader does.
     page = (Path(__file__).resolve().parents[1]
             / "docs" / "public" / "PHYSICS.md").read_text(encoding="utf-8")
     section = page.split("## Selecting an experimental scheme", 1)[1]
-    assert "run-wide, never per-nest" in section
+    assert "run-wide, never per-nest" not in section
+    assert "**The closure can be selected per domain.**" in section
+
+
+def test_a_single_domain_sase_run_carries_no_tree_warning(tmp_path, capsys):
+    """The control: one domain, no nest, no tree sentence."""
+    from gpuwm.experiment import load_experiment
+
+    text = _sase_tree_toml(900)
+    text = text[:text.index("[[domain]]\ngrid_id = 2")]
+    path = tmp_path / "one.toml"
+    path.write_text(text, encoding="utf-8")
+    load_experiment(path)
+    assert _sase_warning_rows(capsys.readouterr().err) == []
+
+
+def _with_shared_line(text: str, line: str) -> str:
+    """``line`` added to the [shared] table of a _sase_tree_toml tree."""
+    anchor = "[[domain]]\ngrid_id = 1\n"
+    assert text.count(anchor) == 1
+    return text.replace(anchor, f"{line}\n{anchor}")
+
+
+#: A non-default value of each fail-closed SASE selector.
+_SASE_NON_DEFAULT = [("sase_moist_n2", False),
+                     ("sase_stable_dissipation", True),
+                     ("sase_flux_diag", True)]
+
+
+def test_the_loader_and_the_run_check_share_one_sase_default_table():
+    """The loader resets a non-SASE domain to the defaults the run check
+    judges against; both read gpuwm.config.SASE_FAIL_CLOSED_DEFAULTS, and
+    those are the RunConfig defaults a bare run gets."""
+    from gpuwm.config import SASE_FAIL_CLOSED_DEFAULTS
+
+    bare = _min_cfg()
+    assert SASE_FAIL_CLOSED_DEFAULTS == {
+        name: getattr(bare, name) for name in SASE_FAIL_CLOSED_DEFAULTS}
+    assert {name for name, _ in _SASE_NON_DEFAULT} == set(
+        SASE_FAIL_CLOSED_DEFAULTS)
+
+
+@pytest.mark.parametrize("name,value", _SASE_NON_DEFAULT,
+                         ids=[n for n, _ in _SASE_NON_DEFAULT])
+@pytest.mark.parametrize("parent_pbl,child_pbl", [(1, 900), (900, 1)],
+                         ids=["ysu-parent", "sase-parent"])
+def test_a_mixed_tree_takes_a_shared_sase_selector_on_its_sase_domains(
+        tmp_path, parent_pbl, child_pbl, name, value):
+    """A [shared] SASE selector on a tree that mixes SASE with YSU.
+
+    Before, no spelling selected a SASE variant on such a tree: in
+    [shared] the YSU domain refused it ("requires bl_pbl_physics=900"),
+    and in the SASE domain's table it was refused as a run key that
+    belongs in [shared].  The seam exists on the SASE domain, so the
+    [shared] value now reaches that domain and the YSU domain keeps the
+    default, which is inert there.
+    """
+    from gpuwm.config import SASE_FAIL_CLOSED_DEFAULTS
+    from gpuwm.experiment import load_experiment
+
+    text = _with_shared_line(
+        _sase_tree_toml(1, child_pbl=child_pbl, parent_pbl=parent_pbl),
+        f"{name} = {str(value).lower()}")
+    path = tmp_path / "mixed.toml"
+    path.write_text(text, encoding="utf-8")
+    exp = load_experiment(path)
+    by_pbl = {d.run.bl_pbl_physics: d.run for d in exp.domains}
+    assert set(by_pbl) == {1, 900}
+    assert getattr(by_pbl[900], name) is value
+    assert getattr(by_pbl[1], name) is SASE_FAIL_CLOSED_DEFAULTS[name]
+
+
+@pytest.mark.parametrize("name,value", _SASE_NON_DEFAULT[:2],
+                         ids=[n for n, _ in _SASE_NON_DEFAULT[:2]])
+def test_a_sase_physics_selector_in_a_domain_table_points_to_shared(
+        tmp_path, name, value):
+    """The other placement: the SASE domain's own [[domain]] table.
+
+    The two physics selectors stay whole-tree keys, so every SASE domain
+    of a tree runs one variant.  The refusal names [shared], and the
+    test above proves that [shared] now works on the same tree.
+    """
+    from gpuwm.experiment import load_experiment
+
+    text = (_sase_tree_toml(1, child_pbl=900)
+            + f"{name} = {str(value).lower()}\n")
+    path = tmp_path / "mixed.toml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        load_experiment(path)
+    said = str(caught.value)
+    assert name in said and "belong in [shared]" in said
+
+
+def test_a_flux_diag_written_on_the_non_sase_domain_is_checked_as_written(
+        tmp_path):
+    """``sase_flux_diag`` is per domain.  Written into the YSU domain's
+    own table it is that domain's setting, not a tree-wide one, and the
+    YSU domain has no SASE closure whose fluxes it could record."""
+    from gpuwm.experiment import load_experiment
+
+    text = _sase_tree_toml(1, parent_pbl=900, child_pbl=1) + (
+        "sase_flux_diag = true\n")
+    path = tmp_path / "mixed.toml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        load_experiment(path)
+    said = str(caught.value)
+    assert "sase_flux_diag=True requires bl_pbl_physics=900" in said
+
+
+def test_a_prepared_sase_domain_does_not_bind_the_closure_selectors(tmp_path):
+    """An HRRR hierarchy prepares every domain from its WRF namelist.
+
+    No namelist spells the SASE selectors, so each prepared domain's
+    identity holds their defaults while the forecast reads the values the
+    experiment config sets, and the tree was refused after preparation
+    for ``run.sase_moist_n2``.  Preparation reads none of the four, so a
+    prepared domain matches the configured one at any value of them; a
+    field preparation does read still refuses.
+    """
+    import dataclasses
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.ingest.prepared_cache import (
+        compare_prepared_domain_config, effective_prepared_domain_config,
+        prepared_domain_config_identity, undelayed_identity_defaults)
+
+    text = _with_shared_line(
+        _sase_tree_toml(1, child_pbl=900),
+        "sase_moist_n2 = false\nsase_stable_dissipation = true\n"
+        "sase_additive_dissipation = false") + "sase_flux_diag = true\n"
+    path = tmp_path / "mixed.toml"
+    path.write_text(text, encoding="utf-8")
+    exp = load_experiment(path)
+    live = exp.domains[1]
+    assert live.run.bl_pbl_physics == 900 and live.run.sase_moist_n2 is False
+    prepared = dataclasses.replace(live, run=dataclasses.replace(
+        live.run, sase_moist_n2=True, sase_stable_dissipation=False,
+        sase_additive_dissipation=True, sase_flux_diag=False))
+
+    def compare(cached):
+        return compare_prepared_domain_config(
+            effective_prepared_domain_config(
+                prepared_domain_config_identity(cached)),
+            effective_prepared_domain_config(
+                prepared_domain_config_identity(live)),
+            not_in_use=undelayed_identity_defaults(exp))
+
+    _tolerated, differing = compare(prepared)
+    assert differing == []
+    drifted = dataclasses.replace(prepared, run=dataclasses.replace(
+        prepared.run, mp_physics=8))
+    _tolerated, differing = compare(drifted)
+    assert "run.mp_physics" in differing
+
+
+@pytest.mark.parametrize("line", ["sase_flux_diag = true",
+                                  "hmix_k_diag = true",
+                                  "nwp_diagnostics = 1"])
+def test_the_preparation_stage_binding_ignores_an_output_only_switch(
+        tmp_path, line):
+    """The stage binding projects out what the prepared cache ignores.
+
+    sase_flux_diag was projected out through PREPARATION_INERT_RUN_FIELDS
+    until its one ruling became the output-only table the cache reader
+    skips; hmix_k_diag and nwp_diagnostics never were, so switching one
+    hashed a different config and prepared the same arrays again.  A
+    field preparation reads still binds.
+    """
+    from gpuwm.experiment import load_experiment
+    from gpuwm.stage_reuse import _experiment_argument_binding
+
+    text = _sase_tree_toml(1, child_pbl=900)
+    plain = tmp_path / "plain.toml"
+    plain.write_text(text, encoding="utf-8")
+    switched = tmp_path / "switched.toml"
+    switched.write_text(_with_shared_line(text, line), encoding="utf-8")
+    moved = tmp_path / "moved.toml"
+    moved.write_text(text.replace("mp_physics = 6", "mp_physics = 8"),
+                     encoding="utf-8")
+    # Configs that build, so the projection answers and not the byte pin.
+    for path in (switched, moved):
+        load_experiment(path)
+
+    bound = _experiment_argument_binding(str(plain))
+    assert bound["schema"] == "gpuwm-preparation-config-controls-v1"
+    assert _experiment_argument_binding(str(switched)) == bound
+    assert _experiment_argument_binding(str(moved)) != bound
+
+
+@pytest.mark.parametrize("name,value", _SASE_NON_DEFAULT,
+                         ids=[n for n, _ in _SASE_NON_DEFAULT])
+def test_a_shared_sase_selector_on_a_tree_with_no_sase_domain_is_refused(
+        tmp_path, name, value):
+    """The refusal a single domain gets holds for a tree with no SASE
+    domain: no domain has the seam the key names."""
+    from gpuwm.experiment import load_experiment
+
+    text = _with_shared_line(_sase_tree_toml(1),
+                             f"{name} = {str(value).lower()}")
+    path = tmp_path / "ysu.toml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        load_experiment(path)
+    said = str(caught.value)
+    assert f"{name}={value!r} requires bl_pbl_physics=900" in said
+
+
+@pytest.mark.parametrize("name,value", _SASE_NON_DEFAULT,
+                         ids=[n for n, _ in _SASE_NON_DEFAULT])
+def test_a_single_non_sase_domain_still_refuses_a_sase_selector(
+        name, value):
+    """The single-domain refusal is unchanged."""
+    cfg = _min_cfg(moist=True, bl_pbl_physics=1, sf_sfclay_physics=1,
+                   km_opt=4, **{name: value})
+    with pytest.raises(ValueError) as caught:
+        validate_run_config(cfg)
+    assert f"{name}={value!r} requires bl_pbl_physics=900" in str(
+        caught.value)

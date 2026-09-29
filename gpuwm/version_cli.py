@@ -451,6 +451,11 @@ def version_main(args=None) -> int:
 
 
 def register_cli(subparsers):
+    # A lookup that fails prints nothing by design, so a timeout of zero,
+    # below zero or not a number was a lookup that could never answer and
+    # said so to nobody; the parser refuses those instead.
+    from gpuwm.cli_numbers import positive_float
+
     parser = subparsers.add_parser(
         "version",
         help="which gpuwm is actually running: version, import location, "
@@ -468,7 +473,7 @@ def register_cli(subparsers):
         help="accepted for older scripts; names the default (no PyPI "
              "lookup) and changes nothing")
     parser.add_argument(
-        "--pypi-timeout", type=float, default=PYPI_TIMEOUT_S,
+        "--pypi-timeout", type=positive_float, default=PYPI_TIMEOUT_S,
         metavar="SECONDS", dest="pypi_timeout",
         help=f"seconds to wait for the index under --check-pypi (default "
              f"{PYPI_TIMEOUT_S})")

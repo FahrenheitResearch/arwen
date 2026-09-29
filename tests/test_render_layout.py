@@ -7,7 +7,7 @@ one is to read filenames.  The field report that opened this was
 "thousands of frames of all sorts of timestamps and plot types in one
 directory".
 
-The layout that replaces it is Drew's 2026-08-06 ruling (case folder ->
+The layout that replaces it is the 2026-08-06 project ruling (case folder ->
 domain -> product subfolders) with the reporter's timestamp request
 slotted into it as the leaf grouping:
 
@@ -36,7 +36,7 @@ pytest.importorskip(
     "wrf", reason="gpuwm render requires the wrf package (wrf-rust)")
 
 import gpuwm.cli as cli
-from gpuwm import render_layout, run_stamp
+from gpuwm import render_layout, render_receipts, run_stamp
 from gpuwm.io.wrfout import WrfoutWriter
 
 _NZ, _NY, _NX = 4, 12, 16
@@ -82,6 +82,20 @@ def wrfout(tmp_path_factory) -> Path:
 def _relative_pngs(root: Path) -> list[str]:
     return sorted(p.relative_to(root).as_posix()
                   for p in root.rglob("*.png"))
+
+
+#: The render's own record, filed at the root of every render folder by
+#: gpuwm.render_receipts: the invocation receipts and their summary.  It
+#: is not a picture and not a layout level, so a listing of the layout
+#: leaves it out, and the listing checks it is present rather than
+#: letting any other stray entry through.
+_RENDER_RECORD = {".render-receipts", render_receipts.SUMMARY_FILENAME}
+
+
+def _layout_entries(root: Path) -> list[str]:
+    names = sorted(p.name for p in root.iterdir())
+    assert _RENDER_RECORD <= set(names), names
+    return [name for name in names if name not in _RENDER_RECORD]
 
 
 def _run_dir(out: Path) -> Path:
@@ -192,7 +206,7 @@ def test_the_flat_layout_reproduces_the_published_release_paths(wrfout,
                      "--products", "refl", "--out", str(bare),
                      "--layout", "flat", "--run-stamp", "off",
                      "--dpi", "72"]) == 0
-    assert sorted(p.name for p in bare.iterdir()) == expected
+    assert _layout_entries(bare) == expected
 
 
 def test_two_nests_and_five_products_no_longer_share_one_directory(
@@ -235,7 +249,7 @@ def test_two_nests_and_five_products_no_longer_share_one_directory(
 
     assert busiest(flat_pngs) == 20
     assert busiest(nested_pngs) == 2
-    assert sorted(p.name for p in nested.iterdir()) == ["d02-3km", "d03-1km"]
+    assert _layout_entries(nested) == ["d02-3km", "d03-1km"]
 
 
 # -- the rust engine ---------------------------------------------------

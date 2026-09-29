@@ -31,6 +31,57 @@ line, and an explicit `cuda` with no usable CuPy refuses by name [commit
 54c492a32]. The announced line is in the 10 GiB walk's own transcript
 [receipt:ux-walks-replay/gpu-walk-3080.html].
 
+A CUDA preparation is also priced before it allocates anything
+[gpuwm/ingest/preparation_price.py]. Every door that can prepare on the card
+(GFS, ERA5 and its analysis-ready store, the mapped sources and 20CRv3,
+met_em, native HRRR with its spawned boundary workers, `gpuwm run` case data
+with or without a host store, and the downscale child's parent
+interpolation) prices the model state, the forcing analysis, the vertical
+plans and outputs, the boundary tables, any child states held for the
+hierarchy export and the CUDA context, reads the card's free memory once in a
+subprocess, and decides there. Under `auto` a preparation that does not fit
+prepares on the CPU with one line, for example "the CUDA preparation needs
+30.2 GiB (...) and the card has 22.3 GiB free of 24.0 GiB", and the receipt's
+`selection.device_fit` records the terms, the free memory and the answer.
+An explicit `--preprocess-backend cuda` that does not fit is refused by name
+before anything is allocated, naming the terms, the stage it would have
+stopped in and `--preprocess-backend cpu`. Every one of those doors defaults
+to `auto`, and `gpuwm go` prices the CPU road for a preparation the card
+cannot hold rather than refusing the run. The price was fitted to four
+measured CUDA preparations (1792 x 1024 x 55, 896 x 512 x 59, a 3:1 nest and
+a tiled nest) and sits 5% to 11% above each measured card peak
+[tests/test_preparation_price.py].
+
+Under either backend, the masked surface fields (soil moisture and
+temperature, snow, skin temperature, sea ice) take WPS metgrid's masked chain
+in float64 in the Rust preprocessing library, parallel across target cells
+(on the CPU backend's worker count, at most eight threads when none is given,
+and on every CPU under the CUDA backend), with a result that does not depend
+on the worker count. The mapped values and their repair counts are byte-identical to
+the single-core NumPy chain it replaced, which is kept only as a test oracle
+[tests/test_wps_masked_chain_native.py]. The native HRRR route maps its soil
+temperature and soil moisture the same way, under either backend: the
+land-only bilinear stencil, the search for the nearest HRRR land cell past the
+fallback radius and the stencil's report are built in float64 in the same
+library, and on the CPU the stencil is applied there too, byte-identical to
+the NumPy builder kept as its test oracle
+[tests/test_masked_stencil_native.py]. A library that predates either entry is
+refused by name with the rebuild remedy; there is no NumPy route for these
+fields. The water surfaces take the same library under either backend: the
+search for the nearest source water cell of each model lake, the bilinear
+blend of source water temperature over the donors each water body owns, the
+sweep that closes a body's remaining holes from its own cells, and the corner
+blend of a water-temperature overlay, the labelling of water bodies, the
+source cells each body owns, the repair of water cells whose provider left
+no admissible temperature, and the per-body assembly of every lake and sea,
+byte-identical to the NumPy code kept as their test oracle
+[tests/test_water_blend_native.py]. The CPU backend's bounded surface-nearest
+search runs there too. These host steps take `--preprocess-workers` when it
+is given; otherwise the CPU backend's automatic count (at most eight), and
+under the CUDA backend every CPU the process may use. The water-temperature
+overlay of the mapped sources and of a case configuration takes the automatic
+count when `--preprocess-workers` is not given.
+
 `gpuwm go CONFIG` runs six stages in order (authority, fetch, front-door
 manifest, preprocessing, forecast, render); `--dry-run` prints all six filled in.
 The chain writes an append-only `events.jsonl` with one started/finished pair per
@@ -124,9 +175,10 @@ path [tools/ensemble_forecast.py; tests/test_ensemble_engine.py]. See section
 walked end to end on a wheel install (Windows 11, RTX 3080, 2026-08-17)
 [docs/public/DOWNSCALE.md]. Two facts shape the path, stated up front because
 they are the two dead ends: the parent must have written a gpuwm restart
-(`--parent-restart` binds it as the physics evidence; a single-domain wizard
-emission disables restart writing, so the one-domain quickstart cannot be
-downscaled; emit a nest ladder, which sets hourly restarts), and a full-physics
+(`--parent-restart` binds it as the physics evidence; every `gpuwm domain`
+configuration, single domain or nest ladder, checkpoints hourly or at the end
+of a shorter run; a hand-written one needs a positive `restart_interval_s`),
+and a full-physics
 child needs a child-grid surface file, which the preparation already built
 (`--child-surface-from <prepared>/wrf-native-input/wrfinput_d0N`).
 

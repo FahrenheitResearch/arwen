@@ -57,6 +57,9 @@ class MetEmCase:
     lane: str                      # "specific-humidity" or "relative-humidity"
     nx: int
     ny: int
+    # LANDMASK: the target grid's land/water, which real.exe reads as
+    # XLAND to size cold-start cloud droplets (make_DropletNumber).
+    landmask: np.ndarray | None = None
 
 
 def _var(ds, name, dtype=np.float32):
@@ -125,7 +128,9 @@ def read_metem(path) -> MetEmCase:
             fields=fields,
             terrain=_var(ds, "HGT_M", np.float64),
             source_orography=soilhgt,
-            lane=lane, nx=nx, ny=ny)
+            lane=lane, nx=nx, ny=ny,
+            landmask=(_var(ds, "LANDMASK") if "LANDMASK" in ds.variables
+                      else None))
     finally:
         ds.close()
 
@@ -239,7 +244,7 @@ def run_differential(metem_path, wrfinput_path, *, mp_physics=None,
                                   levels_hpa=case.levels_hpa,
                                   fields=case.fields)
     result = initialize_real(
-        snapshot, cfg, coord, case.terrain,
+        snapshot, cfg, coord, case.terrain, landmask=case.landmask,
         source_orography=case.source_orography, p_top=grid["p_top"],
         sfcp_to_sfcp=True, use_sh_qv=False, column_workers=column_workers,
         preprocess_backend=preprocess_backend,

@@ -341,6 +341,10 @@ def fit_main(args):
         target_machine = Machine(vram_bytes=free, host_bytes=host["total_bytes"],
                                  name="selected forecast target", host_source="probe")
     footprint = dw.load_polygon_footprint(args.polygon) if args.polygon else None
+    point_extent_km = getattr(args, "point_extent_km", None)
+    dw.refuse_point_extent_on_polygon(point_extent_km, footprint)
+    if point_extent_km is None:
+        point_extent_km = dw.POINT_FIT_MAX_EXTENT_KM
     lat, lon = ((footprint.center_lat, footprint.center_lon) if footprint else
                 dw._parse_point(args.point))
     projection = raw["projection"]
@@ -394,8 +398,16 @@ def fit_main(args):
     else:
         if args.buffer_km is not None:
             raise ValueError("--buffer-km requires --polygon")
+        stop: dict = {}
         dims, exp = dw.fit_ladder(dimensions_builder=starter.point_dimensions,
-            layout_label="template tree " + ", ".join(f"d{grid_id:02d}" for grid_id in starter.domain_ids), **common)
+            layout_label="template tree " + ", ".join(f"d{grid_id:02d}" for grid_id in starter.domain_ids),
+            point_extent_km=point_extent_km, stop_out=stop, **common)
+        bound = stop.get("scope")
+        extent_note = (dw.point_fit_cap_note(bound, dims, starter.dx,
+                                             point_extent_km)
+                       if bound in dw.POINT_FIT_SCOPES else
+                       dw.point_extent_note(dims, starter.dx, point_extent_km))
+        note = "\n".join(line for line in (note, extent_note) if line)
     dw._pole_clearance_refusal(projection, *dims[0], starter.dx,
                                target_option="--polygon" if footprint else "--point")
     if fetch and dw.source_fetch_takes_a_crop_box(source):
@@ -631,7 +643,7 @@ def _tiles_memory_plan(path, experiment, *, original):
     delivery = streaming_decision(experiment, chain=chain)
     if delivery is not None and delivery["refusal"]:
         raise ValueError(delivery["refusal"])
-    sizing = dw.resolve_sizing_budget(None, None)
+    sizing = dw.resolve_sizing_budget(None, None, declare=())
     machine = streaming.planner_machine(
         vram_bytes=sizing.free_bytes, name="domain-tiles available memory",
         device_profile=sizing.device_profile)
@@ -838,12 +850,20 @@ def tiles_main(args):
 
 
 def register_cli(subparsers):
+    from gpuwm import domain_wizard as dw
     parser = subparsers.add_parser("domain-fit", help="explicitly fit an editable "
                                   "TOML to an area/device; preserve exact scientific settings")
     parser.add_argument("template", type=Path, help="ordinary complete experiment TOML")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--point", help="center LAT,LON; fit largest centered layout")
     target.add_argument("--polygon", type=Path, help="GeoJSON area; preserve its entire footprint")
+    parser.add_argument("--point-extent-km", type=dw.point_extent_argument,
+                        default=dw.POINT_FIT_MAX_EXTENT_KM, metavar="KM",
+                        help="largest root extent per axis a --point fit is sized to "
+                        f"(default {dw.POINT_FIT_MAX_EXTENT_KM:.0f}); the projection pole, "
+                        "one trip around the globe, the source's coverage and the card "
+                        "still bound it, and an extent below the template's smallest "
+                        "root gets that root")
     parser.add_argument("--buffer-km", help="one polygon buffer, or one per domain in the template's parent-before-child order")
     device = parser.add_mutually_exclusive_group()
     device.add_argument("--card", help="GPU to size for: a tier (12gb/16gb/24gb/"

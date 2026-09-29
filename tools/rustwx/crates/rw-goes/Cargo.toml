@@ -29,5 +29,6 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 ureq.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 rw-sat = { path = "../rw-sat" }
 rw-store = { path = "../rw-store" }

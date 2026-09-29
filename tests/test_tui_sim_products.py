@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shlex
 from types import SimpleNamespace
 
 import pytest
 
 from gpuwm import stage_cli
 from gpuwm.cli import build_parser
+from host_shell_words import host_shell_words
 
 
 def bundle(tmp_path, layout):
@@ -45,7 +45,7 @@ def test_public_sim_prints_exact_supported_runner_plot_arguments(
                   "--render-dir", str(tmp_path / "my pictures")]
     args = build_parser().parse_args(words)
     assert stage_cli.sim_main(args) == 0
-    command = shlex.split(capsys.readouterr().out.strip())
+    command = host_shell_words(capsys.readouterr().out.strip())
     parser = single.build_parser() if layout == "single" else tree.build_parser()
     parsed = parser.parse_args(command[3:])
     assert parsed.render_products == products
@@ -152,6 +152,18 @@ def test_tree_failure_joins_dispatched_plot_thread_and_preserves_primary_error(
             raise RuntimeError("plot join fixture")
 
     monkeypatch.setattr(plots, "wait", join)
+    halts = []
+
+    def halt(timeout=None):
+        # A stop draws nothing more: the render in flight is ended, not waited for (here its stand-in ends).
+        halts.append(True)
+        allow_finish.set()
+        original_wait(timeout=2)
+        if join_fails:
+            raise RuntimeError("plot join fixture")
+        return True
+
+    monkeypatch.setattr(plots, "halt", halt)
     monkeypatch.setattr(tree.prepared_single, "_route_owned_first_products",
                         lambda *a, **k: plots)
     primary = failure_type("forecast failed after first frame")
@@ -177,5 +189,8 @@ def test_tree_failure_joins_dispatched_plot_thread_and_preserves_primary_error(
         tree.main(argv)
     assert raised.value is primary
     assert receipts == [primary]
-    assert joins == [True] and worker_finished.is_set()
+    # A failure finishes drawing the frames it wrote; a stop (Ctrl+C) halts the renders instead.
+    stopped = failure_type is KeyboardInterrupt
+    assert (joins, halts) == (([], [True]) if stopped else ([True], []))
+    assert worker_finished.is_set()
     assert ("plot join fixture" in capsys.readouterr().err) is join_fails

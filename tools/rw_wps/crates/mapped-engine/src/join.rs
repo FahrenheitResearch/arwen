@@ -15,10 +15,15 @@
 //!   tolerance — an epsilon would accept grids the Python engine refuses;
 //! * `np.mod(x, 360.0)` is floor-modulo, which is `f64::rem_euclid`, not
 //!   `%`;
-//! * the terrain path INHERITS the supplement's missing count while the
-//!   bound-field path RECOMPUTES it on the subset.  The two are
-//!   deliberately different and unifying them moves a number in every
-//!   receipt.
+//! * both joins count the missing cells of the SUBSET they take, never
+//!   the whole donor's: a donor's missing cells need not fall inside the
+//!   borrowed window, and the canonical validator checks the count
+//!   against the cropped array.  (The terrain path used to inherit the
+//!   supplement's whole count; that equals the subset's on every
+//!   composition that passed validation, so no accepted number moved.)
+//! * two invariant records are EQUAL when their finite values are equal
+//!   and their missing cells are the same cells: `NaN != NaN`, so plain
+//!   array equality called one unchanged static different from itself.
 //!
 //! **What the compose goldens do and do not grade here.**  Measured
 //! across every staged composed source: each one's supplement or donor
@@ -149,7 +154,25 @@ pub fn exact_subset_indices(
     if indices.len() > 1 {
         let ascending = indices.windows(2).all(|pair| pair[1] == pair[0] + 1);
         let descending = indices.windows(2).all(|pair| pair[0] == pair[1] + 1);
-        if !(ascending || descending) {
+        let mut contiguous = ascending || descending;
+        if !contiguous
+            && cyclic_degrees
+            && indices.len() <= larger.len()
+            && closed_longitude_circle(larger)
+        {
+            // A donor axis that closes the circle has its last and first
+            // cells as neighbours, so a primary crossing that seam is
+            // still a run of adjacent cells.  At most one full turn: a
+            // longer request would repeat a cell.
+            let size = larger.len();
+            let wrapped: Vec<usize> = indices
+                .windows(2)
+                .map(|pair| (pair[1] + size - pair[0]) % size)
+                .collect();
+            contiguous = wrapped.iter().all(|step| *step == 1)
+                || wrapped.iter().all(|step| *step == size - 1);
+        }
+        if !contiguous {
             return Err(frame_invalid(format!(
                 "primary {label} is not a contiguous terrain-grid subset"
             )));
@@ -158,11 +181,77 @@ pub fn exact_subset_indices(
     Ok(indices)
 }
 
+/// `mapped_composition._closed_longitude_circle`: whether a donor
+/// longitude axis goes once round the globe, evenly.
+///
+/// Its cells, taken in index order and wrapping from the last back to the
+/// first, must step the same way round the circle, one turn in all, with
+/// no step as long as 1.5 of the shortest: a regional axis fails on its
+/// wrap step and an axis missing a cell fails on the step that skips it.
+/// Coordinates are still matched EXACTLY above; this only decides whether
+/// the index sequence may wrap, so the bound picks no cell.
+fn closed_longitude_circle(longitude: &[f64]) -> bool {
+    let folded: Vec<f64> = longitude.iter().map(|value| value.rem_euclid(360.0)).collect();
+    let size = folded.len();
+    if size < 2 {
+        return false;
+    }
+    for backward in [false, true] {
+        let steps: Vec<f64> = (0..size)
+            .map(|index| {
+                let (here, next) = (folded[index], folded[(index + 1) % size]);
+                if backward {
+                    (here - next).rem_euclid(360.0)
+                } else {
+                    (next - here).rem_euclid(360.0)
+                }
+            })
+            .collect();
+        let shortest = steps.iter().copied().fold(f64::INFINITY, f64::min);
+        let longest = steps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let turns = (steps.iter().sum::<f64>() / 360.0).round();
+        if shortest > 0.0 && longest < 1.5 * shortest && turns == 1.0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// `int(np.sign(last - first))` over the solved index range.
 fn index_direction(indices: &[usize]) -> i64 {
     let first = indices[0] as i64;
     let last = indices[indices.len() - 1] as i64;
     (last - first).signum()
+}
+
+/// `mapped_composition._index_direction`: +1 or -1 for the way a
+/// longitude run steps, across the seam or not.  An unwrapped run keeps
+/// [`index_direction`], the value every receipt already carries.
+fn wrapped_index_direction(indices: &[usize], size: usize) -> i64 {
+    if indices.len() < 2 {
+        return 0;
+    }
+    let ascending = indices.windows(2).all(|pair| pair[1] == pair[0] + 1);
+    let descending = indices.windows(2).all(|pair| pair[0] == pair[1] + 1);
+    if ascending || descending {
+        return index_direction(indices);
+    }
+    if (indices[1] + size - indices[0]) % size == 1 {
+        1
+    } else {
+        -1
+    }
+}
+
+/// Equality for records that must be invariant: same shape, equal finite
+/// values, and missing cells in the same places
+/// (`np.array_equal(..., equal_nan=True)`).
+fn invariant_values_equal(left: &ArrayD<f64>, right: &ArrayD<f64>) -> bool {
+    left.shape() == right.shape()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()))
 }
 
 /// `values[np.ix_(latitude_indices, longitude_indices)]` on a 2-D field.
@@ -263,10 +352,8 @@ pub fn apply_terrain(
             source_cycle: entry.source_cycle,
             axes: entry.axes.clone(),
             values: plan.values.clone(),
-            // INHERITED, not recomputed.  The bound-field path a few
-            // hundred lines down recomputes its own on the subset; the
-            // two are deliberately different, and unifying them would
-            // move `missing_count` in every terrain receipt ever written.
+            // Counted on this subset by `plan_terrain`: the array the
+            // canonical validator checks the count against.
             missing_count: entry.missing_count,
             references: entry.references.clone(),
         },
@@ -336,7 +423,7 @@ pub fn plan_terrain(
     let full_reference = &terrain_items[0].2.values;
     if terrain_items[1..]
         .iter()
-        .any(|(_time, _member, value)| &value.values != full_reference)
+        .any(|(_time, _member, value)| !invariant_values_equal(&value.values, full_reference))
     {
         return Err(frame_invalid(
             "terrain supplement changes across supplied valid times",
@@ -383,10 +470,13 @@ pub fn plan_terrain(
     for key in &keys {
         let supplied = terrain_by_time.get(key).copied().unwrap_or(carrier);
         let values = take_grid(&supplied.values, &latitude_indices, &longitude_indices);
+        // The subset's own count, not the supplement's: missing donor
+        // cells outside the primary window are not in this array.
+        let missing_count = crate::array::count_nan(&values);
         match &subset_reference {
             None => subset_reference = Some(values),
             Some(reference) => {
-                if reference != &values {
+                if !invariant_values_equal(reference, &values) {
                     return Err(frame_invalid(
                         "terrain subset changes across primary valid times",
                     ));
@@ -398,7 +488,7 @@ pub fn plan_terrain(
             TerrainEntry {
                 source_cycle: supplied.source_cycle,
                 axes: supplied.axes.clone(),
-                missing_count: supplied.missing_count,
+                missing_count,
                 references: supplied.references.clone(),
             },
         );
@@ -485,7 +575,7 @@ pub fn plan_terrain(
     );
     receipt.insert(
         "longitude_index_direction".into(),
-        json!(index_direction(&longitude_indices)),
+        json!(wrapped_index_direction(&longitude_indices, terrain.longitude.len())),
     );
     receipt.insert(
         "coordinate_match".into(),
@@ -578,9 +668,8 @@ pub fn apply_bound_fields(
                 source_cycle: value.source_cycle,
                 axes: value.axes.clone(),
                 values,
-                // RECOMPUTED on the subset, unlike the terrain path's
-                // inherited count: a donor grid's missing cells need not
-                // fall inside the borrowed window.
+                // Counted on the subset: a donor grid's missing cells
+                // need not fall inside the borrowed window.
                 missing_count,
                 references: value.references.clone(),
             },
@@ -743,7 +832,9 @@ pub fn plan_bound_fields(
                 let reference = ordered[0];
                 if ordered[1..]
                     .iter()
-                    .any(|(value, _entry)| value.values != reference.0.values)
+                    .any(|(value, _entry)| {
+                        !invariant_values_equal(&value.values, &reference.0.values)
+                    })
                 {
                     return Err(frame_invalid(format!(
                         "contributing source binding {quoted} field {} changes \
@@ -935,6 +1026,271 @@ mod tests {
         let indices = exact_subset_indices(&larger, &[2.0, 1.0], "latitude", false).unwrap();
         assert_eq!(indices, vec![2, 1]);
         assert_eq!(index_direction(&indices), -1);
+    }
+
+    fn at(text: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    fn field(time: NaiveDateTime, name: &str, values: ArrayD<f64>) -> DirectValue {
+        DirectValue {
+            name: name.to_owned(),
+            valid_time: time,
+            member: None,
+            source_cycle: time,
+            axes: vec!["y".into(), "x".into()],
+            missing_count: crate::array::count_nan(&values),
+            values,
+            references: vec!["fixture".into()],
+        }
+    }
+
+    fn collection(
+        latitude: &[f64],
+        longitude: &[f64],
+        records: Vec<DirectValue>,
+    ) -> DecodedCollection {
+        let mut direct = BTreeMap::new();
+        let mut source_cycles = BTreeMap::new();
+        for record in records {
+            source_cycles.insert((record.valid_time, None), record.source_cycle);
+            direct.insert((record.valid_time, None, record.name.clone()), record);
+        }
+        DecodedCollection {
+            latitude: latitude.to_vec(),
+            longitude: longitude.to_vec(),
+            vertical_values: vec![],
+            direct,
+            source_cycles,
+            grid_fingerprint: "fixture".into(),
+            hybrid_a: vec![],
+            hybrid_b: vec![],
+        }
+    }
+
+    fn grid(rows: usize, columns: usize) -> ArrayD<f64> {
+        ndarray::Array::from_shape_vec(
+            (rows, columns),
+            (0..rows * columns).map(|value| value as f64).collect(),
+        )
+        .unwrap()
+        .into_dyn()
+    }
+
+    #[test]
+    fn a_primary_crossing_a_global_seam_takes_its_exact_cells() {
+        // The donor's last and first longitudes are neighbours on a
+        // whole-globe axis, so these runs are contiguous although their
+        // indices wrap; each was refused as "not a contiguous
+        // terrain-grid subset".
+        let east: Vec<f64> = (0..1440).map(|index| index as f64 * 0.25).collect();
+        let pacific: Vec<f64> = (0..1440).map(|index| -180.0 + index as f64 * 0.25).collect();
+        let west: Vec<f64> = (0..1440).map(|index| 359.75 - index as f64 * 0.25).collect();
+        for (donor, primary, expected) in [
+            (&east, vec![-0.5, -0.25, 0.0, 0.25], vec![1438, 1439, 0, 1]),
+            (&east, vec![0.25, 0.0, -0.25, -0.5], vec![1, 0, 1439, 1438]),
+            (&pacific, vec![179.5, 179.75, 180.0, 180.25], vec![1438, 1439, 0, 1]),
+            (&west, vec![0.25, 0.0, -0.25, -0.5], vec![1438, 1439, 0, 1]),
+        ] {
+            assert_eq!(
+                exact_subset_indices(donor, &primary, "longitude", true).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn a_rounded_decoded_global_axis_still_closes_its_seam() {
+        // 0.15 deg decoded as micro-degrees over 1e6: not exactly even.
+        let donor: Vec<f64> = (0..2400).map(|index| (index * 150_000) as f64 / 1.0e6).collect();
+        let primary = vec![donor[2398], donor[2399], donor[0], donor[1]];
+        assert_eq!(
+            exact_subset_indices(&donor, &primary, "longitude", true).unwrap(),
+            vec![2398, 2399, 0, 1]
+        );
+    }
+
+    #[test]
+    fn the_seam_wraps_only_a_closed_axis_and_one_turn() {
+        let quarter = [0.0, 90.0, 180.0, 270.0];
+        for (donor, primary, cyclic) in [
+            (&[0.0, 1.0, 2.0][..], &[2.0, 0.0][..], true),
+            (&quarter[..], &[270.0, 90.0][..], true),
+            (&quarter[..], &[270.0, 0.0, 90.0][..], false),
+            (&[0.0, 90.0, 180.0][..], &[180.0, 0.0][..], true),
+            (&[0.0, 90.0, 180.0, 270.0, 360.0][..], &[0.0][..], true),
+            (&quarter[..], &[270.0, 0.000_001][..], true),
+            (&quarter[..], &[270.0, 0.0, 90.0, 180.0, 270.0][..], true),
+        ] {
+            assert!(
+                exact_subset_indices(donor, primary, "longitude", cyclic).is_err(),
+                "{donor:?} {primary:?} {cyclic}"
+            );
+        }
+    }
+
+    #[test]
+    fn terrain_across_the_seam_gathers_and_records_its_direction() {
+        let time = at("2026-09-27 00:00:00");
+        let donor_longitude: Vec<f64> = (0..1440).map(|index| index as f64 * 0.25).collect();
+        let terrain = collection(
+            &[10.0, 11.0],
+            &donor_longitude,
+            vec![field(time, EXTERNAL_FIELD, grid(2, 1440))],
+        );
+        for (primary_longitude, indices, direction) in [
+            (vec![-0.5, -0.25, 0.0, 0.25], [1438_usize, 1439, 0, 1], 1),
+            (vec![0.25, 0.0, -0.25, -0.5], [1, 0, 1439, 1438], -1),
+        ] {
+            let cycles = BTreeMap::from([((time, None), time)]);
+            let names = BTreeSet::from(["surface_pressure".to_owned()]);
+            let header = PrimaryHeader {
+                latitude: &[10.0, 11.0],
+                longitude: &primary_longitude,
+                vertical_values: &[],
+                source_cycles: &cycles,
+                direct_names: &names,
+            };
+            let (plan, receipt) = plan_terrain(&header, &terrain, "valid_time_exact").unwrap();
+            for row in 0..2 {
+                for (column, index) in indices.iter().enumerate() {
+                    assert_eq!(plan.values[[row, column]], (row * 1440 + index) as f64);
+                }
+            }
+            assert_eq!(receipt["longitude_index_direction"], json!(direction));
+            assert_eq!(receipt["longitude_index_range"], json!([indices[0], indices[3]]));
+        }
+    }
+
+    #[test]
+    fn an_unwrapped_run_keeps_its_receipt_direction() {
+        assert_eq!(wrapped_index_direction(&[5, 4, 3], 7), -1);
+        assert_eq!(wrapped_index_direction(&[1, 0], 2), -1);
+        assert_eq!(wrapped_index_direction(&[0, 1], 2), 1);
+        assert_eq!(wrapped_index_direction(&[3], 7), 0);
+    }
+
+    fn with_missing(values: &ArrayD<f64>, cell: [usize; 2]) -> ArrayD<f64> {
+        let mut copy = values.clone();
+        copy[[cell[0], cell[1]]] = f64::NAN;
+        copy
+    }
+
+    #[test]
+    fn missing_donor_cells_outside_the_subset_are_not_a_change() {
+        // An unchanged static with a missing cell outside the primary
+        // window: several identical records were refused (NaN != NaN) and
+        // one broadcast record kept the whole donor's count, which the
+        // canonical validator refused against the cropped array.
+        let time = at("2026-09-27 00:00:00");
+        let later = at("2026-09-27 06:00:00");
+        let cycles = BTreeMap::from([((time, None), time), ((later, None), time)]);
+        let names = BTreeSet::from(["surface_pressure".to_owned()]);
+        let header = PrimaryHeader {
+            latitude: &[10.0, 11.0],
+            longitude: &[1.0, 2.0],
+            vertical_values: &[],
+            source_cycles: &cycles,
+            direct_names: &names,
+        };
+        let values = with_missing(&grid(2, 3), [0, 0]);
+        for one_record in [true, false] {
+            let times = if one_record { vec![time] } else { vec![time, later] };
+            let records = times
+                .into_iter()
+                .map(|valid| field(valid, EXTERNAL_FIELD, values.clone()))
+                .collect();
+            let terrain = collection(&[10.0, 11.0], &[0.0, 1.0, 2.0], records);
+            let alignment = if one_record { "cycle_invariant_broadcast" } else { "valid_time_exact" };
+            let (plan, _receipt) = plan_terrain(&header, &terrain, alignment).unwrap();
+            assert_eq!(plan.values.iter().copied().collect::<Vec<f64>>(), vec![1.0, 2.0, 4.0, 5.0]);
+            for entry in plan.entries.values() {
+                assert_eq!(entry.missing_count, 0);
+                crate::derive::CanonicalField::validate_values(
+                    EXTERNAL_FIELD, &entry.axes, &plan.values, entry.missing_count,
+                )
+                .unwrap();
+            }
+        }
+        // A missing cell INSIDE the window is counted there.
+        let inside = with_missing(&grid(2, 3), [1, 2]);
+        let terrain = collection(
+            &[10.0, 11.0],
+            &[0.0, 1.0, 2.0],
+            vec![field(time, EXTERNAL_FIELD, inside.clone()), field(later, EXTERNAL_FIELD, inside)],
+        );
+        let (plan, _receipt) = plan_terrain(&header, &terrain, "valid_time_exact").unwrap();
+        assert!(plan.entries.values().all(|entry| entry.missing_count == 1));
+        // A static that changes beside a stable missing cell still refuses,
+        // and so does a cell that turns missing.
+        for changed in [grid(2, 3), with_missing(&with_missing(&grid(2, 3), [0, 0]), [1, 1])] {
+            let mut moved = changed;
+            if !moved[[1, 1]].is_nan() {
+                moved[[0, 0]] = f64::NAN;
+                moved[[1, 1]] += 1.0;
+            }
+            let terrain = collection(
+                &[10.0, 11.0],
+                &[0.0, 1.0, 2.0],
+                vec![field(time, EXTERNAL_FIELD, values.clone()), field(later, EXTERNAL_FIELD, moved)],
+            );
+            let refusal = plan_terrain(&header, &terrain, "valid_time_exact").err().unwrap();
+            assert!(refusal.message.contains("changes across supplied valid times"), "{refusal}");
+        }
+    }
+
+    fn binding(alignment: &str) -> Binding {
+        Binding {
+            name: "donor".into(),
+            source_id: "donor-fixture".into(),
+            mapping_role: "donor_mapping".into(),
+            mapping_sha256: "0".repeat(64),
+            data_role: "donor_data".into(),
+            provenance_role: "donor_provenance".into(),
+            fields: vec!["land_fraction".into()],
+            grid_alignment: "exact_coordinate_subset".into(),
+            time_alignment: alignment.into(),
+        }
+    }
+
+    #[test]
+    fn a_bound_field_crosses_the_seam_and_keeps_a_stable_missing_cell() {
+        let time = at("2026-08-17 00:00:00");
+        let later = at("2026-08-17 03:00:00");
+        let cycles = BTreeMap::from([((time, None), time)]);
+        let names = BTreeSet::from(["surface_pressure".to_owned()]);
+        let header = PrimaryHeader {
+            latitude: &[10.0, 11.0],
+            longitude: &[-90.0, 0.0, 90.0],
+            vertical_values: &[],
+            source_cycles: &cycles,
+            direct_names: &names,
+        };
+        let values = grid(2, 4);
+        let donor = collection(
+            &[10.0, 11.0],
+            &[0.0, 90.0, 180.0, 270.0],
+            vec![field(time, "land_fraction", values.clone())],
+        );
+        let (plan, receipt) = plan_bound_fields(&header, &donor, &binding("valid_time_exact")).unwrap();
+        assert_eq!(receipt["longitude_index_range"], json!([3, 1]));
+        let mut slice = collection(&[10.0, 11.0], &[-90.0, 0.0, 90.0], vec![]);
+        apply_bound_fields(&plan, &donor, &mut slice, &(time, None)).unwrap();
+        let taken = &slice.direct[&(time, None, "land_fraction".to_owned())].values;
+        assert_eq!(taken.iter().copied().collect::<Vec<f64>>(), vec![3.0, 0.0, 1.0, 7.0, 4.0, 5.0]);
+
+        // Two identical statics with a missing cell are invariant.
+        let marked = with_missing(&values, [0, 2]);
+        let donor = collection(
+            &[10.0, 11.0],
+            &[0.0, 90.0, 180.0, 270.0],
+            vec![field(time, "land_fraction", marked.clone()), field(later, "land_fraction", marked)],
+        );
+        let (plan, _receipt) =
+            plan_bound_fields(&header, &donor, &binding("cycle_invariant_broadcast")).unwrap();
+        let mut slice = collection(&[10.0, 11.0], &[-90.0, 0.0, 90.0], vec![]);
+        apply_bound_fields(&plan, &donor, &mut slice, &(time, None)).unwrap();
+        assert_eq!(slice.direct[&(time, None, "land_fraction".to_owned())].missing_count, 0);
     }
 
     #[test]

@@ -139,6 +139,46 @@ def test_empty_forecast_inventory_does_not_claim_complete_products(tmp_path):
         backend.products(SimpleNamespace(manifest_path=manifest, ens_root=tmp_path))
 
 
+def test_member_pictures_with_no_map_files_are_named_in_the_products_record(tmp_path, monkeypatch, capsys):
+    """The member renders print their map-file warning into output that is
+    captured and dropped when they succeed; the products record and the
+    terminal carry it once instead, and the pictures are still drawn."""
+    from gpuwm.local_da_runtime import PreparedBackend
+    from gpuwm import go_cli, rustwx
+    from gpuwm.ensemble import wrfout_inventory
+    from gpuwm.ensemble.manifest import write_manifest_atomically, ENSEMBLE_MANIFEST_SCHEMA
+    from gpuwm.render import BASEMAP_MISSING_CODE
+    from test_render_basemap_delivery import wheel_with_companion
+    wheel_with_companion(tmp_path, monkeypatch, maps=False)
+    root = tmp_path / 'forecast'
+    root.mkdir()
+    manifest = root / 'ensemble-manifest.json'
+    write_manifest_atomically(manifest, {'schema': ENSEMBLE_MANIFEST_SCHEMA, 'members': [
+        {'index': index, 'member_dir': f'member_{index:03d}',
+         'wrfout_inventory': [{'path': 'wrfout_d01_2026-09-10_12:15:00'}]} for index in range(2)]})
+    monkeypatch.setattr(wrfout_inventory, 'verify_entry', lambda *a, **k: [])
+    monkeypatch.setattr(go_cli, 'render_extra_missing', lambda: None)
+    commands = []
+    monkeypatch.setattr(go_cli, '_run_stage', lambda name, command, **kw: commands.append(command))
+    backend = PreparedBackend({'analysis_times': []}, tmp_path)
+    backend.go = {'render': tmp_path / 'products'}
+    forecast = SimpleNamespace(manifest_path=manifest, ens_root=root)
+    result = backend.products(forecast)
+    assert len(commands) == 2 and [row['status'] for row in result['members']] == ['complete'] * 2
+    [warning] = result['warnings']
+    assert warning['code'] == BASEMAP_MISSING_CODE
+    assert 'no coastlines, borders or state lines' in warning['message']
+    assert warning['remedy'].startswith('pip install --force-reinstall gpuwm-data')
+    assert capsys.readouterr().err.count('render: warning: no map assets resolve') == 1
+    # Asked again, the record says it again: it is a record, not a one-time event.
+    assert backend.products(forecast)['warnings'] == [warning]
+    # An install whose gpuwm-data has its maps records nothing.
+    maps = tmp_path / 'companion' / 'basemap'
+    maps.mkdir(parents=True)
+    monkeypatch.setattr(rustwx, 'companion_basemap_dir', lambda: maps)
+    assert 'warnings' not in backend.products(forecast)
+
+
 def test_missing_renderer_is_refused_before_configuration_or_gpu_work(tmp_path, monkeypatch):
     from gpuwm.local_da_runtime import PreparedBackend
     from gpuwm import capabilities, go_cli

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from gpuwm.cli_numbers import nonnegative_float
 from gpuwm.verify import spectral
 from gpuwm.verify import spectral_compare
 from gpuwm.verify import spectral_plot
@@ -195,7 +196,7 @@ def register_cli(subparsers) -> argparse.ArgumentParser:
     cross_box.add_argument("receipt", type=Path, metavar="RECEIPT.json")
     cross_box.add_argument("other", type=Path, metavar="OTHER-RECEIPT.json")
     cross_box.add_argument(
-        "--tolerance", type=float, default=None,
+        "--tolerance", type=nonnegative_float, default=None,
         help="override the declared tolerance "
              f"({spectral_compare.CROSS_BOX_TOLERANCE:g}); the default is "
              "measured, so a campaign widening it says why in its record")

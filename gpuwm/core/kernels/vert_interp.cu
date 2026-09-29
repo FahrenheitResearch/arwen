@@ -74,8 +74,18 @@ void vertical_interpolate_logp(const real* __restrict__ field,
 // launcher validates monotonicity, the surface bracket, and that no target
 // lies above the source top (WRF-fatal), so the in-kernel NaN writes are
 // unreachable guards.
+//
+// WRF_VI_MAX_LEVELS sizes the three per-thread column arrays below: the
+// source levels plus the surface pseudo-level.  64 is the default binary
+// every source up to 63 levels runs on; gpuwm/ingest/vert.py compiles the
+// deeper tiers (WRF_VERT_INTERP_LEVEL_TIERS) by defining it ahead of this
+// file and hands a column deeper than the top tier to the CPU bridge.  The
+// bound is an allocation size only: no expression reads it and every loop
+// runs to the column's own count, so a tier cannot change a result.
 
+#ifndef WRF_VI_MAX_LEVELS
 #define WRF_VI_MAX_LEVELS 64
+#endif
 
 __device__ static real wrf_vi_lagrange(const real* x, const real* y,
                                        int order, real target_x)

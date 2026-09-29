@@ -351,7 +351,17 @@ class SpawnRunner:
                     out.add(int(dc.grid_id)); changed = True
         return out
 
-    def _rearm_ready(self, t: float) -> list[int]:
+    def _rearm_ready(self, t: float, live_grid_ids) -> list[int]:
+        """Retired slots whose cooldown is over and whose parent is live.
+
+        ``live_grid_ids`` are the domains the model is integrating right
+        now.  A slot re-arms only while its parent is one of them: a
+        permanent domain (the root, or a permanent d02 under it) is live
+        for the whole run, and a spawned parent only during its own
+        episode.  Asking ``self.spawned`` instead, which holds spawned
+        episodes only, left a nest below a permanent d02 retired for good.
+        """
+        live = {int(g) for g in live_grid_ids} - set(self.retired)
         ready = []
         for gid in sorted(self.retired):
             dc = self.experiment.domain(gid)
@@ -361,8 +371,8 @@ class SpawnRunner:
             retired_t = self.retired_times.get(gid)
             if retired_t is None or float(t) - retired_t < float(cfg.cooldown_s):
                 continue
-            # A nested slot cannot re-arm while its parent episode is absent.
-            if int(dc.parent_id) != int(self.experiment.root.grid_id) and int(dc.parent_id) not in self.spawned:
+            # A nested slot cannot re-arm while its parent is absent.
+            if int(dc.parent_id) not in live:
                 continue
             ready.append(gid)
         return ready
@@ -693,6 +703,8 @@ class SpawnRunner:
         the next leg must assemble and whose ``"child_initializer"`` is
         the adoption seam that attaches the newborn's node/clock/coupler.
         """
+        from dataclasses import replace
+
         from gpuwm.core.storm_tracking import NestFootprint
         from gpuwm.ingest.nest_spawn_init import spawn_child_from_parent
 
@@ -710,8 +722,11 @@ class SpawnRunner:
         # and no call site here needs a guard.
         stream = model_step_log(model)
 
+        started = [node for node in model.walk_parent_first()
+                   if bool(getattr(node, "_started", True))]
         rearmed = []
-        for gid in self._rearm_ready(t):
+        for gid in self._rearm_ready(
+                t, (int(node.cfg.grid_id) for node in started)):
             self.retired.remove(gid)
             self.controller.watches[gid].rearm(
                 t=t, episode=self.episodes.get(gid, 0) + 1)
@@ -728,8 +743,6 @@ class SpawnRunner:
                 episode=self.episodes.get(gid, 0) + 1,
                 cooldown_seconds=cooldown)
 
-        started = [node for node in model.walk_parent_first()
-                   if bool(getattr(node, "_started", True))]
         # Retirement decisions are made from the SAME pre-reset leg window as
         # spawning.  They affect only the next leg; no op from the schedule
         # that just completed is skipped.
@@ -785,8 +798,13 @@ class SpawnRunner:
         # A watch must not read signal that already lives under another
         # nest, so every LIVE child's footprint is excluded; evaluate_all
         # chains the ones fired at this same boundary into the set too.
+        # Each footprint names the grid its cells are counted on (the
+        # node's live parent), and the controller hands it only to the
+        # watches on that grid: d02's cells on d01 are not cells of d02.
         active_footprints = tuple(
-            NestFootprint.coerce(node.cfg) for node in started
+            replace(NestFootprint.coerce(node.cfg),
+                    parent_id=int(node.parent.cfg.grid_id))
+            for node in started
             if node.parent is not None
             and int(node.cfg.grid_id) not in retired_grid_ids)
 

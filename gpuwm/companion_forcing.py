@@ -278,8 +278,10 @@ def edit_schedule(request):
                 forcing=[str(cache / fetch.ERA5_COMBINED_NAMES[provider])],
                 forcing_interval_s=interval)
         from gpuwm.cli import _join_negative_coordinates
+        from gpuwm.go_cli import config_fetch_request
+        # The request the run's fetch stage makes, model top included.
         arguments = _join_negative_coordinates(
-            _fetch_arguments_from_hints(raw["fetch"], out=cache))
+            _fetch_arguments_from_hints(config_fetch_request(raw), out=cache))
         _validate_fetch_arguments(arguments)
         fetch_argv = ["fetch", *arguments]
         policy = "new-request-cache"

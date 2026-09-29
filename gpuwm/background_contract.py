@@ -355,6 +355,14 @@ def plan(source: str, *, init: datetime, now: datetime, run_seconds: float,
                 if publication['available'] is True:
                     basis = (f"actual object availability on {publication['endpoint']} for leads {fetch_leads}; "
                              "native preparation still verifies payload and member identity")
+                if publication['probeable'] and publication['available'] is None:
+                    # A host that could not be heard said nothing about the objects, so the
+                    # declared timing decides, as it does with no probe at all (GS-05).
+                    if cycle is None and (now - candidate).total_seconds() < lag:
+                        raise ValueError("The requested cycle's objects could not be checked (a host was not heard) "
+                                         "and its complete window is not plausibly published yet")
+                    basis = ("declared publication timing; the object check could not reach its host, so "
+                             "the fetch checks each object as it downloads")
             times = tuple((candidate + timedelta(hours=h)).isoformat() for h in leads)
             return Selection(adapter.source_id, product, member, provider, axis,
                              candidate.isoformat(), init.isoformat(), end_time.isoformat(), cadence * 3600,

@@ -209,7 +209,7 @@ Open the base configuration and press **I Scenario**. The Scenario form edits in
 | Center height | Height above ground in metres. |
 | Horizontal radius | Radius in kilometres. |
 | Vertical half-depth | Distance from center to the top or bottom, in metres. |
-| Peak theta increase | Potential-temperature perturbation greater than 0 and at most 10 K; warm bubbles only. |
+| Peak theta increase | Potential-temperature perturbation greater than 0 K; warm bubbles only. Above 10 K the engine warns and records the warning in the perturbation receipt. The engine refuses a bubble that heats a layer past what the radiation accepts, or that builds more water vapour than a forecast has been measured to survive. |
 | Preserve relative humidity | Adjust water vapor inside the bubble to retain RH, or leave vapor unchanged. |
 
 Review the bubble list and apply it to the draft. **F12** saves a separate scenario file. Check the result before preparing or running it. The engine validates placement, dimensions, and whether the perturbation actually reaches cells. This is an explicit hypothetical change to the initial state; label its plots and compare it with an unmodified control using the same other settings.
@@ -229,7 +229,7 @@ The producing namelist is authoritative. An unrelated physics preset cannot repa
 
 To run a preparation with an open configuration, choose its directory with **F4** and review **F8 Run existing preparation**. The Continue menu also offers a prepared-bundle guide with fields for its configuration and WPS authority. A downloads directory, loose GRIB file, or incomplete preparation is not a prepared bundle.
 
-This action runs `gpuwm sim`. With selected plots, Sim draws the **first committed history frame only** while integration continues. Use Plot history afterward for the rest of the saved timeline.
+This action runs `gpuwm sim`. With selected plots, Sim draws each committed history frame as it lands while integration continues.
 
 ## 11. Downscale an archived forecast
 
@@ -247,7 +247,7 @@ Point sizing measures the local GPU by default in this guide. Entering child dim
 
 ## 12. Choose plots and render saved output
 
-**B / Ctrl+P Plots** opens plot settings. The initial General selection requests 25 plots. Other presets provide starting selections for severe, tropical, winter, rain, and wind studies.
+**B / Ctrl+P Plots** opens plot settings. The initial General selection requests 22 plots. Other presets provide starting selections for severe, tropical, winter, rain, and wind studies.
 
 Use **Customize** to load the installed renderer's catalog, type to search, and press **Space** or click a checkbox to toggle a product. **F4** reviews the selection. **All** requests the available catalog; **None** skips pictures. **Edit list** accepts advanced comma-separated selectors such as `var:SNOWH` when that field is available.
 

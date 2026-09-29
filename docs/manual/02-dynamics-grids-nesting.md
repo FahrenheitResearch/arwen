@@ -7,7 +7,7 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md:33-34]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:635].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:678].
 
 Advection is WRF's stencils, hardcoded where WRF hardcodes behavior: horizontal
 momentum is the WRF flux5 (5th-order) stencil, vertical momentum and scalars the
@@ -15,9 +15,9 @@ flux3 (3rd-order) stencil (`gpuwm/core/kernels/advection.cu`)
 [docs/public/CONFIGURATION.md:407-408]. Transported-scalar stencils are fixed
 5th/3rd order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:339]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:372]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:340, 635].
+match [docs/public/CONFIGURATION.md:373, 686].
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`

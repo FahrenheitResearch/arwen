@@ -340,9 +340,9 @@ def test_gfs_lake_coverage_proves_a_global_in_crop_water_donor():
 def test_wizard_suggested_margin_passes_the_lake_donor_proof():
     """Ties the wizard's suggested fetch margin to THIS module's
     donor-coverage function: a crop carrying the documented margin
-    passes whenever the nearest source water lies within the
-    GFS_LAKE_DONOR_MARGIN_DEG allowance, and still fails closed when
-    the crop holds no water at all."""
+    shows every lake its nearest source water whenever that lies within
+    the GFS_LAKE_DONOR_MARGIN_DEG allowance, and a crop with no water at
+    all is counted rather than refused."""
     from gpuwm.fetch import (GFS_SOURCE_RESOLUTION_DEG,
                              gfs_suggested_fetch_margin_deg)
 
@@ -371,6 +371,8 @@ def test_wizard_suggested_margin_passes_the_lake_donor_proof():
         snapshot, _CoverageGrid(point), np.array([[True]]))
     assert (receipt["max_lake_source_water_distance_cells"]
             == float(margin_cells))
+    assert "lake_cells_nearest_water_past_crop" not in receipt
+    assert "lake_cells_without_source_water" not in receipt
 
     # No water anywhere in the crop: the same function fails closed.
     dry = Era5Snapshot(
@@ -383,9 +385,76 @@ def test_wizard_suggested_margin_passes_the_lake_donor_proof():
             "SKINTEMP": np.full((n, n), 290.0, dtype=np.float64),
         },
     )
-    with pytest.raises(ValueError, match="no finite source-water"):
-        _source_coverage_receipt(
-            dry, _CoverageGrid(point), np.array([[True]]))
+    receipt = _source_coverage_receipt(
+        dry, _CoverageGrid(point), np.array([[True]]))
+    assert receipt["lake_cells_without_source_water"] == 1
+
+
+def test_a_lake_whose_nearer_water_could_lie_past_the_crop_is_counted():
+    """Refusing it stopped a preparation over the extent of its download;
+    the lake takes the crop's nearest water and the receipt says so."""
+    axis = np.arange(20, dtype=np.float64)
+    land = np.ones((20, 20), dtype=np.float64)
+    land[10, 19] = 0.0              # nine cells east; the west edge is two
+    snapshot = Era5Snapshot(
+        valid_time=datetime(2026, 9, 27),
+        levels_hpa=np.array([1000.0], dtype=np.float64),
+        latitude=axis,
+        longitude=axis,
+        fields={
+            "LANDSEA": land,
+            "SKINTEMP": np.full((20, 20), 290.0, dtype=np.float64),
+        },
+    )
+    point = (np.array([[10.0]]), np.array([[2.0]]))
+    receipt = _source_coverage_receipt(
+        snapshot, _CoverageGrid(point), np.array([[True]]))
+    assert receipt["lake_cells_nearest_water_past_crop"] == 1
+    assert receipt["max_lake_source_water_distance_cells"] == 17.0
+
+
+def test_a_whole_globe_file_has_no_edge_for_a_lake_to_miss_water_past():
+    """A lake a few columns from a whole-globe file's stored cut finds the
+    water just across it, and nothing is counted as past the crop."""
+    latitude = np.arange(-10.0, 11.0, dtype=np.float64)
+    longitude = np.arange(360, dtype=np.float64)
+    land = np.ones((21, 360), dtype=np.float64)
+    land[10, 358] = 0.0             # 3.5 columns west, across the cut
+    land[10, 10] = 0.0              # 8.5 columns east, same side
+    snapshot = Era5Snapshot(
+        valid_time=datetime(2026, 9, 27),
+        levels_hpa=np.array([1000.0], dtype=np.float64),
+        latitude=latitude,
+        longitude=longitude,
+        fields={
+            "LANDSEA": land,
+            "SKINTEMP": np.full((21, 360), 290.0, dtype=np.float64),
+        },
+    )
+    point = (np.array([[0.0]]), np.array([[1.5]]))
+    receipt = _source_coverage_receipt(
+        snapshot, _CoverageGrid(point), np.array([[True]]))
+    assert receipt["max_lake_source_water_distance_cells"] == 3.5
+    assert "lake_cells_nearest_water_past_crop" not in receipt
+
+
+def test_a_lake_with_no_gfs_water_takes_the_mapped_skin_and_is_counted(
+        capsys):
+    from gpuwm.gfs_direct import (
+        _announce_lake_source_water, lake_skin_with_source_skin_fallback)
+
+    lakes = np.array([[True, False], [True, True]])
+    searched = np.array([[np.nan, np.nan], [281.0, np.nan]])
+    mapped = np.array([[284.0, 290.0], [285.0, 286.0]])
+    lake_skin, cells = lake_skin_with_source_skin_fallback(
+        searched, lakes, mapped)
+    assert cells == 2
+    np.testing.assert_array_equal(lake_skin[lakes], [284.0, 281.0, 286.0])
+    assert np.isnan(lake_skin[0, 1])
+    _announce_lake_source_water(cells, 1, lake_cells=3)
+    said = capsys.readouterr().err
+    assert "of 3 lake cell(s), 2 took the skin temperature GFS has" in said
+    assert "1 took the nearest GFS water inside the fetched area" in said
 
 
 def test_git_identity_degrades_accurately_outside_a_checkout(monkeypatch):
@@ -738,14 +807,17 @@ def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
     Through 1.8.7 this file also carried the sharper half of the case: it
     selected the LEGACY AGGREGATE radiation spelling with radiation OFF
     (`ra_lw_physics`/`ra_sw_physics` at -1, `ra_physics` 0), which the
-    registry has no option for, so its receipt recorded a blocker and
-    the run proceeded anyway.  That spelling is gone from the shipped
+    registry then had no option for, so its receipt recorded a blocker
+    and the run proceeded anyway.  That spelling is gone from the shipped
     file -- radiation off under Noah meant Noah read a fabricated
-    300 W m-2 downward longwave for the whole forecast -- so the
-    unresolvable-selectors half of the claim moved to the derived config
-    below, where it is still exercised.  Recording is not permission:
-    the receipt names what it can and reports the blocker for what it
-    cannot, and neither answer refuses the run.
+    300 W m-2 downward longwave for the whole forecast -- and it moved to
+    the derived config below.  Since af5332967 the capability door reads
+    the two radiation spellings the way the engine does, so the derived
+    config resolves to exactly the receipt its split spelling gets, with
+    no blocker.  The blocker half is still exercised, on a selector the
+    registry has no option for: recording is not permission, the receipt
+    names what it can and reports the blocker for what it cannot, and
+    the door itself refuses neither.
     """
 
     import dataclasses
@@ -766,18 +838,38 @@ def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
     assert receipt["domains"]["1"]["registry_blocker"] is None
     assert receipt["domains"]["1"]["selectors"]["ra_lw_physics"] == 4
 
-    # The unresolvable spelling, preserved: the legacy aggregate with
-    # radiation off still records a blocker instead of refusing.
-    def _radiation_off(domain):
-        run = dataclasses.replace(
-            domain.run, ra_physics=0, ra_lw_physics=-1, ra_sw_physics=-1)
-        return dataclasses.replace(domain, run=run)
+    def _respelled(**selectors):
+        return dataclasses.replace(exp, domains=tuple(
+            dataclasses.replace(
+                domain, run=dataclasses.replace(domain.run, **selectors))
+            for domain in exp.domains))
 
-    legacy = dataclasses.replace(
-        exp, domains=tuple(_radiation_off(d) for d in exp.domains))
-    legacy_receipt = front_door_physics_selection(legacy)
-    assert legacy_receipt["domains"]["1"]["components"] is None
-    assert "ra_physics" in legacy_receipt["domains"]["1"]["registry_blocker"]
+    # The legacy aggregate with radiation off, preserved.  af5332967
+    # retired the (-1, -1) sentinel option it used to land on, whose
+    # ra_physics = 4 requirement was the blocker recorded here, and
+    # resolves the pair through gpuwm.config.radiation_scheme_ids as every
+    # run-path consumer does: radiation off, the receipt of the split
+    # spelling, no blocker.
+    legacy_receipt = front_door_physics_selection(
+        _respelled(ra_physics=0, ra_lw_physics=-1, ra_sw_physics=-1))
+    split_receipt = front_door_physics_selection(
+        _respelled(ra_physics=0, ra_lw_physics=0, ra_sw_physics=0))
+    for grid_id in ("1", "2"):
+        legacy_domain = legacy_receipt["domains"][grid_id]
+        assert legacy_domain["registry_blocker"] is None
+        assert legacy_domain["components"]["radiation"] == "off"
+        assert legacy_domain["components"] == (
+            split_receipt["domains"][grid_id]["components"])
+        assert legacy_domain["governance"] == (
+            split_receipt["domains"][grid_id]["governance"])
+
+    # A selector the registry has no option for is recorded as a blocker,
+    # not raised.  The loader refuses mp_physics = 2 before any door sees
+    # it (the registry now resolves every selector the loader admits), so
+    # it is handed to the door directly here.
+    blocked = front_door_physics_selection(_respelled(mp_physics=2))
+    assert blocked["domains"]["1"]["components"] is None
+    assert "mp_physics" in blocked["domains"]["1"]["registry_blocker"]
 
 
 def test_the_single_domain_default_suite_passes_and_a_named_gate_binds(
@@ -1331,6 +1423,97 @@ def test_the_front_door_says_plainly_when_the_bonus_export_did_not_happen():
                for line in skipped)
 
 
+def test_a_single_domain_with_no_stock_contract_records_the_refusal(
+        tmp_path, monkeypatch):
+    """WDM6 has no stock-WRF package contract, and that is about exporting.
+
+    The single-domain route raised the exporter's refusal, so `gpuwm go`
+    on the shipped Grell-Freitas suite (WDM6) stopped at prepare with
+    "unsupported direct-export microphysics ... mp_physics=16" although
+    its forecast restores the prepared cache, not the exported files.  The
+    slot now records the refusal the mapped and HRRR routes write, and the
+    forecast reader admits a proof carrying it.
+    """
+    from gpuwm import gfs_direct
+    from gpuwm.prepared_single_domain_forecast import (
+        _optional_stock_wrf_export)
+    from gpuwm.wrf_direct import validate_stock_wrf_export_config
+
+    selection = {"profile": None, "acknowledgements": [],
+                 "acknowledgement_provenance": {}}
+    wrf_output = tmp_path / "wrf-native-input"
+
+    def refuse(*_args, **_kwargs):
+        wrf_output.mkdir()
+        (wrf_output / "wrfinput_d01").write_bytes(b"partial")
+        validate_stock_wrf_export_config({"mp_physics": 16},
+                                         configured_suite=True)
+
+    monkeypatch.setattr(gfs_direct, "export_prepared_wrf", refuse)
+    receipt, refusal = gfs_direct._single_domain_stock_export(
+        "cache", "static", "geometry", wrf_output, valid_time=None,
+        boundary_interval_seconds=3600, physics_selection=selection)
+    assert refusal is not None
+    assert receipt["status"] == "REFUSED"
+    assert receipt["schema"] == gfs_direct.SINGLE_DOMAIN_EXPORT_SCHEMA
+    assert "mp_physics=16" in receipt["reason"]
+    assert receipt["unsupported"] == {"mp_physics": [16, None]}
+    assert not wrf_output.exists()
+    proof = {"stock_wrf_export": "optional", "export": receipt}
+    assert _optional_stock_wrf_export(proof, receipt) is True
+    notice = gfs_direct.stock_wrf_export_notice(proof)
+    assert any("bonus stock-WRF export was refused" in line
+               for line in notice)
+    assert any("run the forecast command below" in line for line in notice)
+
+    # An export that runs keeps its READY receipt, and one whose physics
+    # differs from the selection is still refused.
+    ready = {"schema": gfs_direct.SINGLE_DOMAIN_EXPORT_SCHEMA,
+             "status": "READY", "physics": selection}
+    monkeypatch.setattr(gfs_direct, "export_prepared_wrf",
+                        lambda *a, **k: dict(ready))
+    receipt, refusal = gfs_direct._single_domain_stock_export(
+        "cache", "static", "geometry", wrf_output, valid_time=None,
+        boundary_interval_seconds=3600, physics_selection=selection)
+    assert (receipt, refusal) == (ready, None)
+    monkeypatch.setattr(gfs_direct, "export_prepared_wrf",
+                        lambda *a, **k: {**ready, "physics": {}})
+    with pytest.raises(RuntimeError, match="physics provenance differs"):
+        gfs_direct._single_domain_stock_export(
+            "cache", "static", "geometry", wrf_output, valid_time=None,
+            boundary_interval_seconds=3600, physics_selection=selection)
+
+
+def test_a_single_domain_export_not_requested_is_not_attempted(
+        tmp_path, monkeypatch):
+    """Declined, the single-domain slot says so and the exporter never runs."""
+    from gpuwm import gfs_direct
+    from gpuwm.prepared_single_domain_forecast import (
+        _optional_stock_wrf_export)
+
+    def must_not_run(*_args, **_kwargs):
+        pytest.fail("a declined stock-WRF export was attempted")
+
+    monkeypatch.setattr(gfs_direct, "export_prepared_wrf", must_not_run)
+    wrf_output = tmp_path / "wrf-native-input"
+    receipt, refusal = gfs_direct._single_domain_stock_export(
+        "cache", "static", "geometry", wrf_output, valid_time=None,
+        boundary_interval_seconds=3600,
+        physics_selection={"profile": None, "acknowledgements": [],
+                           "acknowledgement_provenance": {}},
+        stock_wrf_export=False)
+    assert refusal is None
+    assert receipt == {
+        "schema": gfs_direct.SINGLE_DOMAIN_EXPORT_SCHEMA,
+        "status": "NOT_REQUESTED",
+        "reason": "the caller did not request a stock-WRF export"}
+    assert not wrf_output.exists()
+    proof = {"stock_wrf_export": "off", "export": receipt}
+    assert _optional_stock_wrf_export(proof, receipt) is True
+    assert any("no stock-WRF export was requested" in line
+               for line in gfs_direct.stock_wrf_export_notice(proof))
+
+
 def test_a_bridge_decode_refusal_reaches_the_reader_as_a_sentence(
         monkeypatch, tmp_path, capsys):
     """E-06: the detection was already right; only the delivery was wrong.
@@ -1599,3 +1782,208 @@ def test_the_door_prints_the_ladder_refusal_with_its_remedy(
     assert "no explicit eta_levels ladder" in captured.err
     assert "remedy: add an explicit eta_levels ladder" in captured.err
     assert "Traceback" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# The unchanged-WRF companion files never stop a GFS forecast's preparation
+# ---------------------------------------------------------------------------
+
+
+def _single_domain_prepared(tmp_path, monkeypatch, profile, *, stock_wrf_export):
+    """Prepare one GFS domain with PROFILE through the real orchestration.
+
+    Decoding, interpolation and array numerics are the CPU fixtures of
+    test_gfs_initial_perturbation; the cache writer is a stand-in that
+    records the identity it was given.  The export stand-in runs the
+    exporter's own configuration admission on that identity, exactly as
+    ``export_prepared_wrf`` does before it writes a byte, so the refusal
+    is the real one.
+    """
+
+    from gpuwm import gfs_direct, wrf_direct
+    from gpuwm.cli import main as cli_main
+    from test_gfs_initial_perturbation import _cpu_preparation, _inputs
+
+    config = tmp_path / "experiment.toml"
+    # Kessler's suite runs no longwave, and this window is at night there.
+    night = (["--ack", "asymmetric-radiation-nocturnal-window-v1"]
+             if profile.startswith("kessler-") else [])
+    assert cli_main([
+        "domain", "--point=35.3,-97.5", "--root-dx", "12", "--vram-gib", "8",
+        "--source", "gfs", "--hours", "3", "--cycle", "2026-09-05T00",
+        "--physics-profile", profile, *night, "--out", str(config)]) == 0
+    exp = load_experiment(config)
+    assert len(exp.domains) == 1
+    exported = []
+    _cpu_preparation(monkeypatch, exp)
+    monkeypatch.setattr(gfs_direct, "_canonical_surface", lambda soil: {})
+
+    import gpuwm.ingest.prepared_cache as prepared_cache_module
+
+    class RecordingCacheStream:
+        """The prepared-cache writer, recorded: head, segments, seal.
+
+        The seal writes a header naming the identity, which is what the
+        export double below reads.
+        """
+
+        def __init__(self, directory, *, identity, **_kwargs):
+            self.directory = Path(directory)
+            self.identity = identity
+
+        def move(self, directory):
+            self.directory = Path(directory)
+
+        def write_head(self, **kwargs):
+            self.directory.mkdir(parents=True)
+            return {"identity": {}, "metadata": {}, "arrays": {},
+                    "payload_bytes": 0, "lbc": kwargs["lbc"],
+                    "setup_core_fingerprint": "0" * 64}
+
+        def write_segment(self, index, interval):
+            return {"index": index,
+                    "start_seconds": float(interval.start_seconds),
+                    "end_seconds": float(interval.end_seconds),
+                    "fields": sorted(interval.fields), "arrays": {},
+                    "payload_bytes": 0, "prefix": {}}
+
+        def seal(self):
+            (self.directory / "header.json").write_text(
+                json.dumps({"identity": self.identity}, sort_keys=True,
+                           default=str),
+                encoding="utf-8")
+            return {"schema": "gpuwm-prepared-cache-v1", "status": "BUILT",
+                    "content_sha256": "c" * 64, "array_count": 1,
+                    "payload_bytes": 1}
+
+    def export(prepared_cache, static_cache, geometry_receipt, output_dir,
+               **_kwargs):
+        header = json.loads(
+            (Path(prepared_cache) / "header.json").read_text(encoding="utf-8"))
+        exported.append(Path(output_dir))
+        wrf_direct.validate_stock_wrf_export_config(
+            header["identity"]["domain_config"]["run"], configured_suite=True)
+        pytest.fail("the export admitted a scheme the unchanged-WRF files "
+                    "have no package for")
+
+    monkeypatch.setattr(
+        prepared_cache_module, "PreparedCacheStream", RecordingCacheStream)
+    monkeypatch.setattr(gfs_direct, "export_prepared_wrf", export)
+    arguments = _inputs(tmp_path, config, "inputs")
+    proof = gfs_direct.prepare_gfs_wrf(
+        **arguments, stock_wrf_export=stock_wrf_export)
+    return exp, arguments["output_root"], proof, exported
+
+
+@pytest.mark.parametrize("profile", [
+    "kessler-mp1-ysu-mm5-noah-dudhia-v1",
+    "milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
+    "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+])
+def test_a_scheme_the_wrf_files_cannot_carry_still_prepares_its_forecast(
+        tmp_path, monkeypatch, capsys, profile):
+    """`gpuwm go` from GFS stopped in preparation for Kessler, Milbrandt-Yau
+    and WDM6 with "unsupported direct-export microphysics: stock-WRF
+    wrfinput export for mp_physics=1 is not available on this route",
+    although ArWen runs all three and the forecast reads only the prepared
+    cache.  The unchanged-WRF files are now refused by name in the proof
+    and the preparation completes, as a domain tree's always has."""
+
+    from gpuwm import prepared_single_domain_forecast as runner
+    from gpuwm.gfs_direct import stock_wrf_export_notice
+
+    exp, output_root, proof, exported = _single_domain_prepared(
+        tmp_path, monkeypatch, profile, stock_wrf_export=True)
+    capsys.readouterr()
+    mp = int(exp.root.run.mp_physics)
+    assert exported, "the export was not attempted"
+    assert proof["stock_wrf_export"] == "optional"
+    slot = proof["export"]
+    assert slot["status"] == "REFUSED"
+    assert slot["schema"] == "gpuwm-native-direct-wrf-export-v3"
+    assert slot["reason"].startswith(
+        f"unsupported direct-export microphysics: stock-WRF wrfinput export "
+        f"for mp_physics={mp} is not available")
+    assert slot["unsupported"] == {"mp_physics": [mp, None]}
+    assert proof["initialization_artifacts"]["wrf_files"] == {}
+    assert not (output_root / "wrf-native-input").exists()
+    assert json.loads((output_root / "proof.json").read_text()) == proof
+    # The forecast recognizes the refused slot as the requested mode.
+    assert runner._optional_stock_wrf_export(proof, slot) is True
+    notice = stock_wrf_export_notice(proof)
+    assert any("bonus stock-WRF export was refused" in line for line in notice)
+    assert any("run the forecast command below" in line for line in notice)
+
+
+def test_a_declined_export_is_not_attempted_on_a_single_domain(
+        tmp_path, monkeypatch, capsys):
+    """`--no-stock-wrf-export` declined the files only for a domain tree."""
+
+    from gpuwm import prepared_single_domain_forecast as runner
+    from gpuwm.gfs_direct import stock_wrf_export_notice
+
+    _exp, output_root, proof, exported = _single_domain_prepared(
+        tmp_path, monkeypatch, "kessler-mp1-ysu-mm5-noah-dudhia-v1",
+        stock_wrf_export=False)
+    capsys.readouterr()
+    assert exported == []
+    assert proof["stock_wrf_export"] == "off"
+    assert proof["export"] == {
+        "schema": "gpuwm-native-direct-wrf-export-v3",
+        "status": "NOT_REQUESTED",
+        "reason": "the caller did not request a stock-WRF export"}
+    assert not (output_root / "wrf-native-input").exists()
+    assert runner._optional_stock_wrf_export(proof, proof["export"]) is True
+    assert any("no stock-WRF export was requested" in line
+               for line in stock_wrf_export_notice(proof))
+
+
+def _deep_tree_root(tmp_path):
+    """A 92-character output name in a 125-character folder: 277 deep."""
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = tmp_path / ("p" * (125 - len(str(tmp_path)) - 1))
+    return parent, parent / ("gfs-tree-domain-z80-" + "x" * 72)
+
+
+def test_a_gfs_domain_tree_too_deep_for_windows_is_refused_before_decode(
+        tmp_path, monkeypatch):
+    """The GFS door publishes the same domain tree the HRRR stage does,
+    and prepared it to the end under a root whose header the forecast
+    could not open.  It is refused before the manifest verification
+    hashes a GRIB, and so before the bridge decodes a field."""
+    from gpuwm import fetch_guard, gfs_direct
+    from test_gfs_initial_perturbation import (
+        _config, _cpu_preparation, _inputs)
+
+    config = _config(tmp_path, domains=2)
+    _cpu_preparation(monkeypatch, load_experiment(config))
+    decoded = []
+    hashed = []
+    original_sha256 = gfs_direct._sha256
+
+    def bridge(command, **_kwargs):
+        decoded.append(command)
+        pytest.fail("the bridge decoded under a root the forecast cannot read")
+
+    def sha256_spy(path):
+        hashed.append(Path(path))
+        return original_sha256(path)
+
+    monkeypatch.setattr(gfs_direct.subprocess, "run", bridge)
+    monkeypatch.setattr(gfs_direct, "_sha256", sha256_spy)
+    arguments = _inputs(tmp_path, config, "inputs")
+    parent, arguments["output_root"] = _deep_tree_root(tmp_path)
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    with pytest.raises(ValueError) as caught:
+        gfs_direct.prepare_gfs_wrf(**arguments)
+
+    message = str(caught.value)
+    assert message.startswith("refusing output root ")
+    assert "277 characters" in message
+    assert "at least 18 characters shorter" in message
+    assert not hashed
+    assert not decoded
+    assert not arguments["output_root"].exists()
+    assert not list(parent.glob(".d-*"))

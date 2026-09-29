@@ -52,6 +52,7 @@ import numpy as np
 
 from gpuwm.mapped_source import (
     MappedSourceFrame,
+    NothingMatched,
     _DecodedCollection,
     _DirectValue,
     _AuthoritySnapshot,
@@ -64,11 +65,14 @@ from gpuwm.mapped_source import (
     _materialize_frames,
     _require_authority_snapshot,
     _snapshot_authority,
+    completed_field_summary,
     load_mapping,
     mapped_frames_to_regular_snapshots,
+    warn_completed_fields,
 )
 from gpuwm.mapped_engine_bridge import ENGINE_RUST as _ENGINE_RUST
 from gpuwm.ingest.grib import Era5Snapshot
+from gpuwm.ingest.source_coverage import ScratchDiskRefusal, scratch_disk_refusal
 from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_MOISTURE,
     MAPPED_SOIL_TEMPERATURE,
@@ -613,11 +617,63 @@ def _exact_subset_indices(
     result = np.asarray(indices, dtype=np.int64)
     if result.size > 1:
         differences = np.diff(result)
-        if not (np.all(differences == 1) or np.all(differences == -1)):
+        contiguous = bool(np.all(differences == 1) or np.all(differences == -1))
+        if (not contiguous and cyclic_degrees
+                and result.size <= larger.size
+                and _closed_longitude_circle(larger)):
+            # A donor axis that closes the circle has its last and first
+            # cells as neighbours, so a primary crossing that seam (a
+            # European domain across 0 deg on a 0..360 donor, a Pacific
+            # one across 180 on a -180..180 donor) is still a run of
+            # adjacent cells.  At most one full turn: a longer request
+            # would repeat a cell.
+            wrapped = np.mod(differences, larger.size)
+            contiguous = bool(np.all(wrapped == 1)
+                              or np.all(wrapped == larger.size - 1))
+        if not contiguous:
             raise ValueError(
                 f"primary {label} is not a contiguous terrain-grid subset"
             )
     return result
+
+
+def _closed_longitude_circle(longitude: np.ndarray) -> bool:
+    """Whether a donor longitude axis goes once round the globe, evenly.
+
+    Its cells, taken in index order and wrapping from the last back to the
+    first, must step the same way round the circle, one turn in all, with
+    no step as long as 1.5 of the shortest: a regional axis fails on its
+    wrap step (the gap it does not cover) and an axis missing a cell fails
+    on the step that skips it.  Coordinates are still matched EXACTLY by
+    the caller; this only decides whether the index sequence may wrap, so
+    the 1.5 bound picks no cell and tolerates only the rounding of a
+    decoded axis such as 0.15 deg.
+    """
+    folded = np.mod(np.asarray(longitude, dtype=np.float64), 360.0)
+    if folded.size < 2:
+        return False
+    following = np.roll(folded, -1)
+    for steps in (np.mod(following - folded, 360.0),
+                  np.mod(folded - following, 360.0)):
+        shortest = float(steps.min())
+        if (shortest > 0.0 and float(steps.max()) < 1.5 * shortest
+                and round(float(steps.sum()) / 360.0) == 1):
+            return True
+    return False
+
+
+def _index_direction(indices: np.ndarray, size: int) -> int:
+    """+1 or -1 for the way an index run steps, wrapped or not; 0 for one cell.
+
+    An unwrapped run keeps the sign of last minus first, the value every
+    receipt already carries; only a run across the seam needs the wrap.
+    """
+    if indices.size < 2:
+        return 0
+    differences = np.diff(indices)
+    if np.all(differences == 1) or np.all(differences == -1):
+        return int(np.sign(indices[-1] - indices[0]))
+    return 1 if int(np.mod(differences[0], size)) == 1 else -1
 
 
 #: The two DECLARED shapes a terrain supplement's clock can take.
@@ -672,7 +728,10 @@ def _compose_terrain(
     if not terrain_items:
         raise ValueError("terrain supplement decoded no terrain messages")
     full_reference = terrain_items[0][1].values
-    if any(not np.array_equal(full_reference, value.values)
+    # equal_nan: a missing cell is data too, and NaN != NaN made one
+    # unchanged record with a missing cell differ from itself.  A cell
+    # that turns missing, or a finite value that moves, still differs.
+    if any(not np.array_equal(full_reference, value.values, equal_nan=True)
            for _key, value in terrain_items[1:]):
         raise ValueError("terrain supplement changes across supplied valid times")
     primary_keys = tuple(sorted(
@@ -702,7 +761,8 @@ def _compose_terrain(
                 f"primary source cycles {sorted(primary_cycles)}"
             )
     # The invariance check above proved every supplied terrain frame is
-    # byte-equal, so under the broadcast alignment the ONE invariant field
+    # equal, missing cells included, so under the broadcast alignment the
+    # ONE invariant field
     # -- already the only field there is -- stands in at the primary valid
     # times the producer did not re-publish it for.  The carrier frame's
     # own metadata travels with it, and the receipt names each carried
@@ -715,7 +775,7 @@ def _compose_terrain(
         values = supplied.values[np.ix_(latitude_indices, longitude_indices)]
         if subset_reference is None:
             subset_reference = values
-        elif not np.array_equal(subset_reference, values):
+        elif not np.array_equal(subset_reference, values, equal_nan=True):
             raise ValueError("terrain subset changes across primary valid times")
         direct[(valid_time, member, _EXTERNAL_FIELD)] = _DirectValue(
             name=_EXTERNAL_FIELD,
@@ -724,7 +784,12 @@ def _compose_terrain(
             source_cycle=supplied.source_cycle,
             axes=supplied.axes,
             values=values,
-            missing_count=supplied.missing_count,
+            # The subset's own count, as the bound-field join below has
+            # always taken it: the supplement's whole count also counted
+            # missing cells outside the primary window, which the
+            # canonical validator then refused as a count that did not
+            # match the array.
+            missing_count=int(np.isnan(values).sum()),
             references=supplied.references,
         )
     assert subset_reference is not None
@@ -757,7 +822,8 @@ def _compose_terrain(
         ),
         "invariant_across_all_supplement_times": True,
         "latitude_index_direction": int(np.sign(latitude_indices[-1] - latitude_indices[0])),
-        "longitude_index_direction": int(np.sign(longitude_indices[-1] - longitude_indices[0])),
+        "longitude_index_direction": _index_direction(
+            longitude_indices, int(terrain.longitude.size)),
         "coordinate_match": "exact_equivalent_contiguous_subset",
         "longitude_equivalence": "modulo_360_exact",
     }
@@ -969,7 +1035,8 @@ def _compose_bound_fields(
                 )
             ordered = [supplied[time] for time in sorted(supplied)]
             reference = ordered[0]
-            if any(not np.array_equal(reference.values, value.values)
+            if any(not np.array_equal(reference.values, value.values,
+                                      equal_nan=True)
                    for value in ordered[1:]):
                 raise ValueError(
                     f"contributing source binding {binding_name!r} field "
@@ -1071,6 +1138,9 @@ class MappedSourceBundle:
     contributing_sources: tuple[Mapping[str, object], ...] = dataclass_field(
         default=(),
     )
+    #: Primary records read through ``mapping.record_aliases``, counted
+    #: per field they answer; ``None`` when none were.
+    record_aliases: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
         # A streamed frameset is NOT tupled here: `tuple()` would read
@@ -1188,6 +1258,16 @@ class _RegularSnapshots(_ABCSequence):
     Indexing is one-deep cached, so a caller that reads the same index
     twice in a row pays once; asking for a different index drops the
     previous snapshot BEFORE reading the next, so the peak is one.
+
+    Once the target grids are known (:meth:`for_grids`), a whole-globe
+    source ring is re-cut opposite them, in the snapshots AND in the
+    geometry :meth:`snapshot_metadata` states, by the rule the GFS route
+    applies (:func:`gpuwm.ingest.horiz.orient_global_source_longitudes`).
+    Named breakage: without it the ring kept the -180/180 cut its decode
+    stores, so every domain touching the antimeridian was refused as
+    "outside the source grid" by every mapped global source while the
+    GFS route built the same domains.  A ring whose cut is already clear
+    of every stencil is left untouched, so off-seam domains are unchanged.
     """
 
     def __init__(self, bundle: "MappedSourceBundle",
@@ -1201,6 +1281,26 @@ class _RegularSnapshots(_ABCSequence):
             land_policy if isinstance(land_policy, Mapping) else None)
         self._cached_position: int | None = None
         self._cached_snapshot = None
+        self._target_longitudes: tuple[np.ndarray, ...] | None = None
+        self._ring_cuts: dict[bytes, object] = {}
+
+    def _ring_cut(self, longitude, projection):
+        """The re-cut this sequence's targets need on ``longitude``, or ``None``."""
+
+        if not self._target_grids or projection is not None:
+            return None
+        from gpuwm.ingest.horiz import global_ring_cut
+
+        key = np.ascontiguousarray(longitude, dtype=np.float64).tobytes()
+        if key not in self._ring_cuts:
+            if self._target_longitudes is None:
+                self._target_longitudes = tuple(
+                    pair[1] for grid in self._target_grids
+                    for pair in (grid.latlon_mass(), grid.latlon_u(),
+                                 grid.latlon_v()))
+            self._ring_cuts[key] = global_ring_cut(
+                longitude, *self._target_longitudes)
+        return self._ring_cuts[key]
 
     def __len__(self) -> int:
         return len(self._order)
@@ -1248,6 +1348,9 @@ class _RegularSnapshots(_ABCSequence):
         projection = (None if grid.projection == "regular_latitude_longitude"
                       else {"family": grid.projection,
                             "parameters": dict(grid.parameters)})
+        cut = self._ring_cut(longitude, projection)
+        if cut is not None:
+            longitude = cut.longitude
         # _pack always constructs Era5Snapshot, for every mapped input format.
         # Full field validation still happens in that constructor and frameset.
         return SourceSnapshotMetadata(
@@ -1307,6 +1410,11 @@ class _RegularSnapshots(_ABCSequence):
         if MAPPED_SOIL_TEMPERATURE not in snapshot.fields \
                 or MAPPED_SOIL_MOISTURE not in snapshot.fields:
             raise ValueError("canonical mapped soil arrays are absent")
+        cut = self._ring_cut(snapshot.longitude, snapshot.projection)
+        if cut is not None:
+            from gpuwm.ingest.horiz import recut_global_ring
+
+            snapshot = recut_global_ring(snapshot, cut)
         # Materialized providers may still cache a complete canonical frame.
         # The snapshot owns its copies; that cache has no packing consumer.
         release = getattr(self._bundle.frames, "release_frame", None)
@@ -1629,20 +1737,23 @@ def _compose_through_engine(
     )
     try:
         directory = Path(work.name) / "composed"
-        mapped_engine_bridge.run_engine(
-            "compose",
-            mapping=mapping_path,
-            files=primary,
-            output=directory,
-            composition=composition_path,
-            supplements=supplements,
-            provenance=provenance,
-            contributing_mappings=contributing,
-            input_manifest=manifest_path,
-            input_manifest_sha256=manifest_sha256,
-            engine=engine,
-            atmospheric_grids=atmospheric_grids,
-        )
+        try:
+            mapped_engine_bridge.run_engine(
+                "compose",
+                mapping=mapping_path,
+                files=primary,
+                output=directory,
+                composition=composition_path,
+                supplements=supplements,
+                provenance=provenance,
+                contributing_mappings=contributing,
+                input_manifest=manifest_path,
+                input_manifest_sha256=manifest_sha256,
+                engine=engine,
+                atmospheric_grids=atmospheric_grids,
+            )
+        except ScratchDiskRefusal as refusal:
+            raise scratch_disk_refusal(refusal, scratch_base) from refusal
         evidence = mapped_engine_bridge.read_composition_evidence(directory)
         def full_fallback():
             # Re-read the same sealed source through the unchanged full writer
@@ -1783,6 +1894,7 @@ def _composed_bundle_from_frames(
         terrain_paths = tuple(supplements[str(terrain_binding["data_role"])])
         terrain_provenance_path = provenance[
             str(terrain_binding["provenance_role"])]
+    warn_completed_fields(completed_field_summary(frames), subject="the source")
     return MappedSourceBundle(
         frames=frames,
         mapping_path=mapping_path,
@@ -1804,6 +1916,10 @@ def _composed_bundle_from_frames(
         soil_layer_contract=contract["soil_layers"],
         alignment_receipt=dict(evidence["alignment_receipt"]),
         contributing_sources=contributing_records,
+        record_aliases=(
+            {str(name): int(count)
+             for name, count in evidence["record_aliases"].items()}
+            if evidence.get("record_aliases") else None),
     )
 
 
@@ -2065,16 +2181,35 @@ def decode_composed_source(
     combined = _decode_partition(
         _partition_mapping(mapping, terrain_only=False), primary, decoders,
     )
+    record_aliases = combined.record_aliases
     terrain_supplement_receipt = None
     if terrain_spec is not None:
-        terrain_collection = _decode_partition(
-            _partition_mapping(mapping, terrain_only=True),
-            supplements[terrain_data_role], decoders,
-        )
+        derived_terrain = None
+        try:
+            terrain_collection = _decode_partition(
+                _partition_mapping(mapping, terrain_only=True),
+                supplements[terrain_data_role], decoders,
+            )
+        except NothingMatched:
+            # The files carry no terrain record at all.  A mapping that
+            # declares how terrain is derived has it derived from the
+            # primary's own first valid time; without that declaration
+            # the miss is refused by name, as it always was.
+            operation = mapping["fields"][_EXTERNAL_FIELD].get("when_absent")
+            if operation is None:
+                raise
+            terrain_collection, derived_terrain = _derive_absent_terrain(
+                mapping, operation, combined)
         combined, terrain_supplement_receipt = _compose_terrain(
             combined, terrain_collection,
             time_alignment=str(terrain_spec["time_alignment"]),
         )
+        if derived_terrain is not None:
+            # Recorded only when terrain was derived, so every receipt of
+            # a source that carries its terrain is unchanged.
+            terrain_supplement_receipt = {
+                **terrain_supplement_receipt, "derived": derived_terrain,
+            }
 
     contributing_records: list[dict[str, object]] = []
     terrain_binding: Mapping[str, object] | None = None
@@ -2141,9 +2276,13 @@ def decode_composed_source(
     for binding_name in sorted(bindings):
         donor_mapping = donor_mappings[binding_name]
         for name in bindings[binding_name]["fields"]:
-            union_fields[str(name)] = copy.deepcopy(
-                dict(donor_mapping["fields"][str(name)])
-            )
+            spec = copy.deepcopy(dict(donor_mapping["fields"][str(name)]))
+            # The primary binds a borrowed field in order to publish it,
+            # so the donor's own ``dependency_only`` does not ride along:
+            # it would hold the field the composition exists to supply
+            # off the composed frame.
+            spec.pop("dependency_only", None)
+            union_fields[str(name)] = spec
     union["fields"] = union_fields
 
     input_hashes = {
@@ -2179,6 +2318,7 @@ def decode_composed_source(
             "member": declared_member,
             "member_identity": declared_member_identity,
         }
+    warn_completed_fields(completed_field_summary(frames), subject="the source")
     return MappedSourceBundle(
         frames=frames,
         mapping_path=mapping_path,
@@ -2200,6 +2340,7 @@ def decode_composed_source(
         soil_layer_contract=contract["soil_layers"],
         alignment_receipt=terrain_receipt,
         contributing_sources=tuple(contributing_records),
+        record_aliases=record_aliases,
     )
 
 
@@ -2286,6 +2427,24 @@ def mapped_composition_receipt(bundle: MappedSourceBundle) -> dict[str, object]:
             if bundle.contributing_sources else {}
         ),
         "soil_layers": dict(bundle.soil_layer_contract),
+        # Present only when the primary's files spelled records the way
+        # an earlier publication of the product did, so every other
+        # receipt is unchanged.
+        **(
+            {"record_aliases": {
+                str(name): int(count)
+                for name, count in sorted(bundle.record_aliases.items())
+            }}
+            if bundle.record_aliases else {}
+        ),
+        # Present only when a frame derived values the source did not
+        # carry, so a receipt of a source that carried every value is
+        # byte-identical to what it was before this key existed.  Each
+        # entry counts the derived values against the field's total.
+        **(
+            {"completed_fields": completed}
+            if (completed := completed_field_summary(bundle.frames)) else {}
+        ),
         "frame_count": len(bundle.frames),
         # Read from the frameset's own document where there is one, so
         # sealing a receipt does not pull every valid time's arrays back
@@ -2300,8 +2459,116 @@ def mapped_composition_receipt(bundle: MappedSourceBundle) -> dict[str, object]:
     return payload
 
 
+def _derive_absent_terrain(
+    mapping: Mapping[str, object],
+    operation: Mapping[str, object],
+    combined,
+):
+    """Terrain for a source whose terrain files carry none.
+
+    Derived once, from the primary's first valid time, and broadcast by
+    the terrain join exactly like a published analysis terrain.  Returns
+    the one-field collection the join reads and the receipt entry.  The
+    mapped engine's ``compose::derive_absent_terrain`` is the same step.
+    """
+
+    from gpuwm.mapped_source import (
+        _height_at_surface_pressure, _WHEN_ABSENT_OPERATIONS,
+    )
+
+    kind = str(operation["operation"])
+    labels = _WHEN_ABSENT_OPERATIONS[kind]
+    key = sorted(combined.source_cycles, key=lambda item: (item[0], str(item[1])))[0]
+    values = []
+    names = []
+    for position, label in enumerate(labels):
+        name = str(operation[label])
+        value = combined.direct.get((key[0], key[1], name))
+        if value is None:
+            raise ValueError(
+                f"terrain_height from surface pressure needs {name!r}, which "
+                f"the primary files do not carry at {key[0].isoformat()}")
+        axes = ("vertical", "y", "x") if position < 3 else ("y", "x")
+        if tuple(value.axes) != axes:
+            raise ValueError(
+                f"terrain_height from surface pressure needs {name!r} on "
+                f"{axes} axes; got {tuple(value.axes)}")
+        values.append(value)
+        names.append(name)
+    factor = {"Pa": 1.0, "hPa": 100.0}[
+        str(mapping["coordinates"]["vertical"]["units"])]
+    levels = [float(level) * factor for level in combined.vertical_values]
+    height, counts = _height_at_surface_pressure(
+        levels, *(value.values for value in values))
+    source_cycle = values[3].source_cycle
+    terrain = _DirectValue(
+        name=_EXTERNAL_FIELD, valid_time=key[0], member=key[1],
+        source_cycle=source_cycle, axes=("y", "x"), values=height,
+        missing_count=0,
+        references=tuple(
+            reference for value in values for reference in value.references),
+    )
+    collection = _DecodedCollection(
+        latitude=combined.latitude, longitude=combined.longitude,
+        vertical_values=combined.vertical_values,
+        direct={(key[0], key[1], _EXTERNAL_FIELD): terrain},
+        source_cycles={key: source_cycle},
+        grid_fingerprint=combined.grid_fingerprint,
+    )
+    receipt = {
+        "operation": kind,
+        "why": "the terrain files carry no terrain_height record",
+        "valid_time": key[0].isoformat(),
+        "fields": names,
+        **counts,
+    }
+    return collection, receipt
+
+
+def decoded_vertical_ladder(
+    bundle: MappedSourceBundle, mapping: Mapping[str, object],
+) -> dict[str, object] | None:
+    """The declared levels a decode's files did not carry, or ``None``.
+
+    A publication on one of the mapping's ``vertical.era_ladders`` is
+    decoded on that ladder rather than refused, so the column the
+    preparation builds has fewer levels than ``vertical.levels`` names.
+    This is the receipt entry that says so: the declared ladder, the one
+    the frames carry, and the levels between them.  ``None`` when the
+    frames carry every declared level, which keeps a full-ladder
+    preparation's receipt as it was.
+    """
+
+    vertical = dict(mapping.get("coordinates") or {}).get("vertical") or {}
+    if not vertical.get("era_ladders"):
+        # Only a declared era ladder lets a decode carry fewer levels than
+        # it declares; any other shortfall was refused by the decoder.
+        return None
+    declared = [float(value) for value in vertical.get("levels", ())]
+    frames = bundle.frames
+    if not declared or not len(frames):
+        return None
+    reader = getattr(frames, "header", None)
+    header = reader(0) if callable(reader) else frames[0].header
+    atmosphere = header.vertical_coordinates.get("atmosphere")
+    if atmosphere is None:
+        return None
+    decoded = [float(value) for value in atmosphere.level_values]
+    carried = set(decoded)
+    absent = [level for level in declared if level not in carried]
+    if not absent:
+        return None
+    return {
+        "units": str(vertical["units"]),
+        "declared_levels": declared,
+        "decoded_levels": decoded,
+        "absent_levels": absent,
+        "absent_level_count": len(absent),
+    }
+
+
 __all__ = [
     "COMPOSITION_SCHEMA", "INPUT_MANIFEST_SCHEMA", "RECEIPT_SCHEMA",
-    "MappedSourceBundle", "decode_composed_source", "load_composition",
-    "mapped_composition_receipt",
+    "MappedSourceBundle", "decode_composed_source", "decoded_vertical_ladder",
+    "load_composition", "mapped_composition_receipt",
 ]

@@ -18,6 +18,7 @@ Two tools are under test and one committed receipt:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -32,6 +33,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from tools import battery_route_preflight as preflight  # noqa: E402
 from tools import battery_wrf_node_plan as node_plan  # noqa: E402
+from tools.release_exclusions import matches, read_exclusions  # noqa: E402
 
 CONFIG_DIR = REPOSITORY_ROOT / "configs" / "battery"
 SIZING_SMOKE = CONFIG_DIR / "shape_smoke_3km_thompson_dudhia.toml"
@@ -857,12 +859,32 @@ def test_twin_field_and_member_ordinal_are_in_the_perturbers_domain():
     assert node_plan.TWIN_MEMBER_ORDINAL in range(4)
 
 
+def _release_drops(rel: str) -> str | None:
+    """The RELEASE-EXCLUDE.txt rule that keeps ``rel`` out of the public tree."""
+    return matches(rel, read_exclusions(REPOSITORY_ROOT))
+
+
 def test_committed_speed_anchor_matches_the_run_report_it_cites():
+    """The committed anchor is a receipt on the public tree too.
+
+    The speed-anchor file ships, and it called this anchor a committed run
+    receipt while citing a report under ``evidence/**``, which the public
+    export drops: a public reader could not open the receipt the status
+    promised.  The report ships beside the anchor now, its bytes pinned by
+    ``evidence_sha256`` (which is also what lets the release's machine-path
+    scan forgive the run's own output paths inside it).
+    """
     anchors = json.loads(SPEED_ANCHORS.read_text(encoding="utf-8"))
     entry = anchors["anchors"]["arwen_3km_conus"]
     assert entry["status"] == "committed-run-receipt"
-    report = json.loads(
-        (REPOSITORY_ROOT / entry["evidence"]).read_text(encoding="utf-8"))
+    rule = _release_drops(entry["evidence"])
+    assert rule is None, (
+        f"the anchor is labelled a committed run receipt but cites "
+        f"{entry['evidence']}, which the public export drops "
+        f"(RELEASE-EXCLUDE.txt: {rule})")
+    raw = (REPOSITORY_ROOT / entry["evidence"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == entry["evidence_sha256"]
+    report = json.loads(raw.decode("utf-8"))
     assert report["domain"]["nx"] == entry["grid"]["nx"]
     assert report["domain"]["ny"] == entry["grid"]["ny"]
     assert report["domain"]["nz"] == entry["grid"]["nz"]
@@ -874,6 +896,167 @@ def test_committed_speed_anchor_matches_the_run_report_it_cites():
             == entry["gridded_output_total_bytes"])
     rate = entry["wall_seconds"] / (entry["run_seconds"] / 60.0)
     assert entry["seconds_per_sim_minute"] == pytest.approx(rate, abs=5e-5)
+
+
+def test_the_route_projection_scales_from_the_anchor_the_public_tree_carries():
+    """The preflight prices from the same shipped report the anchor cites.
+
+    Read from ``evidence/``, the wall-clock projection was absent from every
+    public run of the tool, reported only as "not found".
+    """
+    anchors = json.loads(SPEED_ANCHORS.read_text(encoding="utf-8"))
+    cited = anchors["anchors"]["arwen_3km_conus"]["evidence"]
+    assert preflight.ANCHOR_RECEIPT.as_posix() == cited
+    assert _release_drops(cited) is None
+    receipt = _receipt(SIZING_SMOKE)
+    assert receipt["projection"]["available"] is True
+    assert receipt["projection"]["anchor"] == cited
+    assert _gate(receipt, "arwen.wall_clock_projection")["authority"] == cited
+    for name in ("B4-ARWEN-HRRR-ROUTE.json", "B4-ARWEN-HRRR-SIZING-SMOKE.json"):
+        committed = json.loads(
+            (SPEED_ANCHORS.parent / name).read_text(encoding="utf-8"))
+        assert committed["projection"]["anchor"] == cited, name
+        assert _gate(committed, "arwen.wall_clock_projection")[
+            "authority"] == cited, name
+
+
+def test_the_memory_fit_ships_the_evidence_it_cites():
+    """The fit is a committed measurement on the public tree too.
+
+    The anchors file labelled the fit "committed-measurement-fit" while
+    citing notes under ``evidence/**``, and the preflight wrote the same
+    path as ``fit_source`` into every receipt, both committed ones
+    included; the public export drops ``evidence/**``, so a public reader
+    was sent to a file their install does not have.  The fit and the 4 Hz
+    samples it rests on ship beside the anchor now, their bytes pinned.
+    """
+    anchors = json.loads(SPEED_ANCHORS.read_text(encoding="utf-8"))
+    fit = anchors["device_memory_fit"]
+    assert fit["status"] == "committed-measurement-fit"
+    for key in ("evidence", "samples"):
+        rel = fit[key]
+        rule = _release_drops(rel)
+        assert rule is None, (
+            f"the fit is labelled a committed measurement but its {key} "
+            f"{rel} is dropped by the public export (RELEASE-EXCLUDE.txt: "
+            f"{rule})")
+        raw = (REPOSITORY_ROOT / rel).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == fit[f"{key}_sha256"], rel
+    cited = fit["evidence"]
+    assert preflight.FIT_SOURCE.as_posix() == cited
+    assert _receipt(SIZING_SMOKE)["sizing"]["fit_source"] == cited
+    for name in ("B4-ARWEN-HRRR-ROUTE.json", "B4-ARWEN-HRRR-SIZING-SMOKE.json"):
+        committed = json.loads(
+            (SPEED_ANCHORS.parent / name).read_text(encoding="utf-8"))
+        assert committed["sizing"]["fit_source"] == cited, name
+
+
+def _fit_rungs(text: str) -> list[tuple[str, int, float]]:
+    """The eight RTX 4080 rungs the shipped fit prints, as (name, cells, GiB)."""
+    rows = re.findall(
+        r"^(\S+)\s+(\d{6,})\s+(\d+\.\d+)\s+\d+\.\d+\s+[+-]\d+\.\d+$",
+        text, re.MULTILINE)
+    return [(name, int(cells), float(gib)) for name, cells, gib in rows]
+
+
+def test_the_memory_fit_is_arithmetic_over_what_ships():
+    """Every number of the fit comes back out of the shipped files.
+
+    The 5090 point is re-read from the samples, the 4080 line is refitted
+    from the rungs the document prints, and the anchor's slope and the
+    preflight's constants are recomputed from the two.
+    """
+    anchors = json.loads(SPEED_ANCHORS.read_text(encoding="utf-8"))
+    fit = anchors["device_memory_fit"]
+    point = fit["anchor_point"]
+    assert point["cells"] == anchors["anchors"]["arwen_3km_conus"][
+        "grid"]["cells"]
+
+    device_peak = 0
+    process_peak: dict[str, int] = {}
+    lines = (REPOSITORY_ROOT / fit["samples"]).read_text(
+        encoding="utf-8").splitlines()
+    assert lines[0].split("\t") == [
+        "epoch", "dev_used_mib", "dev_total_mib", "util", "procs"]
+    for line in lines[1:]:
+        _, used, _, _, procs = line.split("\t")
+        device_peak = max(device_peak, int(used))
+        for entry in filter(None, procs.split(";")):
+            pid, mib = entry.split(":")
+            process_peak[pid] = max(process_peak.get(pid, 0), int(mib))
+    assert device_peak == point["device_peak_mib"]
+    assert max(process_peak.values()) == point["forecast_process_peak_mib"]
+
+    text = (REPOSITORY_ROOT / fit["evidence"]).read_text(encoding="utf-8")
+    rungs = _fit_rungs(text)
+    assert len(rungs) == 8, rungs
+    printed = re.search(
+        r"slope (\d+\.\d+) KiB/cell\s+intercept (\d+\.\d+) GiB", text)
+    assert printed, "the shipped fit no longer prints its slope and intercept"
+    xs =[cells for _, cells, _ in rungs]
+    ys = [gib for _, _, gib in rungs]
+    mean_x, mean_y = sum(xs) / len(xs), sum(ys) / len(ys)
+    slope = (sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+             / sum((x - mean_x) ** 2 for x in xs))
+    intercept = mean_y - slope * mean_x
+    assert slope * 1024.0 ** 2 == pytest.approx(
+        float(printed.group(1)), abs=5e-5)
+    assert intercept == pytest.approx(float(printed.group(2)), abs=5e-4)
+
+    def slope_at(intercept_gib: float) -> float:
+        peak_kib = point["forecast_process_peak_mib"] * 1024.0
+        return (peak_kib - intercept_gib * 1024.0 ** 2) / point["cells"]
+
+    kib = fit["slope_kib_per_cell"]
+    # The best value assumes the suite's itemized non-pool 2.91 GiB, the
+    # high end the 2.00 GiB intercept row, the low end the 4080 line.
+    assert round(slope_at(2.91), 2) == kib["best"]
+    assert round(slope_at(2.00), 2) == kib["high"]
+    assert kib["low"] == pytest.approx(slope * 1024.0 ** 2, abs=0.01)
+    gib = fit["intercept_gib"]
+    assert gib["low"] == pytest.approx(intercept, abs=0.05)
+    assert gib["low"] < gib["high"]
+    assert preflight.FIT_SLOPE_KIB_PER_CELL == (
+        kib["low"], kib["best"], kib["high"])
+    assert preflight.FIT_INTERCEPT_GIB == (gib["low"], gib["high"])
+
+
+#: What a public receipt says beside a path the public export drops.
+_DEVELOPMENT_ONLY = "development checkouts only"
+_CITED_PATH = re.compile(
+    r"(?<![\w./-])((?:docs|evidence|tools|configs|gpuwm|tests|work)/"
+    r"[\w./-]*\w)")
+
+
+def _strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
+def test_the_speed_anchors_cite_nothing_a_public_reader_cannot_open_unsaid():
+    """A path the export drops is named as development-only where it is cited.
+
+    The anchors file ships; without this, the next citation into
+    ``evidence/**`` or ``docs/superpowers/**`` reads as a receipt a public
+    reader can open, as the memory fit's did.
+    """
+    anchors = json.loads(SPEED_ANCHORS.read_text(encoding="utf-8"))
+    cited = 0
+    offenders = []
+    for text in _strings(anchors):
+        for rel in _CITED_PATH.findall(text):
+            cited += 1
+            rule = _release_drops(rel)
+            if rule is not None and _DEVELOPMENT_ONLY not in text:
+                offenders.append(f"{rel} (RELEASE-EXCLUDE.txt: {rule})")
+    assert cited >= 5, "the scan found almost no cited path"
+    assert offenders == [], offenders
 
 
 def test_unreceipted_anchors_say_so_and_name_their_upgrade():

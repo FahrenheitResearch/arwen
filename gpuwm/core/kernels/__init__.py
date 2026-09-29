@@ -112,7 +112,7 @@ def load_module(name: str):
             return compile_runtime_unit(name, module_key=f"{MODULE_KEY_ROOT}:{name}")
     src = module_source(name)
     mod = cp.RawModule(code=src, options=("-std=c++17",), name_expressions=None)
-    mod.compile()
+    _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
     from gpuwm.certify.kernel_manifest import record_module
     record_module(f"{MODULE_KEY_ROOT}:{name}",
                   source=src, options=("-std=c++17",), module=mod)
@@ -144,7 +144,7 @@ def load_module_int_defines(
     src = module_source_int_defines(name, normalized, prefix=prefix)
     mod = cp.RawModule(code=src, options=("-std=c++17",),
                        name_expressions=None)
-    mod.compile()
+    _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
     from gpuwm.certify.kernel_manifest import record_module
     tier = ",".join(f"{key}={value}" for key, value in normalized)
     record_module(f"{MODULE_KEY_ROOT}:{name}[{tier}]",
@@ -184,3 +184,15 @@ def get_kernel_int_defines(
         name: str, func: str, defines: tuple[tuple[str, int], ...]):
     """Return a cached kernel compiled with validated integer definitions."""
     return load_module_int_defines(name, defines).get_function(func)
+
+
+def _compile_observed(module, module_key: str) -> None:
+    """Compile ``module``, telling a watching run when it really compiled.
+
+    :func:`gpuwm.kernel_compile_notice.observe_module_compile` costs nothing
+    when no run is watching; when one is, a module that wrote to the kernel
+    cache (a compile, not a cache load) is published as progress.
+    """
+    from gpuwm.kernel_compile_notice import observe_module_compile
+    with observe_module_compile(module_key):
+        module.compile()

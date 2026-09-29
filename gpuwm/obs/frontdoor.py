@@ -36,13 +36,17 @@ import subprocess
 from dataclasses import dataclass
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           cargo_build_one_liner, default_bridge_dir,
+                           default_bridge_dir, lazy_build_hints,
+                           rustwx_build_hint,
                            accept_resolved, executable_name,
                            packaged_bridge_dir)
 
 _PROBE_TIMEOUT_S = 20
 
-CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+#: ``CARGO_BUILD_HINT``: the one-liner that builds the front doors, from
+#: a checkout root, spelled for the shell rule when it is read.
+__getattr__ = lazy_build_hints(
+    __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
 
 def _repo_root() -> Path:
@@ -122,7 +126,7 @@ class FrontDoor:
         return artifact_remedy(
             env_var=self.env_var, filename=executable_name(self.name),
             subject=self.subject, crate_relative=RUSTWX_CRATE_RELATIVE,
-            one_liner=CARGO_BUILD_HINT, artifact=self.name)
+            one_liner=rustwx_build_hint(), artifact=self.name)
 
     def probe(self, path: Path) -> tuple[bool, str]:
         """``--version`` then ``--abi``: is this the binary we expect?"""
@@ -145,7 +149,7 @@ class FrontDoor:
         if abi.returncode != 0 or (abi.stdout or "").strip() != self.abi_marker:
             return False, (f"{transcript} -- --abi does not match the record "
                            "contract this gpuwm expects; rebuild it: "
-                           f"{CARGO_BUILD_HINT}")
+                           f"{rustwx_build_hint()}")
         return True, f"{transcript} -- --abi matches the record contract"
 
     def run(self, subcommand: str, arguments: list[str], *,
@@ -218,7 +222,14 @@ ASOS = FrontDoor(
     abi_marker=(
         "gpuwm-obs.asos-surface.v2\tstations\treports\tprovenance\t"
         "observation_time\ttemperature_2m\tdewpoint_2m\twind_speed_10m\t"
-        "mslp\tK\tm s-1\tPa"),
+        "mslp\tK\tm s-1\tPa\t"
+        # The neutral-table subcommands (table, networks, awc) the global
+        # observation streams call; appended after the v2 line so the
+        # surface contract above is unchanged.
+        "gpuwm-obs.asos-table.v1\tgpuwm-obs.table.v2\t"
+        # fetch/decode --product asos1min: a v2 record may carry the
+        # one-minute provenance, so a binary without the route is stale.
+        "iem-asos-1min"),
 )
 
 #: The GOES ABI cloud-product front door.
@@ -235,7 +246,10 @@ GOES = FrontDoor(
     env_var="GPUWM_RW_GOES",
     subject="the GOES cloud-product front door",
     abi_marker=("gpuwm-obs.goes-fetch.v1\tgpuwm-obs.goes-cwp.v2\t"
-                "gpuwm-obs.goes-cloudtop.v2"),
+                "gpuwm-obs.goes-cloudtop.v2\t"
+                # The Level 1b radiance family and the clear-sky forward
+                # operator (bt, colocate, superobs, quicklook, forward).
+                "gpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1"),
 )
 
 #: The European radar composite front door.

@@ -35,7 +35,7 @@ def test_actual_cli_selects_older_complete_cycle_with_recomputed_leads(tmp_path,
     def probe(url):
         seen.append(url)
         return 'gfs.20260912/18/' in url and bool(re.search(r'f00[89](?:$|[.?])', url))
-    monkeypatch.setattr(fetch, '_head_ok', probe)
+    monkeypatch.setattr(fetch, '_head_answer', probe)
     monkeypatch.setattr(local_da, 'observation_routes', availability)
     monkeypatch.setattr(local_da, 'price_rung', lambda req, rung, exp, streams, **kw: price(req, rung, exp, streams))
     from dataclasses import asdict
@@ -54,7 +54,7 @@ def test_actual_cli_selects_older_complete_cycle_with_recomputed_leads(tmp_path,
     assert result['selected']['members'] == 1 and result['selected']['forecast_seconds'] == 1800.
     assert seen and any('f009' in url for url in seen) and any('f008' in url for url in seen)
     from gpuwm.local_da_runtime import read_plan
-    monkeypatch.setattr(fetch, '_head_ok', lambda url: pytest.fail('saved review must not select another cycle'))
+    monkeypatch.setattr(fetch, '_head_answer', lambda url: pytest.fail('saved review must not select another cycle'))
     loaded = read_plan(tmp_path / 'case/local-da.json')
     assert loaded['background']['selection']['cycle'] == '2026-09-12T18:00:00+00:00'
 

@@ -393,10 +393,10 @@ def test_publication_race_keeps_the_other_files_contents(tmp_path):
 
 def test_printed_path_preserves_apostrophe_spaces_and_shell_metacharacters():
     import os
-    path = "Drew's $forecast " + chr(96) + " file.toml"
+    path = "Ana's $forecast " + chr(96) + " file.toml"
     quoted = st._command_path(path)
     if os.name == "nt":
-        assert quoted == "'Drew''s $forecast " + chr(96) + " file.toml'"
+        assert quoted == "'Ana''s $forecast " + chr(96) + " file.toml'"
     else:
         import shlex
         assert shlex.split(quoted) == [path]
@@ -765,7 +765,17 @@ def test_tiles_prices_a_single_domains_own_table_the_way_the_run_door_reads_it(
     # pinned tiling's to the byte, and the verdict names the window those
     # bytes belong to; the tree-wide table's planner tiling prices a
     # different store and a different window entirely.
-    priced = streaming.streamed_envelope(exp.root.run, run_side)
+    # The host figure includes the domain's lateral forcing series, priced
+    # at the config's own forcing schedule; the door reads that schedule
+    # with this same call.
+    from gpuwm.core import preflight
+    interval, intervals = preflight.config_forcing_schedule(out, exp)
+    priced = streaming.streamed_envelope(
+        exp.root.run, run_side,
+        forcing_interval_seconds=(
+            preflight.DEFAULT_FORCING_INTERVAL_SECONDS if interval is None
+            else interval),
+        forcing_intervals=intervals)
     window = (f"{row['nbuffers']} tile buffer(s) of "
               f"{row['tile_nx'] + 2 * row['halo']}x"
               f"{row['tile_ny'] + 2 * row['halo']}")

@@ -69,9 +69,12 @@ from test_statics_corridor import _synthetic_wps_geog
 #: 24x24 at 6 km with a 9x9 nest at ratio 3, placed to clear the
 #: parent's Davies and terrain-blend zones (the experiment loader
 #: enforces that, and a nest one row closer is refused before any of
-#: this runs).  The corridor is therefore 72x72 child cells -- parent
-#: extent at child resolution, which is the whole point of the artifact
-#: and the reason it is worth pricing.
+#: this runs).  Its itinerary takes it 11 parent cells up and right and
+#: then 21 back, so it can reach every placement in the parent and the
+#: corridor is 72x72 child cells -- the whole parent at child
+#: resolution, which is what lets the crop test below range over all of
+#: it.  (A nest that stays put reaches only its own footprint; see
+#: test_a_still_nest_seals_its_own_footprint.)
 _TREE_TOML = """
 [experiment]
 name = "hrrr-corridor-tree"
@@ -121,6 +124,20 @@ parent_time_step_ratio = 3
 nx = 9
 ny = 9
 history_interval_s = 3600.0
+
+[relocation]
+enabled = true
+grid_id = 2
+
+[[relocation.move]]
+at_seconds = 36.0
+di_parent_cells = 11
+dj_parent_cells = 11
+
+[[relocation.move]]
+at_seconds = 72.0
+di_parent_cells = -21
+dj_parent_cells = -21
 """
 
 _REF_I = _REF_J = 11
@@ -186,14 +203,35 @@ def test_the_hrrr_chain_seals_a_parent_extent_corridor(chain, sealed):
     assert receipt["schema"] == "gpuwm-statics-corridor-set-v1"
     assert receipt["status"] == "READY"
     entry = receipt["domains"]["d02"]
-    # Parent extent at CHILD resolution: the 24x24 root times the nest's
-    # refinement ratio, not the 9x9 nest.
+    # The nest's reach at CHILD resolution, which its itinerary makes the
+    # whole 24x24 root times the refinement ratio, not the 9x9 nest.
     assert entry["corridor_nx"] == 24 * _RATIO
     assert entry["corridor_ny"] == 24 * _RATIO
     assert entry["cells"] == 72 * 72
+    assert entry["reach"]["whole_frame"] is True
+    assert entry["reach"]["movers"][0]["bounded_by"] == "itinerary"
     assert entry["reference_i_parent_start"] == _REF_I
     assert (directory / "d02.npz").is_file()
     assert (directory / STATICS_CORRIDOR_RECEIPT).is_file()
+
+
+def test_a_still_nest_seals_its_own_footprint(chain, tmp_path):
+    """The same tree with no [relocation]: the child can reach nothing but
+    where it was declared, so its corridor is its 9x9 footprint where it
+    used to be the 72x72 parent."""
+    from dataclasses import replace
+
+    from gpuwm.experiment import RelocationConfig
+
+    still = replace(chain.exp, relocation=RelocationConfig())
+    receipt = emit_statics_corridor_set(
+        exp=still, grids=chain.grids, static_catalog=chain.static_catalog,
+        directory=tmp_path / STATICS_CORRIDOR_DIRNAME,
+        statics_corridor="all")
+    entry = receipt["domains"]["d02"]
+    assert (entry["corridor_nx"], entry["corridor_ny"]) == (9, 9)
+    assert entry["window_origin_child_cells"] == [
+        (_REF_I - 1) * _RATIO, (_REF_J - 1) * _RATIO]
 
 
 def test_the_emission_is_deterministic_on_the_hrrr_chain(chain, tmp_path):

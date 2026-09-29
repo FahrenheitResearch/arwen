@@ -203,6 +203,99 @@ def test_bytes_built_from_source_are_not_called_stale(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Map assets: where the renderer draws from, not where fetch-bridges writes
+# ---------------------------------------------------------------------------
+
+def _maps_estate(monkeypatch, tmp_path, *, companion):
+    """A current staged estate whose pinned map assets were never staged.
+
+    The state every README install was in: the platform wheel's binaries
+    match this release, ``fetch-bridges`` never ran, and the renderer in
+    ``libexec`` has no map assets above it.  ``companion`` says whether
+    the ``gpuwm-data`` companion carries them (it does from 2.8.0 on).
+    """
+
+    from gpuwm import rustwx
+
+    staged = _pinned_estate(monkeypatch, tmp_path,
+                            contents={"grib1_bridge": b"release bytes"})
+    platform = bridge_assets.host_platform()
+    pins = bridge_assets.load_pins()
+    bundle = pins.platforms[platform]
+    asset = bridge_assets.AssetPin(
+        path="assets/basemap/natural_earth_10m/ne_10m_coastline.shp",
+        bytes=3, sha256=hashlib.sha256(b"shp").hexdigest())
+    bundle = bridge_assets.BundlePin(
+        platform=bundle.platform, filename=bundle.filename,
+        bytes=bundle.bytes, sha256=bundle.sha256,
+        binaries=bundle.binaries, assets=(asset,))
+    pins = bridge_assets.BridgePins(release=pins.release,
+                                    platforms={platform: bundle})
+    monkeypatch.setattr(bridge_assets, "load_pins", lambda path=None: pins)
+    for name in ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(home)
+    renderer = (tmp_path / "site-packages" / "gpuwm" / "libexec" / "bridges"
+                / "rw_wrfbatch")
+    renderer.parent.mkdir(parents=True)
+    renderer.write_bytes(b"renderer")
+    monkeypatch.setattr(rustwx, "find_renderer", lambda: renderer)
+    monkeypatch.setattr(rustwx, "probe_renderer",
+                        lambda path: (True, "probe ok"))
+    monkeypatch.setattr(rustwx, "basemap_dir",
+                        lambda: tmp_path / "no-checkout-assets")
+    monkeypatch.setattr(rustwx, "default_bridge_dir", lambda: staged)
+    maps = tmp_path / "gpuwm_data" / "data" / "basemap"
+    maps.mkdir(parents=True)
+    monkeypatch.setattr(rustwx, "companion_basemap_dir",
+                        (lambda: maps) if companion else (lambda: None))
+    return maps
+
+
+def test_unstaged_map_assets_are_no_gap_when_the_companion_draws_them(
+        monkeypatch, tmp_path):
+    """Every bare pip install printed MISSING for 42 map asset files and
+    the remedy `gpuwm fetch-bridges`.  The renderer draws from the
+    gpuwm-data companion now, so the copy fetch-bridges would stage is
+    not a gap, and saying it was sent readers to a step that changes no
+    picture."""
+
+    maps = _maps_estate(monkeypatch, tmp_path, companion=True)
+    check = doctor._staged_estate_check()
+    assert check.status == "verified", check.detail
+    assert "map asset" not in check.detail
+
+    renderer = doctor._rust_renderer_check()
+    assert renderer.status == "verified", renderer.detail
+    assert str(maps) in renderer.detail
+
+
+def test_a_renderer_with_no_map_assets_is_a_gap_with_its_fix(monkeypatch,
+                                                             tmp_path):
+    """Without the companion's copy the staged one is what the renderer
+    would read, so its absence is still reported; and the renderer line
+    is a gap naming the pip line, never a verified line with a note."""
+
+    _maps_estate(monkeypatch, tmp_path, companion=False)
+    check = doctor._staged_estate_check()
+    assert check.status == "missing", check.detail
+    assert "map asset" in check.detail
+    assert check.blocking is False
+
+    renderer = doctor._rust_renderer_check()
+    assert renderer.status == "missing", renderer.detail
+    assert renderer.blocking is False
+    assert "no coastlines, borders or state lines" in renderer.detail
+    assert renderer.action.startswith("pip install --force-reinstall "
+                                      "gpuwm-data")
+    assert renderer.action in renderer.remedy
+
+
+# ---------------------------------------------------------------------------
 # The module door (#185)
 # ---------------------------------------------------------------------------
 

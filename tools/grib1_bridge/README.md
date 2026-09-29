@@ -53,6 +53,61 @@ mode to measure supplied forcing times before fitting a grid. A failed
 command's partial stdout is not a usable inventory; complete field and
 spatial validation still belongs to normal input preflight.
 
+## The CPU preprocessing library
+
+The same crate builds `gpuwm_preprocess_cpu` (`libgpuwm_preprocess_cpu.so`,
+`gpuwm_preprocess_cpu.dll`), which `gpuwm.ingest.cpu_backend` loads through
+ctypes.  Besides the horizontal, vertical and WRF-real transforms of the CPU
+preprocessing backend, it carries `gpuwm_wps_masked_chain_f64` and
+`gpuwm_wps_land_unit_scan_f64` (`src/wps_masked.rs`): WPS metgrid's masked
+chain for soil moisture and temperature, snow, skin temperature and sea ice,
+in float64, parallel across target cells with a result that does not depend
+on the worker count.  BOTH preprocessing backends map those fields through
+it, so a library without the entry is refused by name.  Its values and
+repair counts are byte-identical to the NumPy transcription kept as the test
+oracle (`gpuwm/verify/wps_masked_oracle.py`); the search takes its walk
+once per start cell and squares a distance as `dx * dx`, as the oracle's
+shared-walk search does.
+
+`gpuwm_masked_bilinear_stencil_f64` and `gpuwm_masked_stencil_apply_f32`
+(`src/masked_stencil.rs`) build and apply the land-only bilinear stencil of
+the native HRRR route: surface-matched corner weights, the nearest land
+donor for a land cell with none, and the report's counts, byte-identical to
+the NumPy builder kept as its test oracle
+(`gpuwm/verify/hrrr_stencil_oracle.py`).
+
+`src/water_blend.rs` carries the water surfaces: `gpuwm_lake_water_nearest_f64`
+(the search for the nearest source water cell of each model lake, whose
+stopping bound is squared with the C library's `pow` as Python's `** 2`
+does), `gpuwm_masked_bilinear_blend_f64` (the bilinear blend renormalised
+over the water donors that exist), `gpuwm_component_fill_f64` (the
+four-neighbour sweep that closes a water body's holes from its own cells),
+`gpuwm_overlay_bilinear_sample_f64` (the corner blend of a
+water-temperature overlay) and `gpuwm_label_components_8` (the 8-connected
+labelling of water bodies, one thread, labels in the row-major order of each
+body's first cell).  Each is byte-identical to the NumPy code kept
+as its test oracle (`gpuwm/verify/water_blend_oracle.py`) at any worker
+count, and a library without them is refused by name.
+
+`src/water_repair.rs` carries the rest of the water-temperature assembly:
+`gpuwm_water_repair_f64` (the box repairs of water cells whose provider left
+no admissible temperature: ring by ring from the body's own water, else the
+nearest admissible water, else the surrounding skin) and
+`gpuwm_water_bodies_f64` (the per-body loop: each body's cells, donors,
+renormalised blend, coverage, hole fill and provider in one pass instead of
+whole-domain masks once per body).  Both are byte-identical to the NumPy
+code kept in the same oracle, the old assembly loop included, at any worker
+count.
+
+`src/water_owner.rs` carries `gpuwm_component_owner_f64`: which water body
+owns each source cell (the body holding most of the targets nearest to it,
+and among equal claims the highest label), the donor sets of the per-body
+assembly.  `src/surface_nearest.rs` carries `gpuwm_masked_nearest_f32`, the
+CPU backend's bounded surface-nearest search in float32 (the first of
+equally near cells in its scan wins), and is the library's newest entry: the
+ABI marker `gpuwm.bridges` checks.  Both are byte-identical to the NumPy code
+kept in the same oracle at any worker count.
+
 ## Validation posture
 
 Every bridge is fail-closed: unexpected editions, grids, packing, missing

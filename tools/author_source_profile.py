@@ -40,6 +40,9 @@ Steps:
 ``set``          set ``value`` at ``path`` (creating mappings as needed)
 ``delete``       remove ``path``
 ``keep_where``   filter the list at ``path`` on one key's value
+``append_variants``  append, to every list of objects at ``path``, a copy
+                 of each of its elements with ``overlay`` laid over it --
+                 a ranked second form of every selector, stated once
 ``require``      assert ``path`` exists (a guard for parent documents)
 
 Path elements are object keys or list indices.  ``"*"`` means every key
@@ -321,6 +324,24 @@ class Author:
                         "keep_where needs 'equals' or 'not_equals'")
                 container[index] = kept
             return document
+        if op == "append_variants":
+            overlay = self.resolve(step["overlay"])
+            if not isinstance(overlay, dict) or not overlay:
+                raise SpecError(
+                    "append_variants needs a non-empty object overlay")
+            for container, key in self._targets(document, step["path"]):
+                items = container[key]
+                if not isinstance(items, list):
+                    raise SpecError(
+                        f"append_variants needs a list at {step['path']}, "
+                        f"found a {type(items).__name__}")
+                for item in list(items):
+                    if not isinstance(item, dict):
+                        raise SpecError(
+                            "append_variants extends lists of objects; "
+                            f"found a {type(item).__name__}")
+                    items.append({**item, **overlay})
+            return document
         if op == "require":
             path = step["path"]
             node = document
@@ -335,8 +356,8 @@ class Author:
             return document
         raise SpecError(
             f"unknown step op {op!r}; this tool executes "
-            "set, delete, keep_where and require, and refuses anything "
-            "else rather than skipping it")
+            "set, delete, keep_where, append_variants and require, and "
+            "refuses anything else rather than skipping it")
 
     # -- documents ---------------------------------------------------------
 

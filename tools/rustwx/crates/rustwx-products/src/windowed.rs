@@ -1971,7 +1971,7 @@ fn plan_windowed_products(
             if forecast_hour < end_hour {
                 blockers.push(blocker(
                     product,
-                    format!("{label} requires forecast hour >= {end_hour}; use a HRRR extended cycle for 24-48 h products"),
+                    format!("{label} requires forecast hour >= {end_hour}"),
                 ));
                 continue;
             }
@@ -1985,7 +1985,7 @@ fn plan_windowed_products(
                 if forecast_hour < 1 {
                     blockers.push(blocker(
                         product,
-                        "1-h QPF requires forecast hour >= 1 because HRRR APCP windows start at 0-1 h",
+                        "1-h QPF requires forecast hour >= 1 because the first 1 h accumulation window ends at F001",
                     ));
                     continue;
                 }

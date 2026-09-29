@@ -307,3 +307,63 @@ def test_d01_stage_does_not_invent_an_identity_for_a_damaged_root_receipt(tmp_pa
     _write(fixture.proof, proof)
     with pytest.raises(stage_cli.StageRefusal, match="artifact receipt|prepared-cache identity"):
         stage_cli.single_domain_digests(stage_cli.resolve_bundle(fixture.prepared))
+
+
+def _soil_temperature_repair_proof_entry():
+    """The mapped proof's ``soil_temperature_repair``, built by the writer's
+    own functions on a 3 x 4 grid with one rebuilt snowpack column."""
+
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from gpuwm.ingest.soil import (
+        soil_temperature_repair_proof, soil_temperature_repair_receipt,
+        unreasonable_land_soil_columns)
+
+    temperature = np.full((9, 3, 4), 272.0)
+    temperature[0, 1, 2] = 64.0
+    land = np.ones((3, 4), dtype=bool)
+    columns = unreasonable_land_soil_columns(temperature, land)
+    soil = SimpleNamespace(soil_temperature_repair=soil_temperature_repair_receipt(
+        temperature, columns, land))
+    latitude, longitude = np.meshgrid(
+        np.linspace(-117.0, -115.0, 4), np.linspace(43.0, 45.0, 3))[::-1]
+    grid = SimpleNamespace(latlon_mass=lambda: (latitude, longitude))
+    return soil_temperature_repair_proof(soil, grid)
+
+
+def test_a_mapped_proof_carrying_the_soil_temperature_rebuild_passes_the_inventory(
+        tmp_path, monkeypatch):
+    """A mapped preparation whose root had land soil rebuilt TSK-to-TMN
+    (2017-01-19 00Z HRRR over Idaho) writes ``soil_temperature_repair``
+    into its proof, and the forecast's exact top-level inventory check
+    has to take that proof; an unknown key beside it is still refused."""
+
+    receipt = _soil_temperature_repair_proof_entry()
+    assert receipt["repaired_land_columns"] == 1
+    assert receipt["bounding_box"]["latitude"] == [44.0, 44.0]
+    assert receipt["bounding_box"]["longitude"] == [
+        pytest.approx(-115.0 - 2.0 / 3.0)] * 2
+    fixture = _generic_fixture(tmp_path)
+    proof = _json(fixture.proof)
+    proof["soil_temperature_repair"] = receipt
+    _seal(proof, "proof_content_sha256")
+    _write(fixture.proof, proof)
+    manifest = _json(fixture.source_manifest)
+    runner._validate_packaged_mapped_evidence(
+        prepared_root=fixture.prepared, proof=proof, manifest=manifest,
+        manifest_sha256=fixtures._sha256(fixture.source_manifest),
+        experiment_config=None, wps_namelist=None, source="mapped")
+    fixtures._bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    inputs = fixtures._preflight_fixture(fixture)
+    assert inputs.source == "mapped"
+    misspelled = dict(proof)
+    misspelled["soil_temperature_repairs"] = misspelled.pop(
+        "soil_temperature_repair")
+    with pytest.raises(ValueError, match="top-level inventory differs"):
+        runner._validate_packaged_mapped_evidence(
+            prepared_root=fixture.prepared, proof=misspelled,
+            manifest=manifest,
+            manifest_sha256=fixtures._sha256(fixture.source_manifest),
+            experiment_config=None, wps_namelist=None, source="mapped")

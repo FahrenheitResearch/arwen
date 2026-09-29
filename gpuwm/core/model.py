@@ -12,6 +12,7 @@ import json
 import math
 import numpy as np
 from pathlib import Path
+import sys
 import time
 from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
@@ -169,6 +170,9 @@ class ExperimentState:
     #: happened to carry the ingest.  Same unannotated class attribute
     #: for the same reason.
     _declared_experiment = None
+
+    #: Resolved at executor entry, then carried by run receipts.
+    _pool_trim_policy = None
 
     def node(self, grid_id: int) -> DomainNode:
         """Return one domain node by its configured grid identifier."""
@@ -417,6 +421,12 @@ ADAPTIVE_TIMESTEP_RUN_FIELDS: tuple[str, ...] = (
     "starting_time_step", "starting_time_step_den",
     "max_time_step", "max_time_step_den",
     "min_time_step", "min_time_step_den",
+    # Not a WRF key: the floor the steep-terrain rules put under the
+    # substep count the clock derives from its step (RunConfig's own
+    # note says why).  Read by nothing under a fixed clock, so it drops
+    # out with the block there; a clamp like min_time_step under an
+    # adaptive one, so a resume may change it and says so.
+    "min_time_step_sound",
 )
 
 #: The same surface MINUS the feature flag: controller POLICY.
@@ -454,7 +464,13 @@ def restart_identity_payload(exp) -> dict:
     attribute_policy = experiment.get("relocation", {})
     if (attribute_policy.get("follow") or {}).get("field") == "attribute":
         attribute_policy = {key: value for key, value in attribute_policy.items()
-                            if key != "track"}
+                            if key != "track"
+                            # The reach bound's DEFAULT drops out, on the
+                            # absent-stays-absent convention below: every
+                            # fingerprint written before the key existed
+                            # keeps its value, and a declared bound binds.
+                            and not (key == "reach_speed_m_s"
+                                     and value is None)}
     else:
         attribute_policy = None
     for name in RESTART_TOLERATED_EXPERIMENT_FIELDS:
@@ -529,6 +545,13 @@ def restart_identity_payload(exp) -> dict:
         for name in ("retire", "rearm", "follow"):
             if domain.get(name) is None:
                 domain.pop(name, None)
+        # A follower's reach bound takes the same convention one level
+        # down: its default (None) drops out so every follower fingerprint
+        # written before the key existed is unchanged, and a DECLARED
+        # bound binds, because it decides where the nest may go.
+        follow = domain.get("follow")
+        if isinstance(follow, dict) and follow.get("reach_speed_m_s") is None:
+            follow.pop("reach_speed_m_s", None)
         # The per-domain [tiles] road leaves the identity UNCONDITIONALLY,
         # declared or not -- the one place this file's absent-stays-absent
         # convention is not enough.  A declared spawn binds because it
@@ -558,6 +581,17 @@ def restart_identity_payload(exp) -> dict:
         # value for value: a child on its own eta grid is a different run.
         if run.get("eta_levels") is None:
             run.pop("eta_levels", None)
+        # The downscaled child's two lateral-boundary keys, on the same
+        # convention: at their defaults (0.0, False) they are WRF's own
+        # relaxation and zero-gradient w, which is what every experiment
+        # written before they existed ran, so they drop out and every
+        # pre-field fingerprint and checkpoint is unchanged.  A set value
+        # binds: a zone relaxed on another time scale, or with w, is a
+        # different run.
+        if not run.get("relax_timescale_s"):
+            run.pop("relax_timescale_s", None)
+        if not run.get("relax_w"):
+            run.pop("relax_w", None)
         # Scheme-scoped knobs leave the identity of every domain that does
         # not select their scheme (:data:`SCHEME_SCOPED_RUN_FIELDS`).
         selected = run.get("mp_physics")
@@ -756,9 +790,11 @@ def _adapt_experiment_vertical_for_case(exp, case_data, catalog):
 
     def announce(sentence: str) -> None:
         warn(sentence,
-             "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this "
-             "column fatal and names reducing etac as the remedy; the "
-             "remedy is derived here from the terrain this run can "
+             "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls a column "
+             "the coordinate cannot order fatal and names reducing etac as "
+             "the remedy, and a column it only just orders keeps one layer "
+             "too thin to integrate, which a lower etac thickens; the etac is "
+             "derived here from the terrain this run can "
              "actually touch and applied, so every domain of this run "
              "integrates the same coordinate.  p_top is untouched.")
 
@@ -789,24 +825,33 @@ def build_experiment(exp, case_data) -> ExperimentState:
     from gpuwm.ingest.preflight import build_input_catalog
     from gpuwm.core.nest import NestCoupler as ConcreteNestCoupler
 
-    catalog = build_input_catalog(case_data)
-    # THE COORDINATE, BEFORE ANY OTHER READ OF THE EXPERIMENT.  This route
-    # holds the experiment for the whole run -- the root below, every
-    # child, and every spawn and relocation that reads exp.vertical later
-    # -- so the derivation belongs at the top of the builder and not
-    # beside the root preparation, which would leave the children on the
-    # configured value.  The line's POSITION is the contract: the
-    # startup tree (`active`, below) is taken from `exp` by value, and
-    # each child's DomainConfig is stored on its node, where
-    # core/streaming.domain_vertical_coord rebuilds a streamed tile
-    # buffer's coordinate from cfg.etac.  Derived after that copy, a
-    # streamed nest would rebuild its buffer on a coordinate its own
-    # domain is not on, which is the disagreement this lane exists to
-    # make impossible.  The root's statics are built through the same
-    # cached function the preparation makes a few lines below, so asking
-    # for them here costs nothing there.
-    exp = _adapt_experiment_vertical_for_case(exp, case_data, catalog)
-    snapshots = runtime.forcing_snapshots(case_data, catalog)
+    from gpuwm.progress import prep_stage
+
+    # Each step below says when it starts and ends, and the start state
+    # names its grid, so a run page can show where a nested preparation is:
+    # this builder was one silent stretch of minutes.  Said to this
+    # process's listener only (stderr=False): the builder runs inside the
+    # command that holds the run, whose stderr is a person's terminal.
+    with prep_stage("source_decode", label="Read the starting data",
+                    stderr=False):
+        catalog = build_input_catalog(case_data)
+        # THE COORDINATE, BEFORE ANY OTHER READ OF THE EXPERIMENT.  This route
+        # holds the experiment for the whole run -- the root below, every
+        # child, and every spawn and relocation that reads exp.vertical later
+        # -- so the derivation belongs at the top of the builder and not
+        # beside the root preparation, which would leave the children on the
+        # configured value.  The line's POSITION is the contract: the
+        # startup tree (`active`, below) is taken from `exp` by value, and
+        # each child's DomainConfig is stored on its node, where
+        # core/streaming.domain_vertical_coord rebuilds a streamed tile
+        # buffer's coordinate from cfg.etac.  Derived after that copy, a
+        # streamed nest would rebuild its buffer on a coordinate its own
+        # domain is not on, which is the disagreement this lane exists to
+        # make impossible.  The root's statics are built through the same
+        # cached function the preparation makes a few lines below, so asking
+        # for them here costs nothing there.
+        exp = _adapt_experiment_vertical_for_case(exp, case_data, catalog)
+        snapshots = runtime.forcing_snapshots(case_data, catalog)
     forcing_times = runtime.forcing_schedule(exp, case_data, snapshots)
     lbc_interval_s = _forcing_cadence_seconds(catalog)
     # Dormant (spawn-declared) nests are RESERVED but not INTEGRATED:
@@ -871,10 +916,24 @@ def build_experiment(exp, case_data) -> ExperimentState:
             else dycore_state_workspace.nbytes),
         radiation_workspace=radiation_workspace)
 
-    prepared_root = runtime.prepare_root_experiment_case(
-        exp, case_data, input_catalog=catalog,
-        forcing_by_time=snapshots, scratch_arena=arena,
-        dycore_state_workspace=dycore_state_workspace)
+    # Numbered among the grids that start with the run, the grid id said
+    # beside it: a dormant (spawn-declared) nest ahead of an active one
+    # made the id read as "grid 3 of 2".
+    grid_count = len(active.domains)
+    grid_place = {int(dc.grid_id): place
+                  for place, dc in enumerate(active.domains, start=1)}
+
+    def grid_step(grid_id: int):
+        return prep_stage("domain_initialize",
+                          label="Start state and boundaries",
+                          index=grid_place[int(grid_id)], count=grid_count,
+                          grid_id=int(grid_id), stderr=False)
+
+    with grid_step(exp.root.grid_id):
+        prepared_root = runtime.prepare_root_experiment_case(
+            exp, case_data, input_catalog=catalog,
+            forcing_by_time=snapshots, scratch_arena=arena,
+            dycore_state_workspace=dycore_state_workspace)
     # The raw decode is spent: the root's initial state and every
     # boundary frame are built from it above, and nothing below reads it.
     # The children about to be initialized -- and the mid-run delayed
@@ -934,34 +993,35 @@ def build_experiment(exp, case_data) -> ExperimentState:
         # parent's theta).  A delayed-start child initializes from the
         # analysis at its activation time -- the parent has evolved the
         # bubble by then -- so it takes no fresh analytic bubble.
-        child_starts_at_t0 = clocks[dc.grid_id].spec.start_ticks == 0
-        initialized = initialize_child(
-            dc, parent, catalog, exp.vertical,
-            source_orography=case_data.source_orography,
-            scratch_arena=arena,
-            dycore_state_workspace=dycore_state_workspace,
-            sfcp_to_sfcp=case_data.sfcp_to_sfcp,
-            initial_perturbation=(
-                exp.perturbation if child_starts_at_t0 else None))
-        if exp.perturbation is not None:
-            initial_perturbation_receipts.append(
-                dict(initialized.real.initial_perturbation)
-                if child_starts_at_t0 else {
-                    "grid_id": int(dc.grid_id),
-                    "applied": False,
-                    "reason": "delayed start: this domain initializes "
-                              "from the analysis at its activation time, "
-                              "after the perturbation instant",
-                })
-        prepared = runtime.prepare_child_case(
-            initialized, dc, exp=exp, data=case_data,
-            forcing_times=forcing_times,
-            radiation_workspace=radiation_workspace,
-            # Legacy-RRTMG ozone routing (WRF computes o33d on the root
-            # domain only; children receive parent-interpolated fields):
-            # the child's adapter takes the parent's radiation callable
-            # as its ozone provider.  Inert for every other variant.
-            radiation_parent=parent.state.physics.radiation_callable)
+        with grid_step(dc.grid_id):
+            child_starts_at_t0 = clocks[dc.grid_id].spec.start_ticks == 0
+            initialized = initialize_child(
+                dc, parent, catalog, exp.vertical,
+                source_orography=case_data.source_orography,
+                scratch_arena=arena,
+                dycore_state_workspace=dycore_state_workspace,
+                sfcp_to_sfcp=case_data.sfcp_to_sfcp,
+                initial_perturbation=(
+                    exp.perturbation if child_starts_at_t0 else None))
+            if exp.perturbation is not None:
+                initial_perturbation_receipts.append(
+                    dict(initialized.real.initial_perturbation)
+                    if child_starts_at_t0 else {
+                        "grid_id": int(dc.grid_id),
+                        "applied": False,
+                        "reason": "delayed start: this domain initializes "
+                                  "from the analysis at its activation time, "
+                                  "after the perturbation instant",
+                    })
+            prepared = runtime.prepare_child_case(
+                initialized, dc, exp=exp, data=case_data,
+                forcing_times=forcing_times,
+                radiation_workspace=radiation_workspace,
+                # Legacy-RRTMG ozone routing (WRF computes o33d on the root
+                # domain only; children receive parent-interpolated fields):
+                # the child's adapter takes the parent's radiation callable
+                # as its ozone provider.  Inert for every other variant.
+                radiation_parent=parent.state.physics.radiation_callable)
         node = DomainNode(
             cfg=dc, grid=initialized.grid, state=initialized.state,
             clock=clocks[dc.grid_id], parent=parent,
@@ -1010,6 +1070,30 @@ def build_experiment(exp, case_data) -> ExperimentState:
     return built
 
 
+_POOL_TRIM_DEFAULTS = {
+    "win32": (True, "Release unused blocks to avoid measured WDDM page demotion."),
+}
+_POOL_TRIM_FALLBACK = (
+    False, "Retain cached blocks so other processes cannot claim them between steps; "
+    "no trimming speed-up is established on this platform.")
+
+
+def _resolve_pool_trim_policy(requested: bool | None) -> dict[str, object]:
+    """Select the measured platform default or an allocator diagnostic override."""
+    default, reason = _POOL_TRIM_DEFAULTS.get(sys.platform, _POOL_TRIM_FALLBACK)
+    return {
+        "schema": "gpuwm-pool-trim-policy-v1",
+        "platform": sys.platform,
+        "release_unused_blocks": default if requested is None else bool(requested),
+        "cadence": "after each step and period",
+        "selection": "platform-default" if requested is None else "explicit-override",
+        "reason": reason if requested is None else "Explicit allocator diagnostic override. " + reason,
+        "windows_measurement": (
+            "2026-07-17, four domains, five simulated minutes: 32% less wall time; "
+            "pool held at 21.5-23.4 GiB. See docs/da-ensemble-parallel.md."),
+    }
+
+
 def _trim_default_pool() -> None:
     """Release UNUSED cached CuPy pool blocks back to the driver.
 
@@ -1047,13 +1131,66 @@ def _ask_the_checkpoints_question(node) -> None:
     ask_checkpoint_physics_identity(node.state, node.cfg.run)
 
 
+def _release_startup_build(model, node, validators) -> None:
+    """Drop every owner of a delayed child's startup build before its rebuild.
+
+    ``build_experiment`` gives a delayed child a complete state and a
+    prepared physics driver at t = 0 (the checkpoint question and the
+    health validators ask them there), and activation builds a SECOND
+    complete child from the analysis at its start time.  While the node's
+    state, the prepared-case map and the domain's health validator still
+    named the first build, both were on the card together for the whole
+    rebuild, so a tree that fit its steady state ran out of device memory
+    at the child's activation: one extra child state and physics driver
+    over everything admission priced.  MEASURED on an RTX PRO 4500, a 240
+    x 216 3 km HRRR tree with a 180 x 180 1 km nest starting an hour in
+    (`gpuwm go`): the card peaked at 4,899 MiB with both builds held and
+    at 4,337 MiB with this release, every history file byte-identical.
+    The 288 MiB activation still adds is the nest's first-step transients,
+    which the forecast admission prices (282 MiB), so on that route the
+    transition now sits inside what the steady tree is admitted on.
+
+    The release is the one relocation performs on an outgoing child
+    (:func:`gpuwm.core.nest_relocation.release_state_arrays`): every array
+    reference the state holds is dropped, and the cumulus adapter breaks
+    its reference cycle with the driver, so the allocator hands the same
+    bytes back to the rebuild.  The emptied state object stays on the node
+    until the rebuild replaces it, so nothing that walks the tree meets a
+    missing state.  A streamed startup build lives in its host store and
+    is left to its own stepper, which the route rebinds at activation.
+    The collector runs once here, for this activation only, so a cycle no
+    release contract names cannot keep the first build alive either.
+    """
+    import gc
+
+    from gpuwm.core.nest_relocation import release_state_arrays
+
+    grid_id = int(node.cfg.grid_id)
+    validators.pop(grid_id, None)
+    model._prepared_by_grid_id.pop(grid_id, None)
+    try:
+        streamed = node.state._streamed_domain is not None
+    except AttributeError:
+        streamed = False
+    if not streamed:
+        node.coupler = None
+        release_state_arrays(node.state)
+        # Scratch slots sit in a dict, which the array walk above does not
+        # enter; a slot outside the shared arena owns its bytes.
+        try:
+            node.state._scratch.clear()
+        except AttributeError:
+            pass
+    gc.collect()
+
+
 def execute_experiment(
         model: ExperimentState, *, history_handler=None,
         restart_handler=None, progress_callback=None,
         validate_state: bool = True, health_debug: bool = False,
         arena_nan_poison: bool = False,
         skip_feedback_path: bool = False,
-        pool_trim_per_period: bool = True,
+        pool_trim_per_period: bool | None = None,
         relocation_runner=None, steppers=None, step_observer=None,
         experiment=None, delayed_child_initializer=None):
     """Wire one :class:`ExperimentState` into ``execute_schedule``.
@@ -1074,16 +1211,19 @@ def execute_experiment(
     runner refuses here, at start, rather than integrating a nest that
     silently never follows anything.
 
-    ``pool_trim_per_period`` releases the CuPy default pool's UNUSED
-    cached blocks at every period commit.  Measured on the 4-domain
-    real74 shape (2026-07-17 5-sim-min A/B): step-time churn re-inflates
+    ``pool_trim_per_period=None`` selects the platform default: release
+    UNUSED cached blocks after each step and period on Windows, retain
+    them elsewhere. On a shared Linux card, returning those blocks lets
+    competing processes claim memory the next radiation step needs.
+    Measured on Windows with four domains (2026-07-17 5-sim-min A/B): churn re-inflates
     the pool from ~21 to ~30 GiB held against ~20 GiB live, driving WDDM
     page demotion; per-period trimming held the pool at 21.5-23.4 GiB,
     kept the device below the demotion band, and cut wall time 32%.
     Byte-inert by construction -- free_all_blocks releases only unused
     cached blocks, never live allocations, so no computed value can
     change; allocator behavior is not part of any ratified comparator.
-    Disable only for allocator forensics.
+    Explicit booleans remain available for allocator forensics. The resolved
+    rule and its reason are carried by the model into the run receipt.
 
     ``steppers`` is ``{grid_id: callable}``, the callable a STEP op steps
     that domain with.  ``None`` -- and any grid absent from a supplied
@@ -1120,6 +1260,8 @@ def execute_experiment(
     from gpuwm.core.dycore import step
     from gpuwm.core.state import refresh_model_time
 
+    model._pool_trim_policy = _resolve_pool_trim_policy(pool_trim_per_period)
+    pool_trim_per_period = model._pool_trim_policy["release_unused_blocks"]
     status = model._runtime_status
     context = model._activation_context
     if relocation_runner is None and context is not None:
@@ -1232,8 +1374,12 @@ def execute_experiment(
         from gpuwm.core.health import health_validator_for_domain
         validators = {node.cfg.grid_id: health_validator_for_domain(model, node)
                       for node in model.walk_parent_first()}
-        for validator in validators.values():
-            validator.require_healthy(phase="initialized-or-restored")
+        # Indexed, not bound to a loop name: a loop name outlives the loop
+        # for the whole run, and the last validator it named is a delayed
+        # child's startup build when that child comes last, which kept the
+        # build alive past its activation (see _release_startup_build).
+        for gid in validators:
+            validators[gid].require_healthy(phase="initialized-or-restored")
 
     def poison() -> None:
         if arena_nan_poison and arena is not None:
@@ -1356,6 +1502,7 @@ def execute_experiment(
         # child initializes from the analysis at its ACTIVATION time,
         # after the perturbation instant, and the receipts already say
         # so (build_experiment's delayed-start row).
+        _release_startup_build(model, node, validators)
         if delayed_child_initializer is None:
             data = context["case_data"]
             initialized = initialize_child(
@@ -1400,6 +1547,12 @@ def execute_experiment(
             validators[grid_id] = health_validator_for_domain(model, node)
             validators[grid_id].require_healthy(
                 phase=f"delayed-start.d{grid_id:02d}")
+
+    #: Host wall each domain's STEP ops have taken since the run began,
+    #: summed per grid.  Forwarded on every period commit so a reader can
+    #: say which grid of a nested run sets its pace; the same host-side
+    #: pair `step_observer` reports, never a device synchronise.
+    step_wall_by_domain: dict[int, float] = {}
 
     def on_step(grid_id, clock) -> None:
         # WRF prints one `Timing for main:` line per model time step per
@@ -1530,6 +1683,8 @@ def execute_experiment(
                     dt=clock.step_ticks / clock.tick_den)
             except Exception:  # noqa: BLE001 - telemetry never fails a run
                 pass
+        step_wall_by_domain[grid_id] = (step_wall_by_domain.get(grid_id, 0)
+                                        + (time.perf_counter() - started_wall))
 
     def on_force(child_id, parent_id, child_clock, parent_clock) -> None:
         with domain_turn(("FORCE", child_id, parent_id)), allocation_scope(child_id):
@@ -1693,7 +1848,8 @@ def execute_experiment(
                 # in tests/test_clock.py is protecting.
                 domain_clocks={
                     grid_id: float(clock.elapsed_seconds)
-                    for grid_id, clock in clocks.items()})
+                    for grid_id, clock in clocks.items()},
+                domain_step_wall=dict(step_wall_by_domain))
 
     clocks = {node.cfg.grid_id: node.clock
               for node in model.walk_parent_first()}

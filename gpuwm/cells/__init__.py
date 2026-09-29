@@ -2,10 +2,11 @@
 
 ArWen writes fields; a meteorologist deciding on a storm needs OBJECTS
 -- this cell, its track, how old it is, whether it is growing, where it
-will be in twenty minutes.  That object layer is titan-rs, a Rust
+will be in twenty minutes.  That object layer is titan, a Rust
 implementation of the TITAN storm-cell engine (identification,
-tracking, lineage, trend, forecast footprints).  This package is the
-seam between the two:
+tracking, lineage, trend, forecast footprints) that ArWen does not ship:
+the analyze door is optional and off when no titan binary is installed.
+This package is the seam between the two:
 
 * :mod:`gpuwm.cells.export` turns a wrfout series into the checksummed
   Cartesian volumes titan reads, on a fixed height ladder;

@@ -215,6 +215,21 @@ def test_the_scan_is_wired_into_the_snapshot_verdict():
 
 
 @requires_builder
+def test_cpu_preparation_calibration_files_carry_no_machine_paths():
+    snap = _snap()
+    paths = sorted((REPO / "tests").glob("*cpu_preparation*"))
+    assert paths, "the CPU preparation calibration is missing"
+    offenders = []
+    for path in paths:
+        if path.is_file():
+            offenders.extend(
+                (path.name, number, kind)
+                for number, kind, _ in snap.machine_path_violations(
+                    path.read_text(encoding="utf-8")))
+    assert offenders == []
+
+
+@requires_builder
 def test_the_staged_release_tree_carries_no_machine_paths():
     """The regression the audit finding actually asks for.
 

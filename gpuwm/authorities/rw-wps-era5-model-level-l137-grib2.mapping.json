@@ -561,6 +561,126 @@
       "missing": {
         "kind": "reject"
       }
+    },
+    "sea_surface_temperature": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "sea_ice_fraction": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "1",
+        "target": "1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "lake_water_temperature": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "lake_ice_temperature": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "lake_ice_depth": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "snow_water_equivalent": {
+      "provider": "composition_bound",
+      "units": {
+        "source": "kg m-2",
+        "target": "kg m-2"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
     }
   },
   "derivations": [
@@ -764,9 +884,9 @@
       "snow_mixing_ratio": "explicit_zero_with_adapter_validation",
       "graupel_or_hail_mixing_ratio": "explicit_zero_with_adapter_validation",
       "vertical_velocity": "explicit_zero_with_adapter_validation",
-      "snow_water_equivalent": "published_by_companion_pressure_level_source_not_borrowed_here",
+      "snow_water_equivalent": "borrowed_from_companion_pressure_level_source",
       "snow_depth": "published_by_companion_pressure_level_source_not_borrowed_here",
-      "sea_ice_fraction": "published_by_companion_pressure_level_source_not_borrowed_here"
+      "sea_ice_fraction": "borrowed_from_companion_pressure_level_source"
     }
   }
 }

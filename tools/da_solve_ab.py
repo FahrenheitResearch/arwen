@@ -296,6 +296,16 @@ def serialize_config(cfg) -> dict:
     return out
 
 
+#: What a bundle dumped before these config fields existed ran with, so its
+#: replay solves the analysis its leg solved rather than today's defaults.
+#: The radial-velocity dispersion gate is default-on from its introduction:
+#: a bundle recorded before it ran without it and replays without it, and
+#: one that ran with it or its batch condition off (``None``, which
+#: ``serialize_config`` drops) replays with it off by the same entry.
+_ABSENT_IN_OLD_BUNDLES = {"velocity_dispersion_ratio": None,
+                          "velocity_dispersion_batch_ratio": None}
+
+
 def build_config(manifest: dict, device: str):
     """The :class:`RadarAssimilationConfig` both arms share, bar the device.
 
@@ -323,6 +333,8 @@ def build_config(manifest: dict, device: str):
             kwargs[name] = tuple(value)
         else:
             kwargs[name] = value
+    for name, value in _ABSENT_IN_OLD_BUNDLES.items():
+        kwargs.setdefault(name, value)
     kwargs["solve_device"] = device
     return RadarAssimilationConfig(**kwargs)
 

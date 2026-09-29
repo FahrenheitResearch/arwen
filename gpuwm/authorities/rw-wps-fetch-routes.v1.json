@@ -439,7 +439,7 @@
           "role": "physical_analysis_surface_data",
           "leads": [0],
           "cycle": "same",
-          "why": "AIGFS publishes no soil, no land mask, no orography, no skin temperature, no surface pressure and no 2 m humidity. The packaged profile aigfs-gdas-hybrid-grib2-v1 binds exactly those canonicals to the SAME-CYCLE GDAS analysis; a donor from another cycle or grid refuses by name. Without the donor `gpuwm prep --source aigfs` refuses at init naming the missing surfaces."
+          "why": "AIGFS publishes no soil, no land mask, no orography, no skin temperature, no surface pressure and no 2 m humidity. The packaged profile aigfs-gdas-hybrid-grib2-v1 binds the land-surface canonicals to the SAME-CYCLE GDAS analysis and derives surface pressure at every lead from AIGFS's own mean-sea-level pressure at the analysis terrain height; a donor from another cycle or grid refuses by name. Without the donor `gpuwm prep --source aigfs` refuses at init naming the missing surfaces."
         }
       ],
       "record_subset": {
@@ -496,7 +496,7 @@
           "role": "physical_analysis_surface_data",
           "leads": [0],
           "cycle": "same",
-          "why": "the same atmosphere-only gap AIGFS has: aigefs-member-hybrid-grib2-v1 binds the missing land-surface canonicals to the same-cycle GDAS analysis."
+          "why": "the same atmosphere-only gap AIGFS has: aigefs-member-hybrid-grib2-v1 binds the missing land-surface canonicals to the same-cycle GDAS analysis and reduces each lead's own mean-sea-level pressure to the analysis terrain height for its surface pressure."
         }
       ],
       "record_subset": {
@@ -511,13 +511,374 @@
     },
 
     "ecmwf-open-data": {
-      "label": "ECMWF open-data IFS 0.25 deg oper",
+      "label": "ECMWF open-data IFS",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"},
-        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, reachable with --transport aws"}
+        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true, "retention_hours": 72, "why": "the publisher's own door, which keeps its last four days of cycles and publishes each one first; 72 h counted, measured 2026-09-25, so an older cycle goes straight to the mirror"},
+        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, which keeps every cycle the publisher's door has dropped: it serves a cycle past the door's window, and any cycle with --transport aws"}
       ],
-      "host_note": "only the 0.25 deg open set is CC-BY-4.0; the 9 km HRES fields are licensed and are not behind this door. IFS publishes LATER than AIFS -- a cycle whose aifs-single tree is complete may hold only a BUFR track file here.",
+      "host_note": "the 0.4 and 0.25 degree open sets use CC-BY-4.0. IFS publishes LATER than AIFS; a cycle whose aifs-single tree is complete may hold only a BUFR track file here.",
+      "publication_era_note": "A13: intervals are inclusive at valid_from and exclusive at valid_until, in UTC. Layout, pressure level, soil layer and forecast horizon transitions were measured in the mirror listings and indexes. The earliest preparable cycle and refusal advice are derived from the first era without prep_refusal.",
+      "publication_era_measured": "2026-09-28",
+      "publication_era_sources": [
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/?list-type=2&prefix=20240131/06z/0p25/scda/",
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/?list-type=2&prefix=20240228/06z/ifs/0p25/scda/",
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/20240305/06z/ifs/0p25/scda/20240305060000-0h-scda-fc.index",
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/20240318/06z/ifs/0p25/scda/20240318060000-0h-scda-fc.index",
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/20240318/12z/ifs/0p25/oper/20240318120000-0h-oper-fc.index",
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/?list-type=2&prefix=20241112/06z/ifs/0p25/scda/",
+        "https://s3.eu-central-1.amazonaws.com/ecmwf-forecasts/?list-type=2&prefix=20260512/06z/ifs/0p25/oper/"
+      ],
+      "publication_eras": [
+        {
+          "label": "IFS open data",
+          "valid_from": "2022-01-25T00",
+          "valid_until": "2024-01-31T06",
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.4,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              240,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/0p4-beta/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: pressure levels 100, 150, 400, 600 hPa are missing, so the packaged mapping would fail vertical coverage validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2022-01-25T00",
+          "valid_until": "2024-01-31T06",
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.4,
+          "steps": [
+            [
+              90,
+              3
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/0p4-beta/scda/{YYYYMMDDHHMMSS}-{F}h-scda-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: pressure levels 100, 150, 400, 600 hPa are missing, so the packaged mapping would fail vertical coverage validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-01-31T06",
+          "valid_until": "2024-02-28T06",
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              240,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: pressure levels 100, 150, 400, 600 hPa are missing, so the packaged mapping would fail vertical coverage validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-01-31T06",
+          "valid_until": "2024-02-28T06",
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              90,
+              3
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/0p25/scda/{YYYYMMDDHHMMSS}-{F}h-scda-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: pressure levels 100, 150, 400, 600 hPa are missing, so the packaged mapping would fail vertical coverage validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-02-28T06",
+          "valid_until": "2024-03-05T06",
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              240,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: pressure levels 100, 150, 400, 600 hPa are missing, so the packaged mapping would fail vertical coverage validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-02-28T06",
+          "valid_until": "2024-03-05T06",
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              90,
+              3
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/scda/{YYYYMMDDHHMMSS}-{F}h-scda-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: pressure levels 100, 150, 400, 600 hPa are missing, so the packaged mapping would fail vertical coverage validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-03-05T06",
+          "valid_until": "2024-03-18T12",
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              240,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: this publication has one soil temperature layer and two soil moisture layers, where the packaged mapping declares four of each; decoding would fail soil record count validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-03-05T06",
+          "valid_until": "2024-03-18T12",
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              90,
+              3
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/scda/{YYYYMMDDHHMMSS}-{F}h-scda-fc.grib2",
+              "idx_sidecar": null
+            }
+          ],
+          "prep_refusal": "cannot be prepared: this publication has one soil temperature layer and two soil moisture layers, where the packaged mapping declares four of each; decoding would fail soil record count validation."
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-03-18T12",
+          "valid_until": "2024-11-12T06",
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              240,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+              "idx_sidecar": null
+            }
+          ]
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-03-18T12",
+          "valid_until": "2024-11-12T06",
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              90,
+              3
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/scda/{YYYYMMDDHHMMSS}-{F}h-scda-fc.grib2",
+              "idx_sidecar": null
+            }
+          ]
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-11-12T06",
+          "valid_until": null,
+          "cycle_hours": [
+            0,
+            12
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ],
+            [
+              360,
+              6
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/oper/{YYYYMMDDHHMMSS}-{F}h-oper-fc.grib2",
+              "idx_sidecar": null
+            }
+          ]
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2024-11-12T06",
+          "valid_until": "2026-05-12T06",
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ]
+          ],
+          "files": [
+            {
+              "role": "oper-fc",
+              "primary": true,
+              "leads": "all",
+              "path": "{YYYYMMDD}/{HH}z/ifs/0p25/scda/{YYYYMMDDHHMMSS}-{F}h-scda-fc.grib2",
+              "idx_sidecar": null
+            }
+          ]
+        },
+        {
+          "label": "IFS open data",
+          "valid_from": "2026-05-12T06",
+          "valid_until": null,
+          "cycle_hours": [
+            6,
+            18
+          ],
+          "resolution_degrees": 0.25,
+          "steps": [
+            [
+              144,
+              3
+            ]
+          ]
+        }
+      ],
       "cycle_hours": [0, 6, 12, 18],
       "publication_lag_hours": 12,
       "ladders": [
@@ -550,8 +911,8 @@
       "label": "ECMWF AIFS single 0.25 deg oper",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"},
-        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, reachable with --transport aws"}
+        {"name": "ecmwf", "base": "https://data.ecmwf.int/forecasts", "default": true, "retention_hours": 72, "why": "the publisher's own door, which keeps its last four days of cycles and publishes each one first; 72 h counted, measured 2026-09-25, so an older cycle goes straight to the mirror"},
+        {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, which keeps every cycle the publisher's door has dropped: it serves a cycle past the door's window, and any cycle with --transport aws"}
       ],
       "cycle_hours": [0, 6, 12, 18],
       "publication_lag_hours": 8,
@@ -582,7 +943,7 @@
       "label": "DWD ICON-EU regular lat-lon, bz2 objects",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "dwd", "base": "https://opendata.dwd.de/weather/nwp/icon-eu/grib", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"}
+        {"name": "dwd", "base": "https://opendata.dwd.de/weather/nwp/icon-eu/grib", "default": true, "retention_hours": 24, "why": "DWD's rolling open-data door: each of the eight cycle-hour directories holds that hour's newest run and drops it when the next day's run starts to publish, so a run stays about 24 hours; no archive stands behind it. Measured 2026-09-28 19:21 UTC: every cycle-hour directory listed one run, the 18 UTC one still the previous day's"}
       ],
       "host_note": "opendata.dwd.de keeps roughly a rolling day; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the acquisition codec stages them for the decoder.",
       "coverage_note": "ICON-EU spans 23.5 W to 62.5 E, 29.5 to 70.5 N. A domain outside that window is refused at prep by the horizontal mapper, which names the offending corner and the window the source covers.",
@@ -642,11 +1003,88 @@
       }
     },
 
+    "icon-d2": {
+      "label": "DWD ICON-D2 2.2 km native GDT-101, bz2 objects",
+      "measured": "2026-09-27",
+      "hosts": [
+        {"name": "dwd", "base": "https://opendata.dwd.de/weather/nwp/icon-d2/grib", "default": true, "retention_hours": 24, "why": "DWD's rolling open-data door: each of the eight cycle-hour directories holds that hour's newest run and drops it when the next day's run starts to publish, so a run stays about 24 hours; no archive stands behind it"}
+      ],
+      "host_note": "opendata.dwd.de keeps about one day of ICON-D2 runs; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the normalization stage stages them for the remapper. Measured 2026-09-27 for all eight cycles: the first objects land 44 minutes after the start, every pressure-level, soil and time-invariant object by 1 h 13 min, every single-level object by 1 h 23 min.",
+      "coverage_note": "ICON-D2's native mesh covers Germany and its neighbours, and DWD masks its 13 km lateral boundary strip in every record. The registry row's coverage window (lat 44.0..57.3, lon 0.0..17.3) is the largest lat/lon box the published cells fill, less the 0.25-degree normalization halo; the wizard refuses a domain outside it.",
+      "cycle_hours": [0, 3, 6, 9, 12, 15, 18, 21],
+      "publication_lag_hours": 2,
+      "ladders": [
+        {"cycle_hours": null, "steps": [[48, 1]]}
+      ],
+      "cadences": [1],
+      "default_cadence": 1,
+      "layout": "flat",
+      "axes": {
+        "field": [
+          {"names": ["p", "t", "u", "v", "qv", "qc", "qi", "qr", "qs", "qg"], "leveltype": "model-level",
+           "level_format": "%d",
+           "levels": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65]},
+          {"names": ["h_snow", "ps", "relhum_2m", "t_2m", "t_g", "u_10m", "v_10m", "w_snow"],
+           "leveltype": "single-level", "level_literal": "2d"},
+          {"names": ["t_so"], "leveltype": "soil-level", "level_format": "%d",
+           "levels": [0, 2, 5, 6, 18, 54, 162, 486, 1458]},
+          {"names": ["w_so"], "leveltype": "soil-level", "level_format": "%d",
+           "levels": [0, 1, 3, 9, 27, 81, 243, 729]}
+        ],
+        "invariant": [
+          {"names": ["fr_ice", "fr_land", "hsurf"], "leveltype": "time-invariant", "level_literal": "0"},
+          {"names": ["hhl"], "leveltype": "time-invariant", "level_format": "%d",
+           "levels": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66]}
+        ],
+        "geometry": [
+          {"names": ["clat", "clon"], "leveltype": "time-invariant", "level_literal": "0"}
+        ]
+      },
+      "files": [
+        {
+          "role": "state",
+          "primary": true,
+          "leads": "all",
+          "axis": "field",
+          "path": "{HH}/{field_lower}/icon-d2_germany_icosahedral_{leveltype}_{YYYYMMDDHH}_{FFF}{LEVEL_SUFFIX}_{field_lower}.grib2.bz2",
+          "idx_sidecar": null,
+          "magic": "BZh"
+        },
+        {
+          "role": "invariant",
+          "primary": true,
+          "leads": "none",
+          "axis": "invariant",
+          "path": "{HH}/{field_lower}/icon-d2_germany_icosahedral_time-invariant_{YYYYMMDDHH}_000{LEVEL_SUFFIX}_{field_lower}.grib2.bz2",
+          "idx_sidecar": null,
+          "magic": "BZh"
+        },
+        {
+          "role": "geometry",
+          "primary": true,
+          "leads": "none",
+          "axis": "geometry",
+          "path": "{HH}/{field_lower}/icon-d2_germany_icosahedral_time-invariant_{YYYYMMDDHH}_000{LEVEL_SUFFIX}_{field_lower}.grib2.bz2",
+          "idx_sidecar": null,
+          "magic": "BZh"
+        }
+      ],
+      "record_subset": {
+        "supported": false,
+        "why": "each object is already ONE GRIB2 message after bunzip2 -- the file IS the record, so there is nothing left to subset"
+      },
+      "prep": {
+        "source": "icon-d2",
+        "supplement": {"from": "role:invariant", "select": "hsurf",
+                       "role": "icon_d2_invariant_surface"}
+      }
+    },
+
     "gem-gdps": {
       "label": "ECCC GDPS (GEM global) 15 km regular lat-lon",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "msc", "base": "https://dd.weather.gc.ca", "default": true, "retention_hours": null, "why": "the publisher's own door; this route is outside the NCEP ladder and keeps the single endpoint it always had"}
+        {"name": "msc", "base": "https://dd.weather.gc.ca", "default": true, "retention_hours": 696, "why": "MSC Datamart, the publisher's own and only door: 30 day directories with the oldest partly pruned, so 29 days (696 h) are counted, measured 2026-09-25; no archive stands behind it"}
       ],
       "host_note": "MSC Datamart publishes one single-message JPEG2000 file per variable-level. The lead directories run hourly to 240 h, but the full model state exists only every three hours -- the intermediate directories carry surface-only files.",
       "cycle_hours": [0, 12],
@@ -716,22 +1154,43 @@
     "20crv3": {
       "kind": "private_bytes",
       "why": "the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean.",
-      "remedy_source_root": true
+      "remedy": "bring the member's files yourself into DIR; `gpuwm prep --source 20crv3 --source-root DIR --author-only --author-input-manifest DIR/member-manifest.json` writes the member manifest and prints the --source-manifest pair a standalone `gpuwm prep --source 20crv3` binds, and `gpuwm go CONFIG.toml --data-dir DIR` runs the whole chain from a `gpuwm domain --source 20crv3` config."
     },
     "20crv3-cf": {
       "kind": "not_cycle_shaped",
       "why": "the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold.",
-      "remedy_source_root": true
+      "source_root": {
+        "why": "the folder tools/download_20crv3_native_subset.py writes: one NetCDF file per variable, plus invariant.nc, the orography and land mask it recovers from them.",
+        "inputs": {"match": ["*.nc"], "exclude": ["wilt.nc"], "format": "netcdf"},
+        "supplements": [
+          {"role": "twentycrv3_netcdf_recovered_invariant", "match": ["invariant.nc"], "format": "netcdf", "input": true,
+           "why": "the recovered orography and land mask: an input like every other file, and the terrain supplement the composition binds by this role. wilt.nc is only what it was recovered from, so it is not an input."}
+        ]
+      }
     },
     "mapped": {
       "kind": "generic_adapter",
       "why": "`mapped` is the generic declarative adapter, not a product: it names no publisher, no bucket and no file grammar, so there is nothing for a fetch to resolve. It is the door for bytes you already have.",
-      "remedy_source_root": true
+      "remedy": "supply the mapping and composition documents beside the files: `gpuwm prep --source mapped --source-format FORMAT --mapping MAPPING.json --composition COMPOSITION.json --provenance ROLE=PROVENANCE.json --input FILE --supplement ROLE=FILE --author-input-manifest inputs.json --experiment-config CONFIG.toml --wps-namelist CONFIG.namelist.wps --geog-root WPS_GEOG --output-root PREPARED`."
     },
     "era5-l137": {
       "kind": "brokered_request",
-      "why": "ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The same is true of the pressure-level/single-level analysis this source borrows its land surface from, so both files arrive the same way.",
-      "remedy_source_root": true
+      "why": "ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The pressure-level/single-level analysis this source borrows its land surface from does have a fetch door, `gpuwm fetch --source era5 --retrieve`, which writes it into the same folder.",
+      "source_root": {
+        "why": "one folder holding the model-level file(s) from your MARS request and the same hours' surface analysis `gpuwm fetch --source era5 --retrieve --out` writes beside them.",
+        "inputs": {"match": ["*"], "format": "grib2"},
+        "supplements": [
+          {"role": "physical_analysis_surface_data", "match": ["era5-combined.grib"], "format": "grib1", "input": false,
+           "fetch": {"source": "era5"},
+           "why": "the same hours' ERA5 pressure-level/single-level analysis the model-level atmosphere borrows its land surface, soil and lake state from; `gpuwm fetch --source era5 --retrieve` writes it under this name."}
+        ],
+        "request": {
+          "dataset": "reanalysis-era5-complete",
+          "keywords": "class=ea expver=1 stream=oper type=an levtype=ml levelist=1/to/137 param=130/131/132/133 grid=0.25/0.25 format=grib",
+          "lattice_deg": 0.25,
+          "why": "the model-level atmosphere, requested for the same hours and over the lattice points the surface analysis delivers for the same area -- its corners taken inward onto the 0.25 degree lattice, as the provider does for that fetch -- so the two grids share their points."
+        }
+      }
     }
   }
 }

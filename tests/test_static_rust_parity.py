@@ -6,11 +6,11 @@ for the three port lanes (docs/dev/static-rust-port.md); each lane
 turns its own class green and none may weaken an assertion to get
 there.  Contract summary:
 
-- **WPS path (lanes 1-2)**: byte-identical float64 arrays.  The Python
-  is the oracle (it is itself gated against pinned geogrid output by
-  tests/test_static_build.py, test_lambert.py and
-  test_projection_oracle.py, so transitivity carries the WRF
-  arbitration over).
+- **Public float64 projection**: exact platform NumPy comparisons.
+- **WPS sampling**: portable Rust authority with independent NumPy bounds
+  and cross-machine field hashes, owned by the portable golden tests.
+  Full builds remain compared field by field against the NumPy reference
+  under measured bounds, including categorical fields and source coverage.
 - **Highres warp (lane 3)**: defined-behaviour tolerance parity for the
   warped planes; byte parity for everything downstream of them
   (triangle, crosswalk, donor fill, merges) and identical refusal
@@ -24,6 +24,7 @@ that the bare default must be the Rust path.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -161,8 +162,39 @@ class TestLane1GridParity:
                 bridge.grid_free(int(child.value))
 
 
+FULL_BUILD_BOUNDS = (Path(__file__).resolve().parents[1] / "tools" / "rustwx"
+                    / "crates" / "static-fields" / "tests" / "goldens"
+                    / "wps32" / "full-build-numpy-bounds.json")
+
+
+def _assert_full_build_bounds(observed, expected, bounds):
+    assert sorted(observed) == sorted(expected) == sorted(bounds), (
+        "full-build field inventory differs")
+    for name, cap in bounds.items():
+        actual, reference = np.asarray(observed[name]), np.asarray(expected[name])
+        assert actual.shape == reference.shape == tuple(cap["shape"]), name
+        assert actual.dtype == reference.dtype == np.float64, name
+        assert np.isfinite(actual).all() and np.isfinite(reference).all(), name
+        delta = np.abs(actual - reference)
+        assert float(delta.max()) <= cap["max_abs"], (
+            f"{name}: full-build maximum difference exceeds the measured bound")
+        assert float(delta.mean()) <= cap["mean_abs"], (
+            f"{name}: full-build mean difference exceeds the measured bound")
+
+
+@pytest.mark.parametrize("name", ["LANDMASK", "HGT_M", "LAI12M"])
+def test_full_build_bounds_refuse_changed_kernel_output(name):
+    """The reference gate must reject category, terrain and monthly drift."""
+    cap = json.loads(FULL_BUILD_BOUNDS.read_text(encoding="utf-8"))["fields"][name]
+    expected = {name: np.zeros(cap["shape"], dtype=np.float64)}
+    observed = {name: expected[name].copy()}
+    observed[name].flat[0] = cap["max_abs"] + 1.0
+    with pytest.raises(AssertionError, match=name):
+        _assert_full_build_bounds(observed, expected, {name: cap})
+
+
 class TestLane2BuildParity:
-    """The full static build, byte-identical field dict."""
+    """Full independent builds, with measured per-field sampling bounds."""
 
     @pytest.fixture()
     def geog_root(self):
@@ -173,47 +205,25 @@ class TestLane2BuildParity:
         return GEOG_ROOT
 
     @pytest.mark.static_platform_qualification
-    def test_build_static_bytes_equal(self, geog_root, monkeypatch):
-        bridge = _bridge_or_fail()
+    def test_build_static_matches_numpy_with_measured_bounds(self, geog_root, monkeypatch):
+        _bridge_or_fail()
         from gpuwm.static import rust_bridge
         from gpuwm.static.build import GeogSelection, build_static
 
-        grid = _python_parent_grid()
+        table = json.loads(FULL_BUILD_BOUNDS.read_text(encoding="utf-8"))
+        assert table["grid_spec"] == PARENT_SPEC
         selection = GeogSelection.fallback(geog_root)
-        # The numpy oracle, under the explicit reported fallback: the
-        # bare default build_static call now routes to Rust itself.
+        grid = _python_parent_grid()
+        observed_coverage, expected_coverage = {}, {}
+        monkeypatch.delenv(rust_bridge.STATIC_PYTHON_ENV, raising=False)
+        observed = build_static(grid, geog_root, selection=selection,
+                                source_coverage_report=observed_coverage)
         monkeypatch.setenv(rust_bridge.STATIC_PYTHON_ENV, "1")
-        expected = build_static(grid, geog_root, selection=selection)
-        monkeypatch.delenv(rust_bridge.STATIC_PYTHON_ENV)
-
-        handle = bridge.grid_new(PARENT_SPEC)
-        try:
-            paths = {
-                "terrain": selection.path("terrain"),
-                "landuse": selection.path("landuse"),
-                "soil_top": selection.path("soil_top"),
-                "soil_bottom": selection.path("soil_bottom"),
-                "greenfrac": selection.path("greenfrac"),
-                "lai": selection.path("lai"),
-                "albedo": selection.path("albedo"),
-                "snow_albedo": selection.path("snow_albedo"),
-                "soil_temperature": selection.path("soil_temperature"),
-            }
-            fieldset = bridge.build_fields(handle, paths)
-            try:
-                observed = bridge.fieldset_to_dict(fieldset)
-            finally:
-                bridge.fieldset_free(fieldset)
-        finally:
-            bridge.grid_free(handle)
-
-        assert sorted(observed) == sorted(expected), (
-            "field inventory differs")
-        for name in sorted(expected):
-            np.testing.assert_array_equal(
-                observed[name], np.asarray(expected[name]),
-                err_msg=f"{name}: Rust build differs from the Python "
-                        "reference at the byte")
+        expected = build_static(grid, geog_root, selection=selection,
+                                source_coverage_report=expected_coverage)
+        _assert_full_build_bounds(observed, expected, table["fields"])
+        assert observed_coverage == expected_coverage, (
+            "full-build source coverage differs from the independent reference")
 
     def test_build_static_is_faster_than_python(self, geog_root):
         """The Prove lane owns the real measurement on real domains;
@@ -452,8 +462,16 @@ class TestLane3HighresParity:
         assert delta.mean() <= warp_meta["mean_abs_delta_cap_m"], (
             f"mean delta {delta.mean():.3f} m beyond the recorded cap")
 
+    @pytest.mark.parametrize("kind", ["global-terrain-window",
+                                      "terrain-window"])
     def test_derive_window_writes_a_real_mosaic_through_the_dll(
-            self, tmp_path):
+            self, tmp_path, kind):
+        """The terrain door's mosaic against rasterio.merge on the same
+        lattice-snapped bounds (the fallback's arithmetic), asked for the
+        footprint's own bounds as production asks.  The two clips share
+        one pixel grid centred on the whole arc-seconds, so the declared
+        1 arc-second lattice (latitude-banded sources) and the inherited
+        one (staged tiles) are the same grid and meet the one golden."""
         bridge = _bridge_or_fail()
         west = HIGHRES_FIXTURES / "mosaic_west.tif"
         east = HIGHRES_FIXTURES / "mosaic_east.tif"
@@ -467,14 +485,16 @@ class TestLane3HighresParity:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         mosaic_meta = meta["mosaic"]
         out_path = tmp_path / "derived_mosaic.tif"
-        request = json.dumps({
-            "kind": "global-terrain-window",
+        request = {
+            "kind": kind,
             "tiles": [str(west), str(east)],
             "bounds": mosaic_meta["bounds_wsen"],
-            "resolution_deg": mosaic_meta["resolution_deg"],
-            "sea_level_fill": 0.0,
             "out_path": str(out_path),
-        }).encode("utf-8")
+        }
+        if kind == "global-terrain-window":
+            request.update(resolution_deg=mosaic_meta["resolution_deg"],
+                           sea_level_fill=0.0)
+        request = json.dumps(request).encode("utf-8")
         buffer = (ctypes.c_uint8 * len(request)).from_buffer_copy(request)
         cap = 65536
         out = (ctypes.c_uint8 * cap)()
@@ -488,11 +508,13 @@ class TestLane3HighresParity:
         assert audit["output_shape"] == mosaic_meta["shape"]
         assert audit["total_pixels"] == (mosaic_meta["shape"][0]
                                          * mosaic_meta["shape"][1])
-        # rasterio can read the artifact the Rust writer produced.
+        # rasterio can read the artifact the Rust writer produced, and it
+        # sits on the lattice rasterio cut: same pixel grid, same place.
         with rasterio.open(out_path) as derived:
             values = derived.read(1)
             assert list(values.shape) == mosaic_meta["shape"]
-            assert np.isfinite(values).all()
+            assert tuple(derived.transform)[:6] == pytest.approx(
+                mosaic_meta["transform"], rel=0.0, abs=1e-12)
         expect = np.frombuffer(
             (HIGHRES_FIXTURES / "mosaic_filled.bin").read_bytes(),
             dtype=np.float32).reshape(values.shape)
@@ -500,6 +522,9 @@ class TestLane3HighresParity:
             (HIGHRES_FIXTURES / "mosaic_holes.bin").read_bytes(),
             dtype=np.uint8).reshape(values.shape).astype(bool)
         compared = ~holes
+        if kind == "global-terrain-window":
+            assert np.isfinite(values).all()   # holes take the sea-level fill
+        assert np.isfinite(values[compared]).all()
         delta = np.abs(values[compared].astype(np.float64)
                        - expect[compared].astype(np.float64))
         assert delta.max() <= mosaic_meta["max_abs_delta_cap_m"]

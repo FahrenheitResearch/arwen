@@ -6,6 +6,10 @@ Run from the repo root:
 
     python tools/rustwx/crates/static-fields/tests/fixtures/highres/generate_goldens.py
 
+Naming sections (``... generate_goldens.py mosaic``) regenerates only
+those and keeps every other golden's recorded bytes; the mosaic needs only
+the two committed clips, not the real-tile cache they were cut from.
+
 Real inputs: the cached Copernicus DEM GLO-30 tiles under
 ``COPERNICUS_CACHE`` (fetched by a real production run through
 ``gpuwm.static.highres_fetch``; their sha256 sidecars sit next to
@@ -610,23 +614,41 @@ def gen_mosaic() -> None:
     from rasterio.enums import Resampling
     from rasterio.merge import merge as rasterio_merge
 
+    from gpuwm.static.highres_fetch import _lattice_bounds, _terrain_lattice
+
     step = 1.0 / 3600.0
     margin = 0.01
     # Footprint straddling the seam, inside the two clips.
     bbox = dict(lon_min=7.975, lon_max=8.025, lat_min=46.445, lat_max=46.475)
+    # What the terrain door is asked for (footprint plus margin) ...
     bounds = (bbox["lon_min"] - margin, bbox["lat_min"] - margin,
               bbox["lon_max"] + margin, bbox["lat_max"] + margin)
     datasets = [rasterio.open(HERE / "mosaic_west.tif"),
                 rasterio.open(HERE / "mosaic_east.tif")]
     try:
+        # ... and what it cuts: whole pixels of the terrain lattice, the
+        # fallback's own snap, so every footprint agrees on shared ground.
+        lattice = _lattice_bounds(bounds, *_terrain_lattice(None, step))
         mosaic, transform = rasterio_merge(
-            datasets, bounds=bounds, res=(step, step),
+            datasets, bounds=lattice, res=(step, step),
             resampling=Resampling.nearest, nodata=np.nan,
             dtype="float32")
+        # The staged-tile kind inherits the first clip's own grid.  These
+        # clips put their pixel centres on the whole arc-seconds, so that
+        # is the same lattice and one golden serves both kinds.
+        inherited, inherited_transform = rasterio_merge(
+            datasets, bounds=_lattice_bounds(
+                bounds, *_terrain_lattice(datasets[0].transform, None)),
+            nodata=np.nan, dtype="float32")
     finally:
         for dataset in datasets:
             dataset.close()
     values = np.asarray(mosaic[0], dtype=np.float32)
+    if not (np.array_equal(inherited[0], values, equal_nan=True)
+            and np.allclose(tuple(inherited_transform)[:6],
+                            tuple(transform)[:6], rtol=0.0, atol=1e-12)):
+        raise SystemExit("the clips no longer share one lattice: the "
+                         "inherited-resolution kind needs its own golden")
     hole_mask = ~np.isfinite(values)
     holes = int(np.count_nonzero(hole_mask))
     filled = values.copy()
@@ -634,6 +656,7 @@ def gen_mosaic() -> None:
     META["mosaic"] = {
         "tiles": ["mosaic_west.tif", "mosaic_east.tif"],
         "bounds_wsen": list(bounds),
+        "lattice_bounds_wsen": list(lattice),
         "resolution_deg": step,
         "shape": [int(values.shape[0]), int(values.shape[1])],
         "transform": [transform.a, transform.b, transform.c,
@@ -646,17 +669,16 @@ def gen_mosaic() -> None:
         "hole_mask": save("mosaic_holes.bin",
                           hole_mask.astype(np.uint8)),
         "filled": save("mosaic_filled.bin", filled.astype(np.float32)),
-        # MEASURED 2026-08-17: rasterio aligns each source window by
-        # floor-snapping (gdal_merge win_align), which can shift a
-        # sub-pixel-staggered source by one whole pixel; centre-
-        # containment nearest keeps true registration, so ~40% of the
-        # cells on this staggered real-tile seam differ by one-pixel
-        # terrain steps (max 49.7 m in the Alps).  The gates: hole
-        # subset, exact fraction floor, per-cell max, and a mean cap
-        # that keeps the disagreement one-pixel-sized.
-        "exact_fraction_floor": 0.55,
-        "max_abs_delta_cap_m": 60.0,
-        "mean_abs_delta_cap_m": 8.0,
+        # MEASURED 2026-09-28 on the terrain lattice: every output pixel
+        # centre is a source pixel centre, so rasterio's window alignment
+        # and the Rust centre sampling pick the same pixel.  All 45,793
+        # cells are bit-identical, with no holes on either side.  The
+        # gates are exact.  (Cut at the footprint's own edge, 2026-08-17,
+        # the grids were a sub-pixel apart and about 40% of this seam
+        # differed by one-pixel terrain steps, max 49.7 m.)
+        "exact_fraction_floor": 1.0,
+        "max_abs_delta_cap_m": 0.0,
+        "mean_abs_delta_cap_m": 0.0,
     }
 
 
@@ -694,17 +716,31 @@ def gen_tile_ids() -> None:
     META["tile_ids"] = {"cases": cases, "tile_bboxes": tiles}
 
 
-def main() -> None:
-    gen_transforms()
-    gen_clips()
-    gen_terrain_warp()
-    gen_landcover()
-    gen_soil()
-    gen_usda()
-    gen_donors()
-    gen_merges()
-    gen_mosaic()
-    gen_tile_ids()
+GENERATORS = {
+    "transforms": gen_transforms,
+    "clips": gen_clips,
+    "terrain_warp": gen_terrain_warp,
+    "landcover": gen_landcover,
+    "soil": gen_soil,
+    "usda": gen_usda,
+    "donors": gen_donors,
+    "merges": gen_merges,
+    "mosaic": gen_mosaic,
+    "tile_ids": gen_tile_ids,
+}
+
+
+def main(sections: list[str]) -> None:
+    unknown = sorted(set(sections) - set(GENERATORS))
+    if unknown:
+        raise SystemExit(f"unknown golden sections {unknown}; "
+                         f"known: {sorted(GENERATORS)}")
+    if sections:
+        # Every section left out keeps the bytes it was recorded with.
+        META.update(json.loads((HERE / "meta.json").read_bytes()))
+    for name, generate in GENERATORS.items():
+        if not sections or name in sections:
+            generate()
     # write_bytes, not write_text: on Windows the text-mode writer turns
     # every "\n" into "\r\n", and meta.json is a tracked fixture whose
     # bytes the goldens are compared against.
@@ -716,4 +752,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

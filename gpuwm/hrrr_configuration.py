@@ -110,6 +110,10 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
     # A descriptive experiment name is not geometry.
     observed.pop("name", None)
     expected.pop("name", None)
+    # Nor is the soil donor radius: the configuration writes its own, and
+    # the native target document is the one the preparation reads it from.
+    observed.pop("surface_fallback_radius_cells", None)
+    expected.pop("surface_fallback_radius_cells", None)
     if observed != expected:
         drift = {key: (observed.get(key), value) for key, value in expected.items()
                  if observed.get(key) != value}
@@ -118,7 +122,25 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
         if getattr(full.vertical, name) != getattr(vertical, name):
             raise ValueError(f"configured d01 vertical {name} differs from namelist.input")
     raw = copy.deepcopy(raw)
+    if raw.get("static") is None:
+        # The root's own configuration keeps only d01, so the grid-spacing
+        # default is settled on the whole tree here and written into the
+        # table the preparation binds: a 2 km root over a 667 m child
+        # carries the block its child needs, and applies it to itself only
+        # if its own spacing reaches the row.
+        from gpuwm.static.highres_production import (
+            default_static_highres, static_highres_identity)
+        default = default_static_highres(
+            [float(dc.run.dx) for dc in full.domains])
+        if default is not None:
+            raw["static"] = {"highres": static_highres_identity(default)}
     raw["domain"] = raw["domain"][:1]
+    from gpuwm.experiment import (drop_unreached_grell_selectors,
+                                  drop_unreached_relocation,
+                                  drop_unreached_sase_selectors)
+    drop_unreached_sase_selectors(raw, [full.root.run])
+    drop_unreached_grell_selectors(raw, [full.root.run])
+    drop_unreached_relocation(raw, [full.root.grid_id])
     raw["experiment"].update(name=target.name, feedback=0, smooth_option=0)
     if start_time is not None:
         raw["experiment"]["start_time"] = start_time

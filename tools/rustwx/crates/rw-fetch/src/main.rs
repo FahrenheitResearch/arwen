@@ -27,7 +27,13 @@ mod record;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use wx_core::download::TransferProgress;
 
 use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, ResolvedUrl, SourceId};
 
@@ -85,7 +91,96 @@ fetch options
 The transport decision is probe-based and carries no time constants: if
 the object is present and its .idx is absent, malformed, or provably
 shorter than the object, the whole file is taken.  --mode overrides.
+
+While an object moves, fetch prints `rw_fetch-progress fHHH RECEIVED TOTAL`
+on stderr about once a second (TOTAL is - until the size is known).
+
+environment
+  RUSTWX_DOWNLOAD_STREAMS N       chunk streams per object (default 16)
+  RUSTWX_DOWNLOAD_STALL_SECONDS S a connection that delivers under 64 KiB
+                                  in S seconds (default 30) is dropped and
+                                  its chunk resumed from the byte it reached
 ";
+
+/// Exit status of a command line this binary could not act on.
+const EXIT_USAGE: u8 = 2;
+/// Exit status of a payload transfer that failed after the download
+/// client's own retries.  A network fault, so the caller may ask again.
+const EXIT_TRANSFER: u8 = 3;
+/// Exit status of every other refusal.
+const EXIT_REFUSED: u8 = 1;
+
+/// Why a subcommand produced no document.
+///
+/// Three kinds, because the caller acts on each differently: a usage
+/// error is a defect in whoever built the command line, a transfer
+/// failure is the network and worth another attempt, and a refusal is
+/// a fact about the request that another attempt would only repeat.
+/// Every failure used to exit 2 and print the whole usage text after
+/// its reason, so a dropped connection 38 minutes into a download read
+/// as a malformed command line, and the reason itself was lost (see
+/// `failure_text`).
+#[derive(Debug, PartialEq)]
+enum Failure {
+    Usage(String),
+    Transfer(String),
+    Refused(String),
+}
+
+impl Failure {
+    fn message(&self) -> &str {
+        match self {
+            Failure::Usage(text) | Failure::Transfer(text) | Failure::Refused(text) => text,
+        }
+    }
+
+    fn exit_status(&self) -> u8 {
+        match self {
+            Failure::Usage(_) => EXIT_USAGE,
+            Failure::Transfer(_) => EXIT_TRANSFER,
+            Failure::Refused(_) => EXIT_REFUSED,
+        }
+    }
+}
+
+impl From<net::TransferFault> for Failure {
+    /// Only a transfer the network ended is `Transfer` (exit 3, worth
+    /// another attempt).  A 4xx, a 200 to a range request, a foreign
+    /// span or a byte count that does not add up is the origin's answer
+    /// and stays a refusal (exit 1): retrying repeats it, and a
+    /// "the network cut it off" remedy would send the reader after the
+    /// wrong fault.
+    fn from(fault: net::TransferFault) -> Self {
+        match fault {
+            net::TransferFault::Network(text) => Failure::Transfer(text),
+            net::TransferFault::Refused(text) => Failure::Refused(text),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(text: String) -> Self {
+        Failure::Refused(text)
+    }
+}
+
+/// The stderr a failure prints: its reason on a line of its own.
+///
+/// It starts with a newline on purpose.  wx-core draws transfer
+/// progress as `\r  Downloading chunks N/M...` with no line end, so a
+/// reason printed straight after it was glued onto that indented
+/// progress line.  A reader that splits on carriage returns and skips
+/// indented lines (gpuwm's does, to skip the usage text) then never saw
+/// the reason at all and reported the first usage heading instead:
+/// `rw_fetch fetch: common options`.  No usage text follows any more;
+/// a usage error points at `--help`, which prints it.
+fn failure_text(failure: &Failure) -> String {
+    let mut text = format!("\nrw_fetch: {}\n", failure.message());
+    if matches!(failure, Failure::Usage(_)) {
+        text.push_str("rw_fetch --help lists every option\n");
+    }
+    text
+}
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
@@ -95,18 +190,24 @@ fn main() -> ExitCode {
             println!("{document}");
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            eprintln!("rw_fetch: {error}");
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
+        Err(failure) => {
+            eprint!("{}", failure_text(&failure));
+            if args.is_empty() {
+                // The one failure that is answered with the usage text:
+                // the packager's no-argument identity probe demands its
+                // `usage: rw_fetch` marker.
+                eprintln!("{USAGE}");
+            }
+            ExitCode::from(failure.exit_status())
         }
     }
 }
 
-fn run(args: &[String]) -> Result<String, String> {
+fn run(args: &[String]) -> Result<String, Failure> {
     if args.is_empty() {
-        return Err("no subcommand given".to_string());
+        return Err(Failure::Usage("no subcommand given".to_string()));
     }
+    let options = || Options::parse(&args[1..]).map_err(Failure::Usage);
     match args[0].as_str() {
         "--version" | "-V" => Ok(format!("rw_fetch {VERSION}")),
         "--help" | "-h" => Ok(USAGE.to_string()),
@@ -114,10 +215,10 @@ fn run(args: &[String]) -> Result<String, String> {
         // binary for.  Printing it here is what guarantees the literal
         // is in the built image.
         "--abi" => Ok(FETCH_RECORD_ABI.to_string()),
-        "fetch" => command_fetch(&Options::parse(&args[1..])?),
-        "probe" => command_probe(&Options::parse(&args[1..])?),
-        "latest" => command_latest(&Options::parse(&args[1..])?),
-        other => Err(format!("unknown subcommand {other:?}")),
+        "fetch" => command_fetch(&options()?),
+        "probe" => Ok(command_probe(&options()?)?),
+        "latest" => Ok(command_latest(&options()?)?),
+        other => Err(Failure::Usage(format!("unknown subcommand {other:?}"))),
     }
 }
 
@@ -444,6 +545,31 @@ fn object_name(grib_url: &str) -> String {
         .to_string()
 }
 
+/// Why no source served hour `hour`, typed by whose doing it was.
+///
+/// A source whose existence probe got no answer is the network's doing,
+/// so the whole failure is a transfer (exit 3) that the caller may ask
+/// again, even beside a source that answered "not here": the unreachable
+/// one may well have the object.  It used to read as "no source served
+/// this object" (exit 1), which a caller rightly never retries.
+fn unserved(hour: u16, refusals: &[String], unreachable: &[String]) -> Failure {
+    if unreachable.is_empty() {
+        return Failure::Refused(format!(
+            "f{hour:03}: no source served this object -- {}",
+            refusals.join("; ")
+        ));
+    }
+    let reasons: Vec<&str> = unreachable
+        .iter()
+        .chain(refusals.iter())
+        .map(String::as_str)
+        .collect();
+    Failure::Transfer(format!(
+        "f{hour:03}: no source could be reached for this object -- {}",
+        reasons.join("; ")
+    ))
+}
+
 fn probe_record(facts: &plan::ProbeFacts) -> ProbeRecord {
     ProbeRecord {
         object_bytes: facts.object_bytes,
@@ -461,7 +587,7 @@ fn probe_record(facts: &plan::ProbeFacts) -> ProbeRecord {
 // fetch
 // ──────────────────────────────────────────────────────────
 
-fn command_fetch(options: &Options) -> Result<String, String> {
+fn command_fetch(options: &Options) -> Result<String, Failure> {
     let model = options.model()?;
     let cycle = options.cycle_spec()?;
     let product = product_for(model, options)?;
@@ -471,12 +597,13 @@ fn command_fetch(options: &Options) -> Result<String, String> {
         .clone()
         .ok_or_else(|| "--out DIR is required".to_string())?;
     if options.hours.is_empty() {
-        return Err("--hours is required".to_string());
+        return Err("--hours is required".to_string().into());
     }
     std::fs::create_dir_all(&out)
         .map_err(|error| format!("could not create {}: {error}", out.display()))?;
 
     let fetcher = Fetcher::new(options.cache_dir.as_deref())?;
+    let reporter = ProgressReporter::start(fetcher.progress(), Box::new(|line| eprint!("{line}")));
     let started = Instant::now();
     let mut files: Vec<FileRecord> = Vec::with_capacity(options.hours.len());
 
@@ -484,6 +611,7 @@ fn command_fetch(options: &Options) -> Result<String, String> {
         let hour = *hour;
         let hour_started = Instant::now();
         let mut refusals: Vec<String> = Vec::new();
+        let mut unreachable: Vec<String> = Vec::new();
         let mut landed = false;
 
         for candidate in candidates(model, &cycle, hour, &product, only)? {
@@ -497,15 +625,30 @@ fn command_fetch(options: &Options) -> Result<String, String> {
             let (mode, reason) = match decide(options.mode, &facts, options.patterns()) {
                 Decision::Take(mode, reason) => (mode, reason),
                 Decision::Refuse(reason) => {
-                    refusals.push(format!("{}: {reason}", candidate.source));
+                    let said = format!("{}: {reason}", candidate.source);
+                    if facts.object_unreachable.is_some() {
+                        unreachable.push(said);
+                    } else {
+                        refusals.push(said);
+                    }
                     continue;
                 }
             };
 
             let name = object_name(&candidate.grib_url);
             let destination = out.join(&name);
+            // The probes above moved a few bytes of their own; the count
+            // a reader sees is this object's payload.
+            reporter.object(hour);
             let (bytes, ranges, selected, idx_sidecar) = match mode {
-                Mode::FullFile => (fetcher.get_full_file(&candidate.grib_url)?, Vec::new(), None, None),
+                Mode::FullFile => (
+                    fetcher
+                        .get_full_file(&candidate.grib_url)
+                        .map_err(Failure::from)?,
+                    Vec::new(),
+                    None,
+                    None,
+                ),
                 Mode::IdxSubset => {
                     let payload = payload.as_ref().ok_or_else(|| {
                         "internal error: an idx-subset transfer without an index".to_string()
@@ -528,8 +671,9 @@ fn command_fetch(options: &Options) -> Result<String, String> {
                         }
                         chosen
                     };
-                    let (bytes, ranges) =
-                        fetcher.get_idx_subset(&candidate.grib_url, payload, &selection)?;
+                    let (bytes, ranges) = fetcher
+                        .get_idx_subset(&candidate.grib_url, payload, &selection)
+                        .map_err(Failure::from)?;
                     let idx_name = format!("{name}.idx");
                     write_idx(&out, &idx_name, &payload.text)?;
                     (bytes, ranges, Some(selection.len()), Some(idx_name))
@@ -542,7 +686,8 @@ fn command_fetch(options: &Options) -> Result<String, String> {
                      ({} bytes, mode {})",
                     bytes.len(),
                     mode.as_str()
-                ));
+                )
+                .into());
             }
             publish(&destination, &bytes)?;
 
@@ -584,13 +729,11 @@ fn command_fetch(options: &Options) -> Result<String, String> {
         }
 
         if !landed {
-            return Err(format!(
-                "f{hour:03}: no source served this object -- {}",
-                refusals.join("; ")
-            ));
+            return Err(unserved(hour, &refusals, &unreachable));
         }
     }
 
+    reporter.finish();
     let payload_bytes = files.iter().map(|file| file.bytes).sum();
     let document = FetchRecord {
         schema: FETCH_RECORD_SCHEMA,
@@ -623,7 +766,92 @@ fn command_fetch(options: &Options) -> Result<String, String> {
         }),
         wall_seconds: started.elapsed().as_secs_f64(),
     };
-    serde_json::to_string_pretty(&document).map_err(|error| format!("{error}"))
+    Ok(serde_json::to_string_pretty(&document).map_err(|error| format!("{error}"))?)
+}
+
+/// The `rw_fetch-progress` lines `fetch` prints while an object moves.
+///
+/// A whole object is assembled in memory and published in one rename,
+/// so nothing a caller can watch on disk grows while it moves, and a 750
+/// MB file used to read as 0 B until the moment it landed.  These lines
+/// carry the body bytes wx-core has counted, from every stream, about
+/// once a second and only when the count has changed; each starts on a
+/// fresh line so wx-core's carriage-return chunk counter cannot swallow
+/// it.  They never contain `rw_fetch: `, which is how a failure's reason
+/// is found.
+struct ProgressReporter {
+    progress: Arc<TransferProgress>,
+    hour: Arc<AtomicU32>,
+    stop: Option<Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// Seconds between progress lines.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// `hour` before the first object is named.
+const NO_OBJECT: u32 = u32::MAX;
+
+fn progress_line(hour: u32, received: u64, total: Option<u64>) -> String {
+    let total = total.map_or_else(|| "-".to_string(), |total| total.to_string());
+    format!("\nrw_fetch-progress f{hour:03} {received} {total}\n")
+}
+
+impl ProgressReporter {
+    /// `say` receives each line; `fetch` hands it stderr.
+    fn start(progress: Arc<TransferProgress>, mut say: Box<dyn FnMut(&str) + Send>) -> Self {
+        let hour = Arc::new(AtomicU32::new(NO_OBJECT));
+        let (stop, stopped) = mpsc::channel::<()>();
+        let (watched, current) = (progress.clone(), hour.clone());
+        let thread = std::thread::spawn(move || {
+            let mut said: Option<(u32, u64)> = None;
+            loop {
+                let last = match stopped.recv_timeout(PROGRESS_INTERVAL) {
+                    Err(RecvTimeoutError::Timeout) => false,
+                    _ => true,
+                };
+                let hour = current.load(Ordering::Relaxed);
+                let received = watched.received();
+                if hour != NO_OBJECT && said != Some((hour, received)) {
+                    say(&progress_line(hour, received, watched.total()));
+                    said = Some((hour, received));
+                }
+                if last {
+                    return;
+                }
+            }
+        });
+        Self {
+            progress,
+            hour,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
+    }
+
+    /// The next object's payload starts now.
+    fn object(&self, hour: u16) {
+        self.progress.reset();
+        self.hour.store(u32::from(hour), Ordering::Relaxed);
+    }
+
+    /// Say the last count and stop.
+    fn finish(mut self) {
+        self.stop_thread();
+    }
+
+    fn stop_thread(&mut self) {
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for ProgressReporter {
+    fn drop(&mut self) {
+        self.stop_thread();
+    }
 }
 
 fn write_idx(out: &Path, name: &str, text: &str) -> Result<(), String> {
@@ -921,6 +1149,229 @@ mod tests {
             assert_eq!(ModeRequest::parse(spelling).unwrap().as_str(), spelling);
         }
         assert!(ModeRequest::parse("fastest").is_err());
+    }
+
+    #[test]
+    fn a_failure_reason_starts_on_its_own_line_after_carriage_return_progress() {
+        // What wx-core leaves on stderr mid-transfer, then the reason.
+        let transfer = Failure::Transfer("HTTP error: failed to read https://x: timeout".into());
+        let stderr = format!("\r  Downloading chunks 26/27...{}", failure_text(&transfer));
+        let reasons: Vec<&str> = stderr
+            .split(|c| c == '\r' || c == '\n')
+            .filter(|line| line.starts_with("rw_fetch: "))
+            .collect();
+        assert_eq!(reasons, ["rw_fetch: HTTP error: failed to read https://x: timeout"]);
+        assert!(!stderr.contains("common options"), "no usage text after a runtime failure");
+        assert_eq!(transfer.exit_status(), EXIT_TRANSFER);
+    }
+
+    /// A probe that could not reach the origin is the network's fault:
+    /// the fetch exits 3 so the caller asks again.  It used to say "no
+    /// source served this object" and exit 1, and a whole HRRR fetch
+    /// ended on one dropped link without another attempt.
+    #[test]
+    fn an_origin_that_cannot_be_reached_is_a_transfer_failure_not_an_absent_object() {
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.local_addr().expect("address")
+        };
+        let (facts, _payload) = Fetcher::for_test().probe_object(
+            &format!("http://{closed}/hrrr.t06z.wrfprsf18.grib2"),
+            None,
+            false,
+        );
+        assert!(!facts.object_present);
+        assert!(facts.object_unreachable.is_some(), "{facts:?}");
+        let Decision::Refuse(reason) = decide(ModeRequest::FullFile, &facts, 0) else {
+            panic!("an unreachable object cannot be taken");
+        };
+        assert!(reason.contains("could not be reached"), "{reason}");
+        let failure = unserved(18, &[], &[format!("aws: {reason}")]);
+        assert_eq!(failure.exit_status(), EXIT_TRANSFER);
+        assert!(failure.message().starts_with("f018: no source could be reached"));
+
+        // Beside a source that answered "not here", still a transfer.
+        let mixed = unserved(
+            18,
+            &["nomads: the GRIB object is not present at this source".to_string()],
+            &[format!("aws: {reason}")],
+        );
+        assert_eq!(mixed.exit_status(), EXIT_TRANSFER);
+        assert!(mixed.message().contains("not present"), "{}", mixed.message());
+    }
+
+    /// An origin that answers 404 has said the object is not there: that
+    /// stays a refusal (exit 1), and another attempt would only repeat it.
+    #[test]
+    fn an_origin_that_answers_404_is_still_an_absent_object() {
+        let missing =
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let origin = local_origin(vec![missing]);
+        let (facts, _payload) = Fetcher::for_test().probe_object(
+            &format!("{origin}/hrrr.t06z.wrfprsf18.grib2"),
+            None,
+            false,
+        );
+        assert!(!facts.object_present);
+        assert_eq!(facts.object_unreachable, None);
+        let failure = unserved(
+            18,
+            &["aws: the GRIB object is not present at this source".to_string()],
+            &[],
+        );
+        assert_eq!(failure.exit_status(), EXIT_REFUSED);
+        assert!(failure.message().starts_with("f018: no source served this object"));
+    }
+
+    /// One reply per connection, in order, from a local origin.
+    fn local_origin(replies: Vec<Vec<u8>>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            for reply in replies {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(&reply);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// An origin that answers a chunk's range request with the whole
+    /// object (200, not 206) ignored the Range header on purpose.  That
+    /// is a refusal (exit 1), not a transfer the network cut off
+    /// (exit 3): exit 3 makes gpuwm download the whole object again up
+    /// to its retry budget and tell the reader to wait for a steadier
+    /// connection, which would never help.
+    #[test]
+    fn an_origin_that_answers_a_range_request_with_200_exits_1_not_3() {
+        // 20 MB: past one 16 MiB chunk, so the object is fetched in ranges.
+        let probe = b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/20000000\r\n\
+                      Content-Length: 1\r\nConnection: close\r\n\r\nG"
+            .to_vec();
+        let whole = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nGRIB"
+            .to_vec();
+        let origin = local_origin(vec![probe, whole.clone(), whole]);
+        let fault = Fetcher::for_test()
+            .get_full_file(&format!("{origin}/hrrr.t06z.wrfnatf00.grib2"))
+            .expect_err("a 200 to a range request is refused");
+        assert!(matches!(fault, net::TransferFault::Refused(_)), "{fault:?}");
+        let failure = Failure::from(fault);
+        assert_eq!(failure.exit_status(), EXIT_REFUSED);
+        assert!(failure.message().contains("not 206"), "{}", failure.message());
+    }
+
+    #[test]
+    fn a_transfer_the_network_ended_exits_3_and_a_refused_one_exits_1() {
+        let network = Failure::from(net::TransferFault::Network("timeout".into()));
+        assert_eq!(network.exit_status(), EXIT_TRANSFER);
+        let refused = Failure::from(net::TransferFault::Refused("HTTP status 403".into()));
+        assert_eq!(refused.exit_status(), EXIT_REFUSED);
+    }
+
+    /// A progress line stands on its own line, carries the object's
+    /// hour, the bytes so far and the size, and can never be mistaken
+    /// for a failure's reason.
+    #[test]
+    fn a_progress_line_is_its_own_line_and_never_a_failure_reason() {
+        let line = progress_line(7, 1_048_576, Some(750_000_000));
+        assert_eq!(line, "\nrw_fetch-progress f007 1048576 750000000\n");
+        assert!(!line.contains("rw_fetch: "));
+        assert_eq!(progress_line(12, 0, None), "\nrw_fetch-progress f012 0 -\n");
+    }
+
+    /// The reporter says nothing before an object is named, then the
+    /// count the client kept, and one last line when it stops.
+    #[test]
+    fn the_reporter_relays_the_clients_byte_count() {
+        let said = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = said.clone();
+        let progress = TransferProgress::new();
+        let reporter = ProgressReporter::start(
+            progress.clone(),
+            Box::new(move |line| sink.lock().unwrap().push(line.to_string())),
+        );
+        progress.add(99); // a probe's bytes, before the payload
+        reporter.object(3);
+        progress.set_total(1000);
+        progress.add(400);
+        reporter.finish();
+        let said = said.lock().unwrap().clone();
+        assert_eq!(said.last().map(String::as_str), Some("\nrw_fetch-progress f003 400 1000\n"));
+        assert!(said.iter().all(|line| line.contains(" f003 ")), "{said:?}");
+    }
+
+    /// A whole object fetched through the Fetcher is counted byte for
+    /// byte, and its size is known before its chunks arrive.
+    #[test]
+    fn a_full_file_fetch_counts_every_payload_byte() {
+        let object = 17 * 1024 * 1024u64;
+        let body = move |first: u64, last: u64| -> Vec<u8> {
+            let mut reply = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {first}-{last}/{object}\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                last - first + 1
+            )
+            .into_bytes();
+            reply.extend((first..=last).map(|index| (index % 251) as u8));
+            reply
+        };
+        let chunk = 16 * 1024 * 1024u64;
+        // The probe, then the two chunks in the order two streams ask.
+        let origin = {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let address = listener.local_addr().expect("address");
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut request = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        if stream.read(&mut byte).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        request.push(byte[0]);
+                    }
+                    let text = String::from_utf8_lossy(&request).to_string();
+                    let reply = if text.contains("bytes=0-0") {
+                        body(0, 0)
+                    } else if text.contains(&format!("bytes={chunk}-")) {
+                        body(chunk, object - 1)
+                    } else {
+                        body(0, chunk - 1)
+                    };
+                    std::thread::spawn(move || {
+                        let _ = stream.write_all(&reply);
+                    });
+                }
+            });
+            format!("http://{address}")
+        };
+        let fetcher = Fetcher::for_test();
+        let bytes = fetcher
+            .get_full_file(&format!("{origin}/hrrr.t06z.wrfnatf00.grib2"))
+            .expect("whole object");
+        assert_eq!(bytes.len() as u64, object);
+        assert_eq!(fetcher.progress().total(), Some(object));
+        assert_eq!(fetcher.progress().received(), object);
+        assert_eq!(fetcher.streams(), 2);
+    }
+
+    #[test]
+    fn only_a_usage_error_exits_2_and_it_points_at_help_instead_of_dumping_usage() {
+        let usage = run(&["fetch".to_string(), "--bogus".to_string()]).unwrap_err();
+        assert_eq!(usage.exit_status(), EXIT_USAGE);
+        let text = failure_text(&usage);
+        assert!(text.contains("unknown option \"--bogus\""));
+        assert!(text.contains("--help"));
+        assert!(!text.contains("common options"));
+        let refused = run(&["fetch".to_string()]).unwrap_err();
+        assert_eq!(refused, Failure::Refused("--model is required".to_string()));
+        assert_eq!(refused.exit_status(), EXIT_REFUSED);
     }
 
     #[test]

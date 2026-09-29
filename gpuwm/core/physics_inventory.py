@@ -76,18 +76,25 @@ def physics_driver_required(cfg: RunConfig) -> bool:
     return bool(cfg.mp_physics or physics_enabled(cfg))
 
 
+#: The one PBL selector whose driver path (``PhysicsDriver._run_ysu``, the
+#: ``1`` row of the PBL dispatch table in gpuwm/core/physics.py) creates the
+#: retained ``last_ysu`` output dict.
+YSU_PBL_SCHEME = 1
+
+
 def physics_retains_ysu_output(cfg: RunConfig) -> bool:
     """Whether the raw YSU output dict crosses a model-step boundary.
 
     Positive ``bldt`` keeps the historical diagnostic object untouched.
-    SASE never creates that object; its actual raw rates and diagnostics
-    have their own canonical buffers.
+    Only YSU creates that object: MYJ, MYNN, Shin-Hong and SASE leave
+    ``last_ysu`` None (SASE's raw rates and diagnostics have their own
+    canonical buffers), so pricing it for them over-counts about ten
+    arrays and can refuse a run that fits at the margin.
     At ``bldt == 0`` every configured PBL call is immediately consumed by
     :meth:`PhysicsDriver._run_ysu`, so retaining the raw rates duplicates the
     coupled PBL tendencies without serving a later reader.
     """
-    return bool(cfg.bl_pbl_physics and cfg.bl_pbl_physics != SASE_PBL_SCHEME
-                and cfg.bldt > 0.0)
+    return bool(cfg.bl_pbl_physics == YSU_PBL_SCHEME and cfg.bldt > 0.0)
 
 
 def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
@@ -232,6 +239,40 @@ MYNN_PBL_DIAGNOSTICS_2D = ("maxwidth", "maxmf", "ztop_plume")
 
 #: Integer per-column diagnostic; kept apart because it is int32.
 MYNN_PBL_DIAGNOSTICS_INT_2D = ("ktop_plume",)
+
+#: The Eta similarity surface layer's (``sf_sfclay_physics = 2``) WRF INOUT
+#: state, in the argument order of the ``myjsfc_column`` kernel that
+#: gpuwm/core/myjsfc.py launches (hoisted from there, which imports cupy).
+MYJ_SFCLAY_INOUT = ("ust", "znt", "thz0", "qz0", "uz0", "vz0", "qsfc",
+                    "akhs", "akms")
+
+#: The Eta layer's pure outputs, in the same kernel's argument order.
+#: ``rib`` is the field Noah reads as its bulk Richardson number, the same
+#: slot the MM5 surface layers fill through ``br``
+#: (gpuwm/core/physics.py::_run_noah).
+MYJ_SFCLAY_OUTPUTS = ("rmol", "ct", "pblh", "rib", "chs", "chs2", "cqs2",
+                      "hfx", "qfx", "lh", "flhc", "flqc", "qgh", "cpm",
+                      "u10", "v10", "t2", "th2", "tshltr", "th10", "q2",
+                      "qshltr", "q10", "pshltr", "u10e", "v10e")
+
+#: Every persistent 2-D surface field ``initialize_physics`` holds for the
+#: Eta layer, in allocation order: the kernel roster above plus the four
+#: Registry fields its driver path reads or publishes (``ustm``, ``wspd``,
+#: ``ch``, ``mixht``) and ``z0base``, the background roughness seeded from
+#: the cold-start ZNT.  The allocation and the VRAM estimate
+#: (:func:`gpuwm.core.preflight.physics_field_names_2d`) both read THIS
+#: tuple; while the estimate restated nothing for the selector, 17 of these
+#: planes were allocated and never priced.
+MYJ_SFCLAY_FIELDS_2D = tuple(dict.fromkeys((
+    *MYJ_SFCLAY_INOUT, *MYJ_SFCLAY_OUTPUTS,
+    "ustm", "wspd", "ch", "mixht", "z0base")))
+
+#: MYJ's carried 3-D PBL state (``bl_pbl_physics = 2``): WRF's TKE_MYJ and
+#: EL_MYJ, allocated once by ``initialize_physics`` for this selector only.
+#: Read by the allocation and by
+#: :func:`gpuwm.core.preflight.physics_array_shapes`, so the two stay one
+#: list; the estimate used to omit both, 2*nz planes per domain.
+MYJ_PBL_STATE_3D = ("tke_myj", "el_myj")
 
 
 # Hoisted from gpuwm.core.microphysics (module-scope cupy) for the
@@ -390,6 +431,8 @@ def ysu_workspace_floats(nz: int, columns: int) -> int:
 
 __all__ = [
     "spec_zone_ring_save_slots",
+    "MYJ_PBL_STATE_3D", "MYJ_SFCLAY_FIELDS_2D", "MYJ_SFCLAY_INOUT",
+    "MYJ_SFCLAY_OUTPUTS",
     "MYNN_PBL_DIAGNOSTICS_2D", "MYNN_PBL_DIAGNOSTICS_INT_2D",
     "MYNN_PBL_STATE_3D", "MYNN_SURFACE_OUTPUTS",
     "PBL_RQI_MICROPHYSICS", "SFCLAY_OUTPUTS",

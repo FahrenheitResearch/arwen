@@ -26,6 +26,8 @@ from gpuwm.core.track_boundary import boundary_reason
 from gpuwm.cyclone_seed import seed_cyclone, source_inventory
 from gpuwm.starter_template import render_tables
 
+from cyclone_preset_fit import center, holds_the_preset_root
+
 POINT = (18., -65.)
 CYCLE = "2026090900"
 
@@ -260,12 +262,11 @@ def test_two_sources_differ_only_in_source_derived_fields():
 
     Two sources with nothing in common but a planable registry row author
     the SAME 12/3 km moving tree at the same point: the grid, the
-    projection, the vertical ladder, the nest, the follower and the
-    output cadences are byte-equal, and what differs is the acquisition
-    block, the preparation recipe, the recommended physics, the
-    configuration name and the model top the source's own certified
-    inventory floors.  A per-source code path would show up here as a
-    difference in something else.
+    projection, the vertical ladder and model top, the nest, the follower
+    and the output cadences are byte-equal, and what differs is the
+    acquisition block, the preparation recipe, the recommended physics and
+    the configuration name.  A per-source code path would show up here as
+    a difference in something else.
     """
 
     left = _raw(forcing_source="gfs")
@@ -274,14 +275,13 @@ def test_two_sources_differ_only_in_source_derived_fields():
     for table in ("fetch", "case_data", "physics"):
         left.pop(table, None)
         right.pop(table, None)
-    # Two source-derived keys inside shared tables: the configuration name
-    # carries the source title, and p_top is floored by how high that
-    # source's certified inventory reaches.
+    # One source-derived key inside a shared table: the configuration name
+    # carries the source title.  The model top is not one: GFS's certified
+    # ladder stops at 100 hPa, but its fetch is asked for the config's own
+    # top, so both sources carry the default.
     for row in (left, right):
         row["experiment"].pop("name")
-    assert left["shared"]["p_top"] != right["shared"]["p_top"]
-    for row in (left, right):
-        row["shared"].pop("p_top")
+    assert left["shared"]["p_top"] == right["shared"]["p_top"] == 5000.0
     assert left == right
     assert left["domain"][1]["follow"]["track"]["path"] == "storm-track.d02.csv"
 
@@ -478,8 +478,17 @@ def _planned_at(source, point):
 
 
 def _planned_anywhere(source):
-    """This source's setup, authored at the first centre its grid admits."""
+    """This source's setup, authored at the first centre its grid admits.
 
+    ``None`` for a source whose declared window is smaller than the preset
+    root: the door refuses it by name at its own centre, listing the
+    sources that can carry the preset, and no file is emitted.
+    """
+
+    if not holds_the_preset_root(source):
+        with pytest.raises(ValueError, match="covering sources"):
+            _planned_at(source, center(source))
+        return None
     refusals = []
     for point in _candidate_points():
         try:
@@ -513,6 +522,10 @@ def test_every_source_agrees_with_the_run_door_about_what_it_emitted(tmp_path):
     assert sources
     for source in sources:
         result = _planned_anywhere(source)
+        if result is None:
+            # Refused before any file was emitted, so there is nothing
+            # for the run door to read.
+            continue
         block = result["follow_statics"]
         payload = tomllib.loads(result["config_text"])
         if block.get("launch_refusal") is not None:

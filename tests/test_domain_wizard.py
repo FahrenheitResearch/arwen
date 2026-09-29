@@ -1392,7 +1392,7 @@ def test_chain_and_root_dx_parsing_and_refusals(capsys):
 
 
 def test_custom_ladder_3km_to_750m_emits_and_checks(tmp_path, capsys):
-    """Drew's r4 case: an arbitrary root dx with an integer ratio.
+    """The r4 case: an arbitrary root dx with an integer ratio.
 
     Validated by the same estimator fit loop, the same experiment
     loader, and the same `gpuwm check` the presets go through.
@@ -2243,23 +2243,20 @@ def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
     """VRAM is not the only bound on how large an HRRR domain may be.
 
     HRRR's native grid is 1799 x 1059, and the interpolation stencil
-    plus the surface-fallback halo need real source cells outside the
-    target on every side.  A ladder sized purely against VRAM is a
-    legal, well-sized experiment that no HRRR fetch can force: on a
-    24 GiB Linux card, a 3 km root near the Washington/Oregon border
-    ran its halo nine rows off the top of the HRRR grid, and the root
-    preparation found out after the download.
+    needs real source cells outside the target on every side.  A ladder
+    sized purely against VRAM is a legal, well-sized experiment that no
+    HRRR fetch can force: on a 24 GiB Linux card, a 3 km root near the
+    Washington/Oregon border ran its halo nine rows off the top of the
+    HRRR grid, and the root preparation found out after the download.
 
     Sized against the SOURCE's own window function -- the one the root
     preparer calls -- the fit loop stops where HRRR does, and says so.
-
-    Field 2026-08 sharpened "where HRRR does": stopping with the
-    radius-8 window EXACTLY on the native edge left zero surface-donor
-    margin, so the one remediation soil mapping can name (raise
-    surface_fallback_radius_cells) was refused by this very guard.  The
-    fitter-maximum domain must therefore keep the emitted window plus
-    the configured radius inside the native limits.
+    The soil donor search does not stop it: its box stops at HRRR's own
+    edge, where there is nothing to search, so the fitted domain's
+    interpolation reaches the edge and its donor box stops there.
     """
+    from dataclasses import replace
+
     from gpuwm.hrrr_route_inputs import coverage_refusal, target_domain
     from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NY,
                                           required_hrrr_source_window)
@@ -2279,19 +2276,15 @@ def test_hrrr_sizing_respects_hrrrs_own_grid_not_only_the_card(
 
     exp = load_experiment(out)
     assert coverage_refusal(exp) is None
-    full_window = required_hrrr_source_window(target_domain(exp))
-    window = full_window.to_dict()["zero_based_inclusive"]
-    radius = full_window.surface_fallback_radius_cells
-
-    # The emitted window PLUS the configured donor-search radius stays
-    # inside the native limits: a domain this fitter accepts is one
-    # whose donor searches never pin against HRRR's own edge, and whose
-    # radius knob the coverage guard still has room to accept.
-    assert window["j"][1] + radius <= HRRR_SOURCE_NY - 1
-
-    # It stopped AT the reserved margin -- HRRR's grid, not the card,
-    # was the bound -- and the printed advisory says so.
-    assert window["j"][1] + radius == HRRR_SOURCE_NY - 1
+    target = target_domain(exp)
+    assert target.surface_fallback_radius_cells == 24
+    # It stopped where the interpolation reaches HRRR's top edge -- HRRR's
+    # grid, not the card, was the bound -- and the printed advisory says so.
+    atmosphere = required_hrrr_source_window(
+        replace(target, surface_fallback_radius_cells=0))
+    assert atmosphere.j_end == HRRR_SOURCE_NY - 1
+    # The donor box, 24 cells wide, stops on the same edge.
+    assert required_hrrr_source_window(target).j_end == HRRR_SOURCE_NY - 1
     assert "bounded by HRRR's own grid, not by your card" in printed
 
 
@@ -2399,22 +2392,20 @@ def test_a_spec_refusal_is_not_dressed_as_a_coverage_refusal(
     assert "Move --polygon" not in err
 
 
-def test_hrrr_coverage_test_reserves_the_donor_search_margin():
-    """Field 2026-08 (RTX PRO 6000, 1 km nest at 39,-98): the exact bug.
+def test_hrrr_coverage_test_lets_the_donor_search_stop_at_hrrrs_edge():
+    """Field 2026-08 (RTX PRO 6000, 1 km nest at 39,-98).
 
-    The auto-fitted 1234x986 3 km root passed the wizard's coverage
-    test -- its radius-8 window is i=250..1523, j=36..1058, EXACTLY on
-    the native top edge -- and HRRR soil mapping then could not fill
-    two land cells within 8 cells.  The error recommended raising
-    surface_fallback_radius_cells; 8 -> 16 fails this same coverage
-    guard (j=28..1066 vs native j max 1058).  So the wizard's PASS
-    promised a preparation with no working remediation.
+    The auto-fitted 1234x986 3 km root's radius-8 window is
+    i=250..1523, j=36..1058, exactly on the native top edge, and HRRR
+    soil mapping could not fill two land cells within 8 cells.  Raising
+    surface_fallback_radius_cells to 16 asked for source rows past the
+    edge (j=28..1066 against j max 1058) and was refused, so the
+    coverage test then demanded a whole radius of margin from every edge
+    and refused this domain although HRRR covers its atmosphere.
 
-    The coverage test the fitter and the emission share must therefore
-    demand the donor-search margin too, and its refusal must not
-    recommend the radius knob the guard refuses.  The field workaround
-    (root trimmed to 1186x938, child untouched) is the shape that must
-    stay accepted.
+    The donor search's box now stops at HRRR's own edge, where no donor
+    exists: the domain is accepted, and a wider search is accepted with
+    it, its window on the same edge.
     """
     from dataclasses import replace
 
@@ -2431,26 +2422,15 @@ def test_hrrr_coverage_test_reserves_the_donor_search_margin():
             time_step_seconds=15)
 
     fitted = field_target(1234, 986)
-    # Preconditions, straight from the field report: the plain window
-    # guard accepts it, sitting exactly on the native top edge, and a
-    # doubled radius is refused by the same guard.
     window = required_hrrr_source_window(fitted)
     assert (window.j_start, window.j_end) == (36, HRRR_SOURCE_NY - 1)
-    with pytest.raises(ValueError, match="leaves HRRR coverage"):
-        required_hrrr_source_window(
-            replace(fitted, surface_fallback_radius_cells=16))
-
-    refusal = target_coverage_refusal(fitted)
-    assert refusal is not None
-    assert "surface-donor margin" in refusal
-    assert "north" in refusal
-    # Never recommend the knob this guard refuses: the remediation for
-    # a margin refusal is a smaller or moved domain, computed.
-    assert "raise" not in refusal.lower()
-    assert "8 cell(s)" in refusal          # the shortfall, from the guard
-    assert "24 km" in refusal              # 8 source cells at 3 km
-
-    # The field workaround: 24 cells trimmed from every root side.
+    wider = required_hrrr_source_window(
+        replace(fitted, surface_fallback_radius_cells=16))
+    assert (wider.j_start, wider.j_end) == (28, HRRR_SOURCE_NY - 1)
+    assert target_coverage_refusal(fitted) is None
+    assert target_coverage_refusal(
+        replace(fitted, surface_fallback_radius_cells=16)) is None
+    # The field workaround, 24 cells trimmed from every side, still fits.
     assert target_coverage_refusal(field_target(1186, 938)) is None
 
 
@@ -2545,9 +2525,10 @@ def test_no_fit_advice_names_only_profiles_the_same_source_accepts(
 
     Every planable source, through the real CLI: force the no-fit
     refusal, then re-run the same command with each advised profile.
-    ACCEPTED means the pairing gate stays silent -- rc 0, or a refusal
-    about something else entirely (the budget, a nocturnal
-    acknowledgement) -- never the source-pairing refusal.
+    ACCEPTED means neither the pairing gate nor the memory fit refuses
+    it: rc 0, or a refusal about something else entirely (a nocturnal
+    acknowledgement), never the source-pairing refusal, and never the
+    budget the advice was offered as a way out of.
     """
 
     window = source_coverage_window(source)
@@ -2596,6 +2577,12 @@ def test_no_fit_advice_names_only_profiles_the_same_source_accepts(
             assert needle not in follow, (
                 f"{source} advice ranked {profile} at #{rank + 1} and "
                 f"the same wizard refuses the pairing: {follow}")
+        # Nor the budget: a suite named as a way out of a memory refusal
+        # must fit the budget that refused.
+        for needle in ("does not fit", "no budget for ladder"):
+            assert needle not in follow, (
+                f"{source} advice ranked {profile} at #{rank + 1} and "
+                f"the same card refuses it for memory: {follow}")
 
 
 def test_hypsometric_opt_is_emitted_where_wrf_declares_it(tmp_path):

@@ -46,11 +46,14 @@ on two different storms.  Two rules provide that:
 - per-nest search boxes (``search_box``, or the declared footprint plus
   the ``[relocation.follow]`` margin, or the whole parent); and
 - exclusion: a trigger IGNORES signal inside another ACTIVE nest's
-  footprint -- the simplest accurate rule for "that storm is taken".
+  footprint on the SAME parent grid -- the simplest accurate rule for
+  "that storm is taken".  A footprint is cell numbers on one grid, so it
+  is only ever applied to watches on that grid
+  (:attr:`~gpuwm.core.storm_tracking.NestFootprint.parent_id`).
   :meth:`SpawnController.evaluate_all` additionally feeds each event
-  fired at a boundary into the exclusion set of the nests evaluated
-  after it (grid_id order), so two triggers at one boundary cannot
-  claim the same centroid.
+  fired at a boundary into the exclusion set of the nests on the same
+  parent evaluated after it (grid_id order), so two triggers at one
+  boundary cannot claim the same centroid.
 
 CONFIG.  ``spawn = { ... }`` inline table on the dormant ``[[domain]]``:
 ``trigger`` (``"uh"`` | ``"reflectivity"`` | ``"pressure"`` |
@@ -770,28 +773,75 @@ class SpawnController:
             gid for gid, watch in self.watches.items()
             if not watch.fired and not watch.closed))
 
+    @staticmethod
+    def _footprints_on(parent_id: int, footprints, *,
+                       grids) -> tuple[NestFootprint, ...]:
+        """The footprints counted on ``parent_id``'s grid, and only those.
+
+        A footprint's cells are indices on ONE grid.  A live d02 placed at
+        cells 30..50 of d01 says nothing about cells 30..50 of d02, so a
+        watch on d02 that masked them would hide a storm that no nest
+        owns and stay dormant with a ``no-signal`` receipt.  Each
+        footprint therefore goes only to the watches on the grid it is
+        counted on (:attr:`NestFootprint.parent_id`).
+
+        A hand-built footprint that names no grid belongs to the single
+        grid its caller is looking at.  When the watches of one call sit
+        on more than one grid (``grids``) it cannot be placed, and this
+        refuses rather than masking the same cell numbers on every grid.
+        """
+        out: list[NestFootprint] = []
+        for value in footprints:
+            fp = NestFootprint.coerce(value)
+            if fp.parent_id is None:
+                if len(grids) > 1:
+                    raise SpawnRefusal(
+                        f"the live nest d{int(fp.grid_id):02d}'s footprint "
+                        "does not say which grid its cells are counted on, "
+                        "and the dormant nests here watch grids "
+                        f"{sorted(int(g) for g in grids)}; applied to every "
+                        "grid it would hide a storm at the same cell numbers "
+                        "on a grid it does not cover.  Build it with "
+                        "NestFootprint.coerce(domain) or give it parent_id")
+                out.append(fp)
+            elif int(fp.parent_id) == int(parent_id):
+                out.append(fp)
+        return tuple(out)
+
     def evaluate(self, grid_id: int, parent_state, t: float, *,
                  active_footprints=()) -> SpawnEvent | None:
-        """Evaluate ONE dormant nest's trigger (the seam call)."""
+        """Evaluate ONE dormant nest's trigger (the seam call).
+
+        Only the footprints counted on this nest's own parent grid are
+        excluded; a footprint of another grid covers other ground.
+        """
         watch = self.watches.get(int(grid_id))
         if watch is None:
             raise SpawnRefusal(
                 f"grid_id {grid_id} is not a declared dormant nest; "
                 f"declared: {sorted(self.watches)}")
-        return watch.evaluate(parent_state, t,
-                              exclude_footprints=active_footprints)
+        parent_id = self.parent_of[int(grid_id)]
+        return watch.evaluate(
+            parent_state, t,
+            exclude_footprints=self._footprints_on(
+                parent_id, active_footprints, grids={parent_id}))
 
     def evaluate_all(self, parent_states, t: float, *,
                      active_footprints=()) -> tuple[SpawnEvent, ...]:
         """Evaluate every pending watch at one cadence boundary.
 
         ``parent_states`` maps parent grid_id -> live parent state.
-        Watches are processed in grid_id order and every event fired at
-        this boundary immediately joins the exclusion set of the watches
-        after it, so two nests cannot claim one storm even when both
-        triggers cross threshold on the same boundary.
+        ``active_footprints`` are the live nests' footprints, each
+        carrying the grid it is counted on; a watch is given only the
+        ones on its own parent grid.  Watches are processed in grid_id
+        order and every event fired at this boundary immediately joins
+        the exclusion set of the later watches on the SAME parent grid,
+        so two nests cannot claim one storm even when both triggers
+        cross threshold on the same boundary, and a nest born on d01
+        never masks the cells of a watch on d02.
         """
         events: list[SpawnEvent] = []
+        grids = {self.parent_of[gid] for gid in self.pending}
         exclusions = list(active_footprints)
         for gid in self.pending:
             parent_id = self.parent_of[gid]
@@ -810,7 +860,8 @@ class SpawnController:
                 continue
             event = self.watches[gid].evaluate(
                 parent_states[parent_id], t,
-                exclude_footprints=tuple(exclusions))
+                exclude_footprints=self._footprints_on(
+                    parent_id, exclusions, grids=grids))
             if event is None:
                 continue
             events.append(event)
@@ -820,7 +871,9 @@ class SpawnController:
                 i_parent_start=event.i_parent_start,
                 j_parent_start=event.j_parent_start,
                 child_nx=declared.child_nx, child_ny=declared.child_ny,
-                parent_grid_ratio=declared.parent_grid_ratio))
+                parent_grid_ratio=declared.parent_grid_ratio,
+                parent_dx_m=declared.parent_dx_m,
+                parent_id=int(parent_id)))
         return tuple(events)
 
     def drain_receipts(self) -> list[dict]:

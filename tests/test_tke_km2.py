@@ -293,9 +293,10 @@ def test_km_opt2_config_admission():
     # all: WRF hands a child no TKE (no Registry ``i`` flag) and takes none
     # back (no ``f``), so under a parent carrying no TKE there is nothing to
     # couple.  That case has been run and scored (7 h nested 250 m km_opt=2
-    # child under a km_opt=4 parent, PASS).  What remains unmeasured -- a
-    # km_opt=2 child under a km_opt=2 PARENT -- needs both configs to see,
-    # so it is refused in gpuwm.experiment and asserted there, not here.
+    # child under a km_opt=4 parent, PASS).  A km_opt=2 child under a
+    # km_opt=2 PARENT does the same thing (the parent's TKE stays on the
+    # parent); it needs both configs to see, so gpuwm.experiment admits it
+    # with its warning and the tree tests below assert that.
     child = validate_run_config(RunConfig(
         **base, km_opt=2, bl_pbl_physics=0, isfflx=0,
         tke_heat_flux=0.24, nested=True))
@@ -388,20 +389,58 @@ def test_km_opt2_child_is_admitted_under_a_parent_carrying_no_tke(
     assert exp.domains[1].run.nested
 
 
-def test_km_opt2_child_under_a_km_opt2_parent_is_still_refused(tmp_path):
-    """The unmeasured case, and the only one left.
+def test_km_opt2_child_under_a_km_opt2_parent_loads_and_says_so(
+        tmp_path, capsys):
+    """A km_opt=2 parent changes nothing the child does.
 
-    Here the parent really does hold a prognostic TKE field that WRF's
-    Registry flags decline to interpolate down or feed back, and no such
-    tree has been run.  It is refused where the parent is visible --
-    validate_run_config sees one domain at a time and could only refuse
-    this by refusing the measured case with it."""
+    WRF gives tke no nest-interpolation and no feedback flag, and the
+    nest forcing inventory carries no tke row, so the child cold-starts
+    its own TKE under this parent exactly as under a km_opt=4 one.  The
+    tree loads, both domains keep km_opt=2, and the load says the tree
+    is implemented but not yet verified."""
+    from gpuwm.core.nest_fields import nest_field_kinds
     from gpuwm.experiment import load_experiment
 
     path = tmp_path / "tree.toml"
     path.write_text(_two_domain_toml(2, 2), encoding="utf-8")
-    with pytest.raises(NotImplementedError, match="also runs km_opt=2"):
-        load_experiment(path)
+    exp = load_experiment(path)
+    assert [d.run.km_opt for d in exp.domains] == [2, 2]
+    assert exp.domains[1].run.nested
+    # The structural fact the admission rests on: no TKE crosses the
+    # nest edge in either direction.
+    for dom in exp.domains:
+        assert "tke" not in nest_field_kinds(dom.run)
+    said = capsys.readouterr().err
+    rows = [row for row in said.splitlines()
+            if "km_opt=2 under a km_opt=2 parent" in row]
+    assert len(rows) == 1, said
+    assert "cold-starts its own TKE" in rows[0]
+    assert "not yet verified" in rows[0]
+
+
+def test_km_opt2_child_under_a_tke_free_parent_says_nothing(tmp_path,
+                                                            capsys):
+    """The control: the measured tree loads without the warning."""
+    from gpuwm.experiment import load_experiment
+
+    path = tmp_path / "tree.toml"
+    path.write_text(_two_domain_toml(4, 2), encoding="utf-8")
+    load_experiment(path)
+    assert "km_opt=2 under a km_opt=2 parent" not in capsys.readouterr().err
+
+
+def test_the_registry_row_says_a_nest_child_runs():
+    """The published turbulence row agrees with the tree loader: it said
+    km_opt=2 was refused on a nest child after the loader admitted it."""
+    from gpuwm.physics_registry import physics_registry
+
+    row = physics_registry()["components"]["turbulence"]["options"][
+        "tke-1.5-order"]
+    assert "nest_child_restriction" not in row["extensions"]
+    assert not any("Refused on a nest child" in warning
+                   for warning in row["warnings"])
+    assert "cold-starts its own TKE" in (
+        row["extensions"]["nest_child"]["behaviour"])
 
 
 @requires_gpu

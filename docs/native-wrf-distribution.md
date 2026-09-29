@@ -71,7 +71,19 @@ only the CuPy/device probe. Wheel RECORDs, native decoder identities and ABIs,
 CPU preprocessing library, helper inventory, and all artifact hashes are
 still verified. Verification also executes one FP32 bilinear transform with
 one and three Rust workers, requires byte-identical output, and records the
-output hash in `native-wrf-runtime-receipt.json`. The resulting launcher
+output hash in `native-wrf-runtime-receipt.json`. It runs the masked surface
+chain the same way (WPS's queue-limited search and the sea-ice range repair,
+at one and three workers) and the native HRRR route's soil stencil (a
+renormalised corner, a donor tie inside the radius and a donor past it, built
+and applied at one and three workers) and the lake search and water blends
+(a tied lake search past the first window, a renormalised blend, a component
+fill, an overlay sample with an invalid corner, a water repair, a per-body
+assembly, the labelling of two diagonal cells as one body, a source cell two
+bodies claim equally and a tied surface-nearest search, at one and three
+workers),
+and records each hash; a library that predates any of them is refused before
+the distribution is sealed, because both preprocessing backends map soil,
+snow, skin temperature, sea ice and water temperature through them. The resulting launcher
 permits actual ERA5, GFS, and mapped WRF-file generation only when the command
 selects `--preprocess-backend cpu` or `auto`; an explicit CUDA run still
 performs the full GPU check.
@@ -230,9 +242,16 @@ argv without reading case data.
 runs skip the launcher's CUDA-device check. With `--preprocess-backend cpu`,
 interpolation, WRF-real transforms, native setup state, cache writing, and
 stock-WRF export remain on the Rust/NumPy path. `auto` selects CUDA only when
-a device and the certified CUDA 12.x runtime family are available; otherwise
-it falls back to CPU. This implementation path is not a claim that every
+a device and a certified CUDA runtime major are available (this bundle's CuPy
+wheel is the CUDA 12.x one); otherwise it falls back to CPU and says why in one
+line and in the preparation receipt. This implementation path is not a claim that every
 source/domain combination has a clean-machine CPU stock-WRF gate.
+
+Auto also selects CPU when the fit probe measures GPU utilization of at least
+50% or free device memory of at most 25%; the receipt carries those readings
+and thresholds. A card CUDA cannot open in the probe selects CPU as well, and
+the receipt names the CUDA error. Missing load readings leave the
+runtime-based choice unchanged.
 
 ```bash
 ./bin/gpuwm-wrf-init --source hrrr \

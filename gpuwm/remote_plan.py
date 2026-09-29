@@ -233,8 +233,17 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None, prepared_root=
     identifier = secrets.token_hex(16)
     data_cache_key = None
     if isinstance(raw.get("fetch"), dict) and raw["fetch"].get("source") and raw["fetch"].get("cycle"):
-        from gpuwm.go_cli import managed_download_key
-        data_cache_key = managed_download_key(raw["fetch"])
+        from gpuwm.go_cli import config_fetch_request, managed_download_key
+        from gpuwm.runplan import _pinned_fetch_hints
+        # Keyed on the request the remote fetch stage makes, model top
+        # included: a folder fetched for a lower top holds fewer levels.
+        # The host the plan's run_options.transport pins is part of that
+        # request, as it is for a local run: keyed on the table alone, a
+        # second review asking another host landed in the folder the
+        # first one filled and the node's fetch refused it ("--out
+        # already holds a different request").
+        data_cache_key = managed_download_key(
+            _pinned_fetch_hints(parsed, config_fetch_request(raw)))
     remote_data = str(PurePosixPath(workspace) / ".arwen-plan-data" / (data_cache_key or identifier))
     remote_inputs = str(PurePosixPath(workspace) / ".arwen-plan-inputs" / identifier)
     files = {}
@@ -451,8 +460,13 @@ def build_bundle(plan_path, *, workspace, outdir, geog_root=None, prepared_root=
                     and isinstance(hints, dict) and hints.get("source")):
                 # The node acquires into this cache, so review states it and
                 # runs the same node readiness check the staged route runs.
-                expected_downloads.append({"role": "forcing", "path": remote_data,
-                                           "source": hints["source"], "recipe": copy.deepcopy(hints)})
+                # The recipe is the request the node's fetch makes, with
+                # run_options.transport over the table's host, as the
+                # folder key above is.
+                from gpuwm.runplan import _pinned_fetch_hints
+                expected_downloads.append({
+                    "role": "forcing", "path": remote_data, "source": hints["source"],
+                    "recipe": copy.deepcopy(_pinned_fetch_hints(parsed, hints))})
     plan["config"] = {"path": "case.toml"}
     rewrites.append({"field": "output_root", "before": plan.get("output_root"), "after": outdir})
     plan["output_root"] = outdir
@@ -707,7 +721,8 @@ def memory_review(config, *, experiment=None, cadence=None):
             "free_bytes": gate.get("free_bytes"), "budget_bytes": gate.get("budget_bytes"),
             "peak_envelope_bytes": int(phases.peak_envelope_bytes),
             "refuse": bool(gate["refuse"]),
-            "warn": bool(gate["warn"] or gate["refuse"] or gate.get("free_bytes") is None),
+            "warn": bool(gate["warn"] or gate["refuse"] or gate.get("free_bytes") is None
+                         or gate.get("preparation_warning")),
             "verdict": gate["verdict"], "probe_reason": gate.get("probe_reason"),
             "ingest_priced": bool(phases.ingest_priced), "breakdown": breakdown, "sizing": sizing,
             "measured_unix_ms": int(time.time() * 1000)}
@@ -893,6 +908,7 @@ def review(request, workspace):
               "capabilities": rw.capabilities(),
               "manifest_bytes": len(_encoded(bundle)), "manifest_maximum_bytes": MAX_MANIFEST_BYTES,
               "render_products": plan_options.get("render_products"),
+              "render_section": plan_options.get("render_section"),
               "prepared_root": plan_options.get("prepared_root"),
               "wps_namelist": plan_options.get("wps_namelist"),
               "checkpoint": plan_options.get("restart"),
@@ -932,7 +948,8 @@ def launch(request, workspace):
     # than a fixed empty answer the plan disagrees with.
     review_value.update({"argv": rw.compose_argv(review_value["entry"]),
                          "cwd": str(directory), "geog_root": bundle["geog_root"],
-                         "products": review_value.get("render_products"), "parent_job": None,
+                         "products": review_value.get("render_products"),
+                         "section": review_value.get("render_section"), "parent_job": None,
                          "inputs": {path: _sha(payload) for path, payload in sources.items()}})
     review_value["external_inputs"] = {
         str((directory if entry["placement"] == "inputs" else _data_directory(bundle, workspace)) / entry["name"]): entry["sha256"]

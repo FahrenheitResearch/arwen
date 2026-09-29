@@ -158,13 +158,15 @@ def test_node_remap_matches_the_native_hrrr_node_interpolation():
     np.testing.assert_array_equal(soil_t, soil_t_again)
 
 
-def test_mapped_route_repairs_bounded_sixteen_pt_overshoot_and_refuses_beyond(capsys):
+def test_mapped_route_puts_every_moisture_overshoot_on_the_range(capsys):
     """WPS sixteen_pt genuinely overshoots on sharp gradients.
 
     MEASURED on the first real HRRR wrfprs preparation: one land cell of
-    22,482 at -0.016 volumetric moisture.  Within the margin the mapped
-    route clamps to the physical bound, loudly; beyond it the refusal is
-    unchanged.  Both behaviours are default-on -- no flag.
+    22,482 at -0.016 volumetric moisture; on the 2026-09-27 06Z HRRR a 1 km
+    grid over a reservoir's dry bank reached -0.055, past the 0.05 margin
+    that used to separate a repair from a refusal.  Every finite value
+    outside 0..1 goes on the range, loudly and default-on; a land cell with
+    no value at all still refuses, by name.
     """
 
     from gpuwm.ingest.soil import preprocess_noah_soil
@@ -191,15 +193,96 @@ def test_mapped_route_repairs_bounded_sixteen_pt_overshoot_and_refuses_beyond(ca
         soil_layer_contract=contract)
     assert float(np.min(state.soil_moisture)) >= 0.0
     captured = capsys.readouterr()
-    assert "overshoot clamped" in captured.err
+    assert "1 land value(s) outside 0..1" in captured.err
 
     beyond = moisture.copy()
-    beyond[0, 0, 0] = -0.10             # beyond the admission margin
+    beyond[0, 0, 0] = -0.10             # past the retired 0.05 margin
+    beyond[3, 1, 1] = 1.2
     fields[MAPPED_SOIL_MOISTURE] = beyond
-    with pytest.raises(ValueError, match="outside 0..1 on land"):
+    state = preprocess_noah_soil(
+        fields, soil_type=np.full((2, 2), 6),
+        soil_layer_contract=contract)
+    assert float(np.min(state.soil_moisture)) >= 0.0
+    assert float(np.max(state.soil_moisture)) <= 1.0
+    captured = capsys.readouterr()
+    assert "2 land value(s) outside 0..1" in captured.err
+
+    missing = moisture.copy()
+    missing[0, 0, 0] = np.nan
+    fields[MAPPED_SOIL_MOISTURE] = missing
+    with pytest.raises(ValueError, match="carries no value on 1 land"):
         preprocess_noah_soil(
             fields, soil_type=np.full((2, 2), 6),
             soil_layer_contract=contract)
+
+
+def test_moisture_past_the_operators_reach_refuses_on_land_only():
+    """A value no interpolation of a 0..1 field makes is not repaired.
+
+    The overlapping parabola carries a 0..1 field no further than
+    -0.2969..1.2969 (9/32 of the donors' range past each end, the donors
+    widened by packing roundoff), and every other operator is a weighted
+    mean.  A met_em file reaches the initializer with no masked mapping in
+    front of it, so this is where a fill value or percent read as a
+    fraction is caught, on either land-surface arm.  A water column is
+    set to 1.0 whatever it held and is not judged.
+    """
+
+    from gpuwm.ingest.horiz import parabolic_reach
+    from gpuwm.ingest.ruc_soil import _source_soil_profiles
+    from gpuwm.ingest.soil import preprocess_noah_soil
+    from gpuwm.ingest.soil_contract import (
+        MAPPED_SOIL_MOISTURE, MAPPED_SOIL_TEMPERATURE)
+
+    lowest, highest = parabolic_reach(0.0, 1.0)
+    assert lowest == pytest.approx(-0.296875, abs=1.0e-5)
+    assert highest == pytest.approx(1.296875, abs=1.0e-5)
+    contract = _node_contract()
+    landsea = np.asarray([[1.0, 0.0], [1.0, 1.0]])
+    surface = {
+        "LANDSEA": landsea,
+        "SKINTEMP": np.asarray([[291.0, 285.0], [289.0, 288.0]]),
+        "TMN": np.asarray([[286.0, 280.0], [285.0, 284.0]]),
+    }
+    temperature = np.broadcast_to(
+        np.linspace(290.0, 284.0, 9)[:, None, None], (9, 2, 2)).copy()
+
+    def prepare(moisture):
+        fields = {**surface, MAPPED_SOIL_TEMPERATURE: temperature,
+                  MAPPED_SOIL_MOISTURE: moisture}
+        state = preprocess_noah_soil(
+            fields, soil_type=np.full((2, 2), 6),
+            soil_layer_contract=contract)
+        ruc = _source_soil_profiles(fields, contract, land=landsea >= 0.5)
+        return state, ruc
+
+    moisture = np.full((9, 2, 2), 0.25)
+    # The operator's own reach at both ends, on land; a metgrid fill on the
+    # water column.
+    moisture[0, 0, 0] = -0.2968
+    moisture[3, 1, 1] = 1.2968
+    moisture[:, 0, 1] = -1.0e30
+    state, ruc = prepare(moisture)
+    assert float(np.min(state.soil_moisture)) >= 0.0
+    assert float(np.max(state.soil_moisture)) <= 1.0
+    assert ruc[1][0, 0, 0] == 0.0 and ruc[1][3, 1, 1] == 1.0
+
+    for value in (-0.2970, 30.0, -1.0e30):
+        beyond = np.full((9, 2, 2), 0.25)
+        beyond[2, 1, 0] = value
+        with pytest.raises(ValueError, match=(
+                r"mapped soil moisture: 1 land value\(s\) outside "
+                r"-0.2969..1.2969")) as refusal:
+            prepare(beyond)
+        assert "a fill value or soil moisture in another unit" in str(
+            refusal.value)
+        with pytest.raises(ValueError, match=(
+                r"mapped soil moisture \(RUC .*\): 1 land value\(s\) "
+                r"outside -0.2969..1.2969")):
+            _source_soil_profiles(
+                {MAPPED_SOIL_TEMPERATURE: temperature,
+                 MAPPED_SOIL_MOISTURE: beyond}, contract,
+                land=landsea >= 0.5)
 
 
 def test_layer_contracts_are_unchanged():

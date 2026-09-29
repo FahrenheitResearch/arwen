@@ -1,0 +1,11 @@
+{
+ "card_gb": 16,
+ "rung": "nest-3-1-488x406",
+ "start": "2023-03-24T18:00Z",
+ "length_h": 12,
+ "fitted_grid": "3 km 364 by 336 points (1089 by 1005 km); 1 km 492 by 408 points (491 by 407 km); 49 levels",
+ "memory": {
+  "need_gib": 13.53,
+  "budget_gib": 14.54
+ }
+}

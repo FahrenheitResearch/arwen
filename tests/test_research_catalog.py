@@ -300,7 +300,7 @@ def test_public_research_collision_is_plain_and_precedes_sizing(tmp_path, monkey
     output = tmp_path / "study.toml"
     existing = output.with_name(output.name + ".arwen-plots.json") if companion else output
     existing.write_bytes(b"do not replace")
-    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *a: pytest.fail("collision reached sizing"))
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *a, **k: pytest.fail("collision reached sizing"))
     assert main(["research", "create", "regional-evolution.reference", "--point=35.3,-97.5",
                  "--cycle=2026-09-05T18", "--vram-gib=8", "--out=" + str(output)]) == 2
     captured = capsys.readouterr()

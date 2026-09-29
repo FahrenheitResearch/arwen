@@ -155,6 +155,29 @@ def test_pending_child_inputs_names_failed_domain_and_closes(monkeypatch):
     assert pending._closed
 
 
+def test_pending_child_inputs_carries_the_cause_and_its_remedy(monkeypatch):
+    """A worker that reads only the last exception line keys its retry on
+    the refusal's remedy; the wrapper used to drop both."""
+
+    domain = SimpleNamespace(grid_id=2)
+    refusal = ("no surface-matched donor within 8 cells.\n"
+               "Raising surface_fallback_radius_cells to 24 lets it reach "
+               "the coast")
+
+    def fail(*_args):
+        raise ValueError(refusal)
+
+    monkeypatch.setattr(ni, "_prepare_child_input_on_grid", fail)
+    pending = ni.PendingChildInputs(
+        (domain,), {2: object()}, object(), None, workers=1)
+    with pytest.raises(RuntimeError) as caught:
+        pending.result()
+    message = str(caught.value)
+    assert message.startswith("d02 independent input preparation failed: ")
+    assert "Raising surface_fallback_radius_cells to 24" in message
+    assert caught.value.__cause__.args == (refusal,)
+
+
 def test_pending_child_inputs_bounds_nested_cpu_threads_to_budget(monkeypatch):
     domains = tuple(SimpleNamespace(grid_id=grid_id) for grid_id in (2, 3, 4))
     observed = []
@@ -401,6 +424,7 @@ def test_initialize_child_chain_parallel_rejects_wrong_root_before_launch(
         ni.initialize_child_chain_parallel(exp, root, object())
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_prepare_child_input_dispatches_hrrr_on_own_static_landmask(
         monkeypatch):
     valid_time = datetime(2026, 7, 20)

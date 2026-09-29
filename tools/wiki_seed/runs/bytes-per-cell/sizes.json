@@ -1,0 +1,124 @@
+{
+ "what": "Bytes per cell for gpuwm/disk_budget.py, read off the files one run wrote",
+ "when": "2026-09-25",
+ "machine": "RTX 5070 Ti (16 GB)",
+ "engine": "lane/28-recipes-fix at c7a8e064b",
+ "plan": {
+  "schema": "gpuwm.run-plan.v1",
+  "name": "measure",
+  "route": "experiment",
+  "config": {
+   "intent": {
+    "root_dx_km": 12,
+    "chain": "4,3",
+    "buffer_km": "800,300,0",
+    "source": "era5",
+    "cycle": "1999-08-11T12",
+    "hours": 2,
+    "era5_provider": "arco",
+    "polygon": "region.geojson (the 1999-08-11 Salt Lake City event box, 400 x 400 km)",
+    "card": "16gb",
+    "history_interval_s": 3600,
+    "nest_history_interval_s": 900
+   }
+  },
+  "output_root": "run",
+  "run_options": {
+   "keep_checkpoints": 0
+  }
+ },
+ "grids": {
+  "d01": {
+   "dx_km": 12,
+   "columns": [
+    170,
+    170
+   ],
+   "levels": 49,
+   "cells": 1416100,
+   "history_files": 3,
+   "history_bytes_per_cell_first_frame": 89.45,
+   "history_bytes_per_cell_later_frames": 93.45,
+   "checkpoint_sets": 2,
+   "checkpoint_bytes_per_cell": 237.79,
+   "picture_files": 622,
+   "picture_bytes": 411047400,
+   "picture_bytes_per_frame": 137015800
+  },
+  "d02": {
+   "dx_km": 3,
+   "columns": [
+    336,
+    336
+   ],
+   "levels": 49,
+   "cells": 5531904,
+   "history_files": 9,
+   "history_bytes_per_cell_first_frame": 89.42,
+   "history_bytes_per_cell_later_frames": 93.42,
+   "checkpoint_sets": 2,
+   "checkpoint_bytes_per_cell": 189.33,
+   "picture_files": 1828,
+   "picture_bytes": 1264668458,
+   "picture_bytes_per_frame": 140518718
+  },
+  "d03": {
+   "dx_km": 1,
+   "columns": [
+    408,
+    402
+   ],
+   "levels": 49,
+   "cells": 8036784,
+   "history_files": 9,
+   "history_bytes_per_cell_first_frame": 89.41,
+   "history_bytes_per_cell_later_frames": 93.41,
+   "checkpoint_sets": 2,
+   "checkpoint_bytes_per_cell": 189.31,
+   "picture_files": 1828,
+   "picture_bytes": 1031484151,
+   "picture_bytes_per_frame": 114609350
+  }
+ },
+ "files": {
+  "gpuwmrst_d01_1999-08-11_13_00_00__31052d3e5a5241f7a14de36885899fad.npz": 336738136,
+  "gpuwmrst_d01_1999-08-11_14_00_00__925fb6fabdd54f70836da70f0f0e8947.npz": 336738141,
+  "gpuwmrst_d02_1999-08-11_13_00_00__31052d3e5a5241f7a14de36885899fad.npz": 1047367659,
+  "gpuwmrst_d02_1999-08-11_14_00_00__925fb6fabdd54f70836da70f0f0e8947.npz": 1047367660,
+  "gpuwmrst_d03_1999-08-11_13_00_00__31052d3e5a5241f7a14de36885899fad.npz": 1521460493,
+  "gpuwmrst_d03_1999-08-11_14_00_00__925fb6fabdd54f70836da70f0f0e8947.npz": 1521460498,
+  "wrfout_d01_1999-08-11_12_00_00": 126675012,
+  "wrfout_d01_1999-08-11_13_00_00": 132339680,
+  "wrfout_d01_1999-08-11_14_00_00": 132339680,
+  "wrfout_d02_1999-08-11_12_00_00": 494646548,
+  "wrfout_d02_1999-08-11_12_15_00": 516774432,
+  "wrfout_d02_1999-08-11_12_30_00": 516774432,
+  "wrfout_d02_1999-08-11_12_45_00": 516774432,
+  "wrfout_d02_1999-08-11_13_00_00": 516774432,
+  "wrfout_d02_1999-08-11_13_15_00": 516774432,
+  "wrfout_d02_1999-08-11_13_30_00": 516774432,
+  "wrfout_d02_1999-08-11_13_45_00": 516774432,
+  "wrfout_d02_1999-08-11_14_00_00": 516774432,
+  "wrfout_d03_1999-08-11_12_00_00": 718580852,
+  "wrfout_d03_1999-08-11_12_15_00": 750728256,
+  "wrfout_d03_1999-08-11_12_30_00": 750728256,
+  "wrfout_d03_1999-08-11_12_45_00": 750728256,
+  "wrfout_d03_1999-08-11_13_00_00": 750728256,
+  "wrfout_d03_1999-08-11_13_15_00": 750728256,
+  "wrfout_d03_1999-08-11_13_30_00": 750728256,
+  "wrfout_d03_1999-08-11_13_45_00": 750728256,
+  "wrfout_d03_1999-08-11_14_00_00": 750728256
+ },
+ "other_bytes": 56787227,
+ "totals_gib": {
+  "history": 10.938,
+  "checkpoints": 5.412,
+  "pictures": 2.524
+ },
+ "projection_gib": {
+  "history": 11.004,
+  "checkpoints": 5.43,
+  "pictures": 2.934,
+  "total": 19.367
+ }
+}

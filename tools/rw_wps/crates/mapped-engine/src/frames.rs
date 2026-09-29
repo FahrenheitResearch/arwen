@@ -13,9 +13,41 @@ use serde_json::{json, Map, Value};
 
 use crate::array;
 use crate::assemble::DecodedCollection;
-use crate::derive::{derivation_dependencies, evaluate_derivation, CanonicalField};
-use crate::model::{Mapping, GRID_FAMILY_LAMBERT, PROJECTED_AXIS_UNIT_M};
+use crate::derive::{
+    complete_geopotential_height, completed_fields, derivation_dependencies, derivation_shape_operand,
+    evaluate_derivation, CanonicalField, CanonicalFields, HYPSOMETRIC_OPERANDS,
+};
+use crate::model::{FieldSpec, Mapping, GRID_FAMILY_LAMBERT, PROJECTED_AXIS_UNIT_M};
 use crate::refusal::{frame_invalid, mapping_invalid, Result};
+
+/// One completed field as a canonical field; `None` while an operand of
+/// its completion is absent.
+fn complete_field(
+    field: &FieldSpec<'_>,
+    seed: Option<&CanonicalField>,
+    operands: &impl CanonicalFields,
+) -> Result<Option<CanonicalField>> {
+    let name = field.name.as_str();
+    let units = field.units_target()?;
+    let completed = match name {
+        "geopotential_height" => complete_geopotential_height(seed, operands, name, units)?,
+        other => unreachable!("{other} has no completion"),
+    };
+    let Some((values, axes, source_references)) = completed else {
+        return Ok(None);
+    };
+    let missing_count = array::count_nan(&values);
+    Ok(Some(CanonicalField {
+        name: name.to_owned(),
+        units: units.to_owned(),
+        axes,
+        location: field.location()?.to_owned(),
+        staggering: field.staggering().to_owned(),
+        values,
+        missing_count,
+        source_references,
+    }))
+}
 
 /// `gpuwm.source_frame.SCHEMA`.
 pub const SOURCE_FRAME_SCHEMA: &str = "gpuwm-canonical-source-frame-v1";
@@ -60,10 +92,47 @@ fn utc_isoformat(value: NaiveDateTime) -> String {
 pub struct FramePlan {
     /// Valid time and member, in the order the frameset writes them.
     pub keys: Vec<(NaiveDateTime, Option<String>)>,
-    /// Field names in the mapping's declared order.
+    /// The fields a frame publishes, in the mapping's declared order:
+    /// every declared field but those marked `dependency_only`, which are
+    /// decoded for a derivation to read and then released unwritten.
     pub declared_names: Vec<String>,
     /// The names a frame must carry to initialize WRF.
     pub required_names: BTreeSet<String>,
+}
+
+/// Why the target contract refuses a uniform series `observed` seconds
+/// apart, or `None` -- `source_authorities.boundary_interval_refusal`.
+///
+/// `boundary_interval_seconds` is the publisher's own spacing.  A target
+/// that also declares `accept_boundary_interval_multiples` takes any whole
+/// multiple of it: each valid time of such a series is one the publisher
+/// wrote, and the mapping grammar has no time-window statistic whose value
+/// would depend on the spacing.  Without the key the declared spacing is
+/// the only one taken.
+pub fn boundary_interval_refusal(target: &crate::node::Node, observed: i64) -> Option<String> {
+    let declared = target
+        .field("boundary_interval_seconds")
+        .and_then(crate::node::Node::as_i64);
+    let multiples = target
+        .field("accept_boundary_interval_multiples")
+        .and_then(crate::node::Node::as_bool)
+        .unwrap_or(false);
+    match declared {
+        Some(spacing) if multiples && spacing > 0 => {
+            if observed > 0 && observed % spacing == 0 {
+                None
+            } else {
+                Some(format!(
+                    "mapped cadence {observed} seconds is not a whole multiple of \
+                     the {spacing} seconds the target contract declares"
+                ))
+            }
+        }
+        Some(spacing) if spacing == observed => None,
+        _ => Some(format!(
+            "mapped cadence {observed} seconds differs from target contract {declared:?}"
+        )),
+    }
 }
 
 /// Every check a frameset can make before reading a valid time's arrays.
@@ -76,11 +145,19 @@ pub fn plan_frames(
     mapping: &Mapping,
     source_cycles: &BTreeMap<(NaiveDateTime, Option<String>), NaiveDateTime>,
 ) -> Result<FramePlan> {
-    let declared_names = mapping.field_names()?;
+    // A field marked `dependency_only` is an input to a derivation and
+    // nothing else, so the frame stream does not carry it.  Named
+    // breakage: ICON-D2's six raw mass fractions were written beside the
+    // mixing ratios rebased from them, 390 of 1,217 layers per valid time
+    // and about 16 GB of the 50 GB a 48 h 1 km run stages, read by nothing.
+    let mut declared_names: Vec<String> = Vec::new();
     let mut unbound: Vec<String> = Vec::new();
     for field in mapping.fields()? {
         if field.provider() == Some("composition_bound") {
             unbound.push(field.name.clone());
+        }
+        if !field.dependency_only()? {
+            declared_names.push(field.name.clone());
         }
     }
     if !unbound.is_empty() {
@@ -104,6 +181,22 @@ pub fn plan_frames(
         ));
     }
     let required_names: BTreeSet<String> = mapping.required_field_names()?.into_iter().collect();
+    // A required field held off the stream would be written nowhere while
+    // every check that it was derived still passed, so the reader would
+    // meet a frame without it.
+    let mut withheld: Vec<&String> = required_names
+        .iter()
+        .filter(|name| !declared_names.contains(name))
+        .filter(|name| mapping.field(name).and_then(|field| field.dependency_only()).unwrap_or(false))
+        .collect();
+    if !withheld.is_empty() {
+        withheld.sort();
+        return Err(mapping_invalid(format!(
+            "fields {} are required by the target and marked dependency_only; \
+             a frame must publish every required field",
+            crate::refusal::python_list_repr(&withheld)
+        )));
+    }
     let times: Vec<NaiveDateTime> = keys.iter().map(|(time, _member)| *time).collect();
     let mut sorted = times.clone();
     sorted.sort();
@@ -137,14 +230,8 @@ pub fn plan_frames(
             ));
         }
         let observed = *deltas.iter().next().expect("one delta");
-        let declared = target
-            .field("boundary_interval_seconds")
-            .and_then(crate::node::Node::as_i64);
-        if declared != Some(observed) {
-            return Err(frame_invalid(format!(
-                "mapped cadence {observed} seconds differs from target contract \
-                 {declared:?}"
-            )));
+        if let Some(message) = boundary_interval_refusal(target, observed) {
+            return Err(frame_invalid(message));
         }
     }
     Ok(FramePlan {
@@ -192,7 +279,23 @@ pub fn materialize_frame(
             pending.insert(field.name.clone());
         }
     }
-    while !pending.is_empty() {
+    // A field the frame completes, which the source published at only
+    // some of its values or at none, is held back from every derivation
+    // until it is whole; `seeds` keeps the values the source did publish.
+    let completed_names = completed_fields(mapping.vertical_kind()?, required_names);
+    let mut seeds: BTreeMap<&str, Option<CanonicalField>> = BTreeMap::new();
+    for name in &completed_names {
+        if pending.contains(*name)
+            || available.get(*name).is_some_and(|field| field.missing_count == 0)
+        {
+            continue;
+        }
+        seeds.insert(*name, available.remove(*name));
+    }
+    let waits_on = |pending: &BTreeSet<String>| {
+        HYPSOMETRIC_OPERANDS.iter().any(|(operand, _)| pending.contains(*operand))
+    };
+    while !pending.is_empty() || !seeds.is_empty() {
         let mut progress = false;
         for name in pending.clone() {
             let field = mapping.field(&name)?;
@@ -231,12 +334,47 @@ pub fn materialize_frame(
             pending.remove(&name);
             progress = true;
         }
+        // A completion reads the final value of each operand, so it waits
+        // while a derivation still has one to produce.
+        for name in &completed_names {
+            if !seeds.contains_key(*name) || waits_on(&pending) {
+                continue;
+            }
+            let field = mapping.field(name)?;
+            if let Some(completed) = complete_field(&field, seeds[*name].as_ref(), &available)? {
+                available.insert((*name).to_owned(), completed.validated()?);
+                seeds.remove(*name);
+                progress = true;
+            }
+        }
         if !progress {
-            let stuck: Vec<String> = pending.iter().cloned().collect();
-            return Err(frame_invalid(format!(
-                "derived fields have missing dependencies or a cycle: {}",
-                stuck.join(", ")
-            )));
+            // A completed field whose own derivation cannot run is
+            // derived hydrostatically instead, and the loop goes on for
+            // anything that reads it.
+            for name in &completed_names {
+                if !pending.contains(*name) || waits_on(&pending) {
+                    continue;
+                }
+                let field = mapping.field(name)?;
+                if let Some(completed) = complete_field(&field, None, &available)? {
+                    available.insert((*name).to_owned(), completed.validated()?);
+                    pending.remove(*name);
+                    progress = true;
+                }
+            }
+        }
+        if !progress {
+            if !pending.is_empty() {
+                let stuck: Vec<String> = pending.iter().cloned().collect();
+                return Err(frame_invalid(format!(
+                    "derived fields have missing dependencies or a cycle: {}",
+                    stuck.join(", ")
+                )));
+            }
+            // What is left is a completion whose operands this source
+            // does not carry: the frame lacks that field, and says so by
+            // name below.
+            break;
         }
     }
     // The frame states its fields in the mapping's own declared order:
@@ -420,6 +558,11 @@ fn validate_frame_axes(collection: &DecodedCollection, fields: &[CanonicalField]
                 "{} does not share the source horizontal grid",
                 field.name
             )));
+        }
+        if let Some(levels) = shape.get("half_level") {
+            if *levels != collection.vertical_values.len() + 1 {
+                return Err(frame_invalid(format!("{} does not bound the vertical coordinate", field.name)));
+            }
         }
         if let Some(levels) = shape.get("vertical") {
             if *levels != collection.vertical_values.len() {
@@ -754,6 +897,10 @@ pub struct SeriesSummary {
 struct FieldStep {
     name: String,
     derivation: Option<String>,
+    /// Derived hydrostatically where the source leaves the field out;
+    /// a dependency named like the step itself is the source's own
+    /// partial field.
+    completion: bool,
     dependencies: Vec<(String, usize)>,
 }
 
@@ -789,11 +936,47 @@ impl<'a> FieldMaterializer<'a> {
             field.location()?;
             CanonicalField::validate_values(name, &direct.axes, &direct.values, direct.missing_count)?;
             versions.insert(name.clone(), steps.len());
-            steps.push(FieldStep { name: name.clone(), derivation: None, dependencies: Vec::new() });
+            steps.push(FieldStep { name: name.clone(), derivation: None, completion: false,
+                dependencies: Vec::new() });
         }
         let mut pending: BTreeSet<String> = mapping.fields()?.into_iter()
             .filter(|field| field.derivation().is_some()).map(|field| field.name.clone()).collect();
-        while !pending.is_empty() {
+        // A field the frame completes, which the source published at only
+        // some of its values or at none, is held back from every
+        // derivation until it is whole; `seeds` keeps the step of the
+        // values the source did publish.
+        let completed_names = completed_fields(mapping.vertical_kind()?, &plan.required_names);
+        let mut seeds: BTreeMap<&str, Option<usize>> = BTreeMap::new();
+        for name in &completed_names {
+            if pending.contains(*name) { continue; }
+            let partial = collection.direct.get(&(key.0, key.1.clone(), (*name).to_owned()))
+                .map(|direct| direct.missing_count > 0);
+            if partial == Some(false) { continue; }
+            seeds.insert(*name, versions.remove(*name));
+        }
+        // A completion step reads the operands' current versions and, when
+        // the source published part of the field, that partial field.
+        let plan_completion = |name: &str, seed: Option<usize>, versions: &mut BTreeMap<String, usize>,
+                               steps: &mut Vec<FieldStep>| -> bool {
+            if HYPSOMETRIC_OPERANDS.iter().any(|(operand, _)| !versions.contains_key(*operand)) {
+                return false;
+            }
+            let mut dependencies: Vec<(String, usize)> = Vec::new();
+            if let Some(seed) = seed {
+                dependencies.push((name.to_owned(), seed));
+            }
+            for (operand, _) in HYPSOMETRIC_OPERANDS {
+                dependencies.push((operand.to_owned(), versions[operand]));
+            }
+            versions.insert(name.to_owned(), steps.len());
+            steps.push(FieldStep { name: name.to_owned(), derivation: None, completion: true,
+                dependencies });
+            true
+        };
+        let waits_on = |pending: &BTreeSet<String>| {
+            HYPSOMETRIC_OPERANDS.iter().any(|(operand, _)| pending.contains(*operand))
+        };
+        while !pending.is_empty() || !seeds.is_empty() {
             let mut progress = false;
             for name in pending.clone() {
                 let field = mapping.field(&name)?;
@@ -808,14 +991,40 @@ impl<'a> FieldMaterializer<'a> {
                     (name, version)
                 }).collect();
                 versions.insert(name.clone(), steps.len());
-                steps.push(FieldStep { name: name.clone(), derivation: Some(derivation.to_owned()), dependencies });
+                steps.push(FieldStep { name: name.clone(), derivation: Some(derivation.to_owned()),
+                    completion: false, dependencies });
                 pending.remove(&name);
                 progress = true;
             }
+            // A completion reads the final version of each operand, so it
+            // waits while a derivation still has one to produce.
+            for name in &completed_names {
+                let Some(seed) = seeds.get(*name).copied() else { continue; };
+                if !waits_on(&pending) && plan_completion(name, seed, &mut versions, &mut steps) {
+                    seeds.remove(*name);
+                    progress = true;
+                }
+            }
             if !progress {
-                return Err(frame_invalid(format!(
-                    "derived fields have missing dependencies or a cycle: {}",
-                    pending.iter().cloned().collect::<Vec<_>>().join(", "))));
+                // A completed field whose own derivation cannot run is
+                // derived hydrostatically instead.
+                for name in &completed_names {
+                    if pending.contains(*name) && !waits_on(&pending)
+                        && plan_completion(name, None, &mut versions, &mut steps) {
+                        pending.remove(*name);
+                        progress = true;
+                    }
+                }
+            }
+            if !progress {
+                if !pending.is_empty() {
+                    return Err(frame_invalid(format!(
+                        "derived fields have missing dependencies or a cycle: {}",
+                        pending.iter().cloned().collect::<Vec<_>>().join(", "))));
+                }
+                // A completion whose operands this source does not carry:
+                // the frame lacks that field, and says so by name below.
+                break;
             }
         }
         let missing: Vec<&String> = plan.required_names.iter()
@@ -846,7 +1055,14 @@ impl<'a> FieldMaterializer<'a> {
         let dependencies = self.steps[id].dependencies.clone();
         for (_, dependency) in &dependencies { self.materialize(*dependency)?; }
         let field = self.mapping.field(&name)?;
-        let result = if let Some(derivation) = &self.steps[id].derivation {
+        let result = if self.steps[id].completion {
+            let operands: BTreeMap<String, &CanonicalField> = dependencies.iter()
+                .map(|(name, dependency)| (name.clone(), &self.available[dependency])).collect();
+            let seed = operands.get(&name).copied();
+            complete_field(&field, seed, &operands)?
+                .ok_or_else(|| frame_invalid(format!("planned completion of {name} lost its operands")))?
+                .validated()?
+        } else if let Some(derivation) = &self.steps[id].derivation {
             let operands: BTreeMap<String, &CanonicalField> = dependencies.iter()
                 .map(|(name, dependency)| (name.clone(), &self.available[dependency])).collect();
             let operation = self.mapping.derivation(derivation).expect("planned derivation exists");
@@ -875,6 +1091,103 @@ impl<'a> FieldMaterializer<'a> {
         self.remaining[id] -= 1;
         if self.remaining[id] == 0 { self.available.remove(&id); }
     }
+
+    /// The values this frame publishes, counted before one is derived.
+    ///
+    /// A direct field carries its decoded shape.  A derived field keeps
+    /// the shape of the operand its derivation keeps
+    /// (`derivation_shape_operand`), one soil layer taller for a surface
+    /// node, laid out on its own target axes; a derivation built on the
+    /// frame's ladder, and a completed field, take their declared target
+    /// axes over this frame's own grid, ladder and soil column.  Every
+    /// step follows the steps it reads, so one pass in step order sizes
+    /// them all.  A windowed field keeps its levels over the window's rows
+    /// and columns, as the writer crops it.  `None` when a field names an
+    /// axis this cannot size; the write itself still refuses a full disk
+    /// then, it only cannot refuse before the first byte.
+    fn planned_values(&self, window: Option<&crate::window::Window>) -> Result<Option<u64>> {
+        let collection = &self.collection;
+        let direct = |name: &str| {
+            collection.direct.get(&(self.key.0, self.key.1.clone(), name.to_owned()))
+        };
+        let soil = collection.direct.iter()
+            .filter(|((time, member, _), _)| *time == self.key.0 && *member == self.key.1)
+            .find_map(|(_, value)| value.axes.iter().position(|axis| axis == "soil")
+                .map(|axis| value.values.shape()[axis]));
+        let soil = match soil {
+            Some(layers) => Some(layers),
+            None => self.mapping.soil_layer_count()?.and_then(|count| usize::try_from(count).ok()),
+        };
+        let on_grid = |axes: &[String]| -> Option<Vec<usize>> {
+            axes.iter().map(|axis| match axis.as_str() {
+                "y" => Some(collection.latitude.len()),
+                "x" => Some(collection.longitude.len()),
+                "vertical" => Some(collection.vertical_values.len()),
+                "soil" => soil,
+                _ => None,
+            }).collect()
+        };
+        let mut shapes: Vec<Option<(Vec<String>, Vec<usize>)>> = Vec::with_capacity(self.steps.len());
+        for step in &self.steps {
+            let target = self.mapping.field(&step.name)?.target_axes()?;
+            let planned = match (&step.derivation, direct(&step.name)) {
+                (None, Some(value)) => Some((value.axes.clone(), value.values.shape().to_vec())),
+                (Some(derivation), _) => {
+                    let operation = self.mapping.derivation(derivation).ok_or_else(|| mapping_invalid(
+                        format!("field {} names unknown derivation '{derivation}'", step.name)))?;
+                    match derivation_shape_operand(operation) {
+                        None => on_grid(&target).map(|shape| (target, shape)),
+                        Some((label, surface_node)) => {
+                            let operand = operation.get(label).and_then(crate::node::Node::as_str)
+                                .and_then(|name| step.dependencies.iter().find(|(dependency, _)| dependency == name))
+                                .and_then(|(_, id)| shapes[*id].clone());
+                            operand.and_then(|(axes, mut shape)| {
+                                if surface_node {
+                                    shape[axes.iter().position(|axis| axis == "soil")?] += 1;
+                                }
+                                // The result keeps its operand's axes, then is
+                                // laid out on the field's own target axes.
+                                let laid_out = target.iter()
+                                    .map(|axis| axes.iter().position(|name| name == axis).map(|at| shape[at]))
+                                    .collect::<Option<Vec<usize>>>()?;
+                                Some((target, laid_out))
+                            })
+                        }
+                    }
+                }
+                (None, None) => on_grid(&target).map(|shape| (target, shape)),
+            };
+            shapes.push(planned);
+        }
+        let mut total: u64 = 0;
+        for id in &self.output {
+            let step = &self.steps[*id];
+            let Some((_, shape)) = &shapes[*id] else { return Ok(None); };
+            let values: usize = match window.filter(|w| w.fields.contains(&step.name)) {
+                Some(w) if shape.len() == 3 => w.shape(shape[0]).iter().product(),
+                _ => shape.iter().product(),
+            };
+            total = total.saturating_add(values as u64);
+        }
+        Ok(Some(total))
+    }
+}
+
+/// Where the frame stream stands when a write fails: what it needs in
+/// all, what had gone out, and what the disk holding it has left.
+fn stream_detail(directory: &std::path::Path, planned: Option<u64>, written: u64,
+                 available: &dyn Fn(&std::path::Path) -> Option<u64>) -> String {
+    use crate::refusal::bytes_and_gib;
+    let mut detail = match planned {
+        Some(needed) => format!("the stream needs {} in all and {} had been written",
+            bytes_and_gib(needed), bytes_and_gib(written)),
+        None => format!("{} of the stream had been written", bytes_and_gib(written)),
+    };
+    if let Some(free) = available(directory) {
+        detail.push_str(&format!(", and the disk that holds {} has {} free",
+            directory.display(), bytes_and_gib(free)));
+    }
+    detail
 }
 
 /// Write `frames.json` + `frames.f64` into `directory`, PULLING one valid
@@ -908,25 +1221,50 @@ pub fn write_frameset_with_window(
     series: &SeriesSummary,
     input_sha256: &BTreeMap<String, String>,
     request_windows: bool,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
+) -> Result<Value> {
+    write_frameset_within(directory, mapping, series, input_sha256, request_windows,
+        &crate::space::available_bytes, slice)
+}
+
+/// The writer, with the free-space reading it admits the stream against.
+///
+/// The stream's size is known exactly once the first valid time's field
+/// plan and its atmospheric window are: every frame publishes the same
+/// inventory on the same grid, so the first frame's values times the
+/// number of valid times is the whole stream.  That is checked against
+/// `available` before the first byte goes out.  Named breakage: a 48 h
+/// global source composed for fourteen minutes and then stopped on a full
+/// disk, because nothing asked whether the disk could hold its stream.
+fn write_frameset_within(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    available: &dyn Fn(&std::path::Path) -> Option<u64>,
     mut slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
 ) -> Result<Value> {
+    use crate::refusal::{bytes_and_gib, write_error};
     let plan = plan_frames(mapping, &series.source_cycles)?;
     let mut inventories: BTreeSet<Vec<String>> = BTreeSet::new();
     std::fs::create_dir_all(directory).map_err(|error| {
-        crate::refusal::missing_input(format!(
-            "cannot create output directory {}: {error}",
-            directory.display()
-        ))
+        write_error(&format!("create the output directory {}", directory.display()), &error, None)
     })?;
     let stream_path = directory.join("frames.f64");
     let file = std::fs::File::create(&stream_path).map_err(|error| {
-        crate::refusal::missing_input(format!(
-            "cannot write {}: {error}",
-            stream_path.display()
-        ))
+        write_error(&format!("create the frame stream {}", stream_path.display()), &error, None)
     })?;
     let mut stream = std::io::BufWriter::new(file);
     let mut offset: u64 = 0;
+    // What the whole stream needs, once the first frame has said; kept
+    // so a write that still meets a full disk can say how far it got.
+    let mut planned: Option<u64> = None;
+    let stream_failure = |error: std::io::Error, planned: Option<u64>, written: u64| {
+        let detail = crate::refusal::out_of_space(&error)
+            .then(|| stream_detail(directory, planned, written, available));
+        write_error(&format!("write the frame stream {}", stream_path.display()), &error, detail)
+    };
     // The whole-stream digest the reader re-computes before it trusts a
     // single array.  Accumulated as the bytes go out rather than by
     // re-reading the file: a real frameset is multi-gigabyte.
@@ -957,6 +1295,24 @@ pub fn write_frameset_with_window(
                 &header["grid"], &names, frame_documents.len(), &series.grid_fingerprint)?
         } else { None };
         windowed |= window.is_some();
+        if frame_documents.is_empty() {
+            if let Some(values) = fields.planned_values(window.as_ref())? {
+                let frame_bytes = values.saturating_mul(8);
+                let needed = frame_bytes.saturating_mul(plan.keys.len() as u64);
+                planned = Some(needed);
+                if let Some(free) = available(directory).filter(|free| needed > *free) {
+                    // The folder and both numbers make the first sentence,
+                    // so a front end that shows one sentence shows them.
+                    return Err(crate::refusal::disk_full(format!(
+                        "the frame stream needs {} in {} and the disk that holds \
+                         that folder has {} free.  It is {} valid times of {} each, \
+                         refused before its first byte rather than written until \
+                         the disk fills",
+                        bytes_and_gib(needed), directory.display(), bytes_and_gib(free),
+                        plan.keys.len(), bytes_and_gib(frame_bytes))));
+                }
+            }
+        }
         let mut pressure_levels = None;
         inventories.insert(names);
         let time = json!({
@@ -1025,17 +1381,16 @@ pub fn write_frameset_with_window(
             // instead of reading the stream whole.  The field's OWN
             // digest was taken above from the full original values.
             let mut chunk: Vec<u8> = Vec::with_capacity(STREAM_CHUNK * 8);
+            let mut field_written: u64 = 0;
             for values in flat.chunks(STREAM_CHUNK) {
                 chunk.clear();
                 for value in values {
                     chunk.extend_from_slice(&value.to_le_bytes());
                 }
                 sha2::Digest::update(&mut stream_digest, &chunk);
-                stream.write_all(&chunk).map_err(|error| {
-                    crate::refusal::missing_input(format!(
-                        "cannot write the frame stream: {error}"
-                    ))
-                })?;
+                stream.write_all(&chunk)
+                    .map_err(|error| stream_failure(error, planned, offset + field_written))?;
+                field_written += chunk.len() as u64;
             }
             let mut field_document = json!({
                 "name": field.name,
@@ -1100,9 +1455,7 @@ pub fn write_frameset_with_window(
     // so a series that fails here is deleted whole; nothing partial is
     // ever handed on.
     require_one_inventory(&inventories)?;
-    stream.flush().map_err(|error| {
-        crate::refusal::missing_input(format!("cannot flush the frame stream: {error}"))
-    })?;
+    stream.flush().map_err(|error| stream_failure(error, planned, offset))?;
     let document = json!({
         "schema": if windowed { crate::window::FRAMESET_SCHEMA } else { crate::FRAMESET_SCHEMA },
         "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
@@ -1125,10 +1478,8 @@ pub fn write_frameset_with_window(
     let manifest_path = directory.join("frames.json");
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&document).unwrap_or_default())
         .map_err(|error| {
-            crate::refusal::missing_input(format!(
-                "cannot write {}: {error}",
-                manifest_path.display()
-            ))
+            write_error(&format!("write the frameset manifest {}", manifest_path.display()),
+                &error, None)
         })?;
     Ok(document)
 }
@@ -1193,6 +1544,49 @@ mod tests {
         assert!(fields.remaining.iter().all(|uses| *uses == 0));
     }
 
+    /// The chain fixture with `source` marked `dependency_only`, `required`
+    /// naming the target's required fields.
+    fn dependency_only_fixture(required: &[&str]) -> (Mapping, DecodedCollection) {
+        let (mapping, collection, _) = chain_fixture(false);
+        let mut document: Value = mapping.doc.to_value();
+        document["fields"]["source"]["dependency_only"] = json!(true);
+        document["target"] = json!({"require_lateral_boundaries": false,
+            "required_fields": required.iter().map(|name| json!({"name": name})).collect::<Vec<_>>()});
+        let payload = serde_json::to_vec(&document).unwrap();
+        let mapping = Mapping { doc: crate::node::Node::parse(&payload).unwrap(),
+            sha256: crate::digest::bytes_sha256(&payload), path: "<dependency-only-test>".to_owned() };
+        (mapping, collection)
+    }
+
+    #[test]
+    fn a_dependency_only_input_feeds_its_derivation_and_is_not_written() {
+        let (mapping, collection) = dependency_only_fixture(&["output"]);
+        let plan = plan_frames(&mapping, &collection.source_cycles).unwrap();
+        assert_eq!(plan.declared_names, ["middle", "output"].map(str::to_owned).to_vec());
+        let mut fields = FieldMaterializer::new(&mapping, collection, &plan, &plan.keys[0]).unwrap();
+        assert_eq!(fields.names(), ["middle", "output"].map(str::to_owned).to_vec());
+        // Priced as written: the disk admission reads this figure.
+        assert_eq!(fields.planned_values(None).unwrap(), Some(8));
+        let mut written = Vec::new();
+        for id in fields.output.clone() {
+            fields.materialize(id).unwrap();
+            written.push(array::contiguous(&fields.available[&id].values).into_owned());
+            fields.consume(id);
+        }
+        assert_eq!(written, vec![vec![2., 4., 6., 8.], vec![6., 12., 18., 24.]]);
+        assert!(fields.collection.direct.is_empty(), "the input was read");
+        assert!(fields.available.is_empty(), "and released after its last reader");
+    }
+
+    #[test]
+    fn a_required_field_cannot_be_held_off_the_frame() {
+        let (mapping, collection) = dependency_only_fixture(&["source", "output"]);
+        let refusal = plan_frames(&mapping, &collection.source_cycles).err().unwrap();
+        assert_eq!(refusal.message,
+            "fields ['source'] are required by the target and marked dependency_only; \
+             a frame must publish every required field");
+    }
+
     #[test]
     fn a_direct_seed_keeps_its_version_when_derived_under_the_same_name() {
         let (mapping, collection, plan) = chain_fixture(true);
@@ -1203,6 +1597,72 @@ mod tests {
         assert_eq!(fields.available.len(), 1);
         fields.consume(id);
         assert!(fields.available.is_empty());
+    }
+
+    /// A soil column with nine temperature layers and eight water-mass
+    /// layers, the water turned volumetric (eight) and then given a
+    /// surface node above its shallowest layer (nine), on a 2 x 3 grid.
+    fn layered_soil_fixture() -> (Mapping, DecodedCollection, FramePlan) {
+        let soil = json!({"units": {"source": "1", "target": "1"}, "location": "soil",
+            "source_axes": ["soil", "y", "x"], "target_axes": ["soil", "y", "x"]});
+        let mut volumetric = soil.clone();
+        volumetric["derivation"] = json!("volumetric-from-layer-mass");
+        let mut surface_node = soil.clone();
+        surface_node["derivation"] = json!("volumetric-with-surface-node");
+        let bounds: Vec<Value> = (0..8).map(|layer| json!([layer as f64, layer as f64 + 1.0])).collect();
+        let document = json!({"coordinates": {"vertical": {"kind": "pressure", "units": "Pa"}},
+            "fields": {"soil_temperature": soil, "soil_water_column": soil,
+                "soil_water_column_volumetric": volumetric, "volumetric_soil_moisture": surface_node},
+            "derivations": [
+                {"name": "volumetric-from-layer-mass", "operation": "volumetric_soil_moisture_from_layer_mass",
+                 "layer_mass": "soil_water_column", "layer_bounds_m": bounds, "water_density_kg_m3": 1000.0},
+                {"name": "volumetric-with-surface-node", "operation": "soil_surface_node_from_shallowest",
+                 "source": "soil_water_column_volumetric"}]});
+        let payload = serde_json::to_vec(&document).unwrap();
+        let mapping = Mapping { doc: crate::node::Node::parse(&payload).unwrap(),
+            sha256: crate::digest::bytes_sha256(&payload), path: "<layered-soil-test>".to_owned() };
+        let valid_time = NaiveDateTime::parse_from_str("2026-08-17 06:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let column = |name: &str, layers: usize, value: f64| {
+            ((valid_time, None, name.to_owned()), crate::assemble::DirectValue { name: name.to_owned(),
+                valid_time, member: None, source_cycle: valid_time,
+                axes: ["soil", "y", "x"].map(str::to_owned).to_vec(),
+                values: ndarray::ArrayD::from_elem(ndarray::IxDyn(&[layers, 2, 3]), value),
+                missing_count: 0, references: vec![format!("@{name}")] })
+        };
+        let collection = DecodedCollection { latitude: vec![1., 2.], longitude: vec![3., 4., 5.],
+            vertical_values: vec![100000.], direct: BTreeMap::from([
+                column("soil_temperature", 9, 280.0), column("soil_water_column", 8, 50.0)]),
+            source_cycles: BTreeMap::from([((valid_time, None), valid_time)]),
+            grid_fingerprint: "grid".to_owned(), hybrid_a: Vec::new(), hybrid_b: Vec::new() };
+        let plan = FramePlan { keys: vec![(valid_time, None)],
+            declared_names: ["soil_temperature", "soil_water_column", "soil_water_column_volumetric",
+                "volumetric_soil_moisture"].map(str::to_owned).to_vec(),
+            required_names: BTreeSet::new() };
+        (mapping, collection, plan)
+    }
+
+    #[test]
+    fn the_planned_stream_is_the_stream_written_when_soil_columns_differ_in_depth() {
+        // The disk admission multiplies this figure by the valid times, so
+        // a plan one soil layer taller than what is written refuses a
+        // stream that fits.
+        let (mapping, collection, plan) = layered_soil_fixture();
+        let mut fields = FieldMaterializer::new(&mapping, collection, &plan, &plan.keys[0]).unwrap();
+        let planned = fields.planned_values(None).unwrap().expect("every axis here is sizable");
+        let mut written = 0u64;
+        let mut layers = BTreeMap::new();
+        for id in fields.output.clone() {
+            fields.materialize(id).unwrap();
+            let field = &fields.available[&id];
+            written += field.values.len() as u64;
+            layers.insert(field.name.clone(), field.values.shape()[0]);
+            fields.consume(id);
+        }
+        assert_eq!(layers, BTreeMap::from([("soil_temperature".to_owned(), 9),
+            ("soil_water_column".to_owned(), 8), ("soil_water_column_volumetric".to_owned(), 8),
+            ("volumetric_soil_moisture".to_owned(), 9)]));
+        assert_eq!(written, (9 + 8 + 8 + 9) * 6);
+        assert_eq!(planned, written);
     }
 
     #[test]
@@ -1246,6 +1706,144 @@ mod tests {
         std::fs::remove_file(scratch.join("frames.f64")).unwrap();
         std::fs::remove_file(scratch.join("frames.json")).unwrap();
         std::fs::remove_dir(scratch).unwrap();
+    }
+
+    fn cadence_plan(target: Value, minutes: &[i64]) -> Result<FramePlan> {
+        let document = json!({"coordinates": {"vertical": {"kind": "pressure", "units": "Pa"}},
+            "fields": {}, "target": target});
+        let payload = serde_json::to_vec(&document).unwrap();
+        let mapping = Mapping { doc: crate::node::Node::parse(&payload).unwrap(),
+            sha256: crate::digest::bytes_sha256(&payload), path: "<cadence-test>".to_owned() };
+        let cycle = NaiveDateTime::parse_from_str("2023-03-31 18:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let source_cycles = minutes.iter()
+            .map(|minute| ((cycle + chrono::Duration::minutes(*minute), None), cycle))
+            .collect();
+        plan_frames(&mapping, &source_cycles)
+    }
+
+    #[test]
+    fn a_target_declaring_multiples_takes_every_whole_multiple_of_its_spacing() {
+        let exact = json!({"require_lateral_boundaries": true, "required_fields": [],
+            "boundary_interval_seconds": 3600});
+        let mut multiples = exact.clone();
+        multiples["accept_boundary_interval_multiples"] = json!(true);
+        let hourly = [0, 60, 120, 180];
+        let three_hourly = [0, 180, 360, 540];
+        let refusal = cadence_plan(exact.clone(), &three_hourly).err().unwrap();
+        assert_eq!(refusal.message,
+            "mapped cadence 10800 seconds differs from target contract Some(3600)");
+        assert!(cadence_plan(exact, &hourly).is_ok());
+        assert!(cadence_plan(multiples.clone(), &three_hourly).is_ok());
+        assert!(cadence_plan(multiples.clone(), &hourly).is_ok());
+        let refusal = cadence_plan(multiples, &[0, 90, 180]).err().unwrap();
+        assert_eq!(refusal.message,
+            "mapped cadence 5400 seconds is not a whole multiple of the 3600 seconds \
+             the target contract declares");
+    }
+
+    /// The owned NetCDF golden, decoded whole, with the inputs it came from.
+    fn netcdf_golden() -> (Mapping, DecodedCollection, Vec<String>) {
+        let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let golden_root = crate_root.join("tests/goldens");
+        let golden: Value = serde_json::from_slice(&std::fs::read(golden_root.join("netcdf-pressure-level.json")).unwrap()).unwrap();
+        let repository = crate_root.ancestors().nth(4).unwrap();
+        let mapping = Mapping::load(&repository.join(golden["mapping"].as_str().unwrap()).display().to_string()).unwrap();
+        let inputs: Vec<String> = golden["input_names"].as_array().unwrap().iter()
+            .map(|name| golden_root.join(name.as_str().unwrap()).display().to_string()).collect();
+        let collection = crate::engine::decode_collection(&mapping, &inputs, &mut |_| {}).unwrap();
+        (mapping, collection, inputs)
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("gpuwm-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        path
+    }
+
+    /// Write the golden through `write_frameset_within` with `available`
+    /// as the disk's free space; the result and how many valid times the
+    /// writer pulled.
+    fn write_golden(directory: &std::path::Path, available: &dyn Fn(&std::path::Path) -> Option<u64>)
+        -> (Result<Value>, usize) {
+        let (mapping, collection, inputs) = netcdf_golden();
+        let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
+            grid_fingerprint: collection.grid_fingerprint.clone() };
+        let mut remaining = collection;
+        let mut pulled = 0usize;
+        let result = write_frameset_within(directory, &mapping, &series,
+            &crate::engine::input_digests(&inputs).unwrap(), false, available, |key| {
+                pulled += 1;
+                Ok(crate::engine::carve_valid_time(&mut remaining, key))
+            });
+        (result, pulled)
+    }
+
+    #[test]
+    fn a_stream_the_disk_cannot_hold_is_refused_before_its_first_byte_with_its_size() {
+        let written = scratch("stream-admission-fits");
+        let (document, frames) = write_golden(&written, &|_| None);
+        let bytes = document.unwrap()["stream"]["bytes"].as_u64().unwrap();
+        assert!(frames >= 2, "the golden is a series, so the plan multiplies");
+        std::fs::remove_dir_all(&written).unwrap();
+
+        // One byte short: refused as a full disk, naming the folder, the
+        // exact size the stream would have had and the space there was,
+        // after pulling only the first valid time and writing nothing.
+        let short = scratch("stream-admission-short");
+        let (refused, pulled) = write_golden(&short, &|_| Some(bytes - 1));
+        let refusal = refused.err().unwrap();
+        assert_eq!(refusal.class, crate::refusal::class::DISK_FULL);
+        assert!(refusal.message.contains(&short.display().to_string()), "{}", refusal.message);
+        assert!(refusal.message.contains(&format!("needs {bytes} bytes")), "{}", refusal.message);
+        assert!(refusal.message.contains(&format!("has {} bytes", bytes - 1)), "{}", refusal.message);
+        assert!(refusal.message.contains(&format!("{frames} valid times")), "{}", refusal.message);
+        assert_eq!(pulled, 1);
+        assert_eq!(std::fs::metadata(short.join("frames.f64")).unwrap().len(), 0);
+        assert!(!short.join("frames.json").exists());
+        std::fs::remove_dir_all(&short).unwrap();
+
+        // Exactly enough is enough: the plan is the stream, not a margin.
+        let exact = scratch("stream-admission-exact");
+        let (document, _) = write_golden(&exact, &|_| Some(bytes));
+        assert_eq!(document.unwrap()["stream"]["bytes"].as_u64(), Some(bytes));
+        std::fs::remove_dir_all(&exact).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_write_that_meets_a_full_disk_is_a_disk_refusal_not_a_missing_input() {
+        // `/dev/full` answers every write with ENOSPC, so a stream path
+        // linked to it is a disk that fills at the first byte.
+        if !std::path::Path::new("/dev/full").exists() {
+            return;
+        }
+        let directory = scratch("stream-enospc");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::os::unix::fs::symlink("/dev/full", directory.join("frames.f64")).unwrap();
+        let (refused, _) = write_golden(&directory, &|_| Some(1 << 40));
+        let refusal = refused.err().unwrap();
+        assert_eq!(refusal.class, crate::refusal::class::DISK_FULL, "{}", refusal.message);
+        assert!(refusal.message.starts_with(&format!(
+            "cannot write the frame stream {}: ", directory.join("frames.f64").display())),
+            "{}", refusal.message);
+        assert!(refusal.message.contains("os error 28"), "{}", refusal.message);
+        assert!(refusal.message.contains("the stream needs "), "{}", refusal.message);
+        assert!(!refusal.remedy.contains("input list"), "{}", refusal.remedy);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_created_is_a_write_refusal_naming_it() {
+        let blocker = scratch("stream-blocked");
+        std::fs::write(&blocker, b"a file where the folder should be").unwrap();
+        let directory = blocker.join("frames");
+        let (refused, pulled) = write_golden(&directory, &|_| None);
+        let refusal = refused.err().unwrap();
+        assert_eq!(refusal.class, crate::refusal::class::WRITE_FAILED, "{}", refusal.message);
+        assert!(refusal.message.starts_with(&format!(
+            "cannot create the output directory {}: ", directory.display())), "{}", refusal.message);
+        assert_eq!(pulled, 0);
+        std::fs::remove_file(&blocker).unwrap();
     }
 
     #[test]

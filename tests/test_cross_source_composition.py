@@ -1,6 +1,6 @@
 """Cross-source composition: a field may be sourced from ANOTHER source's decode.
 
-The grammar under test is Drew's requested feature: a composition declares
+The grammar under test is a requested feature: a composition declares
 per-field source bindings -- contributing source id, that source's own sealed
 mapping authority pinned by SHA-256, and a cycle/time-alignment rule -- and a
 same-grid contribution lands while a cross-grid contribution refuses by naming
@@ -394,6 +394,52 @@ def test_valid_time_exact_requires_the_donor_at_every_primary_time():
     with pytest.raises(ValueError, match="lacks.*valid time"):
         _compose_bound_fields(
             primary, donor, binding_name="donor", binding=binding,
+        )
+
+
+def test_a_bound_field_crosses_the_seam_of_a_global_donor():
+    """The borrow's exact-subset solve wraps the seam of a whole-globe donor."""
+    start = datetime(2026, 8, 17)
+    binding = dict(_BINDING, time_alignment="valid_time_exact")
+    donor_longitude = np.arange(0.0, 360.0, 90.0)
+    primary = _primary((start,), longitude=(-90.0, 0.0, 90.0))
+    donor = _donor((start,), longitude=donor_longitude)
+    combined, receipt = _compose_bound_fields(
+        primary, donor, binding_name="donor", binding=binding,
+    )
+    values = donor.direct[(start, None, "terrain_height")].values
+    np.testing.assert_array_equal(
+        combined.direct[(start, None, "terrain_height")].values,
+        values[[2, 1]][:, [3, 0, 1]])
+    assert receipt["longitude_index_range"] == [3, 1]
+
+
+def test_an_invariant_broadcast_keeps_a_stable_missing_cell():
+    """Identical statics with a missing cell are invariant (NaN != NaN)."""
+    start = datetime(2026, 8, 17)
+    binding = dict(_BINDING, time_alignment="cycle_invariant_broadcast")
+    primary = _primary((start, start + timedelta(hours=6)))
+    base = np.arange(9, dtype=np.float64).reshape(3, 3)
+    base[0, 2] = np.nan  # outside the primary's rows 1..2, columns 0..1
+    donor = _donor((start, start + timedelta(hours=3)), base=base)
+    combined, _receipt = _compose_bound_fields(
+        primary, donor, binding_name="donor", binding=binding,
+    )
+    for time in (start, start + timedelta(hours=6)):
+        injected = combined.direct[(time, None, "terrain_height")]
+        assert injected.missing_count == 0
+        np.testing.assert_array_equal(
+            injected.values, np.asarray([[6.0, 7.0], [3.0, 4.0]]))
+
+    changed = dict(donor.direct)
+    later = (start + timedelta(hours=3), None, "terrain_height")
+    moved = changed[later].values.copy()
+    moved[2, 0] += 1.0
+    changed[later] = _direct("terrain_height", later[0], moved)
+    with pytest.raises(ValueError, match="changes across supplied valid times"):
+        _compose_bound_fields(
+            primary, _collection(donor.latitude, donor.longitude, changed),
+            binding_name="donor", binding=binding,
         )
 
 

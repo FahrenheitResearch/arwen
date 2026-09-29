@@ -495,7 +495,7 @@ class PreparedBackend:
         Its initial interface heights are held fixed across the short cycle.
         """
         from gpuwm.io.wrfout import WrfoutWriter, wrf_global_attrs
-        from gpuwm.obs.target_grid import TargetGrid
+        from gpuwm.obs.target_grid import TargetGrid, identity_names_grid
         projection, cfg = self.inputs.grid, self.exp.root.run
         path = self.root / 'observation-reference.nc'
         lat, lon = projection.latlon_mass()
@@ -521,7 +521,12 @@ class PreparedBackend:
                         sha256=_sha(path), identity=grid.identity_sha256(),
                         height_policy='fixed initial interface heights for local gridding and localization')
         if stamp.exists():
-            if json.loads(stamp.read_text()) != expected:
+            saved = json.loads(stamp.read_text())
+            # A stamp may carry either spelling of this grid's identity
+            # (TargetGrid.matches_identity); any other value is another grid.
+            if isinstance(saved, dict) and identity_names_grid(grid, saved.get('identity')):
+                saved = dict(saved, identity=expected['identity'])
+            if saved != expected:
                 raise PlanError('The saved observation reference changed; restore its reviewed bytes before resuming.', code='REFERENCE_CHANGED')
         else:
             _atomic(stamp, expected)
@@ -700,7 +705,13 @@ class PreparedBackend:
                          routes=obs['receipts'], point_observations=receipts, static_covariance=static_receipt))
         radar = obs['radar'] is not None
         reflect = radar and self.reflectivity_available
+        from gpuwm.da.velocity_dispersion import (DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+                                                  DEFAULT_VELOCITY_DISPERSION_RATIO)
         config = RadarAssimilationConfig(localization=loc, rtps_alpha=settings['rtps_alpha'],
+            velocity_dispersion_ratio=settings.get('velocity_dispersion_ratio',
+                                                   DEFAULT_VELOCITY_DISPERSION_RATIO),
+            velocity_dispersion_batch_ratio=settings.get('velocity_dispersion_batch_ratio',
+                                                         DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO),
             analysis_fields=tuple(fields), velocity=radar, reflectivity=reflect, clear_air=reflect,
             velocity_error_inflation=settings['error_inflation'],
             reflectivity_error_inflation=settings['error_inflation'],
@@ -741,6 +752,8 @@ class PreparedBackend:
         from gpuwm.ensemble.wrfout_inventory import WRFOUT_INVENTORY_KEY
         document = read_manifest(forecast.manifest_path, schema=ENSEMBLE_MANIFEST_SCHEMA)
         reports = []
+        warnings = []
+        maps_checked = False
         for member in document['members']:
             from gpuwm.ensemble.wrfout_inventory import verify_entry
             root = Path(forecast.ens_root) / member['member_dir']
@@ -757,12 +770,26 @@ class PreparedBackend:
             if missing:
                 reports.append(dict(member=member['index'], status='unavailable', reason=missing))
                 continue
+            if not maps_checked:
+                maps_checked = True
+                # The render below prints its map-asset warning into output
+                # that is captured and dropped when it succeeds, so pictures
+                # with no coastlines or borders would pass unremarked. The
+                # products record and the terminal carry it instead.
+                from gpuwm import rustwx
+                from gpuwm.render import BASEMAP_MISSING_CODE, renderer_basemap_gap
+                gap = renderer_basemap_gap()
+                if gap is not None:
+                    warnings.append(dict(code=BASEMAP_MISSING_CODE, message=gap, remedy=rustwx.basemap_remedy()))
+                    print(f'render: warning: {gap}', file=sys.stderr, flush=True)
             try:
-                go_cli._run_stage('render', go_cli.render_command(render, frames), explain=False)
+                go_cli.run_render_pass(render, frames, explain=False)
                 reports.append(dict(member=member['index'], status='complete', path=str(render['render'])))
             except (RuntimeError, go_cli.GoStageFailed) as exc:
                 reports.append(dict(member=member['index'], status='failed', reason=str(exc)))
         products = dict(route='gpuwm render', members=reports)
+        if warnings:
+            products['warnings'] = warnings
         if not reports or any(row['status'] != 'complete' for row in reports):
             raise ProductFailure(products)
         return products

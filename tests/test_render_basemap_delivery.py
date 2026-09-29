@@ -31,6 +31,20 @@ where the consuming binary already is: staged under
 ``rw_wrfbatch`` already walks (``assets/basemap`` under the first eight
 ancestors of its own directory), so the binary finds them with no
 environment variable set and no cooperation from the Python half.
+
+And why the companion as well
+-----------------------------
+The bundle is ``gpuwm fetch-bridges``'s, and once the platform wheels
+carried the renderer themselves nothing ran that command: neither the
+README's Linux steps nor the Linux package's INSTALL.md.  Every picture
+of a wheel install came out with no coastlines, borders or state lines,
+and the one warning went to a stderr the run captured and dropped.  The
+``gpuwm-data`` companion is a hard dependency every install pulls and is
+not size-bound the way the ``gpuwm`` wheel is, so since 2.8.0 it carries
+the renderer's three layer directories and ``gpuwm.rustwx`` hands them to
+the renderer; a run whose renderer still has none says so in a
+``render_basemap_missing`` event.  The tests at the end of this file pin
+both halves.
 """
 
 from __future__ import annotations
@@ -49,6 +63,9 @@ from gpuwm import bridge_assets, rustwx
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_TOOL = REPO_ROOT / "tools" / "build_bridge_bundle.py"
 SOURCE_ASSETS = REPO_ROOT / "tools" / "rustwx" / "assets"
+#: The companion's copy of the renderer's layer directories.
+COMPANION_BASEMAP = (REPO_ROOT / "gpuwm-data" / "gpuwm_data" / "data"
+                     / "basemap")
 
 #: The source revision these tests "release".  Pin verifies every
 #: binary's embedded GPUWM_BRIDGE_SOURCE_REV stamp against it, so the
@@ -460,6 +477,9 @@ def test_a_renderer_with_no_basemaps_warns_before_it_draws(tmp_path,
     monkeypatch.chdir(workdir)
     # The checkout fallback (basemap_dir) is the last rung; point it away.
     monkeypatch.setattr(rustwx, "basemap_dir", lambda: tmp_path / "nowhere")
+    # The companion carries them on every install since 2.8.0, so the
+    # silent state is now an install whose companion lost them.
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: None)
     # ... and away from the cartopy cache this workstation may well have,
     # which the renderer would otherwise draw from.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -470,7 +490,8 @@ def test_a_renderer_with_no_basemaps_warns_before_it_draws(tmp_path,
     assert "no coastlines" in notice
     # Actionable: one sentence, one remedy, no multi-line bootstrap.
     assert notice.count("\n") == 0
-    assert "fetch-bridges" in notice or "RUSTWX_BASEMAP_DIR" in notice
+    # The remedy is the package that carries them, reinstalled in place.
+    assert "pip install --force-reinstall gpuwm-data" in notice
 
     # And silence once the assets are where the renderer looks.
     staged = bridges / "assets" / "basemap"
@@ -493,6 +514,9 @@ def test_platform_renderer_receives_separately_staged_basemaps(tmp_path, monkeyp
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.chdir(home)
     monkeypatch.setattr(rustwx, "basemap_dir", lambda: tmp_path / "no-checkout-assets")
+    # An install whose companion carries no map assets (one from before
+    # 2.8.0, or edited): the copy fetch-bridges staged is still used.
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: None)
     staged = home / ".gpuwm" / "bridges" / "assets" / "basemap"
     staged.mkdir(parents=True)
     packaged = tmp_path / "venv" / "site-packages" / "gpuwm" / "libexec" / "bridges" / "rw_wrfbatch"
@@ -594,6 +618,7 @@ def test_the_cartopy_cache_counts_as_geography_and_silences_the_warning(
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     monkeypatch.setattr(rustwx, "basemap_dir", lambda: tmp_path / "nowhere")
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: None)
 
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
@@ -601,7 +626,339 @@ def test_the_cartopy_cache_counts_as_geography_and_silences_the_warning(
     assert rustwx.cartopy_natural_earth_root() is None
     assert render.missing_basemap_notice(renderer) is not None
 
-    (home / ".local" / "share" / "cartopy" / "shapefiles"
-     / "natural_earth").mkdir(parents=True)
+    cartopy = home / ".local" / "share" / "cartopy" / "shapefiles" / "natural_earth"
+    cartopy.mkdir(parents=True)
     assert rustwx.cartopy_natural_earth_root() is not None
+    # A cache is geography only for the layers it holds.  The one on the
+    # 5070 Ti host held a coastline and no state lines, so its pictures
+    # had no borders; an empty or partial cache still warns.
+    assert render.missing_basemap_notice(renderer) is not None
+    (cartopy / "physical").mkdir()
+    (cartopy / "physical" / "ne_10m_coastline.shp").write_bytes(b"shp")
+    assert render.missing_basemap_notice(renderer) is not None
+    (cartopy / "cultural").mkdir()
+    for name in ("ne_10m_admin_0_boundary_lines_land.shp",
+                 "ne_50m_admin_1_states_provinces_lines.shp"):
+        (cartopy / "cultural" / name).write_bytes(b"shp")
     assert render.missing_basemap_notice(renderer) is None
+
+
+# ---------------------------------------------------------------------------
+# A wheel install draws its maps with no step after pip install
+# ---------------------------------------------------------------------------
+
+#: The files a picture's coastline, national borders, state lines and
+#: counties are drawn from, relative to a basemap root.
+DRAWN_LAYERS = (
+    "natural_earth_10m/ne_10m_coastline.shp",
+    "natural_earth_10m/ne_10m_admin_0_boundary_lines_land.shp",
+    "natural_earth_10m/ne_10m_admin_1_states_provinces_lines.shp",
+    "us_counties_5m/cb_2023_us_county_5m.shp",
+)
+
+
+def wheel_install(tmp_path, monkeypatch) -> Path:
+    """A venv-shaped install with no staged bridge estate.
+
+    The platform wheel's renderer sits in
+    ``site-packages/gpuwm/libexec/bridges`` with no ``assets/`` beside it
+    or above it; ``gpuwm fetch-bridges`` never ran, so
+    ``~/.gpuwm/bridges`` is empty; there is no checkout to fall back to,
+    no cartopy cache and no ``RUSTWX_*`` override.  Exactly the install
+    the README's Linux steps leave.  Returns the renderer's path.
+    """
+
+    from gpuwm import bridges
+
+    for name in ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR",
+                 rustwx.RENDERER_ENV):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    site = tmp_path / "venv" / "lib" / "python3" / "site-packages"
+    renderer = (site / "gpuwm" / "libexec" / "bridges"
+                / bridges.executable_name(rustwx.RENDERER_NAME))
+    renderer.parent.mkdir(parents=True)
+    renderer.write_bytes(b"unexecuted-artifact-location")
+    renderer.chmod(0o755)
+    monkeypatch.setattr(rustwx, "renderer_candidates", lambda: (renderer,))
+    monkeypatch.setattr(rustwx, "basemap_dir",
+                        lambda: tmp_path / "no-checkout" / "basemap")
+    monkeypatch.setattr(rustwx, "default_bridge_dir",
+                        lambda: home / ".gpuwm" / "bridges")
+    return renderer
+
+
+def wheel_with_companion(tmp_path, monkeypatch, *, maps: bool = True):
+    """:func:`wheel_install` beside a ``gpuwm-data`` that has its maps, or lost them.
+
+    Returns the companion's map directory, or None when ``maps`` is
+    false.  For the tests of callers that start the renderer themselves
+    rather than through ``gpuwm render``.
+    """
+
+    wheel_install(tmp_path, monkeypatch)
+    companion = None
+    if maps:
+        companion = (tmp_path / "venv" / "lib" / "python3" / "site-packages"
+                     / "gpuwm_data" / "data" / "basemap")
+        companion.mkdir(parents=True)
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: companion)
+    return companion
+
+
+def test_a_wheel_install_with_no_staged_estate_draws_its_maps(tmp_path,
+                                                              monkeypatch):
+    """THE DEFECT: every picture of a pip install had no geography.
+
+    Measured on the 5070 Ti host: a fresh venv, ``pip install
+    'gpuwm[all-cu12]'``, ``fetch-tables``, ``doctor``, then a forecast --
+    4,002 pictures of an HRRR run and 24,203 of two ERA5 runs, every one
+    with no coastline, border or state line.  The renderer resolved from
+    ``libexec/bridges`` with nothing beside it and ``resolve_basemap_dir``
+    answered None.  The companion every install pulls carries the layers
+    now, and the renderer is handed them.
+    """
+
+    renderer = wheel_install(tmp_path, monkeypatch)
+    found = rustwx.find_renderer()
+    assert found == renderer.resolve()
+    assert not (found.parent / "assets").exists()
+
+    resolved = rustwx.resolve_basemap_dir(found)
+    assert resolved is not None, (
+        "a wheel install with no staged bridge estate resolves no map "
+        "assets, so every picture is drawn with no coastlines, borders or "
+        "state lines")
+    for layer in DRAWN_LAYERS:
+        assert (resolved / layer).is_file(), f"{layer} missing from {resolved}"
+        assert (resolved / layer).with_suffix(".shx").is_file(), layer
+
+    # What the renderer is actually handed, observed in a real child.
+    child = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import os; print(os.environ['RUSTWX_BASEMAP_DIR'])"],
+        env=rustwx.renderer_env(), capture_output=True, text=True, check=True)
+    assert Path(child.stdout.strip()) == resolved
+
+    from gpuwm import render
+
+    assert render.missing_basemap_notice(found) is None
+
+
+def test_an_explicit_override_still_outranks_the_companion(tmp_path,
+                                                           monkeypatch):
+    wheel_install(tmp_path, monkeypatch)
+    mine = tmp_path / "my maps"
+    mine.mkdir()
+    monkeypatch.setenv("RUSTWX_BASEMAP_DIR", str(mine))
+    assert rustwx.renderer_env()["RUSTWX_BASEMAP_DIR"] == str(mine)
+    assert rustwx.resolve_basemap_dir(rustwx.find_renderer()) == mine
+
+
+def test_the_companion_copy_is_the_renderers_own_byte_for_byte():
+    """Two copies of one tree, held to one.
+
+    ``tools/rustwx/assets/basemap`` is the copy of record: the renderer's
+    own build and the bridge bundle read it.  The companion carries its
+    layer directories so a wheel install draws maps.  A layer changed or
+    added on one side only would draw different geography on a checkout
+    and on an install, or none at all on an install.
+    """
+
+    _require_source_assets()
+    if not COMPANION_BASEMAP.is_dir():
+        pytest.skip("the companion's copy needs the source tree")
+    source = SOURCE_ASSETS / "basemap"
+    layers = sorted(p.name for p in source.iterdir() if p.is_dir())
+    carried = sorted(p.name for p in COMPANION_BASEMAP.iterdir()
+                     if p.is_dir())
+    remedy = ("copy each layer directory of tools/rustwx/assets/basemap "
+              "over gpuwm-data/gpuwm_data/data/basemap, e.g. python -c "
+              "\"import shutil; [shutil.copytree(f'tools/rustwx/assets/"
+              "basemap/{d}', f'gpuwm-data/gpuwm_data/data/basemap/{d}', "
+              "dirs_exist_ok=True) for d in " + repr(layers) + "]\"")
+    assert carried == layers, (
+        f"the renderer's layers {layers} and the companion's {carried} "
+        f"differ; {remedy}")
+    for layer in layers:
+        mine = {p.relative_to(source / layer).as_posix(): p
+                for p in (source / layer).rglob("*") if p.is_file()}
+        theirs = {p.relative_to(COMPANION_BASEMAP / layer).as_posix(): p
+                  for p in (COMPANION_BASEMAP / layer).rglob("*")
+                  if p.is_file()}
+        assert sorted(mine) == sorted(theirs), (
+            f"{layer}: files differ; {remedy}")
+        differ = [name for name in mine
+                  if mine[name].read_bytes() != theirs[name].read_bytes()]
+        assert not differ, f"{layer}: {differ} differ by bytes; {remedy}"
+    # Beside the layers, only the note that says where they came from.
+    loose = sorted(p.name for p in COMPANION_BASEMAP.iterdir() if p.is_file())
+    assert loose == ["PROVENANCE.md"]
+
+
+def test_the_companion_resolver_never_raises_on_a_missing_companion(
+        monkeypatch):
+    from gpuwm import data_assets
+
+    def gone():
+        raise ModuleNotFoundError("No module named 'gpuwm_data'",
+                                  name="gpuwm_data")
+
+    monkeypatch.setattr(data_assets, "companion_root", gone)
+    assert data_assets.companion_basemap_dir() is None
+
+    def skewed():
+        raise ImportError("mismatched companion")
+
+    monkeypatch.setattr(data_assets, "companion_root", skewed)
+    assert data_assets.companion_basemap_dir() is None
+    assert data_assets.companion_reinstall_command().startswith(
+        "pip install --force-reinstall gpuwm-data")
+
+
+# ---------------------------------------------------------------------------
+# A missing basemap is never silent again
+# ---------------------------------------------------------------------------
+
+def test_a_run_is_told_once_while_drawing_and_once_at_finalize(tmp_path,
+                                                               monkeypatch):
+    from gpuwm import render
+
+    wheel_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: None)
+    told = []
+
+    def warn(code, message, **fields):
+        told.append((code, message, fields))
+
+    folder = tmp_path / "png"
+    assert render.announce_missing_basemap(warn, folder, stage="as-drawn")
+    # every later frame of the same run returns at once
+    assert not render.announce_missing_basemap(warn, folder, stage="as-drawn")
+    assert render.announce_missing_basemap(warn, folder, stage="finalize")
+    assert not render.announce_missing_basemap(warn, folder,
+                                               stage="finalize")
+    assert [code for code, _, _ in told] == [render.BASEMAP_MISSING_CODE] * 2
+    code, message, fields = told[0]
+    assert "no coastlines, borders or state lines" in message
+    assert fields["remedy"].startswith("pip install --force-reinstall "
+                                       "gpuwm-data")
+    assert fields["remedy"] in message
+    assert fields["render_stage"] == "as-drawn"
+    assert told[1][2]["render_stage"] == "finalize"
+
+    # An install that draws its maps is told nothing.
+    monkeypatch.setattr(rustwx, "companion_basemap_dir",
+                        lambda: COMPANION_BASEMAP)
+    quiet = []
+    assert not render.announce_missing_basemap(
+        lambda *a, **k: quiet.append(a), tmp_path / "other",
+        stage="as-drawn")
+    assert quiet == []
+
+
+def test_a_warning_that_raises_never_stops_the_picture(tmp_path,
+                                                       monkeypatch):
+    from gpuwm import render
+
+    wheel_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: None)
+
+    def broken(*_args, **_fields):
+        raise RuntimeError("observer gone")
+
+    assert render.announce_missing_basemap(
+        broken, tmp_path / "png", stage="as-drawn") is False
+
+
+def test_the_finalize_render_tells_the_run_before_it_draws(tmp_path,
+                                                          monkeypatch,
+                                                          capsys):
+    """The end-of-run render, on the path ``gpuwm go`` and run-plan take."""
+
+    from gpuwm import go_cli, render
+
+    wheel_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(rustwx, "companion_basemap_dir", lambda: None)
+    frames = tmp_path / "run" / "wrfout"
+    frames.mkdir(parents=True)
+    (frames / "wrfout_d01_2026-09-26_06_00_00").write_bytes(b"frame")
+    drawn = []
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: drawn.append(command))
+
+    class Observer:
+        def __init__(self):
+            self.warnings = []
+
+        def warn(self, code, message, **fields):
+            self.warnings.append((code, message, fields))
+
+    observer = Observer()
+    plan = {"run": tmp_path / "run", "render": tmp_path / "png",
+            "wrfout_dir": frames, "render_products": None}
+    assert go_cli._render_stage(plan, explain=False, observer=observer)
+    assert drawn, "the render stage drew nothing"
+    assert [w[0] for w in observer.warnings] == [render.BASEMAP_MISSING_CODE]
+    assert observer.warnings[0][2]["render_stage"] == "finalize"
+
+    # A stage with no event stream belongs to a terminal command: stderr.
+    plan = {**plan, "render": tmp_path / "png-2"}
+    assert go_cli._render_stage(plan, explain=False, observer=None)
+    err = capsys.readouterr().err
+    assert "render: warning: no map assets resolve" in err
+    assert "pip install --force-reinstall gpuwm-data" in err
+
+
+def test_every_reader_keys_on_the_engines_code():
+    """The web page, a remote machine's status and the terminal workspace
+    each spell the code to stay off the render stack; one code, held here."""
+
+    from gpuwm import remote_artifacts, render, runplan
+    from gpuwm.gui import runs
+
+    code = render.BASEMAP_MISSING_CODE
+    assert code in runplan.WARNING_CODES
+    assert runs.BASEMAP_MISSING == code
+    assert remote_artifacts.RENDER_BASEMAP_MISSING == code
+    tui = REPO_ROOT / "tools" / "arwen-tui" / "src" / "local_progress.rs"
+    if tui.is_file():
+        assert (f'RENDER_BASEMAP_MISSING:&str="{code}"'
+                in tui.read_text(encoding="utf-8"))
+
+
+def test_the_web_page_knows_the_pictures_have_no_maps(tmp_path):
+    from gpuwm.gui import runs
+    from gpuwm.render import BASEMAP_MISSING_CODE
+
+    run = tmp_path / "run"
+    run.mkdir()
+    records = [
+        {"schema_version": "gpuwm.run-plan.event.v1", "sequence": 1,
+         "event": "stage_started", "stage": "forecast"},
+        {"schema_version": "gpuwm.run-plan.event.v1", "sequence": 2,
+         "event": "warning", "code": BASEMAP_MISSING_CODE,
+         "message": "no map assets resolve for the renderer",
+         "remedy": "pip install --force-reinstall gpuwm-data==2.8.0"},
+    ]
+    events = run / runs.EVENTS
+    events.write_text("".join(json.dumps(r) + "\n" for r in records[:1]),
+                      encoding="utf-8")
+    assert runs.status(run)["basemap_missing"] is False
+    events.write_text("".join(json.dumps(r) + "\n" for r in records),
+                      encoding="utf-8")
+    assert runs.status(run)["basemap_missing"] is True
+    copy = json.loads((REPO_ROOT / "gpuwm" / "gui" / "copy" / "screens.json")
+                      .read_text(encoding="utf-8"))
+    assert "gpuwm-data" in copy["mapviewer"]["no_basemap"]
+    script = (REPO_ROOT / "gpuwm" / "gui" / "static" / "js"
+              / "mapviewer.js").read_text(encoding="utf-8")
+    assert "V.no_basemap" in script and "st.basemap_missing" in script
+    assert f'data.code !== "{BASEMAP_MISSING_CODE}"' in script

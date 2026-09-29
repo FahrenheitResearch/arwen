@@ -47,10 +47,9 @@
 # d03 (500 m) and d04 (100 m) turn the PBL parameterization off and run WRF's
 # 3-D Smagorinsky closure, transcribed from v4.6.1 and certified on the
 # release line (gpuwm/core/dycore.py:914; dry-CBL oracle receipts in
-# docs/public/receipts/les/).  km_opt = 2 (prognostic TKE) is NOT used: it is
-# refused on a nest child until a nested prognostic-TKE domain has been run,
-# and the plan's optional km2 d04 arm is contingent on this km3 pair
-# succeeding first.
+# docs/public/receipts/les/).  km_opt = 2 (prognostic TKE) is not used here:
+# a nest child may run it and cold-starts its own TKE, and the plan's
+# optional km2 d04 arm is contingent on this km3 pair succeeding first.
 #
 # ---------------------------------------------------------------------------
 # MIXING LENGTH: mix_isotropic = 1 on BOTH children.  CHANGED 2026-08-09.
@@ -149,6 +148,12 @@
 #     must never absorb an inventory change.  Admitting the 2016 record
 #     requires a ruling backed by evidence that HRRRv1's CICE on hybrid
 #     levels does carry a mixing ratio.  Nothing here assumes it does.
+#     UPDATE 2026-09-28 (2.8.0): the native bridge now admits it.  The QI
+#     row of the bridge's decode table takes CICE (0/6/0) as its earlier
+#     code, read only from a file that publishes no CIMIXR, and the
+#     idx-subset alias table selects CIMIXR|CICE.  A real 2017-01-19 wrfnat
+#     decoded that way peaks at 7.03e-4 kg/kg, a mixing-ratio magnitude, so
+#     item 1 no longer blocks this case.
 #  2. bl_pbl_physics = 0 ROUTE REFUSAL.  gpuwm.hrrr_route_inputs
 #     .render_namelist_input admits only bl_pbl_physics in [1, 11], so no
 #     product path can emit this config's namelists.  The demonstration hit

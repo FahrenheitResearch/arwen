@@ -89,24 +89,38 @@ gpuwm distribution's NOTICE, not by this one.
 
 --------------------------------------------------------------------------
 
-Reference results under non-commercial terms
+RFMIP data: one derived table ships, the RFMIP files do not
 
-The RFMIP clear-sky reference results
-(rfmip-clear-sky-reference-{lw,sw}-{up,down}.nc) are CC-BY-NC-SA-4.0:
-NonCommercial and ShareAlike, which is incompatible with Apache-2.0. They
-are excluded from BOTH built artifacts -- from the wheel by
-exclude-package-data and from the source distribution by the same entry,
-which setuptools applies to both -- so a `pip install gpuwm-data` never
-receives them. They remain in the public git repository as a verification
-fixture; the Apache-2.0 grant in the LICENSE file does not extend to them
-and is not offered over them. Their licence text ships at
-gpuwm_data/data/rrtmgp/LICENSE-CC-BY-NC-SA-4.0 so that PROVENANCE.md
-resolves.
+gpuwm_data/data/rrtmgp/rrtmgp-trace-gas-climatology.json holds 136
+numbers derived from the RFMIP clear-sky input file produced by the
+University of Colorado for RFMIP (CMIP6 input4MIPs, UColorado-RFMIP-1-2):
+the experiment-zero global-mean mole fractions of sixteen well-mixed gases
+and the median layer pressure and ozone profile over its 100 sites. That
+file's embedded licence attribute names CC-BY-SA-4.0 and links the
+CC-BY-4.0 deed; the derived table is offered under CC-BY-SA-4.0, the
+stricter reading, whose text ships beside it at
+gpuwm_data/data/rrtmgp/LICENSE-CC-BY-SA-4.0. The Apache-2.0 grant in the
+LICENSE file does not extend to that table.
 
-The related rfmip-clear-sky-inputs.nc carries an internal attribute naming
-CC-BY-4.0 and a link to CC-BY-SA-4.0. The ambiguity is recorded in
-PROVENANCE.md and both texts ship beside the file rather than one being
-chosen for the reader.
+The RFMIP files themselves are in neither this distribution nor its
+source repository: the input file, and the four clear-sky reference
+results, which are CC-BY-NC-SA-4.0 (non-commercial). The tests that read
+them fetch them at test time from rrtmgp-data v1.9, SHA-256 verified
+(gpuwm/core/rfmip_upstream.py in gpuwm).
+
+--------------------------------------------------------------------------
+
+Map assets: Natural Earth and US Census cartographic boundaries
+
+gpuwm_data/data/basemap/ holds the geography the renderer draws on every
+picture. natural_earth_10m/ and natural_earth_110m/ are Natural Earth
+layers (https://www.naturalearthdata.com/), which Natural Earth places in
+the public domain. us_counties_5m/ is the US Census Bureau's
+cb_2023_us_county_5m cartographic boundary file, a work of the United
+States Government and not subject to copyright in the United States
+(17 U.S.C. 105). No redistribution condition attaches to either. The
+upstream archives are named in each directory's README and in
+gpuwm_data/data/basemap/PROVENANCE.md.
 
 --------------------------------------------------------------------------
 

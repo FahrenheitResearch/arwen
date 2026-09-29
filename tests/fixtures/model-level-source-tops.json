@@ -1,0 +1,56 @@
+{
+  "schema": "mapped-model-level-top-measurements-v1",
+  "profiles": {
+    "icon-d2-grib2-v1": {
+      "source_cycle": "2026-09-28T06:00:00Z",
+      "forecast_hours": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "point_lat_lon": [
+        50.1,
+        8.7
+      ],
+      "measurement": "Maximum level-1 pressure across four real native-composed frames on the declared normalized window.",
+      "measurement_source": "Native compose frames.json measured on 2026-09-28T10:10:51Z",
+      "record_url_template": "https://opendata.dwd.de/weather/nwp/icon-d2/grib/06/p/icon-d2_germany_icosahedral_model-level_2026092806_{lead:03d}_1_p.grib2.bz2",
+      "measured_maximum_pa": 5074.857421875,
+      "upper_interface_height_m": 22000.0,
+      "lower_interface_height_m": 19401.85,
+      "warm_season_reference": {
+        "report_id": "AFGL-TR-86-0110",
+        "title": "AFGL Atmospheric Constituent Profiles (0-120km)",
+        "table": "1b",
+        "printed_page": 5,
+        "profile": "midlatitude summer",
+        "month": "July",
+        "latitude_degrees_north": 45,
+        "source_url": "https://apps.dtic.mil/sti/tr/pdf/ADA175173.pdf",
+        "scan_url": "https://archive.org/download/DTIC_ADA175173/DTIC_ADA175173.pdf",
+        "height_m": [
+          20000.0,
+          21000.0
+        ],
+        "pressure_pa": [
+          5950.0,
+          5100.0
+        ],
+        "interpolation": "linear log pressure with height",
+        "pressure_at_mass_height_pa": 5340.627493953892,
+        "coverage_rule": "lower altitude bracket pressure",
+        "basis": "The 20700.925 m mass height lies between the standard July rows. Log-pressure interpolation gives 5340.63 Pa; the 20 km row supplies a conservative 5950 Pa bound for this reference column, independent of the configured top. This climatology is not a measured extreme-weather envelope."
+      },
+      "normalized_window": {
+        "west": 8.34,
+        "south": 49.74,
+        "dx": 0.02,
+        "dy": 0.02,
+        "nx": 37,
+        "ny": 37
+      },
+      "frames_sha256": "dbf2600074da4fb6591aa84ddbfbf35b8ff8d395ba1092c6ed11ab4433e6bdde"
+    }
+  }
+}

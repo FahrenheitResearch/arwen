@@ -8,7 +8,7 @@
       "message": "volumetric_soil_moisture has 1 GRIB soil records; the mapping declares 4 ordered soil selectors",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "gfs-pressure-fixture",
     "verdict": "REFUSED"
   },
@@ -17,7 +17,7 @@
       "message": "volumetric_soil_moisture has 1 GRIB soil records; the mapping declares 4 ordered soil selectors",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "gfs-pressure-fixture",
     "verdict": "REFUSED"
   },
@@ -25,6 +25,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "gfs-pressure-fixture"
 }

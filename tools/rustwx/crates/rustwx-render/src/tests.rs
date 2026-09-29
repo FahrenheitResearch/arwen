@@ -821,3 +821,107 @@ fn contour_only_map_with_height_contours_and_barbs_renders_visible_overlays() {
         "overlay-only render should remain visible"
     );
 }
+
+/// Three category codes, 0, 1 and 2, as integer-centred bands.
+fn three_code_scale() -> ColorScale {
+    ColorScale::Discrete(DiscreteColorScale {
+        levels: vec![-0.5, 0.5, 1.5, 2.5],
+        colors: vec![
+            Color::rgba(0, 0, 255, 255),
+            Color::rgba(0, 255, 0, 255),
+            Color::rgba(255, 0, 0, 255),
+        ],
+        extend: ExtendMode::Neither,
+        mask_below: None,
+    })
+}
+
+fn category_legend() -> LegendControls {
+    LegendControls {
+        density: LevelDensity::default(),
+        mode: LegendMode::Categories,
+    }
+}
+
+#[test]
+fn projected_category_maps_draw_only_the_codes_the_grid_holds() {
+    // A 3x3 plane of codes 0 and 2 in a checkerboard: any pixel between two
+    // grid points that is drawn as code 1 was invented by interpolation.
+    // The regular mesh takes the rectilinear rasterizer, the skewed one the
+    // triangle rasterizer; both must sample the nearest code.
+    for skew in [0.0, 0.35] {
+        let shape = GridShape::new(3, 3).unwrap();
+        let lat: Vec<f32> = (0..9).map(|cell| 35.0 + (cell / 3) as f32).collect();
+        let lon: Vec<f32> = (0..9).map(|cell| -97.0 + (cell % 3) as f32).collect();
+        let grid = LatLonGrid::new(shape, lat, lon).unwrap();
+        let values: Vec<f32> = (0..9)
+            .map(|cell| if cell % 2 == 0 { 0.0 } else { 2.0 })
+            .collect();
+        let field = Field2D::new(ProductKey::named("category"), "", grid, values).unwrap();
+        let mut request = MapRenderRequest::new(field, three_code_scale());
+        request.width = 360;
+        request.height = 300;
+        request.colorbar = false;
+        request.legend = category_legend();
+        request.projected_domain = Some(ProjectedDomain {
+            x: (0..9)
+                .map(|cell| (cell % 3) as f64 + skew * (cell / 3) as f64)
+                .collect(),
+            y: (0..9).map(|cell| (cell / 3) as f64).collect(),
+            extent: ProjectedExtent {
+                x_min: 0.0,
+                x_max: 2.0 + 2.0 * skew,
+                y_min: 0.0,
+                y_max: 2.0,
+            },
+        });
+        for style in [
+            StaticPlotStyle::OperationalFast,
+            StaticPlotStyle::OperationalBudget30s,
+        ] {
+            let image = render_image_with_style(&request, style).unwrap();
+            let held_low = image.pixels().filter(|px| px.0 == [0, 0, 255, 255]).count();
+            let held_high = image.pixels().filter(|px| px.0 == [255, 0, 0, 255]).count();
+            let invented = image.pixels().filter(|px| px.0 == [0, 255, 0, 255]).count();
+            assert!(held_low > 1000 && held_high > 1000, "skew {skew} {style:?}");
+            assert_eq!(invented, 0, "code 1 invented at skew {skew} under {style:?}");
+        }
+    }
+}
+
+#[test]
+fn category_colormap_fill_is_its_legend_under_every_plot_style() {
+    let codes: Vec<f64> = (1..=21).map(f64::from).collect();
+    let levels: Vec<f64> = (0..=21).map(|edge| edge as f64 + 0.5).collect();
+    let palette = [Rgba::new(68, 1, 84), Rgba::new(253, 231, 37)];
+    for style in [
+        StaticPlotStyle::Default,
+        StaticPlotStyle::OperationalFast,
+        StaticPlotStyle::CleanAtlasCombined,
+    ] {
+        let cmap = LeveledColormap::from_palette_with_options(
+            &palette,
+            &levels,
+            Extend::Neither,
+            None,
+            ColormapBuildOptions {
+                render_density: style.render_density(RenderDensity::default()),
+                legend: category_legend(),
+            },
+        );
+        assert_eq!(cmap.levels, levels, "{style:?} densified a category legend");
+        assert_eq!(colorbar_ticks(&cmap, Some(1.0)), codes);
+        let mut seen = Vec::new();
+        for &code in &codes {
+            let fill = cmap.map(code);
+            let rel = legend_tick_rel(&cmap, code).unwrap();
+            assert_eq!(
+                legend_color_at_rel(&cmap, LegendMode::Categories, rel),
+                fill,
+                "code {code} under {style:?}"
+            );
+            assert!(!seen.contains(&fill), "code {code} shares a colour");
+            seen.push(fill);
+        }
+    }
+}

@@ -13,7 +13,10 @@ import time
 
 import numpy as np
 
-from gpuwm.native_wrf_contract import native_geometry_contract
+from gpuwm.native_wrf_contract import (
+    native_geometry_contract,
+    require_land_terrain,
+)
 from gpuwm.static.build import GeogSelection, build_static
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.ingest.hrrr_target import (
@@ -46,7 +49,7 @@ def native_static_geometry(
 
     This goes through the shared contract rather than restating it, because
     ``tools/write_hrrr_native_geometry_receipt.py`` compares the sealed
-    document to ``native_geometry_contract`` for exact equality.  v1.0.0 had
+    document to ``native_geometry_contract`` key for key.  v1.0.0 had
     the two written out independently and they drifted by one key
     (``map_proj``), which failed every new HRRR area.
     """
@@ -103,12 +106,7 @@ def validate_static(
         raise ValueError("MAPFAC_V stagger shape mismatch")
     if not np.isin(fields["LANDMASK"], (0.0, 1.0)).all():
         raise ValueError("LANDMASK is not binary")
-    land = fields["LANDMASK"] > 0.5
-    if np.any(land) and not np.any(fields["HGT_M"][land] != 0.0):
-        raise ValueError(
-            "native static HGT_M is identically zero over every land cell; "
-            "the selected WPS GEOG terrain is likely missing or outside its "
-            "staged footprint")
+    require_land_terrain(fields["HGT_M"], fields["LANDMASK"])
     if fields["LU_INDEX"].min() < 1 or fields["LU_INDEX"].max() > 21:
         raise ValueError("LU_INDEX is outside the MODIS-Noah categories")
     if fields["SCT_DOM"].min() < 1 or fields["SCT_DOM"].max() > 16:
@@ -132,7 +130,12 @@ def main() -> None:
     parser.add_argument("--geog-root", type=Path)
     parser.add_argument("--static-cache", type=Path)
     parser.add_argument("--static-receipt", type=Path)
-    parser.add_argument("--experiment-config", type=Path)
+    configuration = parser.add_mutually_exclusive_group()
+    configuration.add_argument("--experiment-config", type=Path)
+    configuration.add_argument(
+        "--static-highres", type=json.loads, metavar="JSON",
+        help=("the [static] table a namelist-only preparation resolved, as "
+              "JSON; it has no configuration file to name"))
     parser.add_argument("--case-date", type=date.fromisoformat)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
@@ -149,9 +152,16 @@ def main() -> None:
     target = load_hrrr_target_domain(args.domain_spec)
     grid = benchmark_grid(target)
     source_window = required_hrrr_source_window(target)
-    from gpuwm.static.highres_production import load_static_highres, apply_prepared_highres
-    highres = load_static_highres(args.experiment_config)
-    if highres is not None and highres.enabled and args.case_date is None:
+    from gpuwm.static.highres_production import (
+        load_static_highres, apply_prepared_highres, overlay_active,
+        parse_static_table)
+    if args.static_highres is not None:
+        highres = parse_static_table(
+            args.static_highres, source="--static-highres",
+            base_dir=Path.cwd())
+    else:
+        highres = load_static_highres(args.experiment_config)
+    if overlay_active(highres, grid) and args.case_date is None:
         raise ValueError("high-resolution static preparation needs --case-date YYYY-MM-DD")
     if (args.static_cache is None) != (args.static_receipt is None):
         raise ValueError("static-cache and static-receipt must be supplied together")
@@ -176,7 +186,7 @@ def main() -> None:
     fields, overlay_binding = apply_prepared_highres(
         fields, grid, config=highres, domain_id=1, case_date=args.case_date,
         landuse_attrs=(selection.landuse_global_attrs()
-                       if highres is not None and highres.enabled else None),
+                       if overlay_active(highres, grid) else None),
         baseline_receipt=prior)
     build_seconds = time.perf_counter() - build_started
     fields.update({
@@ -256,7 +266,7 @@ def main() -> None:
             "cold_build_validate_and_cache": time.perf_counter() - total_started,
         },
     }
-    if highres is not None and highres.enabled:
+    if overlay_active(highres, grid):
         receipt["highres"] = overlay_binding["highres"]
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     temporary_receipt = args.receipt.with_suffix(args.receipt.suffix + ".tmp")

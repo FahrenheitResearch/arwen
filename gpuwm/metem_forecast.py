@@ -17,7 +17,7 @@ from gpuwm.vertical_adaptation import (
 from gpuwm.progress_log import ProgressOptions, add_progress_arguments
 from gpuwm.wrfinput_forecast import (RENDER_ROOT_NAME, WrfTreeInputs, WrfLanduseIdentity,
     _sha, announce_render_readiness, arm_door_first_products, door_render_plan,
-    draw_door_products)
+    draw_door_products, stop_door_renders)
 
 
 
@@ -27,8 +27,10 @@ def _announce_adaptation(sentence: str) -> None:
     from gpuwm.explain import warn
 
     warn(sentence,
-         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
-         "fatal and names reducing etac as the remedy; the remedy is "
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls a column "
+         "the coordinate cannot order fatal and names reducing etac as "
+         "the remedy, and a column it only just orders keeps one layer "
+         "too thin to integrate, which a lower etac thickens; the etac is "
          "derived here from the terrain the met_em files carry and "
          "applied, so the prepared inputs, their receipt and the forecast "
          "all carry the same coordinate.  p_top is untouched.")
@@ -430,9 +432,10 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
     from gpuwm.metem_door import metgrid_initialization_controls, metgrid_memory_admission
     from gpuwm.ingest.real import initialize_real
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
-    from gpuwm.preprocess_policy import resolve_preprocess_backend as preparation_road
+    from gpuwm.preprocess_policy import preprocess_backend_choice
     from gpuwm.ingest.lateral_bc import StateBoundaryFrames, start_last_forcing_order, attach_lateral_boundaries
     from gpuwm.ingest.prepared_cache import prepared_cache_identity, write_prepared_cache, PreparedCacheReader
+    from gpuwm.ingest.boundary_stream import say_prepared_sealed
     from gpuwm.prepared_domain_tree_forecast import resolve_execution_plan
 
     text = run.toml_text
@@ -465,8 +468,12 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
     # The shared policy governs both the estimate and the executing backend.
     # Explicit selectors and already-resolved backend objects are retained.
     road = preprocess_backend
+    road_reason = None
     if road is None or isinstance(road, str):
-        road = preparation_road(source='met_em', experiment=exp, requested=road)
+        road, road_reason = preprocess_backend_choice(
+            source='met_em', experiment=exp, requested=road)
+        if road_reason is not None:
+            print(f'met_em: preparation runs on the CPU backend: {road_reason}.', flush=True)
     memory_receipt = metgrid_memory_admission(run, exp, **(
         {} if preprocess_backend is None else {
             'preprocess_backend': road if isinstance(road, str) else road.name}))
@@ -479,9 +486,31 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
                'field_adapter_code':Path(__file__).with_name('ingest')/'metem.py',
                **{f'met_em_d{gid:02d}_{index}':path for gid,files in run.paths.items() for index,path in enumerate(files)}}
     source_digests = {name:_sha(path) for name,path in sources.items()}
-    backend = resolve_preprocess_backend(road, cpu_bridge=cpu_bridge)
+    # THE FIT, BEFORE ANYTHING IS INTERPOLATED.  The price is built from
+    # the met_em files' own inventory: auto prepares on the CPU when the
+    # card cannot hold one domain's build, an explicit cuda that cannot is
+    # refused by name.  It replaces the advisory that computed an
+    # over-budget preparation, warned, and allocated anyway (A65).
+    from gpuwm.ingest.preparation_price import SourceInventory, price_preparation
+    # metgrid_memory_admission always carries the inventory it validated.
+    root_inventory = (memory_receipt.get('analysis_shapes_by_domain') or {}).get(
+        exp.domains[0].grid_id)
+    preparation_price = None if root_inventory is None else price_preparation(
+        'met_em', [domain.run for domain in exp.domains],
+        SourceInventory.from_shapes(root_inventory),
+        boundary_intervals=len(run.paths[exp.domains[0].grid_id]) - 1)
+    backend = resolve_preprocess_backend(road, cpu_bridge=cpu_bridge, reason=road_reason,
+                                         price=preparation_price)
+    # preprocess.json is the implementation identity a reuse is decided on,
+    # written before anything is interpolated; what the vertical
+    # interpolation actually ran on, and why this backend was selected,
+    # are facts of this preparation and are recorded in
+    # metgrid-import.json below instead.
+    implementation_receipt = dict(backend.receipt())
+    implementation_receipt.pop('vertical_interpolation', None)
+    backend_selection = implementation_receipt.pop('selection', None)
     documents = {'experiment.toml': text.encode('utf-8'),
-                 'preprocess.json': json_bytes(backend.receipt())}
+                 'preprocess.json': json_bytes(implementation_receipt)}
     import hashlib
 
     source_hashes = dict(source_digests,
@@ -521,6 +550,9 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
     bundles, domain_receipts = [], {}
     root_boundaries = None
     fractional = run.controls.get('physics', {}).get('fractional_seaice', [0])[0] == 1
+    # Every forcing time is built before the forecast starts; say so, the
+    # way a chained route says why it declined.
+    say_prepared_sealed("met_em")
     for domain, grid in zip(exp.domains, grids):
         cfg = domain.run
         frames = StateBoundaryFrames(spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
@@ -539,7 +571,9 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
             series[index] = met_em_series_identity(case)
             result = initialize_real(case.snapshot, cfg, coord, case.terrain,
                 source_orography=case.source_orography, p_top=exp.vertical.p_top,
-                preprocess_backend=backend, state_backend='preprocess', **controls)
+                preprocess_backend=backend, state_backend='preprocess',
+                boundary_only=index != 0,
+                landmask=case.statics.get('LANDMASK'), **controls)
             result.state.set_map_coriolis(case.statics['MAPFAC_M'], case.statics['MAPFAC_U'], case.statics['MAPFAC_V'],
                 case.statics['F'], case.statics['E'], sina=case.statics['SINALPHA'], cosa=case.statics['COSALPHA'])
             if domain.parent_id == 0:
@@ -594,8 +628,12 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
     receipt_path = directory/'metgrid-import.json'
     if reused:
         # This is the original preparation's observation, not today's
-        # free-memory reading. Reusing its science does not rewrite it.
-        memory_receipt = json.loads(receipt_path.read_text(encoding='utf-8'))['memory_admission']
+        # free-memory reading or backend probe. Reusing its science does
+        # not rewrite it.
+        original_receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        memory_receipt = original_receipt['memory_admission']
+        backend_selection = original_receipt.get(
+            'preprocess_backend_selection', backend_selection)
     write_document(receipt_path, json_bytes({'schema':'gpuwm-metgrid-import-v1','source_files':source_hashes,
         'vertical_coordinate':vertical_policy,'vertical_generation':vertical_generation,
         # The EFFECTIVE hybrid coordinate and the derivation behind it.
@@ -603,6 +641,8 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
         # keeps that meaning; this is the hybrid pair the run integrates.
         'hybrid_coordinate':_vertical_coordinate_receipt(exp, vertical_adaptation),
         'domains':domain_receipts,'memory_admission':memory_receipt,
+        'vertical_interpolation':list(backend.receipt().get('vertical_interpolation', ())),
+        'preprocess_backend_selection':backend_selection,
         'namelist_translation':asdict(run.substitution_report),
         'namelist_translation_text':run.substitution_report.format()}), reused=reused)
     artifacts['preparation_receipt'] = receipt_path
@@ -710,11 +750,15 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
                                 render_dir=None if render_dir is None else io_path(render_dir),
                                 init=inputs.experiment.start_time, can_draw=missing is None)
         first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
-        run_prepared_tree(inputs,output_directory=worker_output,io_mode=io_mode,
-            restart=None if restart is None else io_path(restart),
-            health_debug=health_debug,progress_options=progress_options,
-            initialization=MetemInitialization(inputs),
-            **({} if first_products is None else {'first_products': first_products}))
+        try:
+            run_prepared_tree(inputs,output_directory=worker_output,io_mode=io_mode,
+                restart=None if restart is None else io_path(restart),
+                health_debug=health_debug,progress_options=progress_options,
+                initialization=MetemInitialization(inputs),
+                **({} if first_products is None else {'first_products': first_products}))
+        except BaseException as error:
+            stop_door_renders(first_products, error)
+            raise
         try:
             draw_door_products(plan, first_products=first_products, door=DOOR)
         except GoStageFailed as failure:

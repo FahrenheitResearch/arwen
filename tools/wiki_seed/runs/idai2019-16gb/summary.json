@@ -1,0 +1,50 @@
+{
+ "run": "idai2019-16gb",
+ "exit": 0,
+ "completed": {
+  "dry_run": false
+ },
+ "stages_s": {
+  "fetch": 109.254046,
+  "prepare": 36.479617,
+  "initialize": 0.266947,
+  "forecast": 1820.732365,
+  "finalize": 0.000374
+ },
+ "failed": null,
+ "domains": {
+  "d01": {
+   "files": 7,
+   "last_time": "2019-03-12_12:00:00",
+   "max_w_ms": 4.35,
+   "max_wind10_ms": 38.84,
+   "max_rain_mm": 224.49,
+   "min_psfc_hpa": 802.66,
+   "nan": false,
+   "nx": 156,
+   "ny": 158
+  },
+  "d02": {
+   "files": 25,
+   "last_time": "2019-03-12_12:00:00",
+   "max_w_ms": 10.26,
+   "max_wind10_ms": 34.93,
+   "max_rain_mm": 192.51,
+   "min_psfc_hpa": 757.3,
+   "nan": false,
+   "nx": 384,
+   "ny": 384
+  },
+  "d03": {
+   "files": 25,
+   "last_time": "2019-03-12_12:00:00",
+   "max_w_ms": 5.22,
+   "max_wind10_ms": 13.52,
+   "max_rain_mm": 7.54,
+   "min_psfc_hpa": 831.63,
+   "nan": false,
+   "nx": 366,
+   "ny": 366
+  }
+ }
+}

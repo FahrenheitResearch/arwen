@@ -431,7 +431,7 @@ class RunConfig:
     # device once per step.  Trajectory-inert by construction -- it reads
     # model state and writes only its own slots -- so it is a restart-
     # boundary-adjustable diagnostic toggle exactly like nwp_diagnostics
-    # (gpuwm/io/restart.py CONFIG_DIAGNOSTIC_FIELDS).
+    # (gpuwm/checkpoint_identity.py CONFIG_DIAGNOSTIC_FIELDS).
     tke_budget: int = 0
     # --- Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors ---
     #
@@ -482,8 +482,10 @@ class RunConfig:
     # N^2 at the stability lengths, the subgrid-energy buoyancy source and
     # the K_v/K_h stability suppression.  False consumes the dry N^2 at
     # all three points, isolating the diffusion channel from the venting
-    # channel.  Not a per-domain override: a nest whose domains ran
-    # different closures could not be compared across its own boundary.
+    # channel.  Not a per-domain override: every SASE domain of a tree
+    # runs one variant, so an on/off pair compares two whole trees.  On a
+    # tree that mixes SASE with another PBL scheme the [shared] value
+    # reaches the SASE domains only (SASE_FAIL_CLOSED_DEFAULTS).
     sase_moist_n2: bool = True
     # Stable-limb dissipation decoupling (physics selector, run-wide).
     # True rides the Deardorff lambda << Delta dissipation coefficient
@@ -533,7 +535,9 @@ class RunConfig:
     # governed horizontal diffusivity.  Both are m2 s-1 on the mass grid
     # and mean the same thing, so a run that removes one producer and adds
     # the other can be MEASURED on the channel it swapped rather than
-    # argued about.  Reads no prognostic and writes none.
+    # argued about.  Reads no prognostic and writes none, so a restart or
+    # a prepared cache may see it change
+    # (gpuwm/checkpoint_identity.py CONFIG_DIAGNOSTIC_FIELDS).
     hmix_k_diag: bool = False
     # Expert acknowledgement admitting km_opt = 0 with a PBL scheme that
     # does not itself produce horizontal mixing -- i.e. a run with NO
@@ -593,8 +597,9 @@ class RunConfig:
     moist_mix6_off: bool = False
     # WRF v4.6.1 Registry defaults for the Grell-family namelist keys
     # (Registry.EM_COMMON:2544,2546).  clos_choice=0 is the 16-member
-    # ensemble closure -- the only arm the GF oracle covers, and the only
-    # admitted value; ishallow toggles CUP_gf_sh, both arms oracle-covered.
+    # ensemble closure, the arm the GF oracle covers; 1..16 run one member
+    # alone (GF_CLOSURE_MEMBERS); ishallow toggles CUP_gf_sh, both arms
+    # oracle-covered.
     # Read only where cu_physics = 3, which no frozen configuration
     # selects, so appending them cannot move a frozen trajectory.
     clos_choice: int = 0
@@ -781,6 +786,48 @@ class RunConfig:
     #: gpuwm/vertical_remap.py :: require_shared_column_basis for why the
     #: remap is only well posed when they agree.
     eta_levels: tuple[float, ...] | None = None
+    # APPENDED LAST, after eta_levels, on the same discipline.  The two
+    # lateral-boundary keys a downscaled child needs because its parent is
+    # much coarser than it is (gpuwm/downscale.py _derive_child_run_config).
+    #: Davies relaxation time scale, in seconds, on the first relaxed row:
+    #: the relaxation pulls that row toward the boundary state with this
+    #: e-folding time, and the pull weakens linearly across the zone
+    #: (fcx = ramp / relax_timescale_s, gcx = ramp / (5 relax_timescale_s)).
+    #: 0 keeps WRF's recipe, fcx = 0.1 / dt and gcx = 1 / (50 dt), which is
+    #: the same law with the time scale tied to 10 of the domain's OWN
+    #: steps, so it moves whenever the step does.  A derived child sets it
+    #: in seconds instead: the time a 20 m/s flow takes to cross one child
+    #: cell (gpuwm/downscale.py CHILD_RELAX_CROSSING_SPEED, where the arm
+    #: measurement that chose it is recorded).  A nest reads it too, in
+    #: WRF's nested FP32 operation order.
+    relax_timescale_s: float = 0.0
+    #: Whether a specified domain relaxes ``w`` toward its boundary table
+    #: in the relaxation zone and takes the table's ``w`` on the specified
+    #: rows, as a WRF nest does.  False keeps WRF's root-domain rule: ``w``
+    #: is never relaxed, and the specified rows copy the first interior
+    #: row (zero gradient), which carries an updraft that forms inside the
+    #: relaxation zone straight onto the boundary.  Needs a ``w`` table,
+    #: which an offline child's parent history always carries.
+    relax_w: bool = False
+    # APPENDED LAST, after relax_w, on the same discipline.
+    #: Under the adaptive clock, the fewest acoustic substeps per step this
+    #: domain takes.  The clock derives the count from its live step every
+    #: root step (WRF's ``time_step_sound = 0`` rule,
+    #: :func:`gpuwm.core.adaptive_clock.wrf_num_sound_steps`), which gives 4
+    #: at 1 km for any step under about 3.3 s; this is a floor under that
+    #: count.  0, the default, leaves WRF's derived count untouched.  The
+    #: steep-terrain rules (:mod:`gpuwm.acoustic_adaptation`,
+    #: :mod:`gpuwm.terrain_clock`) set it on each adaptive domain whose
+    #: substep count they raise, because without it the clock put their
+    #: six substeps back to four: a 1 km forecast under a 67 m/s
+    #: crest-level jet stopped at model second 135 on the adaptive clock
+    #: with its step ceiling honoured, and ran three hours once the six
+    #: substeps reached the dynamics.  Under a fixed clock nothing reads
+    #: it; ``time_step_sound`` is the count there.  One of
+    #: :data:`gpuwm.core.model.ADAPTIVE_TIMESTEP_RUN_FIELDS`, so it drops
+    #: out of every fixed-clock identity and is controller policy under an
+    #: adaptive one.
+    min_time_step_sound: int = 0
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -1003,6 +1050,18 @@ SASE_PBL_SCHEME = 900
 #: importing it here costs the config layer no CuPy dependency.
 SASE_MAX_NZ = _sase_limits.MAX_COLUMN_LEVELS
 
+#: The SASE knobs that are fail-closed on their non-default value, each
+#: with the default it is judged against: :func:`validate_run_config`
+#: refuses a non-default value on a domain that does not run SASE.  The
+#: domain-tree loader (gpuwm.experiment) reads the same table, so a
+#: ``[shared]`` value on a tree that mixes SASE with another PBL scheme
+#: reaches the SASE domains and leaves the others on these defaults.
+SASE_FAIL_CLOSED_DEFAULTS = {
+    "sase_flux_diag": False,
+    "sase_moist_n2": True,
+    "sase_stable_dissipation": False,
+}
+
 #: The MYNN surface layer's selector.  No RULE reads it any more -- the
 #: SASE pairing that did is admitted (the closure reads ust/hfx/qfx/wspd
 #: and this layer publishes all four) -- but it is not dead vocabulary:
@@ -1040,6 +1099,96 @@ PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, 11, SASE_PBL_SCHEME)
 # nothing while 16 was unreachable and would have been a silent wrong
 # answer the moment it was not.
 CU_SCHEMES = (0, 1, 3, 16)
+
+#: The cumulus scheme that reads the Grell-family keys below.
+GRELL_FREITAS_CU_PHYSICS = 3
+
+#: The Grell-family keys, each with the WRF Registry default it is judged
+#: against: :func:`validate_run_config` refuses a non-default value on a
+#: domain whose ``cu_physics`` is not :data:`GRELL_FREITAS_CU_PHYSICS`.
+#: The domain-tree loader (gpuwm.experiment) reads the same table, so a
+#: ``[shared]`` value on a tree that mixes Grell-Freitas with another
+#: cumulus choice reaches the Grell-Freitas domains and leaves the others
+#: on these defaults.
+GRELL_FAMILY_DEFAULTS = {
+    "clos_choice": 0,
+    "ishallow": 0,
+}
+
+#: Grell-Freitas closure selector, ``clos_choice`` (WRF's ``ichoice``).
+#: ``cup_forcing_ens_3d`` (module_cu_gf_deep.F:2373-2720, gf.cu
+#: ``gfd_cup_forcing_ens_3d``, gpuwm/verify/gf_deep_ref.py) fills a
+#: closure array of ``maxens3 = 16`` members, ``xf_ens(1:16)``.  0 takes
+#: the ensemble mean of all sixteen; 1..16 copies member ``ichoice`` into
+#: every slot, so the mean IS that member.  Each value in this range is
+#: a code path WRF defines and the port carries.
+GF_CLOSURE_MEMBERS = 16
+
+#: The four closure families of ``cup_forcing_ens_3d``, named by what
+#: each member's mass flux is computed from.  Members of one family
+#: share their forcing; 14 and 15 differ from their siblings only in a
+#: coefficient (14 scales the cloud-base mass flux by BETAJB once more,
+#: 15 floors the precipitation efficiency at 1e-3 instead of 1e-5).
+GF_CLOSURE_FAMILIES: tuple[tuple[tuple[int, ...], str], ...] = (
+    ((1, 2, 3, 16),
+     "the rate the large-scale forcing builds the cloud work function, "
+     "(aa1 - aa0)/dt"),
+    ((4, 5, 6, 14),
+     "the grid-scale vertical mass flux (omega) at cloud base"),
+    ((7, 8, 9, 15),
+     "the column moisture convergence over the precipitation efficiency"),
+    ((10, 11, 12, 13),
+     "removal of the cloud work function aa1 over the adjustment time "
+     "tau_ecmwf"),
+)
+
+
+def gf_clos_choice_refusal(value: object) -> str | None:
+    """The breakage an out-of-range ``clos_choice`` would cause, or None.
+
+    One wording for every door (``validate_run_config``, the namelist
+    importer, the registry row).  Admitted: 0..16.  Refused: anything
+    else, because the value has no meaning in WRF's closure code and the
+    port would run one of two wrong things with no word said.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return (f"clos_choice must be an integer 0..{GF_CLOSURE_MEMBERS}, "
+                f"got {value!r}.")
+    if 0 <= value <= GF_CLOSURE_MEMBERS:
+        return None
+    if value > GF_CLOSURE_MEMBERS:
+        why = (f"cup_forcing_ens_3d copies member clos_choice of the "
+               f"{GF_CLOSURE_MEMBERS}-member closure array xf_ens(1:"
+               f"{GF_CLOSURE_MEMBERS}) into every slot, so "
+               f"clos_choice={value} reads past the end of that array")
+    else:
+        why = ("a negative value takes neither of cup_forcing_ens_3d's "
+               "two branches (0 = ensemble mean, 1..16 = one member): the "
+               "run would average the ensemble with its negative-forcing "
+               "guard (the ichoice = 0 branch) skipped")
+    return (f"clos_choice={value} is refused: {why}. Choose 0 (the "
+            f"16-member ensemble mean, the WRF Registry default) or one "
+            f"member 1..{GF_CLOSURE_MEMBERS}.")
+
+
+def gf_clos_choice_advice(value: int) -> str | None:
+    """The implemented-unverified warning for a single-member closure.
+
+    None for 0, the ensemble mean, which is the arm compared bitwise
+    against WRF v4.6.1 (tests/test_gf_driver_parity.py,
+    tests/test_gf_gfdrv_cuda.py).
+    """
+    if value == 0:
+        return None
+    family = next(what for members, what in GF_CLOSURE_FAMILIES
+                  if value in members)
+    return (f"clos_choice={value} runs Grell-Freitas on closure member "
+            f"{value} alone (its family computes cloud-base mass flux from "
+            f"{family}) instead of the 16-member ensemble mean. It is WRF "
+            "v4.6.1's own code path and the kernel matches the float32 "
+            "reference on it, but only clos_choice=0 has been compared "
+            "against a WRF run, so this closure is implemented but not "
+            "verified against WRF.")
 
 #: Every radiation selector value ``validate_run_config`` admits, as
 #: importable tuples for the same reason :data:`MP_PHYSICS_ACCEPTED` is
@@ -1583,14 +1732,14 @@ MP28_AEROSOL_SYNTHETIC_FALLBACK = (
 #: climatology the aerosol falls back to thompson_init's synthetic profile,
 #: ``aerosol_from_input`` is False, and nwfa/nifa revert to flow-dependent
 #: boundaries with zero inflow -- the measured depletion in
-#: docs/public/PHYSICS.md, a front at 0.99319 of the wind, the whole domain
-#: at WRF's aerosol floor after L/U.  A domain with no EXTERNAL inflow face
+#: docs/public/PHYSICS.md, a front at 1.00454 of the wind, the whole domain's
+#: initial aerosol gone after L/U.  A domain with no EXTERNAL inflow face
 #: is not exposed to it, which is why the check is on ``specified`` rather
 #: than on mp=28 alone.
 #:
 #: THE MEASUREMENT IS HERE AND NOT IN THE SENTENCE.  The front reaches
-#: 0.99319 of the wind speed, so a 100 km nest in a 20 m/s flow is at the
-#: floor in 83 minutes and nothing NaNs, trips a bound or reports it
+#: 1.00454 of the wind speed, so a 100 km nest in a 20 m/s flow has lost its
+#: initial aerosol in 83 minutes and nothing NaNs, trips a bound or reports it
 #: (docs/public/validation/mp28-column-evidence.md).  A reader at a door
 #: needs the breakage and the way out; the numbers are why the refusal
 #: exists, which is a question the source answers.
@@ -1609,8 +1758,9 @@ MP28_AEROSOL_LATERAL_FORCING_PRECONDITION = (
     "mp_physics=28 on a domain with external lateral boundaries "
     "(specified) needs WRF's monthly WIF aerosol climatology "
     "(QNWFA_QNIFA_SIGMA_MONTHLY.dat): without it nwfa/nifa take zero-inflow "
-    "boundaries and aerosol-free air drains the domain to WRF's aerosol "
-    "floor, with nothing in the output saying so. Set [shared] "
+    "boundaries and aerosol-free air drains the domain's aerosol, to zero in "
+    "clear air and to WRF's aerosol floor where the scheme runs, with "
+    "nothing in the output saying so. Set [shared] "
     "wif_climatology_path or $GPUWM_WIF_CLIMATOLOGY, stage it with `gpuwm "
     "fetch-tables --wif`, or select [shared] mp28_aerosol_source='synthetic' "
     "to take the synthetic profile deliberately."
@@ -2351,7 +2501,9 @@ def validate_sase_config(cfg: RunConfig) -> None:
                 "moist=true: the closure mixes water vapour, cloud water "
                 "and cloud ice alongside potential temperature and forms "
                 "its stability from the saturated Brunt-Vaisala "
-                "frequency.")
+                "frequency, which a dry run cannot supply. Set "
+                "moist=true, or select bl_pbl_physics=1, 2, 5 or 11 (YSU, "
+                "MYJ, MYNN or Shin-Hong), which run dry.")
         if cfg.nz > SASE_MAX_NZ:
             # A compile-time bound, not a policy: the vertical solve keeps
             # three FP64 columns of this depth in per-thread local memory.
@@ -2362,18 +2514,19 @@ def validate_sase_config(cfg: RunConfig) -> None:
                 "in per-thread local memory at that fixed depth.")
     # The three knobs are fail-closed on their NON-default value only, so
     # every existing configuration keeps validating unchanged.
-    for name, default, what in (
-            ("sase_flux_diag", False,
+    for name, what in (
+            ("sase_flux_diag",
              "the split subgrid-flux diagnostic records the SASE venting "
              "and K_v channels, which no other turbulence path computes"),
-            ("sase_moist_n2", True,
+            ("sase_moist_n2",
              "the moist-N2 substitution it disables exists only inside "
              "the SASE closure, so switching it off elsewhere would "
              "disable nothing"),
-            ("sase_stable_dissipation", False,
+            ("sase_stable_dissipation",
              "the stable-limb dissipation coefficient it decouples lives "
              "in the SASE analytic decay substep, so setting it "
              "elsewhere would decouple nothing")):
+        default = SASE_FAIL_CLOSED_DEFAULTS[name]
         value = getattr(cfg, name)
         if type(value) is not bool:
             raise ValueError(f"{name} must be boolean, got {value!r}.")
@@ -2450,6 +2603,10 @@ _DYNAMICS_RANGES: dict[str, tuple] = {
     "spec_exp": (lambda v: v >= 0.0,
                  "a non-negative lateral-sponge exponent "
                  "(WRF Registry default 0.0)"),
+    # Davies time scale on the first relaxed row; 0 is WRF's 10 x dt.
+    "relax_timescale_s": (lambda v: v >= 0.0,
+                          "a non-negative relaxation time scale in s "
+                          "(0 keeps WRF's 10 x dt)"),
     "diff_6th_factor": (lambda v: v >= 0.0,
                         "a non-negative 6th-order diffusion factor "
                         "(WRF Registry default 0.12)"),
@@ -2646,12 +2803,10 @@ def validate_km_opt(cfg: RunConfig) -> None:
         # nothing to feed back, and that case has now been run and scored
         # (7 h, 250 m child under a km_opt=4 parent, status PASS; see
         # docs/superpowers/receipts/les/nested-les-km2-2026-08-02.md).
-        # The residual case -- a km_opt=2 child under a km_opt=2 parent,
-        # where the parent really does hold a field WRF declines to hand
-        # down -- is refused in gpuwm.experiment, which is the only place
-        # that knows the parent.  A single-domain RunConfig cannot tell
-        # the two apart, so refusing here would refuse the measured case
-        # along with the unmeasured one.
+        # A km_opt=2 child under a km_opt=2 parent does the same thing
+        # (the parent's TKE stays on the parent); gpuwm.experiment, the
+        # only place that knows the parent, admits that tree with a
+        # not-yet-verified warning.
     if cfg.km_opt in (1, 2, 3, 4):
         return
     if producer is None and ack != KM_OPT_ZERO_ACK:
@@ -3185,6 +3340,20 @@ def _validate_adaptive_time_step(cfg: RunConfig) -> None:
             raise ValueError(
                 f"starting_time_step ({float(start_dt):g} s) is below "
                 f"min_time_step ({float(min_dt):g} s).")
+    floor = getattr(cfg, "min_time_step_sound", 0)
+    if (not isinstance(floor, int) or isinstance(floor, bool)
+            or floor < 0):
+        raise ValueError(
+            "min_time_step_sound must be a whole number of acoustic "
+            f"substeps, 0 or more, got {floor!r}: it is the fewest "
+            "substeps the adaptive clock may take, and 0 leaves WRF's "
+            "count.")
+    if floor % 2:
+        raise ValueError(
+            f"min_time_step_sound must be even, got {floor}: the adaptive "
+            "clock runs at least this many substeps, and RK3 stage 2 runs "
+            "time_step_sound//2 acoustic substeps of dt/time_step_sound, "
+            "which only integrates to dt/2 for even counts.")
 
     if not cfg.use_adaptive_time_step:
         return
@@ -3441,17 +3610,13 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     # test_km_opt4_admits_pbl_off_vertical_diffusion is the pin -- and
     # a generic rule here would refuse it.
     #
-    # THE PER-SCHEME DRY REFUSALS THAT DO STAND stand on their own
-    # stated reasons, are declared in the registry's required_settings
-    # for exactly those two options, and are raised where the reason
-    # lives rather than by a rule typed here.  MYJ: WRF's own PBL
-    # driver fatals without qv_curr/qc_curr
-    # (phys/module_pbl_driver.F:1441-1443), which validate_myj_pairing
-    # transcribes and tests/test_myj_port.py's
-    # test_a_dry_myj_run_is_refused_the_way_wrf_refuses_it pins.  SASE:
-    # the saturated Brunt-Vaisala stability it forms and the condensate
-    # rows it mixes, refused by validate_sase_config.  YSU, MYNN and
-    # Shin-Hong declare no moist requirement in this tree.
+    # THE ONE PER-SCHEME DRY REFUSAL THAT DOES STAND is SASE's, raised
+    # where its reason lives rather than by a rule typed here: the
+    # saturated Brunt-Vaisala stability it forms and the condensate
+    # rows it mixes, refused by validate_sase_config.  MYJ's dry refusal
+    # is gone (see validate_myj_pairing): YSU, MYJ, MYNN and Shin-Hong
+    # each run dry, which tests/test_myj_port.py's
+    # test_a_dry_pbl_run_reaches_the_driver_and_mixes pins.
     if cfg.cu_physics and not cfg.moist:
         raise ValueError(
             f"cu_physics={cfg.cu_physics} requires moist=true: the cumulus "
@@ -3461,7 +3626,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "registry says the same thing through the option's "
             "required_settings."
         )
-    if cfg.cu_physics == 3:
+    if cfg.cu_physics == GRELL_FREITAS_CU_PHYSICS:
         if not cfg.bl_pbl_physics:
             raise ValueError(
                 "cu_physics=3 (Grell-Freitas) requires a PBL scheme: the "
@@ -3479,17 +3644,18 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 "STEPCU=1) and carries no NCA hold; cudt is a Kain-Fritsch "
                 "cadence knob."
             )
-        if cfg.clos_choice != 0:
-            raise ValueError(
-                f"clos_choice={cfg.clos_choice} is not admitted: only the "
-                "16-member ensemble closure (0, the WRF Registry default) "
-                "carries GF oracle coverage; the single-closure arms have "
-                "no parity receipt."
-            )
+        refusal = gf_clos_choice_refusal(cfg.clos_choice)
+        if refusal is not None:
+            raise ValueError(refusal)
+        advice = gf_clos_choice_advice(cfg.clos_choice)
+        if advice is not None:
+            from gpuwm.explain import warn_once
+            warn_once(f"gf-clos-choice-{cfg.clos_choice}", advice)
         if cfg.ishallow not in (0, 1):
             raise ValueError(
                 f"ishallow must be 0 or 1, got {cfg.ishallow}.")
-    elif cfg.clos_choice != 0 or cfg.ishallow != 0:
+    elif any(getattr(cfg, name) != default
+             for name, default in GRELL_FAMILY_DEFAULTS.items()):
         raise ValueError(
             "clos_choice/ishallow are Grell-family keys read only where "
             "cu_physics=3; set them with the scheme or leave the Registry "
@@ -4193,3 +4359,31 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     from gpuwm.physics_registry import require_consumer_rows
     require_consumer_rows(cfg)
     return cfg
+
+
+def declared_key_rows() -> dict[str, dict[str, dict]]:
+    """Every declared configuration key row, by the table that owns it.
+
+    The companion of :class:`RunConfig`'s fields for the keys no typed
+    field carries (:mod:`gpuwm.config_keys`): a front end reads each key's
+    TOML type, default and one-line meaning here, and the loader that owns
+    the table checks values against the same row.  Imported inside the
+    function because every owning module imports this one.
+    """
+
+    from gpuwm import experiment
+    from gpuwm.case_data import CASE_DATA_KEY_ROWS
+    from gpuwm.fetch import FETCH_HINT_ROWS
+    from gpuwm.ingest.soil_downscale import INGEST_TABLE_ROWS
+
+    tables = {
+        "experiment": experiment._EXPERIMENT_KEY_ROWS,
+        "shared": experiment._SHARED_KEY_ROWS,
+        "domain": experiment._DOMAIN_KEY_ROWS,
+        "relocation": experiment._RELOCATION_KEY_ROWS,
+        "case_data": CASE_DATA_KEY_ROWS,
+        "fetch": FETCH_HINT_ROWS,
+        "ingest": INGEST_TABLE_ROWS,
+    }
+    return {table: {name: row.to_json() for name, row in rows.items()}
+            for table, rows in tables.items()}

@@ -196,12 +196,14 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
     single path because the whole point of the analysis is that the
     members differ.
 
-    A member whose ensemble named ``render_products`` draws its first
+    A member whose ensemble named ``render_products`` draws every
     committed frame while that member is still integrating, through
     :func:`gpuwm.first_products.arm` -- the same function, with the
     same answer to "did this run ask for pictures", that every other
-    forecast door arms with.  Naming no products is the default and
-    leaves this engine exactly as it was.
+    forecast door arms with.  ``member-first-products`` reports the
+    analysis frame and ``member-live-products`` each frame after it.
+    Naming no products is the default and leaves this engine exactly as
+    it was.
     """
     root = Path(ens_root)
     manifest_path = prepare_ensemble(cfg, root, run_seconds=run_seconds)
@@ -259,6 +261,7 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
                     "from the base config instead would be a cycling run "
                     "that quietly stopped cycling.")
         started = time.perf_counter()
+        stopped = False
 
         def _ready(receipt, index=index):
             _emit(on_event, {"event": "member-first-products",
@@ -268,15 +271,20 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
             _emit(on_event, {"event": "warning", "index": index,
                              "code": code, "message": message, **fields})
 
+        def _drawn(entry, index=index):
+            _emit(on_event, {"event": "member-live-products",
+                             "index": index, "receipt": entry})
+
         # The same two steps every other door takes, taken by the same
         # function: `arm` answers "did this member ask for pictures"
         # and returns what the landing is armed with, or None.  A
-        # member draws its analysis frame while it is still
-        # integrating instead of leaving a finished ensemble with no
-        # picture in it.
+        # member draws every frame while it is still integrating, its
+        # analysis frame first: a member used to draw that one frame
+        # and no other, so a finished ensemble held one picture set per
+        # member however many frames it wrote.
         first_frame = first_products.arm(
             member_render_plan(cfg, member_dir),
-            report=_ready, warn=_declined)
+            report=_ready, warn=_declined, report_live=_drawn)
         # Handed to the runner only when there IS a render, so a runner
         # that never accepted this argument -- every one written before
         # the early render reached this engine -- is called exactly as
@@ -293,6 +301,7 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
                 perturbation_options=dict(cfg.perturbation_options),
                 run_seconds=run_seconds, restart=restart, **hook)
         except BaseException as error:
+            stopped = isinstance(error, KeyboardInterrupt)
             record["status"] = "FAILED"
             record["wall_seconds"] = time.perf_counter() - started
             record["error"] = {
@@ -315,8 +324,13 @@ def run_ensemble(cfg: EnsembleConfig, ens_root: str | Path, *,
                 # pictures are still being written is also not a member
                 # a reader can be told is finished.  Nothing here can
                 # fail the run: wait() reports a wedged render as a
-                # warning and returns.
-                first_frame.wait()
+                # warning and returns.  A stop draws nothing more; a
+                # member that failed on its own finishes drawing the
+                # frames it wrote.
+                if stopped:
+                    first_frame.halt()
+                else:
+                    first_frame.wait()
 
         record["status"] = "DONE"
         # Recorded, not inferred: "this member started from an analysis"

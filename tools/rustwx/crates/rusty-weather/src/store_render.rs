@@ -26,7 +26,7 @@ use rustwx_core::{Field2D, FieldSelector, ProductKey, SelectedField2D};
 use rustwx_models::{LatestRun, plot_recipe_store_requirements};
 use rustwx_products::derived::{
     DerivedBatchRequest, DerivedRenderedRecipe, StoreProductGrid,
-    render_derived_recipes_from_store_grids,
+    render_derived_recipes_from_store_grids, store_plane_conversion,
 };
 use rustwx_products::direct::{
     DirectBatchRequest, DirectRenderedRecipe, build_projected_map_with_projection,
@@ -587,10 +587,46 @@ pub(crate) fn generic_subtitle_row(
     (left, right)
 }
 
-/// Deterministic filename token for an arbitrary stored variable name: the
-/// sanitized name (truncated) plus an FNV-1a hash of the exact original, so
-/// two names that sanitize identically can never overwrite each other.
+/// Deterministic filename token for an arbitrary stored variable name,
+/// spelled from the name itself and nothing else.
+///
+/// Lowercase ASCII letters, digits and `_` stand for themselves, which is
+/// every byte of every variable the wrfout import writes, so a folder is
+/// the variable's own name: `var_wrf_t2`.  Any other byte is written
+/// `-XX` (its lowercase hex), and `-` is never written for itself, so the
+/// spelling is reversible and two different names can never share a
+/// folder -- which is the whole job the hash suffix used to do.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the hash made every raw
+/// variable's folder unreadable (`var_wrf_t2_1222df9c491fb635`) beside the
+/// named product drawing the same grid, and a reader could not tell which
+/// variable a folder held without decoding a hash.
+///
+/// The one bound: a spelling longer than [`GENERIC_TOKEN_MAX_BYTES`] would
+/// not fit in a filename beside the rest of the engine's name, so only
+/// such a name keeps the truncated-plus-hash form.
 fn generic_variable_output_slug(variable: &str) -> String {
+    let mut spelled = String::with_capacity(variable.len() + 4);
+    for byte in variable.bytes() {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' {
+            spelled.push(char::from(byte));
+        } else {
+            spelled.push_str(&format!("-{byte:02x}"));
+        }
+    }
+    if spelled.len() <= GENERIC_TOKEN_MAX_BYTES {
+        return format!("var_{spelled}");
+    }
+    hashed_generic_variable_output_slug(variable)
+}
+
+/// How long a spelled variable token may be before it no longer fits a
+/// filename beside the engine's model, cycle, lead and domain tokens.
+const GENERIC_TOKEN_MAX_BYTES: usize = 96;
+
+/// The bounded form for a name too long to spell: the sanitized name,
+/// truncated, plus an FNV-1a hash of the exact original.
+fn hashed_generic_variable_output_slug(variable: &str) -> String {
     let mut safe = safe_artifact_component(variable);
     safe.truncate(56);
     let hash = variable
@@ -656,6 +692,16 @@ pub fn render_derived_recipes_from_store(
             }
             Err(err) => return Err(format!("read derived grid '{slug}': {err}").into()),
         };
+        // A plane stored in a unit its product's colour bar cannot be
+        // reached from is not drawn: its numbers would be read in the
+        // wrong unit.  Skipped by name, so the rest of the hour still draws.
+        if let Err(reason) = store_plane_conversion(slug, &stored.units) {
+            skipped.push(StoreRenderSkip {
+                slug: slug.clone(),
+                reason: format!("stored grid present but {reason}"),
+            });
+            continue;
+        }
         if slug == "theta_e_2m_10m_winds" && winds.is_none() {
             let u10 = FieldSelector::height_agl(CanonicalField::UWind, 10);
             let v10 = FieldSelector::height_agl(CanonicalField::VWind, 10);
@@ -701,4 +747,42 @@ pub fn render_derived_recipes_from_store(
         vec![source.fetch_key()],
     )?;
     Ok(DerivedStoreOutcome { rendered, skipped })
+}
+
+#[cfg(test)]
+mod generic_name_tests {
+    use super::generic_variable_output_slug;
+
+    #[test]
+    fn an_imported_variable_is_filed_under_its_own_name() {
+        assert_eq!(generic_variable_output_slug("wrf_t2"), "var_wrf_t2");
+        assert_eq!(
+            generic_variable_output_slug("geopotential_height_500hpa"),
+            "var_geopotential_height_500hpa"
+        );
+    }
+
+    #[test]
+    fn names_that_sanitize_alike_never_share_a_folder_and_carry_no_hash() {
+        let upper = generic_variable_output_slug("wrf_T2");
+        let lower = generic_variable_output_slug("wrf_t2");
+        let dashed = generic_variable_output_slug("wrf-t2");
+        assert_ne!(upper, lower);
+        assert_ne!(dashed, lower);
+        assert_ne!(dashed, upper);
+        assert_eq!(upper, "var_wrf_-542");
+        assert_eq!(dashed, "var_wrf-2dt2");
+        // The escape itself is escaped, so a name containing "-54" cannot
+        // collide with one containing "T".
+        assert_ne!(generic_variable_output_slug("wrf_-542"), upper);
+    }
+
+    #[test]
+    fn only_a_name_too_long_for_a_filename_keeps_the_hashed_form() {
+        let long = "x".repeat(200);
+        let slug = generic_variable_output_slug(&long);
+        assert!(slug.len() < 100, "{slug}");
+        let hash = slug.rsplit('_').next().unwrap();
+        assert_eq!(hash.len(), 16, "{slug}");
+    }
 }

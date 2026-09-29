@@ -216,6 +216,78 @@ def test_the_host_fingerprint_separates_a_rebind_from_a_drift():
     assert _fingerprint_value(a, ids=False) != _fingerprint_value(c, ids=False)
 
 
+def _driver_state():
+    class Driver:
+        pass
+
+    class State:
+        pass
+
+    state = State()
+    state.physics = Driver()
+    return state
+
+
+def test_a_fresh_object_on_a_freed_address_is_not_a_double_buffer():
+    """The rebinding ``bldt=0`` produces, with CPython reusing addresses.
+
+    Each "capture" rebinds the driver's bundle to a fresh object and drops
+    the previous one, so the allocator hands a freed address to a later
+    bundle.  With bare ``id()`` the two read as the same object coming
+    back, which ``capture_step`` refuses as a double buffer; the graph
+    section lost the ship config and the real Lambert projection row to
+    that on some runs.  Lifetimes keep every fresh bundle distinct.
+    """
+    from tilestream.graphcap import ObjectLifetimes, host_fingerprint
+
+    class Bundle:
+        pass
+
+    state = _driver_state()
+    lifetimes = ObjectLifetimes()
+    addresses, prints = [], []
+    for _ in range(64):
+        state.physics.tendencies = Bundle()
+        addresses.append(id(state.physics.tendencies))
+        prints.append(host_fingerprint(state, identity=lifetimes.serial))
+    # The precondition: the allocator really did reuse an address, so the
+    # case the check used to get wrong is the case being tested.
+    assert len(set(addresses)) < len(addresses)
+    assert len(set(prints)) == len(prints)
+
+
+def test_a_ping_pong_between_two_live_objects_is_still_a_double_buffer():
+    """The positive control: the same object coming back must still read so."""
+    from tilestream.graphcap import ObjectLifetimes, host_fingerprint
+
+    class Bundle:
+        pass
+
+    state = _driver_state()
+    pair = (Bundle(), Bundle())
+    lifetimes = ObjectLifetimes()
+    prints = []
+    for generation in range(4):
+        state.physics.tendencies = pair[generation % 2]
+        prints.append(host_fingerprint(state, identity=lifetimes.serial))
+    assert prints[0] != prints[1]
+    assert prints[0] == prints[2]
+    assert prints[1] == prints[3]
+
+
+def test_an_object_that_cannot_be_weakly_referenced_keeps_its_lifetime():
+    """``object()`` has no weakref slot, so the ledger holds it strongly."""
+    from tilestream.graphcap import ObjectLifetimes
+
+    lifetimes = ObjectLifetimes()
+    kept = object()
+    first = lifetimes.serial(kept)
+    serials = [lifetimes.serial(object()) for _ in range(16)]
+    assert lifetimes.serial(kept) == first
+    assert len(set(serials)) == len(serials)
+    assert first not in serials
+
+
 # ---------------------------------------------------------------------------
 # capture and replay, end to end on one buffer
 # ---------------------------------------------------------------------------
@@ -279,6 +351,27 @@ def test_an_empty_capture_is_refused():
         raise AssertionError(
             "a capture that recorded nothing was accepted; it would launch "
             "successfully, do nothing, and read as a total speedup")
+
+
+def test_a_radiation_due_step_is_captured_and_replays_bit_exact():
+    """A radiation firing inside a captured step reads nothing back.
+
+    RRTMGP checks once per firing that every column shares the model-top
+    interface, and that check was a device-to-host read, which a capturing
+    stream refuses.  Every radiation-due step therefore failed to capture
+    ("the current stream is capturing, so D2H transfers are disallowed")
+    and the gate's three fast cadence graph rows raised.  A captured step
+    now takes the general per-column above-model path, which computes the
+    same values, so the replay must still match the monolithic run.
+    """
+    import cupy as cp  # noqa: F401  (a card is required)
+
+    from tilestream import test_gate
+
+    rec = test_gate.graph_case(kind="physics", rung="full fast cadence",
+                               tile_nx=48, tile_ny=40, nsteps=3)
+    assert rec["graph_ok"], rec.get("graph_info")
+    assert rec["bitexact"], "graph replay changed the fast cadence answer"
 
 
 def _run_all():

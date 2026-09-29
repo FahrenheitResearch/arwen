@@ -1,17 +1,48 @@
 """Register every FTZ / subnormal claim in the public tree.
 
 Scope is machine-defined: ``git ls-files`` minus the RELEASE-EXCLUDE globs
-minus the two vendored Rust trees, tests INCLUDED.  A hand-kept list would
-drift, and a sentence that drifts out of the census is a public claim nobody
-is checking.
+minus the vendored trees, tests INCLUDED.  A hand-kept list would drift, and
+a sentence that drifts out of the census is a public claim nobody is
+checking.
 
-Each record pins one line by its exact text, so editing a registered sentence
-without re-running this tool fails the consistency gate.  ``asserted_token``
-binds a record to the receipt's verdict for its (route, mechanism) cell.
-Attribution across the five routes is judgment, not mechanics: this tool
-never guesses one.  A record it cannot attribute is written with
-``asserted_token: null`` and ``attribution: "unattributed"``, and the gate
-requires only that a token, once present, agrees with the receipt.
+``--check`` refuses, each for the breakage named:
+
+* a claim line nobody registered: an FTZ sentence ships that no curator has
+  held against the receipt;
+* a registered line that is gone: the register ships a claim the tree no
+  longer makes;
+* a registered line whose words changed: an ``asserted_token`` a curator
+  wrote for one sentence goes on vouching for a different one;
+* an ``anchor_sha256`` that is not the hash of its ``anchor``: a record
+  edited by hand says one thing and hashes another;
+* a ``site_count`` or ``site_count_by_kind`` that disagrees with the
+  records: two branches that each register one claim both write the same
+  new total, git merges that without a conflict, and the register ships a
+  count one short;
+* a token the receipt contradicts: the register says a route flushes where
+  the measurement says it does not, or the reverse.
+
+A site is anchored by its file and the exact text of its line (``anchor``,
+hashed in ``anchor_sha256``).  Identical lines in one file are counted, so a
+second copy of a registered sentence is still an unregistered claim.
+``line`` is where this tool last found the site: a hint for readers that
+``--check`` does not fail on.  While ``line`` was part of the key, a row
+added to CHANGELOG.md above its claims moved about 20 records down one line
+without changing a word of any of them.  Every branch that added a row had
+to regenerate the census, every merge of two such branches conflicted in it,
+and two branches that each added one row could merge cleanly and leave all
+of those records a line short, red on the merged line.  A line that only
+moved changes no claim, so it no longer touches the census.  A context
+window was left out of the key on purpose: it would tie each claim to its
+neighbours, and a row landing next to a claim would fail the gate again
+with no claim changed.
+
+``asserted_token`` binds a record to the receipt's verdict for its (route,
+mechanism) cell.  Attribution across the five routes is judgment, not
+mechanics: this tool never guesses one.  A record it cannot attribute is
+written with ``asserted_token: null`` and ``attribution: "unattributed"``,
+and the gate requires only that a token, once present, agrees with the
+receipt.
 
 Usage::
 
@@ -31,7 +62,7 @@ from pathlib import Path
 
 from tools.ftz_receipt import route_inventory as ri
 
-SCHEMA_ID = "gpuwm.ftz-claim-census/v1"
+SCHEMA_ID = "gpuwm.ftz-claim-census/v2"
 
 CLAIM_PATTERN = re.compile(r"ftz|subnormal", re.IGNORECASE)
 
@@ -73,6 +104,15 @@ BEHAVIOURAL_FILES = (
 
 ATTRIBUTION_PENDING = "unattributed"
 ATTRIBUTION_SET = "attributed"
+
+CENSUS_REL = "gpuwm/verify/ftz_claim_sites.json"
+
+ANCHORING_NOTE = (
+    "a site is its file plus the exact text of its line (anchor, "
+    "anchor_sha256), and identical lines in one file are counted; line is "
+    "where the generator last found the site, a hint the check does not "
+    "fail on, so lines added or removed above a claim leave the census "
+    "valid")
 
 TEXT_SUFFIXES = frozenset({
     ".py", ".pyi", ".md", ".txt", ".rst", ".toml", ".cfg", ".ini", ".json",
@@ -175,9 +215,8 @@ def merge_attribution(records: list[dict],
 
 
 def build_census(root: Path, previous: dict | None = None) -> dict:
-    census_rel = "gpuwm/verify/ftz_claim_sites.json"
     records = merge_attribution(
-        collect_sites(root, public_files(root), census_rel), previous)
+        collect_sites(root, public_files(root), CENSUS_REL), previous)
     by_kind: dict[str, int] = {}
     for record in records:
         by_kind[record["kind"]] = by_kind.get(record["kind"], 0) + 1
@@ -193,6 +232,7 @@ def build_census(root: Path, previous: dict | None = None) -> dict:
             "routes and is not machine-derivable; unattributed records carry "
             "asserted_token: null and the gate requires only that a token, "
             "once written, agrees with the receipt",
+        "anchoring_note": ANCHORING_NOTE,
         "site_count": len(records),
         "site_count_by_kind": dict(sorted(by_kind.items())),
         "sites": records,
@@ -207,58 +247,139 @@ def default_output(root: Path) -> Path:
     return root / "gpuwm" / "verify" / "ftz_claim_sites.json"
 
 
+def _line_hint(record: dict) -> int:
+    hint = record.get("line")
+    return hint if isinstance(hint, int) else 0
+
+
+def _pair_nearest(registered: list[dict], found: list[dict]
+                  ) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+    """Pair registered with found records, closest line hint first.
+
+    Returns the pairs, the registered records left over and the found
+    records left over.  The pairing only chooses which line a problem is
+    reported against; whether the census fails never depends on it.
+    """
+    if not registered or not found:
+        return [], list(registered), list(found)
+    candidates = sorted(
+        (abs(_line_hint(reg) - _line_hint(hit)), i, j)
+        for i, reg in enumerate(registered)
+        for j, hit in enumerate(found))
+    used_registered: set[int] = set()
+    used_found: set[int] = set()
+    pairs: list[tuple[dict, dict]] = []
+    for _, i, j in candidates:
+        if i in used_registered or j in used_found:
+            continue
+        used_registered.add(i)
+        used_found.add(j)
+        pairs.append((registered[i], found[j]))
+    return (pairs,
+            [reg for i, reg in enumerate(registered)
+             if i not in used_registered],
+            [hit for j, hit in enumerate(found) if j not in used_found])
+
+
 def check_census(root: Path, census: dict,
-                 receipt: dict | None = None) -> list[str]:
+                 receipt: dict | None = None,
+                 notes: list[str] | None = None) -> list[str]:
     """Return every reason the census does not describe the tree.
 
-    Three failure classes, matching the three mutations the test drives: an
-    unregistered claim line, an anchor whose text no longer matches, and an
-    asserted token the receipt does not support.
+    Sites are matched on (file, exact line text) as a multiset: every copy
+    of a line in the tree needs its own record and every record needs its
+    own copy in the tree.  A match whose line number moved is not a
+    problem; when ``notes`` is given, the count of such moves is appended
+    there for the caller to show.  What is left unmatched in one file is
+    paired by nearest line and reported as changed text; the rest are
+    unregistered or no longer present.
     """
     problems: list[str] = []
-    census_rel = "gpuwm/verify/ftz_claim_sites.json"
-    found = {(record["file"], record["line"]): record
-             for record in collect_sites(root, public_files(root),
-                                         census_rel)}
-    registered = {(record["file"], record["line"]): record
-                  for record in census.get("sites", [])}
+    found = collect_sites(root, public_files(root), CENSUS_REL)
+    registered = list(census.get("sites", []))
 
-    for key, record in found.items():
-        if key not in registered:
+    for record in registered:
+        if anchor_sha256(record["anchor"]) != record["anchor_sha256"]:
             problems.append(
-                f"unregistered claim {record['file']}:{record['line']}: "
-                f"{record['anchor'][:80]}")
-    for key, record in registered.items():
-        if key not in found:
+                f"anchor hash stale at {record['file']}:{_line_hint(record)}")
+
+    found_by_site: dict[tuple[str, str], list[dict]] = {}
+    for record in found:
+        found_by_site.setdefault((record["file"], record["anchor"]),
+                                 []).append(record)
+    registered_by_site: dict[tuple[str, str], list[dict]] = {}
+    for record in registered:
+        registered_by_site.setdefault((record["file"], record["anchor"]),
+                                      []).append(record)
+
+    moved = 0
+    loose_registered: dict[str, list[dict]] = {}
+    loose_found: dict[str, list[dict]] = {}
+    for site in found_by_site.keys() | registered_by_site.keys():
+        pairs, spare_registered, spare_found = _pair_nearest(
+            registered_by_site.get(site, []), found_by_site.get(site, []))
+        moved += sum(1 for reg, hit in pairs
+                     if _line_hint(reg) != hit["line"])
+        loose_registered.setdefault(site[0], []).extend(spare_registered)
+        loose_found.setdefault(site[0], []).extend(spare_found)
+
+    for relpath in sorted(loose_registered.keys() | loose_found.keys()):
+        pairs, gone, new = _pair_nearest(loose_registered.get(relpath, []),
+                                         loose_found.get(relpath, []))
+        for reg, hit in sorted(pairs, key=lambda pair: pair[1]["line"]):
             problems.append(
-                f"registered claim no longer present {key[0]}:{key[1]}")
-            continue
-        if found[key]["anchor"] != record["anchor"]:
+                f"anchor text changed at {relpath}:{hit['line']} "
+                f"(registered at line {_line_hint(reg)}): "
+                f"{reg['anchor'][:80]!r} is now {hit['anchor'][:80]!r}")
+        for hit in sorted(new, key=lambda record: record["line"]):
             problems.append(
-                f"anchor text changed at {key[0]}:{key[1]}")
-        elif anchor_sha256(record["anchor"]) != record["anchor_sha256"]:
-            problems.append(f"anchor hash stale at {key[0]}:{key[1]}")
+                f"unregistered claim {relpath}:{hit['line']}: "
+                f"{hit['anchor'][:80]}")
+        for reg in sorted(gone, key=_line_hint):
+            problems.append(
+                f"registered claim no longer present "
+                f"{relpath}:{_line_hint(reg)}: {reg['anchor'][:80]}")
+
+    by_kind: dict[str, int] = {}
+    for record in registered:
+        by_kind[record.get("kind")] = by_kind.get(record.get("kind"), 0) + 1
+    if "site_count" in census and census["site_count"] != len(registered):
+        problems.append(
+            f"site_count says {census['site_count']} but the census holds "
+            f"{len(registered)} records")
+    if ("site_count_by_kind" in census
+            and census["site_count_by_kind"] != by_kind):
+        problems.append(
+            f"site_count_by_kind says {census['site_count_by_kind']} but "
+            f"the records count {by_kind}")
 
     if receipt is not None:
         cells = {(cell["route"], cell["mechanism"]): cell["verdict"]
                  for cell in receipt["cells"]}
-        for key, record in registered.items():
+        for record in registered:
+            where = f"{record['file']}:{_line_hint(record)}"
             token = record.get("asserted_token")
             if token is None:
                 if record.get("attribution") != ATTRIBUTION_PENDING:
                     problems.append(
-                        f"{key[0]}:{key[1]} claims attribution with no token")
+                        f"{where} claims attribution with no token")
                 continue
             cell = cells.get((record.get("route"), record.get("mechanism")))
             if cell is None:
                 problems.append(
-                    f"{key[0]}:{key[1]} asserts a token for a cell the "
+                    f"{where} asserts a token for a cell the "
                     f"receipt does not carry: "
                     f"({record.get('route')}, {record.get('mechanism')})")
             elif cell != token:
                 problems.append(
-                    f"{key[0]}:{key[1]} asserts {token!r} but the receipt's "
+                    f"{where} asserts {token!r} but the receipt's "
                     f"cell says {cell!r}")
+
+    if notes is not None and moved:
+        notes.append(
+            f"{moved} of {len(registered)} sites sit on a different line "
+            f"than their line hint; the check does not fail on that, and "
+            f"regenerating refreshes the hints")
     return problems
 
 
@@ -271,15 +392,18 @@ def main(argv: list[str] | None = None) -> int:
     out = default_output(root)
     previous = (json.loads(out.read_text(encoding="utf-8"))
                 if out.exists() else None)
-    document = build_census(root, previous)
     if args.check:
         if previous is None:
             print(f"census missing: {out}", file=sys.stderr)
             return 1
-        problems = check_census(root, previous)
+        notes: list[str] = []
+        problems = check_census(root, previous, notes=notes)
         for problem in problems:
             print(problem, file=sys.stderr)
+        for note in notes:
+            print(note)
         return 1 if problems else 0
+    document = build_census(root, previous)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(document), encoding="utf-8", newline="\n")
     print(f"wrote {out} ({document['site_count']} claim lines in "

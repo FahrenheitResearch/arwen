@@ -1,0 +1,11 @@
+{
+ "card_gb": 16,
+ "rung": "nest-12-3-1-400x400",
+ "start": "1999-08-11T12:00Z",
+ "length_h": 12,
+ "fitted_grid": "12 km 120 by 118 points (1428 by 1404 km); 3 km 336 by 336 points (1005 by 1005 km); 1 km 408 by 402 points (407 by 401 km); 49 levels",
+ "memory": {
+  "need_gib": 11.44,
+  "budget_gib": 14.54
+ }
+}

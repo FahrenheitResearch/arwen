@@ -77,13 +77,13 @@ class EnsembleConfig:
     #: ``gpuwm render --products`` takes, or ``None`` for no pictures.
     #:
     #: THE ONLY SWITCH.  There is no second "draw early" flag: naming
-    #: products here is what arms the early render in
-    #: :func:`gpuwm.ensemble.engine.run_ensemble`, exactly as
-    #: ``run_options.render_products`` arms it for ``run-plan`` and
-    #: ``--render-products`` arms it for the child runner.  Absent is
-    #: the default and is the behaviour this engine had before the
-    #: early render reached it: the members write frames and nobody
-    #: draws them.
+    #: products here is what arms each member's renders in
+    #: :func:`gpuwm.ensemble.engine.run_ensemble` (every frame, drawn as
+    #: it lands), exactly as ``run_options.render_products`` arms them
+    #: for ``run-plan`` and ``--render-products`` for the child runner.
+    #: Absent is the default and is the behaviour this engine had before
+    #: the renders reached it: the members write frames and nobody draws
+    #: them.
     #:
     #: Adding it to an overlay a half-finished ensemble was started
     #: from changes that overlay's sha256, which

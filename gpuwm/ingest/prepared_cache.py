@@ -35,6 +35,7 @@ import uuid
 
 import numpy as np
 
+from gpuwm.checkpoint_identity import CONFIG_DIAGNOSTIC_FIELDS
 from gpuwm.vertical_contract import (
     validate_coordinate_shapes,
     validate_explicit_eta_grid,
@@ -43,8 +44,16 @@ from gpuwm.namelist_seal import validated_namelist_extension_invariant
 
 
 PREPARED_CACHE_SCHEMA = "gpuwm-prepared-real-cache-v1"
+#: File-level rename for one payload or header written aside.  Bound once,
+#: apart from the directory publication rename (``os.replace`` at the call
+#: sites that publish a whole bundle), so the two are separate operations.
+_replace_file = os.replace
 SEALED_PREPARED_EXTENSION_MODE = "sealed-prefix-v1"
 _HEADER_NAME = "header.json"
+#: The longest name a prepared-cache write gives a file in its directory:
+#: the header written aside, then renamed onto ``header.json``.  Payloads
+#: are ``aNNNNN.npy`` and theirs ``aNNNNN.npy.tmp``, a character shorter.
+HEADER_PARTIAL_NAME = _HEADER_NAME + ".tmp"
 _MET_REQUIRED = frozenset({
     "LANDSEA", "SKINTEMP", "T2", "U10", "V10",
 })
@@ -186,6 +195,12 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # 2.6.1's members: top-level DomainConfig declarations whose
     # off state is None.
     "start_time", "spawn", "tiles", "output", "retire", "rearm", "follow",
+    # 2.8's per-domain follower reach bound, nested in a DECLARED follow
+    # document.  Its not-in-use value is None (the engine default), the
+    # state every follower header written before the key describes, and
+    # the prepared initial state and boundaries never read it: it sizes
+    # the statics corridor, which its own loader checks for coverage.
+    "follow.reach_speed_m_s",
     # This branch's members, NESTED under run.  The walk builds dotted
     # paths, so these have always worked here.  Dropping them when
     # 2.6.1 restructured the table above would have re-refused every
@@ -268,13 +283,15 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # 78c60d6b6):
     "run.c_k", "run.mix_isotropic", "run.mix_upper_bound",
     "run.tke_heat_flux", "run.tke_drag_coefficient", "run.tke_upper_bound",
-    "run.tke_budget", "run.isfflx", "run.moist_mix6_off",
-    # SASE (604de61e3, e11e2eee2, 1a0e8a7f8):
-    "run.sase_flux_diag", "run.sase_moist_n2", "run.sase_stable_dissipation",
-    "run.sase_additive_dissipation", "run.hmix_k_diag",
+    "run.isfflx", "run.moist_mix6_off",
+    # SASE (604de61e3, e11e2eee2, 1a0e8a7f8); the closure selectors moved
+    # to PREPARATION_INERT_RUN_FIELDS below:
     "run.km_opt_zero_acknowledgement",
-    # Grell-Freitas (ea0cada3b):
-    "run.clos_choice", "run.ishallow",
+    # (run.tke_budget, run.sase_flux_diag and run.hmix_k_diag are
+    # output-only and are dropped at any value by
+    # INERT_DIAGNOSTIC_IDENTITY_FIELDS below.)
+    # Grell-Freitas (ea0cada3b): clos_choice and ishallow moved to
+    # PREPARATION_INERT_RUN_FIELDS below.
     # NSSL selectors (76d96d550): mp=18 predates them, and DomainState
     # allocates the mp=18 species tuple and its CCN fill without
     # consulting them; only the scheme reads them:
@@ -327,6 +344,12 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # boundary table set are built ON the ladder, so a cache prepared for a
     # 49-level child cannot serve a 96-level one.
     "run.eta_levels",
+    # The downscaled child's relaxation time scale and w treatment, on
+    # argument (c): both choose how the FORECAST applies the boundary
+    # tables, and neither is read while the tables or the initial state
+    # are built -- the tables always carry w.  Registered in the commit
+    # that added them, so no tree prepared before them is refused.
+    "run.relax_timescale_s", "run.relax_w",
 })
 
 #: RunConfig fields that joined after the identity header and for which
@@ -407,6 +430,7 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
             # an optional declaration whose off state is None.
             "tiles": None, "output": None,
             "retire": None, "rearm": None, "follow": None,
+            "follow.reach_speed_m_s": None,
             # READ FROM THE DATACLASS, not restated: two
             # hand-maintained copies of one default is the failure
             # this package has paid for repeatedly.  The NAMES come
@@ -466,16 +490,16 @@ NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
     "history_interval_s",
 })
 
-#: Trajectory-inert diagnostic toggles, on the same footing as the
-#: cadences above and for the same published reason:
-#: :data:`gpuwm.io.restart.CONFIG_DIAGNOSTIC_FIELDS` already allows
-#: ``nwp_diagnostics`` to differ across a restart boundary because
-#: flipping it cannot change the trajectory (pinned by
-#: tests/test_uh_lifecycle.py).  It selects which diagnostic accumulators
-#: a FORECAST carries; a prepared cache predates every one of them.
-INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset({
-    "run.nwp_diagnostics",
-})
+#: Output-only diagnostic toggles, on the same footing as the cadences
+#: above and for the same published reason: each selects which
+#: diagnostic buffers a FORECAST carries, and a prepared cache predates
+#: every one of them.  DERIVED from
+#: :data:`gpuwm.checkpoint_identity.CONFIG_DIAGNOSTIC_FIELDS`, the one
+#: table restart already reads, rather than listed a second time: the
+#: second list held only ``nwp_diagnostics``, so switching tke_budget,
+#: sase_flux_diag or hmix_k_diag on or off refused an unchanged cache.
+INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset(
+    f"run.{name}" for name in CONFIG_DIAGNOSTIC_FIELDS)
 
 #: Identity fields PREPARATION never reads: they change the trajectory,
 #: not the prepared state.  A prepared cache is an initial state plus
@@ -524,6 +548,33 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     "run.starting_time_step", "run.starting_time_step_den",
     "run.max_time_step", "run.max_time_step_den",
     "run.min_time_step", "run.min_time_step_den",
+    # The adaptive clock's substep floor, on the same argument: only the
+    # clock reads it, once per root step of the forecast, and the forecast
+    # doors set it after the cache is read.
+    "run.min_time_step_sound",
+    # THE SASE CLOSURE'S SELECTORS, out of the tolerant table above for
+    # the same reason as the adaptive targets: they have to be forgiven at
+    # any value.  No WRF namelist spells them, so an HRRR hierarchy
+    # prepares every domain from the namelist with their defaults, while
+    # the forecast reads them from the experiment config: a SASE tree
+    # with [shared] sase_moist_n2 = false was refused after preparation
+    # for a field whose value cannot move a prepared array.  The standing
+    # check holds: the only prepare-side module that names any of them
+    # is this identity table.  sase_flux_diag is not among them: it is an
+    # output-only switch, dropped from the restart identity as well, so
+    # its one ruling is INERT_DIAGNOSTIC_IDENTITY_FIELDS above.
+    "run.sase_moist_n2",
+    "run.sase_stable_dissipation", "run.sase_additive_dissipation",
+    # THE GRELL-FREITAS CLOSURE AND SHALLOW-ARM SELECTORS, on the same
+    # argument.  Only the forecast's cumulus call reads them
+    # (gpuwm/core/gf.py packs both into the scheme's integer inputs); the
+    # prepared initial state and the boundary tables are the same under
+    # every value.  An HRRR hierarchy prepares its domains from WRF
+    # namelists, and a tree's cumulus-off child carries 0 for both beside
+    # a Grell-Freitas root that runs clos_choice = 1, so binding them
+    # refused a prepared domain for a key preparation never read.  They
+    # stay in the experiment fingerprint and the restart identity.
+    "run.clos_choice", "run.ishallow",
 })
 
 
@@ -627,9 +678,14 @@ CONDITIONAL_PREPARATION_RECEIPTS = (
 #: Full soil-operation receipt inventory for layouts that bind the texture
 #: treatment into BOTH cache user metadata and proof. Portable adapters that
 #: keep texture treatment in the proof alone retain the conditional tuple.
+#: ``soil_temperature_repair`` (real.exe's TSLB reasonableness rebuild,
+#: :func:`gpuwm.ingest.soil.soil_temperature_repair_proof`) is bound the
+#: same way on the native HRRR route, and only when a land column was
+#: rebuilt; the mapped routes carry it in their proof alone.
 SOIL_PREPARATION_RECEIPTS = (
     *CONDITIONAL_PREPARATION_RECEIPTS,
     "soil_texture_downscale",
+    "soil_temperature_repair",
 )
 
 
@@ -672,14 +728,15 @@ def compare_prepared_domain_config(cached, live, *, not_in_use=None
     def walk(cached_node, live_node, prefix: str) -> None:
         for key in sorted(set(cached_node) | set(live_node)):
             path = f"{prefix}{key}"
-            if path in PREPARATION_INERT_RUN_FIELDS:
+            if (path in PREPARATION_INERT_RUN_FIELDS
+                    or path in INERT_DIAGNOSTIC_IDENTITY_FIELDS):
                 # Not tolerance, and not a widening of it: preparation
                 # reads none of these, so a cache written under one value
                 # is byte-identical to one written under another and the
                 # comparison has nothing to say about them.
                 # `effective_prepared_domain_config` already drops them
                 # for callers that normalise first; this covers the ones
-                # that hand the walk a raw header.
+                # that hand the walk a raw header (PreparedCacheReader).
                 continue
             if key not in cached_node:
                 if (path in DEFAULT_TOLERANT_IDENTITY_FIELDS
@@ -850,6 +907,21 @@ class _BundleWriter:
         self.temporary = temporary
         self.manifest: dict[str, dict[str, object]] = {}
         self.payload_bytes = 0
+        # Set on the first link this drive refuses: every later payload is
+        # copied rather than retried as a link.
+        self.copying = False
+        self._pending_reuse_bytes = 0
+
+    def expect_reuse(self, reader: "PreparedCacheReader", keys) -> None:
+        """Declare the payloads :meth:`link_verified` is about to place.
+
+        So a drive that cannot link is checked ONCE, for the whole
+        remaining prefix, before the first byte is copied -- not found
+        full on the last file.
+        """
+        self._pending_reuse_bytes += sum(
+            (reader.path / reader.arrays[key]["file"]).stat().st_size
+            for key in keys)
 
     def add(self, key: str, value) -> None:
         if not isinstance(key, str) or not key or key in self.manifest:
@@ -861,8 +933,13 @@ class _BundleWriter:
         # budget even when the final public cache path itself is valid.
         filename = f"a{len(self.manifest):05d}.npy"
         path = self.temporary / filename
-        with path.open("wb") as stream:
+        # Written aside and renamed: a chained preparation writes its
+        # boundary segments straight into a PUBLISHED cache directory, where
+        # a reader must never see half an array under its final name.
+        partial = path.with_name(filename + ".tmp")
+        with partial.open("wb") as stream:
             np.save(stream, array, allow_pickle=False)
+        _replace_file(partial, path)
         self.manifest[key] = {
             "file": filename,
             "shape": list(array.shape),
@@ -873,15 +950,23 @@ class _BundleWriter:
         self.payload_bytes += int(array.nbytes)
 
     def link_verified(self, key: str, reader: "PreparedCacheReader") -> None:
-        """Reuse one already-verified immutable payload without copying it.
+        """Reuse one already-verified immutable payload unchanged.
 
-        Extension bundles are siblings in the operational work tree, so a
-        hard link is both atomic and space-constant.  We deliberately do not
-        fall back to a byte copy: silently doing so would turn an hourly
-        append into quadratic disk traffic.  The completed staging bundle is
-        verified again before publication, which catches a predecessor that
-        changed while its links were being assembled.
+        A hard link where the drive has them: atomic, and no extra space,
+        which is what an hourly append to a growing cache wants.  Where it
+        has none (exFAT, or the two folders on different drives) the
+        payload is copied instead and proven byte-identical to its source
+        (:func:`gpuwm.filesystem_paths.copy_verified`), after one check
+        that everything still to be copied fits; the copy costs its size in
+        disk, and the run says so in one line.  This used to refuse, citing
+        only that cost.  Either way the completed staging bundle is
+        verified against its manifest again before publication, which
+        catches a predecessor that changed while it was being placed.
         """
+        from gpuwm.filesystem_paths import (
+            copy_verified, links_unavailable, note_copy_instead_of_link,
+            require_room_to_copy)
+
         if not isinstance(key, str) or not key or key in self.manifest:
             raise ValueError(f"invalid or duplicate prepared-cache key {key!r}")
         try:
@@ -892,16 +977,62 @@ class _BundleWriter:
         filename = f"a{len(self.manifest):05d}.npy"
         source = reader.path / source_spec["file"]
         destination = self.temporary / filename
-        try:
-            os.link(source, destination)
-        except OSError as exc:
-            raise PreparedCacheMismatchError(
-                "prepared-cache extension requires same-filesystem hard-link "
-                "reuse; refusing a quadratic payload copy") from exc
+        size = source.stat().st_size
+        if not self.copying:
+            try:
+                os.link(source, destination)
+            except FileExistsError:
+                raise
+            except OSError as exc:
+                if not links_unavailable(exc):
+                    raise
+                require_room_to_copy(
+                    max(self._pending_reuse_bytes, size),
+                    self.temporary.parent,
+                    f"the prepared cache {reader.path}")
+                note_copy_instead_of_link()
+                self.copying = True
+        if self.copying:
+            copy_verified(source, destination)
+        self._pending_reuse_bytes = max(0, self._pending_reuse_bytes - size)
         spec = _json_copy(source_spec)
         spec["file"] = filename
         self.manifest[key] = spec
         self.payload_bytes += int(spec["nbytes"])
+
+
+def read_manifest_array(directory, key: str, spec) -> np.ndarray:
+    """Read one payload and prove it against its manifest row.
+
+    Shared by the sealed reader and the streamed boundary reader
+    (:mod:`gpuwm.ingest.boundary_stream`), so a segment read before the seal
+    is held to the same shape, dtype and content digest as a sealed read.
+    """
+
+    try:
+        filename = spec["file"]
+    except (KeyError, TypeError) as exc:
+        raise PreparedCacheCorruptError(
+            f"prepared cache array entry {key!r} is malformed") from exc
+    candidate = Path(filename)
+    if (candidate.name != filename or candidate.is_absolute()
+            or not str(filename).endswith(".npy")):
+        raise PreparedCacheCorruptError(
+            f"prepared cache array {key!r} has unsafe file name")
+    path = Path(directory) / filename
+    try:
+        with path.open("rb") as stream:
+            array = np.load(stream, allow_pickle=False)
+    except (OSError, EOFError, ValueError) as exc:
+        raise PreparedCacheCorruptError(
+            f"prepared cache array {key!r} is unreadable") from exc
+    if (list(array.shape) != spec["shape"]
+            or str(array.dtype) != spec["dtype"]
+            or int(array.nbytes) != int(spec["nbytes"])
+            or _array_sha256(array) != spec["sha256"]):
+        raise PreparedCacheCorruptError(
+            f"prepared cache array {key!r} fails its manifest")
+    return array
 
 
 class PreparedCacheReader:
@@ -1027,20 +1158,7 @@ class PreparedCacheReader:
         except KeyError as exc:
             raise PreparedCacheCorruptError(
                 f"prepared cache is missing array {key!r}") from exc
-        path = self.path / spec["file"]
-        try:
-            with path.open("rb") as stream:
-                array = np.load(stream, allow_pickle=False)
-        except (OSError, EOFError, ValueError) as exc:
-            raise PreparedCacheCorruptError(
-                f"prepared cache array {key!r} is unreadable") from exc
-        if (list(array.shape) != spec["shape"]
-                or str(array.dtype) != spec["dtype"]
-                or int(array.nbytes) != int(spec["nbytes"])
-                or _array_sha256(array) != spec["sha256"]):
-            raise PreparedCacheCorruptError(
-                f"prepared cache array {key!r} fails its manifest")
-        return array
+        return read_manifest_array(self.path, key, spec)
 
     def verify_all(self) -> dict[str, object]:
         for key in sorted(self.arrays):
@@ -1050,6 +1168,89 @@ class PreparedCacheReader:
             "status": "PASS",
             "path": str(self.path.resolve()),
             "content_sha256": self.content_sha256,
+            "array_count": len(self.arrays),
+            "payload_bytes": self.payload_bytes,
+        }
+
+
+
+class PreparedHeadReader:
+    """The start-time half of a prepared cache, read before its seal.
+
+    A chained preparation publishes every non-boundary array of its cache
+    with ``boundary-stream/head.json`` before the boundary intervals exist
+    (:mod:`gpuwm.ingest.boundary_stream`).  This reader serves exactly
+    those arrays, held to the head's manifest rows, and a header view whose
+    metadata carries the declared interval schedule, so a forecast can be
+    restored and validated at the head.  It has no ``content_sha256``: that
+    digest exists only at the seal, where the runner checks it.
+    """
+
+    def __init__(self, root, head, *, expected_identity):
+        self.head = head
+        cache = head["basis"]["cache"]
+        self.path = Path(root) / str(cache["directory"])
+        identity = _json_copy(expected_identity)
+        tolerated, differing = compare_prepared_identity(
+            cache["identity"], identity)
+        if differing:
+            raise PreparedCacheMismatchError(
+                prepared_identity_refusal(
+                    subject=f"prepared head {self.path}",
+                    header={"identity": cache["identity"]},
+                    differing=differing))
+        self.tolerated_identity_fields = tuple(tolerated)
+        lbc = cache.get("lbc")
+        metadata = _json_copy(cache["metadata"])
+        metadata["lbc"] = None if lbc is None else {
+            "spec_bdy_width": lbc["spec_bdy_width"],
+            "spec_zone": lbc["spec_zone"],
+            "relax_zone": lbc["relax_zone"],
+            "intervals": [
+                {"start_seconds": float(start), "end_seconds": float(end),
+                 "fields": list(lbc["fields"])}
+                for start, end in lbc["schedule"]],
+        }
+        metadata["setup_fingerprint"] = None
+        self.arrays = dict(cache["arrays"])
+        self.header = {
+            "schema": PREPARED_CACHE_SCHEMA,
+            "status": "HEAD",
+            "identity": cache["identity"],
+            "metadata": metadata,
+            "arrays": self.arrays,
+            "payload_bytes": int(cache["payload_bytes"]),
+        }
+        self.setup_core_fingerprint = str(cache["setup_core_fingerprint"])
+
+    @property
+    def metadata(self) -> Mapping[str, object]:
+        return MappingProxyType(self.header["metadata"])
+
+    @property
+    def content_sha256(self):
+        return None
+
+    @property
+    def payload_bytes(self) -> int:
+        return int(self.header["payload_bytes"])
+
+    def read_array(self, key: str) -> np.ndarray:
+        try:
+            spec = self.arrays[key]
+        except KeyError as exc:
+            raise PreparedCacheCorruptError(
+                f"prepared head is missing array {key!r}") from exc
+        return read_manifest_array(self.path, key, spec)
+
+    def verify_all(self) -> dict[str, object]:
+        for key in sorted(self.arrays):
+            self.read_array(key)
+        return {
+            "schema": PREPARED_CACHE_SCHEMA,
+            "status": "HEAD_PASS",
+            "path": str(self.path.resolve()),
+            "content_sha256": None,
             "array_count": len(self.arrays),
             "payload_bytes": self.payload_bytes,
         }
@@ -1193,11 +1394,12 @@ def write_prepared_cache(path, *, identity, initial_result, met,
     them only when its identity explicitly binds a nested, non-specified child;
     that export-only cache feeds ``wrfinput_dNN`` and cannot be restored as a
     standalone forecast root.
+
+    The whole-set call of :class:`PreparedCacheStream`: head, every interval
+    as a segment, seal, in one go.  A chained preparation makes the same
+    three calls with the forcing times built in between, so the one-shot
+    cache and the streamed cache are the same bytes by construction.
     """
-    from gpuwm.state_serialization_contract import (
-        STATE_SERIALIZED_ATTRS, lateral_boundary_prefix_identity,
-        setup_core_fingerprint, setup_fingerprint,
-    )
 
     path = Path(path)
     if path.exists():
@@ -1205,8 +1407,109 @@ def write_prepared_cache(path, *, identity, initial_result, met,
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = _prepared_cache_staging_path(path)
     temporary.mkdir()
-    writer = _BundleWriter(temporary)
     try:
+        stream = PreparedCacheStream(
+            temporary, identity=identity,
+            sealed_forcing_extension=sealed_forcing_extension)
+        stream.write_head(
+            initial_result=initial_result, met=met, surface=surface,
+            metadata=metadata, lbc=boundary_schedule(boundaries),
+            # The one-shot writer has always fingerprinted the STATE's own
+            # attachment; it stays the authority whenever the caller's
+            # state carries some other boundary set than the one written.
+            lateral_from_state=(
+                getattr(initial_result.state, "lateral_boundaries", None)
+                is not boundaries))
+        if boundaries is not None:
+            for index, interval in enumerate(boundaries.intervals):
+                stream.write_segment(index, interval)
+        receipt = stream.seal()
+        os.replace(temporary, path)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    receipt = dict(receipt)
+    receipt["path"] = str(path.resolve())
+    return receipt
+
+
+def boundary_schedule(boundaries, *, fields=None):
+    """The head's declaration of a boundary set: controls and schedule.
+
+    ``None`` for a cache without external boundaries.  ``fields`` names the
+    inventory when the intervals do not exist yet (a chained preparation
+    knows it from the start time's frame).
+    """
+
+    if boundaries is None:
+        return None
+    intervals = boundaries.intervals
+    return {
+        "spec_bdy_width": int(boundaries.spec_bdy_width),
+        "spec_zone": int(boundaries.spec_zone),
+        "relax_zone": int(boundaries.relax_zone),
+        "schedule": [[float(interval.start_seconds),
+                      float(interval.end_seconds)] for interval in intervals],
+        "fields": (sorted(fields) if fields is not None
+                   else sorted(intervals[0].fields) if len(intervals)
+                   else []),
+    }
+
+
+class PreparedCacheStream:
+    """The one prepared-cache writer: a head, one segment per interval, a seal.
+
+    ``write_head`` writes every array the start time makes (state, coord,
+    base, result, met, surface) under the file numbers the bundle has always
+    used, and starts the setup fingerprint from the start state's immutable
+    core.  ``write_segment(k, interval)`` writes interval k's boundary tables
+    under the next file numbers and feeds the same bytes into the same
+    digest the whole-set fingerprint walks.  ``seal`` writes ``header.json``
+    with the unchanged ``basis``, so ``content_sha256`` is the value the
+    one-shot writer produces for the same inputs.
+    """
+
+    def __init__(self, directory, *, identity,
+                 sealed_forcing_extension: bool = False):
+        self.directory = Path(directory)
+        self.identity = _json_copy(identity)
+        self.sealed_forcing_extension = bool(sealed_forcing_extension)
+        self._writer = _BundleWriter(self.directory)
+        self._metadata: dict[str, object] | None = None
+        self._lbc: dict[str, object] | None = None
+        self._digest = None
+        self._fingerprint: str | None = None
+        self._core_fingerprint: str | None = None
+        self._state_prefix = None
+        self._nested = False
+        self._intervals: list[dict[str, object]] = []
+        self._prefix_rows: list[dict[str, object]] = []
+        self._rational = False
+        self._sealed = False
+
+    def move(self, directory) -> None:
+        """Follow the directory after its tree was published by rename."""
+
+        self.directory = Path(directory)
+        self._writer.temporary = self.directory
+
+    @property
+    def payload_bytes(self) -> int:
+        return self._writer.payload_bytes
+
+    def write_head(self, *, initial_result, met, surface=None, metadata=None,
+                   lbc=None, lateral_from_state: bool = False
+                   ) -> dict[str, object]:
+        from gpuwm.state_serialization_contract import (
+            STATE_SERIALIZED_ATTRS, _lateral_fingerprint_header,
+            _update_lateral_fingerprint, _update_setup_core,
+            lateral_boundary_prefix_identity,
+        )
+
+        if self._metadata is not None:
+            raise RuntimeError("the prepared-cache head is written once")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        writer = self._writer
         state_names = []
         for name in STATE_SERIALIZED_ATTRS:
             value = getattr(initial_result.state, name, None)
@@ -1246,38 +1549,43 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             for name in surface_names:
                 writer.add(f"surface/{name}", surface[name])
 
-        if boundaries is None:
-            if not _is_nested_child_identity(identity):
+        if lbc is None:
+            if not _is_nested_child_identity(self.identity):
                 raise ValueError(
                     "omitting prepared-cache LBCs requires an identity-bound "
                     "nested non-specified child")
-            lbc_metadata = None
+            if self.sealed_forcing_extension:
+                raise ValueError(
+                    "sealed prepared-cache forcing requires root LBCs")
         else:
-            interval_metadata = []
-            for index, interval in enumerate(boundaries.intervals):
-                field_names = sorted(interval.fields)
-                interval_metadata.append({
-                    "start_seconds": float(interval.start_seconds),
-                    "end_seconds": float(interval.end_seconds),
-                    "fields": field_names,
-                })
-                for name in field_names:
-                    field = interval.fields[name]
-                    for side_name in ("west", "east", "south", "north"):
-                        side = getattr(field, side_name)
-                        prefix = f"lbc/{index}/{name}/{side_name}"
-                        writer.add(f"{prefix}/value", side.value)
-                        writer.add(f"{prefix}/tendency", side.tendency)
-                        if side.time_law is not None:
-                            for coefficient in ("quadratic", "denominator_rate"):
-                                writer.add(f"{prefix}/rational_time_v1/{coefficient}",
-                                           getattr(side.time_law, coefficient))
-            lbc_metadata = {
-                "spec_bdy_width": int(boundaries.spec_bdy_width),
-                "spec_zone": int(boundaries.spec_zone),
-                "relax_zone": int(boundaries.relax_zone),
-                "intervals": interval_metadata,
+            lbc = {
+                "spec_bdy_width": int(lbc["spec_bdy_width"]),
+                "spec_zone": int(lbc["spec_zone"]),
+                "relax_zone": int(lbc["relax_zone"]),
+                "schedule": [[float(start), float(end)]
+                             for start, end in lbc["schedule"]],
+                "fields": sorted(str(name) for name in lbc["fields"]),
             }
+        self._lbc = lbc
+
+        state = initial_result.state
+        digest = hashlib.sha256()
+        self._nested = _update_setup_core(digest, state, error_type=ValueError)
+        self._core_fingerprint = digest.copy().hexdigest()
+        if self._nested:
+            self._fingerprint = digest.hexdigest()
+        elif lbc is None or lateral_from_state:
+            _update_lateral_fingerprint(digest, state)
+            self._fingerprint = digest.hexdigest()
+        else:
+            _lateral_fingerprint_header(
+                digest, spec_bdy_width=lbc["spec_bdy_width"],
+                spec_zone=lbc["spec_zone"], relax_zone=lbc["relax_zone"],
+                count=len(lbc["schedule"]))
+            self._digest = digest
+        if self.sealed_forcing_extension and (lateral_from_state
+                                              or self._nested):
+            self._state_prefix = lateral_boundary_prefix_identity(state)
 
         cache_metadata = {
             "user": _json_copy(metadata or {}),
@@ -1288,8 +1596,6 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             "base_scalars": _base_metadata(initial_result.base),
             "met_fields": met_names,
             "surface_fields": surface_names,
-            "lbc": lbc_metadata,
-            "setup_fingerprint": setup_fingerprint(initial_result.state),
             "hydrometeor_initialization": _json_copy(
                 getattr(initial_result, "hydrometeor_initialization", {})),
         }
@@ -1311,23 +1617,151 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             getattr(initial_result, "aerosol_initialization", {}) or {})
         if aerosol_initialization:
             cache_metadata["aerosol_initialization"] = aerosol_initialization
+        # The water surface's receipt, and the skin temperatures taken from
+        # the other surface because the source held none of the target's
+        # own, ride the bundle only when there is something to say, by the
+        # same emptiness contract.
         lake_receipt = getattr(met, "water_temperature_receipt", None)
-        if lake_receipt and lake_receipt.get("lake_water_mapping"):
+        if lake_receipt and (lake_receipt.get("lake_water_mapping")
+                             or lake_receipt.get("water_fill")):
             cache_metadata["water_temperature"] = _json_copy(dict(lake_receipt))
-        if sealed_forcing_extension:
-            if boundaries is None:
-                raise ValueError(
-                    "sealed prepared-cache forcing requires root LBCs")
+        other_surface = {
+            name: int(counts.get("other_surface", 0))
+            for name, counts in (
+                getattr(met, "masked_field_repairs", None) or {}).items()
+            if counts.get("other_surface", 0)}
+        if other_surface:
+            cache_metadata["surface_from_other_surface"] = other_surface
+        # And the soil values of land the source holds no land for, which
+        # take the column the soil router builds at the skin temperature
+        # and the soil's field capacity (gpuwm/ingest/soil.py:
+        # island_soil_columns), by the same contract.
+        island_soil = {
+            name: int(counts.get("no_source_land", 0))
+            for name, counts in (
+                getattr(met, "masked_field_repairs", None) or {}).items()
+            if counts.get("no_source_land", 0)}
+        if island_soil:
+            cache_metadata["soil_from_skin_and_field_capacity"] = island_soil
+        if self.sealed_forcing_extension:
             cache_metadata.update({
                 "forcing_extension_mode": SEALED_PREPARED_EXTENSION_MODE,
-                "setup_core_fingerprint": setup_core_fingerprint(
-                    initial_result.state),
-                "lateral_boundary_prefix": lateral_boundary_prefix_identity(
-                    initial_result.state),
+                "setup_core_fingerprint": self._core_fingerprint,
             })
+        self._metadata = cache_metadata
+        return {
+            "identity": _json_copy(self.identity),
+            "metadata": _json_copy(cache_metadata),
+            "arrays": _json_copy(writer.manifest),
+            "payload_bytes": int(writer.payload_bytes),
+            "lbc": _json_copy(lbc),
+            "setup_core_fingerprint": self._core_fingerprint,
+        }
+
+    def write_segment(self, index: int, interval) -> dict[str, object]:
+        from gpuwm.state_serialization_contract import (
+            _lateral_fingerprint_interval, interval_has_time_law,
+            lateral_boundary_prefix_row,
+        )
+
+        if self._metadata is None or self._sealed:
+            raise RuntimeError("a segment belongs between head and seal")
+        if self._lbc is None:
+            raise ValueError("this cache declared no external boundaries")
+        index = int(index)
+        schedule = self._lbc["schedule"]
+        if index != len(self._intervals):
+            raise ValueError(
+                f"boundary segment {index} arrived before segment "
+                f"{len(self._intervals)}; segments are written in time "
+                "order because that order numbers their files")
+        if index >= len(schedule):
+            raise ValueError(
+                f"boundary segment {index} is past the declared "
+                f"{len(schedule)} intervals")
+        bounds = [float(interval.start_seconds),
+                  float(interval.end_seconds)]
+        if bounds != schedule[index]:
+            raise ValueError(
+                f"boundary segment {index} spans {bounds}, not the "
+                f"declared {schedule[index]}")
+        writer = self._writer
+        before_keys = set(writer.manifest)
+        before_bytes = writer.payload_bytes
+        field_names = sorted(interval.fields)
+        for name in field_names:
+            field = interval.fields[name]
+            for side_name in ("west", "east", "south", "north"):
+                side = getattr(field, side_name)
+                prefix = f"lbc/{index}/{name}/{side_name}"
+                writer.add(f"{prefix}/value", side.value)
+                writer.add(f"{prefix}/tendency", side.tendency)
+                if side.time_law is not None:
+                    for coefficient in ("quadratic", "denominator_rate"):
+                        writer.add(f"{prefix}/rational_time_v1/{coefficient}",
+                                   getattr(side.time_law, coefficient))
+        self._intervals.append({
+            "start_seconds": bounds[0],
+            "end_seconds": bounds[1],
+            "fields": field_names,
+        })
+        if self._digest is not None:
+            _lateral_fingerprint_interval(self._digest, interval)
+        row = lateral_boundary_prefix_row(interval)
+        self._prefix_rows.append(row)
+        self._rational = self._rational or interval_has_time_law(interval)
+        arrays = {key: _json_copy(spec) for key, spec in writer.manifest.items()
+                  if key not in before_keys}
+        return {
+            "index": index,
+            "start_seconds": bounds[0],
+            "end_seconds": bounds[1],
+            "fields": field_names,
+            "arrays": arrays,
+            "payload_bytes": int(writer.payload_bytes - before_bytes),
+            "prefix": _json_copy(row),
+        }
+
+    def seal(self) -> dict[str, object]:
+        from gpuwm.state_serialization_contract import (
+            lateral_boundary_prefix_document,
+        )
+
+        if self._metadata is None or self._sealed:
+            raise RuntimeError(
+                "the prepared cache is sealed once, after its head")
+        cache_metadata = dict(self._metadata)
+        if self._lbc is None:
+            lbc_metadata = None
+        else:
+            count = len(self._lbc["schedule"])
+            if len(self._intervals) != count:
+                raise ValueError(
+                    f"the prepared cache declares {count} boundary intervals "
+                    f"and {len(self._intervals)} were written")
+            lbc_metadata = {
+                "spec_bdy_width": self._lbc["spec_bdy_width"],
+                "spec_zone": self._lbc["spec_zone"],
+                "relax_zone": self._lbc["relax_zone"],
+                "intervals": list(self._intervals),
+            }
+        cache_metadata["lbc"] = lbc_metadata
+        cache_metadata["setup_fingerprint"] = (
+            self._fingerprint if self._digest is None
+            else self._digest.hexdigest())
+        if self.sealed_forcing_extension:
+            cache_metadata["lateral_boundary_prefix"] = (
+                self._state_prefix
+                if self._state_prefix is not None or self._nested
+                else lateral_boundary_prefix_document(
+                    spec_bdy_width=self._lbc["spec_bdy_width"],
+                    spec_zone=self._lbc["spec_zone"],
+                    relax_zone=self._lbc["relax_zone"],
+                    rows=self._prefix_rows, rational=self._rational))
+        writer = self._writer
         basis = {
             "schema": PREPARED_CACHE_SCHEMA,
-            "identity": _json_copy(identity),
+            "identity": _json_copy(self.identity),
             "metadata": cache_metadata,
             "arrays": writer.manifest,
             "payload_bytes": writer.payload_bytes,
@@ -1347,22 +1781,21 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             "content_sha256": hashlib.sha256(
                 _canonical(basis).encode("utf-8")).hexdigest(),
         }
-        header_path = temporary / _HEADER_NAME
-        header_path.write_text(
+        header_path = self.directory / _HEADER_NAME
+        partial = header_path.with_name(HEADER_PARTIAL_NAME)
+        partial.write_text(
             json.dumps(header, indent=2, sort_keys=True, allow_nan=False)
             + "\n", encoding="utf-8")
-        os.replace(temporary, path)
-    except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    return {
-        "schema": PREPARED_CACHE_SCHEMA,
-        "status": "BUILT",
-        "path": str(path.resolve()),
-        "content_sha256": header["content_sha256"],
-        "array_count": len(writer.manifest),
-        "payload_bytes": writer.payload_bytes,
-    }
+        _replace_file(partial, header_path)
+        self._sealed = True
+        return {
+            "schema": PREPARED_CACHE_SCHEMA,
+            "status": "BUILT",
+            "path": str(self.directory.resolve()),
+            "content_sha256": header["content_sha256"],
+            "array_count": len(writer.manifest),
+            "payload_bytes": writer.payload_bytes,
+        }
 
 
 def _reader_boundary_side(reader, prefix):
@@ -1723,6 +2156,7 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
     temporary.mkdir()
     writer = _BundleWriter(temporary)
     try:
+        writer.expect_reuse(prior_reader, prior_reader.arrays)
         for key in sorted(prior_reader.arrays):
             writer.link_verified(key, prior_reader)
         old_count = len(prior_boundaries.intervals)
@@ -1749,10 +2183,10 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
         (temporary / _HEADER_NAME).write_text(
             json.dumps(header, indent=2, sort_keys=True, allow_nan=False)
             + "\n", encoding="utf-8")
-        # The predecessor payloads are hard-linked by design.  Verify the
-        # complete staged authority after all links and the new header exist;
-        # a concurrent mutation therefore refuses publication rather than
-        # blessing bytes that no longer match the inherited manifest.
+        # Verify the complete staged authority after every linked or
+        # copied predecessor payload and the new header exist; a concurrent
+        # mutation therefore refuses publication rather than blessing bytes
+        # that no longer match the inherited manifest.
         PreparedCacheReader(
             temporary, expected_identity=new_identity).verify_all()
         prior_header_after = hashlib.sha256(
@@ -1774,6 +2208,9 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
         "content_sha256": header["content_sha256"],
         "array_count": len(writer.manifest),
         "payload_bytes": writer.payload_bytes,
+        # How the retained prefix reached the new cache: "linked" costs no
+        # disk, "copied" (a drive with no hard links) costs its size.
+        "predecessor_payloads": "copied" if writer.copying else "linked",
         "predecessor": {
             "path": str(predecessor.resolve()),
             "content_sha256": prior_reader.content_sha256,
@@ -1846,7 +2283,9 @@ def reconcile_cached_state_inventory(stored_names, expected_names):
 
 
 def restore_prepared_cache(path, *, expected_identity, cfg, static,
-                           allow_nested_without_lbc: bool = False
+                           allow_nested_without_lbc: bool = False,
+                           reader=None, boundary_source=None,
+                           array_module=None,
                            ) -> RestoredPreparedCache:
     """Validate and restore an integration-ready GPU state.
 
@@ -1857,16 +2296,30 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     live :class:`gpuwm.core.nest.NestCoupler` rebuilds rolling boundaries from
     the parent after each parent step.  The opt-in never permits a root cache
     to omit LBCs and never turns a child into a standalone root.
+
+    ``array_module`` is :class:`DomainState`'s setup seam.  ``None`` (the
+    default) restores onto the GPU for a forecast.  ``numpy`` restores a
+    host setup state for a caller that only PREPARES from the root, such
+    as the HRRR hierarchy stage: that stage builds the children on the CPU
+    whatever the machine has, and a CUDA import there refused every
+    HRRR domain tree on a CPU-only install although nothing in it needs
+    a card.  A NumPy state is never a valid forecast input.
     """
     # Resolve the pure ownership decision before importing the optional CUDA
     # runtime.  This keeps malformed caller contracts deterministic on CPU-
     # only installations and makes the hierarchy exception directly testable.
-    reader = PreparedCacheReader(path, expected_identity=expected_identity)
+    if reader is None:
+        reader = PreparedCacheReader(path, expected_identity=expected_identity)
     metadata = reader.header["metadata"]
     lbc_mode = _restore_lbc_mode(
         lbc_metadata=metadata["lbc"], identity=expected_identity,
         allow_nested_without_lbc=allow_nested_without_lbc)
-    import cupy as cp
+    if array_module is None:
+        import cupy as xp
+    elif array_module is np:
+        xp = np
+    else:
+        raise TypeError("array_module must be None (CUDA) or numpy")
 
     from gpuwm.core.grid import BaseState, VerticalCoord
     from gpuwm.core.state import DomainState
@@ -1909,7 +2362,7 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     except (TypeError, ValueError) as exc:
         raise PreparedCacheMismatchError(str(exc)) from exc
 
-    state = DomainState(cfg)
+    state = DomainState(cfg, array_module=array_module)
     state.load_base(coord, base)
     state.set_map_coriolis(
         static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
@@ -1927,11 +2380,29 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
             raise PreparedCacheMismatchError(
                 f"prepared cache state/{name} shape or dtype differs from "
                 "the active config")
-        target[...] = cp.asarray(host)
+        target[...] = xp.asarray(host)
 
     lbc_meta = metadata["lbc"]
+    streamed = boundary_source is not None
     if lbc_mode == "nested-parent-forced":
         boundaries = None
+    elif streamed:
+        # ``boundary_source`` streams the root's intervals from a prepared
+        # tree (gpuwm.ingest.boundary_stream): one device slot, reloaded
+        # at each interval seam from host FP32 exactly as the eager attach
+        # converts it, so nothing here waits for an interval the model has
+        # not reached.
+        from gpuwm.ingest.lateral_bc import (
+            attach_streaming_lateral_boundaries)
+
+        boundaries = boundary_source
+        if [[float(start), float(end)] for start, end
+                in getattr(boundaries.intervals, "bounds", ())] != [
+                [float(row["start_seconds"]), float(row["end_seconds"])]
+                for row in lbc_meta["intervals"]]:
+            raise PreparedCacheMismatchError(
+                "streamed boundary schedule differs from the prepared cache")
+        attach_streaming_lateral_boundaries(state, boundaries)
     else:
         intervals = []
         for index, interval_meta in enumerate(lbc_meta["intervals"]):
@@ -1949,9 +2420,22 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
             tuple(intervals), int(lbc_meta["spec_bdy_width"]),
             int(lbc_meta["spec_zone"]), int(lbc_meta["relax_zone"]))
         attach_lateral_boundaries(state, boundaries)
-    observed_setup = setup_fingerprint(state)
-    if metadata.get("forcing_extension_mode") == \
+    if streamed:
+        # The whole setup fingerprint needs every interval; at the head it
+        # is checked on its immutable core, and the full fingerprint is
+        # checked against the sealed header once every interval exists.
+        observed_setup = None
+        expected_core = getattr(reader, "setup_core_fingerprint", None)
+        if expected_core is None:
+            expected_core = metadata.get("setup_core_fingerprint")
+        if (expected_core is not None
+                and setup_core_fingerprint(state) != expected_core):
+            raise PreparedCacheMismatchError(
+                "prepared head reconstructed a different immutable setup "
+                "core")
+    elif metadata.get("forcing_extension_mode") == \
             SEALED_PREPARED_EXTENSION_MODE:
+        observed_setup = setup_fingerprint(state)
         if (setup_core_fingerprint(state)
                 != metadata.get("setup_core_fingerprint")):
             raise PreparedCacheMismatchError(
@@ -1962,9 +2446,11 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
             raise PreparedCacheMismatchError(
                 "sealed prepared cache reconstructed a different forcing "
                 "inventory")
-    elif observed_setup != metadata["setup_fingerprint"]:
-        raise PreparedCacheMismatchError(
-            "prepared cache reconstructed a different setup fingerprint")
+    else:
+        observed_setup = setup_fingerprint(state)
+        if observed_setup != metadata["setup_fingerprint"]:
+            raise PreparedCacheMismatchError(
+                "prepared cache reconstructed a different setup fingerprint")
 
     met_fields = {
         name: reader.read_array(f"met/{name}")
@@ -2000,19 +2486,20 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
 
 
 __all__ = [
-    "CACHE_WRITER_KEY", "CachedInitialResult",
+    "CACHE_WRITER_KEY", "CachedInitialResult", "HEADER_PARTIAL_NAME",
     "DEFAULT_TOLERANT_IDENTITY_FIELDS",
     "INERT_DIAGNOSTIC_IDENTITY_FIELDS",
     "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARATION_INERT_RUN_FIELDS",
     "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
-    "PreparedCacheReader", "RestoredPreparedCache",
+    "PreparedCacheReader", "PreparedHeadReader", "RestoredPreparedCache",
     "SEALED_PREPARED_EXTENSION_MODE", "STRICT_IDENTITY_FIELDS",
     "UNSTAMPED_WRITER",
     "cache_writer_version", "compare_prepared_domain_config",
     "compare_prepared_identity", "effective_prepared_domain_config",
     "prepared_cache_identity",
     "prepared_domain_config_identity", "prepared_identity_refusal",
+    "PreparedCacheStream", "boundary_schedule", "read_manifest_array",
     "reconcile_cached_state_inventory",
     "extend_prepared_cache", "restore_prepared_cache",
     "select_prepared_met_fields", "undelayed_identity_defaults",

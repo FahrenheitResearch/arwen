@@ -1844,7 +1844,7 @@ def test_a_mixed_column_asking_for_28_anywhere_still_refuses_the_wif_key(
     assert "mp_physics=6" in message
 
 
-def test_mp28_has_one_named_suite_on_one_route_and_is_never_a_default():
+def test_mp28_has_one_named_suite_on_the_prepared_routes_and_is_never_a_default():
     """The registry decides reachability, and this pins what it decided.
 
     The comment in ``pending_wrf_physics_components`` justifies appending
@@ -1855,9 +1855,12 @@ def test_mp28_has_one_named_suite_on_one_route_and_is_never_a_default():
 
     What the claim IS changed with audit R-067: the option went from no
     template at all -- which was the ship-only-what-users-can-reach rule
-    failing quietly -- to exactly one named suite, on the one route that
-    can build a cold start for it.  Never a default is the part that did
-    not change, and it is the part the blocker comment rests on.
+    failing quietly -- to exactly one named suite.  It rode the domain-tree
+    route alone until the mp_physics=28 cold-start arm landed (audit
+    R-044); it is on both prepared routes now, and the native benchmark
+    keeps it off because no native WRF run of it exists to replay.  Never
+    a default is the part that did not change, and it is the part the
+    blocker comment rests on.
     """
     from gpuwm.physics_compat import MP28_REGISTRY_OPTION_ID
     from gpuwm.physics_registry import DEFAULT_TEMPLATE_ID, physics_registry
@@ -1878,7 +1881,8 @@ def test_mp28_has_one_named_suite_on_one_route_and_is_never_a_default():
     assert len(suites) == 1, suites
     assert by_template.get(DEFAULT_TEMPLATE_ID) != MP28_REGISTRY_OPTION_ID
     # The route split is the claim, so it is asserted BOTH ways: declared
-    # where a runner can build the cold start, absent where none can.
+    # where a runner builds its own cold start, absent from the one route
+    # that replays a native run, which refuses it by that reason.
     routes = registry["runner_routes"]
     declaring = {
         route_id
@@ -1886,12 +1890,14 @@ def test_mp28_has_one_named_suite_on_one_route_and_is_never_a_default():
         for template_ids in (route.get("source_template_ids", {}) or {}).values()
         if suites & set(template_ids)
     }
-    assert declaring == {"tools.prepared_domain_tree_forecast"}, declaring
-    for route_id in ("tools.hrrr_single_domain_benchmark",
-                     "tools.prepared_single_domain_forecast"):
-        for template_ids in (
-                routes[route_id].get("source_template_ids", {}) or {}).values():
-            assert not suites & set(template_ids), route_id
+    assert declaring == {"tools.prepared_domain_tree_forecast",
+                         "tools.prepared_single_domain_forecast"}, declaring
+    benchmark = routes["tools.hrrr_single_domain_benchmark"]
+    for template_ids in (benchmark.get("source_template_ids", {}) or {}).values():
+        assert not suites & set(template_ids)
+    (suite,) = suites
+    assert "no native run of this composition exists" in (
+        benchmark["refused_template_ids"][suite])
 
 
 def test_the_aerosol_units_are_wrfs_resolved_value_not_the_registry_line():

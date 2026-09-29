@@ -79,13 +79,15 @@ def test_stages_only_selected_companions_and_keeps_plan_options(saved):
 
 
 def test_repeat_plans_share_the_native_canonical_acquisition_key_but_not_outputs(saved):
-    from gpuwm.go_cli import managed_download_key
+    from gpuwm.go_cli import config_fetch_request, managed_download_key
     from gpuwm.toml_document import emit_experiment_toml
     config, _plan = saved
     raw = tomllib.loads(config.read_text())
     first, second = bundle(saved), bundle(saved)
     assert first["id"] != second["id"]
-    assert first["data_cache_key"] == second["data_cache_key"] == managed_download_key(raw["fetch"])
+    # The key of the request the remote fetch stage makes, model top included.
+    assert first["data_cache_key"] == second["data_cache_key"] == managed_download_key(
+        config_fetch_request(raw))
     first_config = tomllib.loads(contents(first, "case.toml").decode())
     second_config = tomllib.loads(contents(second, "case.toml").decode())
     assert first_config["fetch"]["out"] == second_config["fetch"]["out"]
@@ -97,7 +99,7 @@ def test_repeat_plans_share_the_native_canonical_acquisition_key_but_not_outputs
 
 @pytest.mark.parametrize("source", ["gfs", "hrrr", "rap"])
 def test_ordinary_generic_prepared_sources_keep_native_acquisition_owner(saved, source):
-    from gpuwm.go_cli import managed_download_key
+    from gpuwm.go_cli import config_fetch_request, managed_download_key
     from gpuwm.toml_document import emit_experiment_toml
     config, _plan = saved
     raw = tomllib.loads(config.read_text())
@@ -112,8 +114,73 @@ def test_ordinary_generic_prepared_sources_keep_native_acquisition_owner(saved, 
     assert staged["fetch"]["source"] == source and plan["route"] == "prepared"
     assert staged["fetch"]["hours"] == 6 and staged["fetch"]["cycle"] == "2026-09-07T18"
     assert plan["run_options"]["data_dir"] == staged["fetch"]["out"]
-    assert document["data_cache_key"] == managed_download_key(raw["fetch"])
+    assert document["data_cache_key"] == managed_download_key(config_fetch_request(raw))
     assert "case_data" not in staged and document["blobs"] == []
+
+
+@pytest.mark.parametrize("source, hosts", [("rap", ("nomads", "aws")),
+                                           ("hrrr", ("nomads", "s3"))])
+def test_the_node_download_folder_is_keyed_on_the_host_the_plan_pins(saved, source, hosts):
+    """Two reviews of one config pinned to different hosts get two folders.
+
+    The node's download folder was keyed on the [fetch] table alone, so a
+    second review asking another host through ``run_options.transport``
+    landed in the folder the first review's fetch had filled, and the
+    node's fetch refused it: "--out already holds a different request".
+    """
+    from gpuwm.go_cli import config_fetch_request, managed_download_key
+    from gpuwm.toml_document import emit_experiment_toml
+    config, plan = saved
+    raw = tomllib.loads(config.read_text())
+    raw["experiment"]["run_seconds"] = 6 * 3600
+    raw["fetch"].update(source=source, cycle="2026-09-07T18", forecast_start_hour=0, hours=6)
+    raw["fetch"].pop("cadence", None)
+    config.write_text(emit_experiment_toml(raw))
+    document = json.loads(plan.read_text())
+
+    def keyed(transport):
+        document["run_options"] = {"render_products": "none",
+                                   **({} if transport is None else {"transport": transport})}
+        plan.write_text(json.dumps(document))
+        return bundle(saved)["data_cache_key"]
+
+    request = config_fetch_request(raw)
+    first, second = hosts
+    assert keyed(first) == managed_download_key(request | {"transport": first})
+    assert keyed(second) == managed_download_key(request | {"transport": second})
+    assert keyed(first) != keyed(second)
+    assert keyed(None) == managed_download_key(request)
+    if source == "hrrr":
+        # The unpinned default written out asks for what no option asks for.
+        assert keyed("auto") == keyed(None)
+
+
+@pytest.mark.parametrize("table, option, host", [
+    ("s3", None, "s3"), ("s3", "nomads", "nomads"), ("s3", "auto", None),
+    ("auto", None, None)])
+def test_the_reviewed_download_recipe_asks_the_host_the_plan_pins(
+        saved, table, option, host):
+    """The review states the request the node's fetch makes.
+
+    Its recipe was the [fetch] table as written, so a plan that pinned
+    another host through ``run_options.transport``, or unpinned the
+    table's host with ``auto``, was reviewed as asking the table's host.
+    """
+    from gpuwm.toml_document import emit_experiment_toml
+    config, plan = saved
+    raw = tomllib.loads(config.read_text())
+    raw["experiment"]["run_seconds"] = 6 * 3600
+    raw["fetch"].update(source="hrrr", cycle="2026-09-07T18", forecast_start_hour=0,
+                        hours=6, transport=table)
+    raw["fetch"].pop("cadence", None)
+    config.write_text(emit_experiment_toml(raw))
+    document = json.loads(plan.read_text())
+    document["run_options"] = {"render_products": "none",
+                               **({} if option is None else {"transport": option})}
+    plan.write_text(json.dumps(document))
+    downloads = bundle(saved)["expected_downloads"]
+    assert [item["recipe"].get("transport") for item in downloads] == [host]
+    assert all(item["recipe"]["source"] == "hrrr" for item in downloads)
 
 
 @pytest.mark.parametrize("extended_path", [False, True])

@@ -14,6 +14,8 @@ from pathlib import Path
 import tempfile
 from typing import Callable
 
+from gpuwm.filesystem_paths import publish_new
+
 INTENT_NAME = 'analysis-publication.json'
 COMMIT_NAME = 'analysis-commit.json'
 SCHEMA = 'gpuwm-da.analysis-commit.v1'
@@ -61,7 +63,7 @@ def write_record(path, value) -> dict:
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(temporary, path)
+            publish_new(temporary, path)
         except FileExistsError:
             if path.read_bytes() != payload:
                 raise ValueError(f'{path}: refusing to replace a published identity') from None

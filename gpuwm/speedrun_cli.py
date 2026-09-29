@@ -243,7 +243,11 @@ def _cache_census(cache_dir: Path) -> dict[str, Any]:
 
     entries, undecodable, architectures = notice.scan_kernel_cache(cache_dir)
     capability = notice.current_compute_capability()
-    token = None if capability is None else f"sm_{capability.replace('.', '')}"
+    # The census keys an architecture as the bare SM ("86", "120"), the
+    # way CuPy spells the card.  Looking it up as "sm_86" found nothing,
+    # so a cache full of this card's kernels counted 0 for this card and
+    # a warm-class course refused on a warm cache as cold.
+    token = None if capability is None else capability.replace(".", "")
     for_this_card = (
         entries if token is None
         else architectures.get(token, 0) + undecodable)

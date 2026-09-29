@@ -8,7 +8,7 @@
       "message": "source frame is incomplete for WRF initialization: land_fraction, skin_temperature, soil_temperature, specific_humidity_2m, surface_pressure, terrain_height, volumetric_soil_moisture",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "aigfs-nomads",
     "verdict": "REFUSED"
   },
@@ -416,7 +416,7 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "aigfs-nomads",
     "verdict": "INSPECTED"
   },
@@ -424,6 +424,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "aigfs-nomads"
 }

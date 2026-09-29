@@ -4,7 +4,7 @@
 //! pyo3 -- one loading discipline across every gpuwm bridge), positional
 //! C signatures guarded by an ABI version probe, a thread-local
 //! last-error string, and a contract-marker symbol
-//! (`gpuwm_static_build_fields`, listed in `gpuwm/bridges.py`
+//! (`gpuwm_static_sampling_portable_v1`, listed in `gpuwm/bridges.py`
 //! `BRIDGE_ABI_MARKERS`) naming the capability that distinguishes this
 //! contract.
 //!
@@ -162,6 +162,10 @@ pub extern "C" fn gpuwm_static_abi_version() -> u32 {
         STATIC_ABI_VERSION
     })
 }
+
+/// Fixed float32 and float64 sampling arithmetic for prepared moving nests.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_sampling_portable_v1() -> u32 { 1 }
 
 /// The source-revision stamp, same contract as
 /// `gpuwm_ncwrite_source_rev` (see `netcdf-writer`): read out of the

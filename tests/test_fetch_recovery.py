@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from gpuwm import fetch_routes, go_cli
+from gpuwm import fetch_endpoints, fetch_routes, go_cli
 
 
 @pytest.fixture(autouse=True)
@@ -78,8 +78,10 @@ def test_transient_retries_are_bounded_and_do_not_publish_a_manifest(tmp_path, n
 
     with pytest.raises(ValueError, match="remaining files"):
         _run(plan, tmp_path, fail)
-    assert len(seen) == 3 * len(plan.ladder)
-    assert no_wait == [2, 4]
+    # The tree's shared schedule: five rounds, 2, 4, 8 and 16 s apart.
+    assert fetch_endpoints.TRANSIENT_ATTEMPTS == 5
+    assert len(seen) == fetch_endpoints.TRANSIENT_ATTEMPTS * len(plan.ladder)
+    assert no_wait == [2, 4, 8, 16]
     assert not (tmp_path / fetch_routes.MANIFEST_NAME).exists()
     assert not (tmp_path / fetch_routes.SHA256SUMS_NAME).exists()
 

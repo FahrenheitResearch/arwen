@@ -8,7 +8,9 @@
 //!   format, dimensions, global attributes, and every variable with its
 //!   dimensions, shape, dtype and attributes.  Selector resolution
 //!   (name, `standard_name`, units checks) happens on the Python side
-//!   against this document; no values are read.
+//!   against this document.  The only values read are one element per
+//!   variable of a classic file, to prove the file holds every byte its
+//!   header describes (see [`check_classic_extent`]).
 //! * `rw_netcdf dump FILE OUTDIR VAR...` decodes the named variables and
 //!   writes little-endian `f64` numeric planes or fixed-width ASCII bytes,
 //!   plus `metadata.json` giving each variable's dtype, shape and filename.
@@ -60,7 +62,8 @@ usage: rw_netcdf inventory FILE
        rw_netcdf recover-wrf-soil WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR
        rw_netcdf --abi | --help
 
-  inventory  print a JSON description of FILE (no values are read)
+  inventory  print a JSON description of FILE; a classic file that ends
+             before its data does is refused
   dump       decode VARIABLEs into OUTPUT_DIR as flat little-endian f64
              files plus metadata.json
   --unit-scale=N / --unit-offset=N  explicit quantity conversion after CF unpacking
@@ -77,6 +80,12 @@ struct Inventory {
     schema: &'static str,
     format: String,
     metadata: MetadataProvenance,
+    /// True when this reader proved the file holds every byte its header
+    /// describes (a classic file; see [`check_classic_extent`]).  False
+    /// for a NetCDF-4 file, whose own library checks its end when it
+    /// opens.  A reader older than the check omits the field, which is
+    /// how a caller tells the two apart.
+    extent_checked: bool,
     dimensions: Vec<DimensionRecord>,
     global_attributes: BTreeMap<String, serde_json::Value>,
     variables: Vec<VariableRecord>,
@@ -161,6 +170,17 @@ struct CfApplied {
     fill_value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     missing_value: Option<f64>,
+    /// The NetCDF default fill of the stored type, masked because the
+    /// variable declares no `_FillValue`: a value the writer never set
+    /// (a masked element written without an explicit fill) is stored as
+    /// this finite number, and passing it on made 9.97e36 K a
+    /// temperature.  Byte types have no default fill in this rule, the
+    /// same exemption netCDF4-python makes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_fill: Option<f64>,
+    /// True when the reader applied the default-fill rule above, so a
+    /// caller can tell this reader from one that predates it.
+    default_fill_rule: bool,
     missing_count: usize,
     /// False under `--raw`: the attributes above are reported but were
     /// deliberately not acted on, so stored sentinels survive.
@@ -512,6 +532,7 @@ impl MetadataProvenance {
 
 fn inventory(path: &Path) -> Result<(), String> {
     let (file, metadata) = open(path)?;
+    let extent_checked = check_classic_extent(&file)?;
     let dimensions: Vec<DimensionRecord> = file
         .dimensions()
         .map_err(|error| format!("cannot read dimensions of {}: {error}", path.display()))?
@@ -550,6 +571,7 @@ fn inventory(path: &Path) -> Result<(), String> {
         schema: INVENTORY_SCHEMA,
         format: format!("{:?}", file.format()),
         metadata,
+        extent_checked,
         dimensions,
         global_attributes,
         variables,
@@ -558,6 +580,64 @@ fn inventory(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot serialize inventory: {error}"))?;
     println!("{text}");
     Ok(())
+}
+
+/// Does a classic file hold every byte its header describes?
+///
+/// A CDF-1/2/5 file cut off partway through its data (a copy that
+/// stopped, a disk that filled, a writer that died) keeps its header, so
+/// it still opens, and the C library hands the missing values back as
+/// zeros without a word.  A truncated forecast then reads as a real one
+/// whose fields happen to be zero.  So the inventory reads the LAST
+/// element of every variable, one value each whatever the variable's
+/// size: the decoder checks the bytes that element needs against the
+/// file's length, and between them those elements reach the file's last
+/// byte whatever order the variables were laid out in.  A character
+/// variable is read whole, being text.
+///
+/// Only running past the end is this check's to report.  A variable that
+/// cannot be read for another reason is left to the read that asks for
+/// it, which names its own problem, so a file that inventoried before
+/// still does.  `Ok(false)` for a NetCDF-4 file: the HDF5 library checks
+/// that container's end when it opens, and this reader did not.
+fn check_classic_extent(file: &netcrust::File) -> Result<bool, String> {
+    use netcrust::{DataType, NcFormat, NcSliceInfo, NcSliceInfoElem};
+    if !matches!(file.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5) {
+        return Ok(false);
+    }
+    let variables = file
+        .variables()
+        .map_err(|error| format!("cannot read variables: {error}"))?;
+    for variable in &variables {
+        let shape = variable.shape();
+        if shape.contains(&0) {
+            continue;
+        }
+        let name = variable.name();
+        let read = if matches!(variable.dtype(), DataType::Char) {
+            file.read_strings(name).map(|_| ())
+        } else if shape.is_empty() {
+            file.read_array_f64(name).map(|_| ())
+        } else {
+            let last = NcSliceInfo {
+                selections: shape
+                    .iter()
+                    .map(|&len| NcSliceInfoElem::Index(len as u64 - 1))
+                    .collect(),
+            };
+            file.read_array_f64_slice(name, &last).map(|_| ())
+        };
+        if let Err(error) = read {
+            if error.to_string().contains("beyond file") {
+                return Err(format!(
+                    "the file ends before its data does: variable '{name}' runs \
+                     past the end, so it was cut short while it was written or \
+                     copied"
+                ));
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// Preserve fixed-width ASCII character arrays in their declared shape.
@@ -599,6 +679,25 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
 fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
                     apply_scale: bool, unit_transform: [f64; 2]) -> Result<(), String> {
     dump_with_water_layer(path, out_dir, names, apply_mask, apply_scale, unit_transform, None)
+}
+
+/// The NetCDF library's default fill for a stored type (netcdf.h
+/// NC_FILL_*), as the f64 the decoder compares against.  A float variable
+/// is compared in its own precision, so the f32 default widens exactly as
+/// a stored f32 element does.  Byte and character types return None.
+fn nc_default_fill(dtype: &netcrust::DataType) -> Option<f64> {
+    use netcrust::DataType as T;
+    match dtype {
+        T::I16 => Some(-32767.0),
+        T::I32 => Some(-2147483647.0),
+        T::F32 => Some(f64::from(9.969_209_968_386_869e36_f32)),
+        T::F64 => Some(9.969_209_968_386_869e36),
+        T::U16 => Some(65535.0),
+        T::U32 => Some(4294967295.0),
+        T::I64 => Some(-9223372036854775806.0),
+        T::U64 => Some(18446744073709551614.0),
+        _ => None,
+    }
 }
 
 fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
@@ -670,11 +769,18 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
         // `--raw` reports the attributes it did NOT act on, so the
         // record still says what the file declares while `applied`
         // says whether anything was done about it.
+        let fill_value = number("_FillValue");
+        let default_fill = match (&variable, fill_value) {
+            (Some(variable), None) => nc_default_fill(variable.dtype()),
+            _ => None,
+        };
         let cf = CfApplied {
             scale_factor: number("scale_factor"),
             add_offset: number("add_offset"),
-            fill_value: number("_FillValue"),
+            fill_value,
             missing_value: number("missing_value"),
+            default_fill,
+            default_fill_rule: apply_mask,
             missing_count: 0,
             applied: apply_mask || apply_scale,
         };
@@ -682,6 +788,7 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
         for value in values.iter_mut() {
             if apply_mask {
                 let is_missing = cf.fill_value.is_some_and(|fill| *value == fill)
+                    || cf.default_fill.is_some_and(|fill| *value == fill)
                     || cf.missing_value.is_some_and(|marker| *value == marker);
                 if is_missing || !value.is_finite() {
                     if is_missing {
@@ -1449,6 +1556,52 @@ mod tests {
             .iter()
             .find(|record| record["name"] == name)
             .unwrap_or_else(|| panic!("{name} not in metadata"))
+    }
+
+    /// A float written with a masked element and no `_FillValue` stores
+    /// the library's default fill, 9.969e36.  That is a finite number, so
+    /// a reader that only honours declared markers hands it on as data
+    /// (a 9.97e36 K temperature).  Masked on, it is missing; raw, it is
+    /// the stored number; a declared `_FillValue` replaces the default.
+    #[test]
+    fn an_undeclared_default_fill_is_missing() {
+        use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
+        let dir = scratch("default-fill");
+        let source = dir.join("fill.nc");
+        let mut schema = Schema::new(NcFormat::Classic);
+        let x = schema.def_dim("x", 3, false).expect("dim");
+        let t = schema.def_var("T", NcType::Float, &[x]).expect("var");
+        let d = schema.def_var("D", NcType::Double, &[x]).expect("var");
+        let declared = schema.def_var("declared", NcType::Float, &[x]).expect("var");
+        schema
+            .put_var_attr(declared, "_FillValue", AttrValue::Floats(vec![-999.0]))
+            .expect("attr");
+        let mut writer = NcWriter::create(&source, schema).expect("create");
+        let fill32 = 9.969_209_968_386_869e36_f32;
+        writer.write_var(t, VarData::F32(&[1.0, fill32, 3.0])).expect("T");
+        writer.write_var(d, VarData::F64(&[9.969_209_968_386_869e36, 2.0, 3.0])).expect("D");
+        writer.write_var(declared, VarData::F32(&[fill32, -999.0, 3.0])).expect("declared");
+        writer.finish().expect("finish");
+
+        let out = dir.join("out");
+        dump(&source, &out, &["T".into(), "D".into(), "declared".into()], true, true)
+            .expect("dump");
+        let t_values = read_f64_plane(&out.join("0000.f64"));
+        assert_eq!(t_values[0], 1.0);
+        assert!(t_values[1].is_nan(), "the f32 default fill must mask");
+        let d_values = read_f64_plane(&out.join("0001.f64"));
+        assert!(d_values[0].is_nan(), "the f64 default fill must mask");
+        let declared_values = read_f64_plane(&out.join("0002.f64"));
+        assert!(declared_values[0].is_finite(), "a declared fill replaces the default");
+        assert!(declared_values[1].is_nan());
+        let metadata = read_metadata(&out);
+        assert_eq!(record(&metadata, "T")["cf"]["missing_count"], 1);
+        assert_eq!(record(&metadata, "T")["cf"]["default_fill_rule"], true);
+        assert!(record(&metadata, "declared")["cf"].get("default_fill").is_none());
+
+        let raw = dir.join("raw");
+        dump(&source, &raw, &["T".into()], false, false).expect("raw dump");
+        assert!(read_f64_plane(&raw.join("0000.f64"))[1] > 9.0e36);
     }
 
     #[test]

@@ -52,9 +52,19 @@ from gpuwm.ingest.lateral_bc import (
 from gpuwm.ingest.prepared_cache import (
     CONDITIONAL_PREPARATION_RECEIPTS,
     prepared_cache_identity,
-    write_prepared_cache,
 )
+from gpuwm.ingest.boundary_stream import (
+    SEALED_REASONS,
+    PreparedTreeWriter,
+    producer_device_bytes,
+    remove_unfinished_tree,
+)
+from gpuwm.ingest.cpu_backend import host_step_workers
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+from gpuwm.ingest.preparation_price import (
+    price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
+    admit_preparation,
     release_backend_memory,
     resolve_preprocess_backend,
 )
@@ -67,11 +77,13 @@ from gpuwm.ingest.water_overlay import (
     load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence,
 )
 from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
-from gpuwm.native_domain_artifacts import _atomic_staging_sibling
+from gpuwm.native_domain_artifacts import (
+    _atomic_staging_sibling, published_path_refusal)
 from gpuwm.native_wrf_contract import (
     NATIVE_STATIC_REQUIRED,
     canonical_noah_surface,
     load_native_static_cache,
+    require_land_terrain,
     validate_native_lambert_contract,
     validate_native_lambert_contracts,
     validate_native_static_fields,
@@ -169,9 +181,11 @@ def _verify_input_manifest(
 
 
 def _validated_static(
-        fields: Mapping[str, object], grid, ny: int, nx: int,
+        fields: Mapping[str, object], grid, ny: int, nx: int, *,
+        land_terrain: bool = True,
 ) -> dict[str, np.ndarray]:
-    return validate_native_static_fields(fields, grid, ny, nx)
+    return validate_native_static_fields(
+        fields, grid, ny, nx, land_terrain=land_terrain)
 
 
 from gpuwm.ingest.water_temperature import (
@@ -220,8 +234,10 @@ def _announce_adaptation(sentence: str) -> None:
     """Say, once, that the run is not on the configured vertical coordinate."""
 
     warn(sentence,
-         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
-         "fatal and names reducing etac as the remedy; the remedy is "
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls a column "
+         "the coordinate cannot order fatal and names reducing etac as "
+         "the remedy, and a column it only just orders keeps one layer "
+         "too thin to integrate, which a lower etac thickens; the etac is "
          "derived here from the terrain this run can actually touch and "
          "applied, so the prepared inputs, their receipt and the forecast "
          "all carry the same coordinate.  p_top is untouched.")
@@ -239,12 +255,24 @@ def _survey_static_catalog(exp, wps_namelist, geog_root):
 
 
 def _load_static(path: Path, grid, ny: int, nx: int) -> dict[str, np.ndarray]:
-    return load_native_static_cache(path, grid, ny, nx)
+    """A prebuilt root static cache, validated but for its land height.
+
+    The land-height check (:func:`gpuwm.native_wrf_contract
+    .require_land_terrain`) is the caller's: the ERA5 and GFS doors lay a
+    declared ``[static.highres]`` terrain over these fields first, and it
+    reads the terrain the run will integrate.
+    """
+    return load_native_static_cache(
+        path, grid, ny, nx, land_terrain=False)
 
 
 def _static_from_geog(
         wps_namelist: Path, geog_root: Path, grid, cfg,
 ) -> tuple[dict[str, np.ndarray], dict[str, object], dict[str, object]]:
+    """The root statics from WPS GEOG, validated but for their land height.
+
+    The land-height check is the caller's, as for :func:`_load_static`.
+    """
     catalog, receipt = verified_static_catalog(
         Path(wps_namelist), Path(geog_root), (1,))
     fields = build_static_for_domain(grid, catalog, 1)
@@ -253,8 +281,9 @@ def _static_from_geog(
     # and the statics cannot disagree about what a lake is.
     landuse_attrs = geog_selection_from_catalog(
         catalog, 1).landuse_global_attrs()
-    return (_validated_static(fields, grid, cfg.ny, cfg.nx), receipt,
-            landuse_attrs)
+    return (_validated_static(fields, grid, cfg.ny, cfg.nx,
+                              land_terrain=False),
+            receipt, landuse_attrs)
 
 
 def _write_static_cache(path: Path, fields: Mapping[str, np.ndarray]) -> None:
@@ -360,7 +389,7 @@ def prepare_era5_wrf(
     input_manifest: Path,
     input_manifest_sha256: str,
     output_root: Path,
-    preprocess_backend: str = "cuda",
+    preprocess_backend: str = "auto",
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: Path | None = None,
     geog_root: Path | None = None,
@@ -404,8 +433,21 @@ def prepare_era5_wrf(
             raise FileNotFoundError(f"missing ERA5 adapter input {role}: {path}")
     if not os.access(paths["bridge"], os.X_OK):
         raise PermissionError("ERA5 Rust bridge is not executable")
+    # A head published early whose producer failed, was stopped or went
+    # silent is this tool's own unfinished product, not a finished run.
+    remove_unfinished_tree(output_root)
     if output_root.exists():
         raise FileExistsError(f"refusing to overwrite {output_root}")
+    # A domain tree is published through staging deeper than its
+    # output root; refused here, before any GRIB is hashed or decoded.
+    # The experiment is read only to count its domains, and only when
+    # the limit binds: a single-domain bundle publishes no tree and is
+    # not measured against it.  The load the preparation uses follows
+    # the manifest verification below.
+    refusal = published_path_refusal(output_root)
+    if (refusal is not None and len(load_era5_adapter_config(
+            paths["experiment_config"])[0].domains) > 1):
+        raise ValueError(refusal)
     manifest = _verify_input_manifest(
         Path(input_manifest), input_manifest_sha256, paths)
     preprocess = resolve_preprocess_backend(
@@ -415,6 +457,14 @@ def prepare_era5_wrf(
 
     total_started = time.perf_counter()
     exp, declared = load_era5_adapter_config(paths["experiment_config"])
+    # THE FLOOR, BEFORE THE DECODE (A98): the domains alone bound the card
+    # price from below, so an explicit cuda they cannot fit is refused
+    # before the host decode, and auto moves to the CPU here.  The decoded
+    # price below stays the binding check.
+    preprocess = admit_preparation(
+        preprocess, lambda: price_preparation_floor("era5", exp),
+        workers=preprocess_workers)
+    preprocess_receipt = preprocess.receipt()
     from gpuwm.case_data import preparation_case_policy
     case_policy = preparation_case_policy(declared)
     from gpuwm.static.highres_production import (
@@ -521,6 +571,10 @@ def prepare_era5_wrf(
         static, grid, config=static_highres, domain_id=1,
         case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
         baseline_receipt=root_static_receipt)
+    # The land-height check reads the terrain the run will integrate: a
+    # declared high-resolution terrain gives the islands the baseline
+    # dataset holds at 0 m their height.
+    require_land_terrain(static["HGT_M"], static["LANDMASK"])
     # THE COORDINATE, BEFORE ANYTHING IS BUILT ON IT.  The same call the
     # other source doors make, in the same place: root terrain in hand,
     # nothing yet built on a vertical coordinate.
@@ -588,8 +642,8 @@ def prepare_era5_wrf(
             f"{exp.start_time.isoformat()}, and the decoded series "
             f"[{first.isoformat()} .. {last.isoformat()}] does not.  "
             "Either fetch a window that covers the start hour (`gpuwm "
-            f"fetch --source era5 --cycle {exp.start_time:%Y-%m-%dT%H}` "
-            "writes one that begins there), or set "
+            f"fetch --source era5 --cycle {exp.start_time:%Y-%m-%dT%H} "
+            "--retrieve` downloads one that begins there), or set "
             "[experiment].start_time in "
             f"{paths['experiment_config']} to an hour the series carries.")
     if start_index:
@@ -607,7 +661,9 @@ def prepare_era5_wrf(
     # hierarchy, before any horizontal interpolation.  Absent, this is
     # the identity: the same tuple object flows onward.
     water_overlay, water_file_binding = load_bound_water_overlay(water_temperature_overlay)
-    snapshots = overlay_snapshot_sequence(snapshots, water_overlay, binding=water_file_binding)
+    snapshots = overlay_snapshot_sequence(
+        snapshots, water_overlay, binding=water_file_binding,
+        workers=host_step_workers(preprocess))
     source_inventory = tuple(snapshots[0].fields) if snapshots else ()
     source_units = dict(canonical_units(parse_vtable(paths["vtable"])))
     has_invariant_orography = (
@@ -622,7 +678,7 @@ def prepare_era5_wrf(
             "--source-orography artifact was passed, and the config "
             "declares no [case_data] source_orography.  Fix ONE of these: "
             "fetch the combined GRIB with the invariant geopotential "
-            "included (`gpuwm fetch --source era5` writes it into "
+            "included (`gpuwm fetch --source era5 --retrieve` writes it into "
             "era5-combined.grib), pass --source-orography PATH "
             "(--source-orography-variable NAME, default SOILHGT), or "
             "declare source_orography + source_orography_variable in "
@@ -682,9 +738,21 @@ def prepare_era5_wrf(
 
     from gpuwm.core.grid import make_vertical_coord
 
+    # THE FIT, BEFORE THE FIRST DEVICE ALLOCATION: the decode above ran on
+    # the host.  ERA5's humidity conversion also runs on the whole SOURCE
+    # grid in FP64, which the price carries as its own phase.  A backend
+    # already on the CPU is not priced.
+    preprocess = admit_preparation(
+        preprocess, lambda: price_forcing_preparation(
+            "era5", exp, snapshots, fp64_humidity_transform=True),
+        workers=preprocess_workers)
+    preprocess_receipt = preprocess.receipt()
     initialize_started = time.perf_counter()
-    # ONE forcing time is ever resident.  The start time is built LAST
-    # (start_last_forcing_order) and is the only met/state this loop
+    # ONE forcing time is ever resident.  A single domain builds the start
+    # time FIRST, publishes it in the prepared head and releases it, then
+    # writes each boundary interval as soon as its two times exist
+    # (gpuwm.ingest.boundary_stream).  Otherwise the start time is built
+    # LAST (start_last_forcing_order) and is the only met/state this loop
     # retains; every other time contributes its perimeter frames against
     # its own position and is released before the next one is
     # interpolated.  Walking the times in order instead meant holding the
@@ -700,7 +768,9 @@ def prepare_era5_wrf(
     forcing = StateBoundaryFrames(
         spec_bdy_width=cfg.spec_bdy_width,
         spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
-    for index in start_last_forcing_order(len(snapshots)):
+    def build_forcing_time(index):
+        # One forcing time's build, unchanged.  A single domain calls it
+        # start first (gpuwm.ingest.boundary_stream).
         source = snapshots[index]
         met = interpolate_era5_to_lambert(
             source, grid,
@@ -713,23 +783,40 @@ def prepare_era5_wrf(
             eta_levels=exp.vertical.eta_levels)
         initialized = initialize_real(
             met, cfg, coord, static["HGT_M"], grid=grid,
+            landmask=static["LANDMASK"],
             source_orography=source_terrain,
             p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
             preprocess_backend=preprocess,
-            state_backend="preprocess")
+            state_backend="preprocess", boundary_only=index != 0)
         initialized.state.set_map_coriolis(
             static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
             static["F"], static["E"], sina=static["SINALPHA"],
             cosa=static["COSALPHA"])
-        forcing.add_state(initialized.state, index=index)
-        if index == 0:
-            initial_met = met
-            initial_result = initialized
-        else:
-            del met, initialized, coord
-            release_backend_memory(preprocess)
-    boundaries = forcing.build(times)
-    attach_lateral_boundaries(initial_result.state, boundaries)
+        return met, initialized
+
+    # START FIRST when the head can be published before the last time
+    # exists.  A hierarchy needs every root interval before its
+    # children, and a water-temperature overlay binds its receipt over
+    # every forcing time into the cache identity: both build every time
+    # first, start time last, as before.
+    start_first = (len(exp.domains) == 1
+                   and water_temperature_overlay is None)
+    if not start_first:
+        for index in start_last_forcing_order(len(snapshots)):
+            met, initialized = build_forcing_time(index)
+            forcing.add_state(initialized.state, index=index)
+            if index == 0:
+                initial_met = met
+                initial_result = initialized
+            else:
+                del met, initialized
+                release_backend_memory(preprocess)
+        boundaries = forcing.build(times)
+        attach_lateral_boundaries(initial_result.state, boundaries)
+    else:
+        initial_met, initial_result = build_forcing_time(0)
+        forcing.add_state(initial_result.state, index=0)
+        boundaries = None
 
     # No lake skin override: metgrid's masked=both SKINTEMP chain with
     # static-landmask targets already yields water-source skin at lakes,
@@ -746,6 +833,10 @@ def prepare_era5_wrf(
         soil_type=static["SCT_DOM"],
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
+        # Land the source holds no land for takes the column the
+        # router builds (gpuwm/ingest/soil.py: island_soil_columns).
+        soil_no_source_land=getattr(
+            initial_met, "soil_no_source_land", None),
         terrain=static["HGT_M"],
         # Declared artifact XOR the GRIB's own invariant SOILGEO, resolved
         # the same way initialize_real resolves it a few lines above.
@@ -812,6 +903,7 @@ def prepare_era5_wrf(
     if staging.exists():
         raise FileExistsError(f"refusing stale ERA5 staging path {staging}")
     staging.mkdir(parents=True)
+    writer = None
     try:
         static_cache = staging / "native-static.npz"
         geometry_receipt = staging / "geometry-receipt.json"
@@ -829,7 +921,8 @@ def prepare_era5_wrf(
         if statics_corridor is not None and len(exp.domains) < 2:
             raise ValueError(
                 "--statics-corridor prepares child-resolution statics over "
-                "a parent extent, and this experiment has no child domain; "
+                "the ground a child domain can reach, and this experiment "
+                "has no child domain; "
                 "remove the flag or prepare a domain tree")
         if len(exp.domains) > 1:
             selected_workers = hierarchy_workers
@@ -949,11 +1042,63 @@ def prepare_era5_wrf(
             forcing_hours=forcing_hours,
             source_identity=native_source_identity,
         )
+        writer = PreparedTreeWriter(
+            staging=staging, output_root=output_root, identity=identity)
+        if not start_first:
+            writer.decline_chaining(SEALED_REASONS["water_overlay"])
+        preprocessing_receipt_sha256 = hashlib.sha256(
+            _canonical(preprocess_receipt).encode("utf-8")).hexdigest()
+        # Everything the proof says that the start time already knows; the
+        # seal adds the artifact records, the cache receipt, the export and
+        # the wall times (SEAL_ONLY_PROOF_KEYS).
+        proof_head = {
+            "schema": "gpuwm-era5-direct-wrf-proof-v2",
+            "status": "READY_NOT_YET_STOCK_WRF_GATED",
+            "vertical_coordinate": _vertical_coordinate_receipt(
+                exp, vertical_adaptation),
+            "forcing_times": [value.isoformat() for value in times],
+            "forcing_hours": forcing_hours,
+            "boundary_interval_seconds": boundary_interval_seconds,
+            "input_manifest_sha256": input_manifest_digest,
+            "decoder_sha256": _sha256(paths["bridge"]),
+            "preprocessing": preprocess_receipt,
+            "preprocessing_receipt_sha256": preprocessing_receipt_sha256,
+            **soil_floor_binding,
+            # The soil-state SOURCE resolution, unconditional: a reader
+            # of this forecast must be able to answer "how coarse was
+            # the soil I started from" without the config, and whether
+            # the sub-source-cell reconstitution ran on it.  Bound
+            # outside CONDITIONAL_PREPARATION_RECEIPTS on purpose: the
+            # prepared-cache validator compares that tuple EXACTLY on
+            # both sides, and this receipt is proof-only.
+            "soil_texture_downscale": dict(
+                getattr(soil, "soil_texture_downscale", {}) or {}),
+            **water_overlay_binding,
+            "source_inputs": {
+                "manifest_schema": manifest["schema"],
+                "manifest_sha256": input_manifest_digest,
+                "files": manifest["files"],
+            },
+            # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
+            # Unconditional, and stated even when no floor fired.
+            **moisture_floor_proof_entry(
+                initial_result,
+                when_unrecorded=(
+                    "this preparation's initialization result carries "
+                    "no moisture-floor field, so it came from an ingest "
+                    "predating the receipt; re-prepare the case to "
+                    "record whether its vapour was floored on the way "
+                    "in")),
+        }
+        # One machine, one card: the forecast may start beside this
+        # producer only when both fit (boundary_stream.chained_admission).
+        writer.admit(
+            experiment=exp, backend=str(preprocess_receipt["backend"]),
+            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])))
         cache_started = time.perf_counter()
-        cache_receipt = write_prepared_cache(
-            prepared_cache, identity=identity,
+        writer.write_head(
             initial_result=initial_result, met=initial_met,
-            boundaries=boundaries, surface=_canonical_surface(soil),
+            surface=_canonical_surface(soil),
             metadata={
                 "source_adapter": "era5",
                 "initial_valid_time": times[0].isoformat(),
@@ -963,18 +1108,51 @@ def prepare_era5_wrf(
                 "preprocessing": preprocess_receipt,
                 **soil_floor_binding,
             },
+            lbc={
+                "spec_bdy_width": cfg.spec_bdy_width,
+                "spec_zone": cfg.spec_zone,
+                "relax_zone": cfg.relax_zone,
+                "schedule": [
+                    [float(earlier * 3600), float(later * 3600)]
+                    for earlier, later in zip(forcing_hours,
+                                              forcing_hours[1:])],
+                "fields": forcing.inventory,
+            },
+            proof_head=proof_head,
+            input_manifest_sha256=input_manifest_digest,
+            forcing=forcing,
         )
         cache_seconds = time.perf_counter() - cache_started
+        # The start state has done its work: it is in the head.
+        del initial_result, initial_met
+        release_backend_memory(preprocess)
+        boundaries_started = time.perf_counter()
+        if boundaries is not None:
+            writer.write_intervals(boundaries.intervals)
+        else:
+            writer.stream_forcing_times(
+                count=len(snapshots), build_forcing_time=build_forcing_time,
+                forcing=forcing, times=times,
+                release=lambda: release_backend_memory(preprocess))
+            initialize_seconds += time.perf_counter() - boundaries_started
+        cache_started = time.perf_counter()
+        cache_receipt = writer.seal_cache()
+        cache_seconds += time.perf_counter() - cache_started
         portable_cache_receipt = dict(cache_receipt)
         portable_cache_receipt["path"] = prepared_cache.name
+        # Where the tree lives now: published at the head when chained,
+        # still staged otherwise.
+        static_cache = writer.root / static_cache.name
+        geometry_receipt = writer.root / geometry_receipt.name
+        portable_source_manifest = writer.root / portable_source_manifest.name
+        prepared_cache = writer.cache_path
+        wrf_output = writer.root / wrf_output.name
         export_started = time.perf_counter()
         export_receipt = export_prepared_wrf(
             prepared_cache, static_cache, geometry_receipt, wrf_output,
             valid_time=times[0],
             boundary_interval_seconds=boundary_interval_seconds)
         export_seconds = time.perf_counter() - export_started
-        preprocessing_receipt_sha256 = hashlib.sha256(
-            _canonical(preprocess_receipt).encode("utf-8")).hexdigest()
         initialization_artifacts = {
             "source_manifest": {
                 "path": portable_source_manifest.name,
@@ -1006,46 +1184,11 @@ def prepare_era5_wrf(
         }
         verify_overlay_sequence(snapshots)
         proof = {
-            "schema": "gpuwm-era5-direct-wrf-proof-v2",
-            "status": "READY_NOT_YET_STOCK_WRF_GATED",
-            "vertical_coordinate": _vertical_coordinate_receipt(
-                exp, vertical_adaptation),
-            "forcing_times": [value.isoformat() for value in times],
-            "forcing_hours": forcing_hours,
-            "boundary_interval_seconds": boundary_interval_seconds,
-            "input_manifest_sha256": input_manifest_digest,
-            "decoder_sha256": _sha256(paths["bridge"]),
-            "preprocessing": preprocess_receipt,
-            "preprocessing_receipt_sha256": preprocessing_receipt_sha256,
-            **soil_floor_binding,
-            # The soil-state SOURCE resolution, unconditional: a reader
-            # of this forecast must be able to answer "how coarse was
-            # the soil I started from" without the config, and whether
-            # the sub-source-cell reconstitution ran on it.  Bound
-            # outside CONDITIONAL_PREPARATION_RECEIPTS on purpose: the
-            # prepared-cache validator compares that tuple EXACTLY on
-            # both sides, and this receipt is proof-only.
-            "soil_texture_downscale": dict(
-                getattr(soil, "soil_texture_downscale", {}) or {}),
-            **water_overlay_binding,
-            "source_inputs": {
-                "manifest_schema": manifest["schema"],
-                "manifest_sha256": input_manifest_digest,
-                "files": manifest["files"],
-            },
+            **proof_head,
             "initialization_artifacts": initialization_artifacts,
-            # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
-            # Unconditional, and stated even when no floor fired.
-            **moisture_floor_proof_entry(
-                initial_result,
-                when_unrecorded=(
-                    "this preparation's initialization result carries "
-                    "no moisture-floor field, so it came from an ingest "
-                    "predating the receipt; re-prepare the case to "
-                    "record whether its vapour was floored on the way "
-                    "in")),
             "prepared_cache": portable_cache_receipt,
             "export": export_receipt,
+            "boundary_stream": writer.boundary_stream_proof(),
             "timing_seconds": {
                 "decode": decode_seconds,
                 "initialize_all_times": initialize_seconds,
@@ -1054,12 +1197,15 @@ def prepare_era5_wrf(
                 "total": time.perf_counter() - total_started,
             },
         }
-        (staging / "proof.json").write_text(
-            json.dumps(proof, indent=2, sort_keys=True) + "\n")
-        os.replace(staging, output_root)
+        writer.publish(proof)
         return proof
-    except BaseException:
+    except BaseException as error:
         shutil.rmtree(staging, ignore_errors=True)
+        if writer is not None:
+            # A head already published stays, marked failed, so a waiting
+            # forecast ends with this reason and the next preparation of
+            # this output root rebuilds it.
+            writer.fail(error)
         raise
 
 
@@ -1107,9 +1253,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--statics-corridor", nargs="?", const="all", default=None,
         metavar="GRID_IDS",
-        help="seal child-resolution statics over the parent extent for "
-             "every child (bare flag) or for a comma-separated list of "
-             "child grid ids.  REQUIRED when the experiment configures "
+        help="seal child-resolution statics over the ground each child "
+             "can reach, for every child (bare flag) or for a "
+             "comma-separated list of child grid ids.  REQUIRED when "
+             "the experiment configures "
              "[relocation]: a prepared bundle runs without WPS_GEOG, so a "
              "nest that moves onto ground it has not visited has no other "
              "source of terrain, landuse and soil category.  Costs host "
@@ -1145,26 +1292,36 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ValueError as error:
         parser.error(str(error))
-    proof = prepare_era5_wrf(
-        grib=args.grib, vtable=args.vtable, bridge=args.bridge,
-        wps_namelist=args.wps_namelist,
-        static_input=args.static_input,
-        static_receipt=args.static_receipt,
-        source_orography=args.source_orography,
-        source_orography_variable=args.source_orography_variable,
-        experiment_config=args.experiment_config,
-        input_manifest=args.input_manifest,
-        input_manifest_sha256=args.input_manifest_sha256,
-        output_root=args.output_root,
-        preprocess_backend=args.preprocess_backend,
-        preprocess_workers=args.preprocess_workers,
-        cpu_preprocess_bridge=args.cpu_preprocess_bridge,
-        geog_root=args.geog_root,
-        hierarchy_workers=args.hierarchy_workers,
-        statics_corridor=statics_corridor,
-        hierarchy_source_orography=hierarchy_source_orography,
-        water_temperature_overlay=args.water_temperature_overlay,
-    )
+    try:
+        proof = prepare_era5_wrf(
+            grib=args.grib, vtable=args.vtable, bridge=args.bridge,
+            wps_namelist=args.wps_namelist,
+            static_input=args.static_input,
+            static_receipt=args.static_receipt,
+            source_orography=args.source_orography,
+            source_orography_variable=args.source_orography_variable,
+            experiment_config=args.experiment_config,
+            input_manifest=args.input_manifest,
+            input_manifest_sha256=args.input_manifest_sha256,
+            output_root=args.output_root,
+            preprocess_backend=args.preprocess_backend,
+            preprocess_workers=args.preprocess_workers,
+            cpu_preprocess_bridge=args.cpu_preprocess_bridge,
+            geog_root=args.geog_root,
+            hierarchy_workers=args.hierarchy_workers,
+            statics_corridor=statics_corridor,
+            hierarchy_source_orography=hierarchy_source_orography,
+            water_temperature_overlay=args.water_temperature_overlay,
+        )
+    except InitializationMemoryRefused as error:
+        # A preparation the card cannot hold under an explicit
+        # --preprocess-backend cuda (PreparationDeviceRefused), or any
+        # other measured initialization budget that refuses the case, is
+        # a refusal with its own remedy line: one message at exit 2, as
+        # `gpuwm` itself answers it, not a traceback that buries the
+        # remedy at the bottom of a stack.
+        print(f"rw-wps --source era5: {error}", file=sys.stderr)
+        return 2
     print(json.dumps(proof, indent=2, sort_keys=True))
     # Parity with the GFS and 20CRv3 front doors, and the last silent
     # one of the three the prepared-forecast runners actually support:

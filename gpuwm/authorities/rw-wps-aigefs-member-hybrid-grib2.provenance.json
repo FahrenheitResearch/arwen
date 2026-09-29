@@ -11,8 +11,9 @@
     "skin_temperature",
     "specific_humidity_2m"
   ],
-  "units_policy": "terrain enters as the analysis product's surface geopotential height record in metres; no scale is applied",
+  "units_policy": "terrain enters as the analysis product's surface geopotential height record in metres and mean-sea-level pressure as the member's own record in pascals; no scale is applied",
   "time_policy": "the AI ensemble member supplies the evolving atmosphere at every forecast step; the borrowed land-surface state is the one analysis record of the SAME cycle, verified by the composition's source_cycle_analysis_broadcast alignment and carried unchanged to every primary valid time, with the carried times named in the receipt",
+  "surface_pressure_policy": "surface pressure is derived at every valid time from that valid time's own member bytes: the member's mean-sea-level pressure, reduced to the analysis terrain height through the member's own isobaric heights by WRF real's sfcprs3 relation (surface_pressure_from_sea_level), so the column mass follows each member and each lead and sits on the terrain the composition pairs it with. Both doors serve mean-sea-level pressure; a surface-pressure record the AWS mirror appends is not read, because it sits on the AI model's own orography rather than the analysis terrain",
   "member_policy": "member identity belongs to the PRIMARY files and is verified by the packaged rw-wps.members.v1 grammar at member preparation; the contributing analysis is deterministic and a member-bearing donor refuses by name",
   "absence_policy": "the member product publishes no soil temperature, no soil moisture, no land mask, no orography, no skin temperature and no 2 m humidity (byte-measured, 2026-08-17 00Z cycle); every one of those gaps is declared composition_bound in the primary mapping and bound to the analysis donor -- nothing is synthesized",
   "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"

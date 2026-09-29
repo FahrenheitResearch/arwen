@@ -1,0 +1,764 @@
+{
+  "schema": "gpuwm-obs.asos-surface.v2",
+  "status": "READY",
+  "provenance": {
+    "source": "asos",
+    "product": "iem-asos-1min",
+    "uri": "tests/fixtures/asos1min_real/observations_1min.csv",
+    "sha256": "6c06678be5fd33e526a17cce44444afdccfb95de7b104a6195a01ece526383c7",
+    "fetched_at": "2026-09-28T10:37:41",
+    "is_stub": false,
+    "stub_reason": ""
+  },
+  "station_table_sha256": "e390b9b1875d0926646f4761a654622ebf10edeba87d65c2ec508581b29e70e4",
+  "valid_times": [
+    "2024-05-21T12:00:00",
+    "2024-05-21T12:01:00",
+    "2024-05-21T12:02:00",
+    "2024-05-21T12:03:00",
+    "2024-05-21T12:04:00",
+    "2024-05-21T12:05:00",
+    "2024-05-21T12:06:00",
+    "2024-05-21T12:07:00",
+    "2024-05-21T12:08:00",
+    "2024-05-21T12:09:00",
+    "2024-05-21T12:10:00",
+    "2024-05-21T12:11:00",
+    "2024-05-21T12:12:00",
+    "2024-05-21T12:13:00",
+    "2024-05-21T12:14:00",
+    "2024-05-21T12:15:00",
+    "2024-05-21T12:16:00",
+    "2024-05-21T12:17:00",
+    "2024-05-21T12:18:00",
+    "2024-05-21T12:19:00",
+    "2024-05-21T12:20:00",
+    "2024-05-21T12:21:00",
+    "2024-05-21T12:22:00",
+    "2024-05-21T12:23:00",
+    "2024-05-21T12:24:00",
+    "2024-05-21T12:25:00",
+    "2024-05-21T12:26:00",
+    "2024-05-21T12:27:00",
+    "2024-05-21T12:28:00",
+    "2024-05-21T12:29:00",
+    "2024-05-21T12:30:00"
+  ],
+  "match_seconds": 30,
+  "min_report_rate": 0.8,
+  "max_screen_rate": 0.05,
+  "screen": {
+    "temperature_min_k": 233.15,
+    "temperature_max_k": 328.15,
+    "wind_min_ms": 0.0,
+    "wind_max_ms": 75.0,
+    "dewpoint_above_temperature_drops": 0,
+    "range_drops": 0,
+    "stations_dropped_by_screen": [],
+    "stations_dropped_by_completeness": []
+  },
+  "stations": [
+    {
+      "station_id": "AMW",
+      "name": "Ames",
+      "latitude": 41.9904,
+      "longitude": -93.6185,
+      "elevation_m": 280.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DSM",
+      "name": "Des Moines",
+      "latitude": 41.534,
+      "longitude": -93.6531,
+      "elevation_m": 294.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    }
+  ],
+  "reports": [
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:00:00",
+      "observation_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.028888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:01:00",
+      "observation_time": "2024-05-21T12:01:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:02:00",
+      "observation_time": "2024-05-21T12:02:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:03:00",
+      "observation_time": "2024-05-21T12:03:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.028888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:04:00",
+      "observation_time": "2024-05-21T12:04:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.028888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:05:00",
+      "observation_time": "2024-05-21T12:05:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:06:00",
+      "observation_time": "2024-05-21T12:06:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:07:00",
+      "observation_time": "2024-05-21T12:07:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:08:00",
+      "observation_time": "2024-05-21T12:08:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:09:00",
+      "observation_time": "2024-05-21T12:09:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 3.086666666666667
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:10:00",
+      "observation_time": "2024-05-21T12:10:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 3.086666666666667
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:11:00",
+      "observation_time": "2024-05-21T12:11:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 3.086666666666667
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:12:00",
+      "observation_time": "2024-05-21T12:12:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:13:00",
+      "observation_time": "2024-05-21T12:13:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:14:00",
+      "observation_time": "2024-05-21T12:14:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:15:00",
+      "observation_time": "2024-05-21T12:15:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:16:00",
+      "observation_time": "2024-05-21T12:16:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:17:00",
+      "observation_time": "2024-05-21T12:17:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.028888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:18:00",
+      "observation_time": "2024-05-21T12:18:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:19:00",
+      "observation_time": "2024-05-21T12:19:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:20:00",
+      "observation_time": "2024-05-21T12:20:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:21:00",
+      "observation_time": "2024-05-21T12:21:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:22:00",
+      "observation_time": "2024-05-21T12:22:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.5722222222222224
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:23:00",
+      "observation_time": "2024-05-21T12:23:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:24:00",
+      "observation_time": "2024-05-21T12:24:00",
+      "values": {
+        "dewpoint_2m": 289.81666666666666,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:25:00",
+      "observation_time": "2024-05-21T12:25:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.028888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:26:00",
+      "observation_time": "2024-05-21T12:26:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 1.5433333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:27:00",
+      "observation_time": "2024-05-21T12:27:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 2.057777777777778
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:28:00",
+      "observation_time": "2024-05-21T12:28:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 3.086666666666667
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:29:00",
+      "observation_time": "2024-05-21T12:29:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 3.086666666666667
+      },
+      "flags": []
+    },
+    {
+      "station_id": "AMW",
+      "valid_time": "2024-05-21T12:30:00",
+      "observation_time": "2024-05-21T12:30:00",
+      "values": {
+        "dewpoint_2m": 289.26111111111106,
+        "temperature_2m": 290.92777777777775,
+        "wind_speed_10m": 3.086666666666667
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:00:00",
+      "observation_time": "2024-05-21T12:00:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:01:00",
+      "observation_time": "2024-05-21T12:01:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:02:00",
+      "observation_time": "2024-05-21T12:02:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:03:00",
+      "observation_time": "2024-05-21T12:03:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:04:00",
+      "observation_time": "2024-05-21T12:04:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:05:00",
+      "observation_time": "2024-05-21T12:05:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:06:00",
+      "observation_time": "2024-05-21T12:06:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:07:00",
+      "observation_time": "2024-05-21T12:07:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:08:00",
+      "observation_time": "2024-05-21T12:08:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:09:00",
+      "observation_time": "2024-05-21T12:09:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:10:00",
+      "observation_time": "2024-05-21T12:10:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:11:00",
+      "observation_time": "2024-05-21T12:11:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:12:00",
+      "observation_time": "2024-05-21T12:12:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:13:00",
+      "observation_time": "2024-05-21T12:13:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:14:00",
+      "observation_time": "2024-05-21T12:14:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:15:00",
+      "observation_time": "2024-05-21T12:15:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:16:00",
+      "observation_time": "2024-05-21T12:16:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:17:00",
+      "observation_time": "2024-05-21T12:17:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:18:00",
+      "observation_time": "2024-05-21T12:18:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:19:00",
+      "observation_time": "2024-05-21T12:19:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:20:00",
+      "observation_time": "2024-05-21T12:20:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:21:00",
+      "observation_time": "2024-05-21T12:21:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 6.173333333333334
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:22:00",
+      "observation_time": "2024-05-21T12:22:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:23:00",
+      "observation_time": "2024-05-21T12:23:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:24:00",
+      "observation_time": "2024-05-21T12:24:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:25:00",
+      "observation_time": "2024-05-21T12:25:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.658888888888889
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:26:00",
+      "observation_time": "2024-05-21T12:26:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:27:00",
+      "observation_time": "2024-05-21T12:27:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:28:00",
+      "observation_time": "2024-05-21T12:28:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:29:00",
+      "observation_time": "2024-05-21T12:29:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 5.144444444444445
+      },
+      "flags": []
+    },
+    {
+      "station_id": "DSM",
+      "valid_time": "2024-05-21T12:30:00",
+      "observation_time": "2024-05-21T12:30:00",
+      "values": {
+        "dewpoint_2m": 290.3722222222222,
+        "temperature_2m": 292.0388888888889,
+        "wind_speed_10m": 4.630000000000001
+      },
+      "flags": []
+    }
+  ]
+}

@@ -198,6 +198,22 @@ pub(crate) fn planned_store_fields(options: &WrfProcessOptions) -> Vec<String> {
         .collect()
 }
 
+/// The same rows as [`planned_store_fields`], as the canonical selectors
+/// they are written under: the vocabulary a product recipe asks in.
+pub(crate) fn planned_store_selectors(options: &WrfProcessOptions) -> Vec<FieldSelector> {
+    COLUMN_PLANE_CATALOG
+        .iter()
+        .filter(|plane| {
+            options.should_process(
+                plane.filter_key,
+                Some(plane.store_name),
+                WrfProductGroup::Diagnostic,
+            )
+        })
+        .map(ColumnPlane::selector)
+        .collect()
+}
+
 /// A column's native fields for one frame, read once and shared by every
 /// plane that needs them.
 struct Columns {

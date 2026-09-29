@@ -617,3 +617,40 @@ def test_the_new_tiedtke_restart_identity_names_this_port():
     assert identity.endswith("-v1"), (
         "the identity carries no revision suffix, so a change to the "
         "driver seam has no way to invalidate old checkpoints")
+
+
+def test_a_reused_pipeline_runs_on_the_step_it_is_handed(monkeypatch):
+    """The pipeline cache is keyed by chunk shape, and the step is not in it.
+
+    An adaptive clock moves dt every root step while the chunk shape stays
+    put, so a reused pipeline has to take each call's step, and take it
+    exactly as a pipeline built on that step would.
+    """
+    import numpy as np
+
+    from gpuwm.core import ntiedtke
+
+    class _Inert:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    for name in ("NtWorkspace", "NtLaunchGeometry", "NtStages"):
+        monkeypatch.setattr(ntiedtke, name, _Inert)
+
+    def cfg(dt):
+        return SimpleNamespace(dt=dt, clock_dt=0.0,
+                               ntiedtke_tiedtke_closure=False)
+
+    scheme = ntiedtke.NewTiedtke()
+    built = scheme._for(64, 10, cfg(12.0))
+    for dt in (15.5, 9.25, 12.0):
+        reused = scheme._for(64, 10, cfg(dt))
+        assert reused is built
+        fresh = ntiedtke.NtPipeline(ncol=64, nz=10, dt=dt, stepcu=1,
+                                    itimestep=2)
+        assert reused.scalars.keys() == fresh.scalars.keys()
+        for name, value in fresh.scalars.items():
+            assert type(reused.scalars[name]) is type(value), name
+            assert reused.scalars[name] == value, name
+        assert reused.scalars["dt"] == np.float32(dt)
+        assert reused.scalars["delt"] == np.float32(dt)

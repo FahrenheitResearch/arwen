@@ -2,12 +2,16 @@
 
 A gridded observation set is only meaningful beside the grid it was gridded
 to, so the grid is a first-class, hashed object here rather than an implied
-one.  :meth:`TargetGrid.identity_sha256` digests the projection descriptor
-*and* the coordinate arrays, using the same canonicalization as
+one.  :meth:`TargetGrid.identity_sha256` digests the projection's exact
+definition *and* the vertical and terrain arrays, using the same
+canonicalization as
 :meth:`gpuwm.ingest.hrrr_target.HrrrTargetDomain.identity_sha256`, so two
 writers that agree on the grid produce the same digest and a consumer that
 disagrees fails closed instead of silently assimilating into the wrong
-columns.
+columns.  The latitude/longitude arrays are held to that definition within
+a small fraction of a cell instead of being digested: they come out of
+projection arithmetic, whose last digit depends on the machine, and a
+digest of them names the machine as well as the grid.
 
 :meth:`TargetGrid.from_wrfout` reconstructs the projection from the file's
 global attributes and then **checks it against the file's own XLAT/XLONG**.
@@ -29,8 +33,14 @@ import numpy as np
 from gpuwm.static.projection import (EARTH_RADIUS_M, WPS_MAP_PROJ_NAMES,
                                      ProjectedGrid, projection_class)
 
-#: Contract string for the serialized grid descriptor.
-TARGET_GRID_SCHEMA = "gpuwm-obs.radar-target-grid.v1"
+#: Contract string for the serialized grid descriptor.  v2 identifies the
+#: horizontal grid by its projection definition; v1 digested the computed
+#: latitude/longitude arrays.
+TARGET_GRID_SCHEMA = "gpuwm-obs.radar-target-grid.v2"
+
+#: The identity every product written before v2 carries, still accepted
+#: from a grid that reproduces it (see :meth:`TargetGrid.matches_identity`).
+TARGET_GRID_SCHEMA_V1 = "gpuwm-obs.radar-target-grid.v1"
 
 #: Largest lat/lon disagreement (degrees) tolerated between the projection
 #: rebuilt from a wrfout's attributes and the XLAT/XLONG the file carries.
@@ -95,14 +105,30 @@ class TargetGrid:
         if np.any(np.diff(self.z_w, axis=0) <= 0.0):
             raise ValueError(
                 "z_w must increase monotonically with level in every column")
+        # The identity digests the projection's definition, not lat/lon,
+        # so lat/lon must be that projection's columns: within
+        # GRID_POSITION_TOLERANCE_CELLS of a cell, which admits the
+        # last-digit rounding of the machine that computed them and no
+        # real displacement.
+        from gpuwm.static.grid_identity import position_tolerance_deg
+
+        expected_lat, expected_lon = self.projection.latlon_mass()
+        tolerance = position_tolerance_deg(self.dx_m, self.dy_m)
+        if (np.shape(expected_lat) != self.lat.shape
+                or _max_offset_deg(self.lat, expected_lat) > tolerance
+                or _max_offset_deg(self.lon, expected_lon,
+                                   longitude=True) > tolerance):
+            raise ValueError(
+                "lat/lon are not the mass points of this grid's projection "
+                f"(within {tolerance:.3e} degrees)")
 
     # -- identity ----------------------------------------------------------
 
     def descriptor(self) -> dict:
-        """The projection half of the identity: small, readable, exact."""
+        """The projection half of the v1 identity."""
 
         return {
-            "schema": TARGET_GRID_SCHEMA,
+            "schema": TARGET_GRID_SCHEMA_V1,
             "name": self.name,
             "map_proj": self.map_proj,
             "nx": int(self.nx),
@@ -119,12 +145,46 @@ class TargetGrid:
         }
 
     def identity_sha256(self) -> str:
-        """Digest of the descriptor and every coordinate array.
+        """Digest of the projection's definition and the column arrays.
 
-        The arrays are in because two grids can share every scalar and
-        still differ — a regenerated terrain field, a different vertical
-        stretching — and an observation set is bound to the columns it was
-        placed in, not to the namelist that nominally produced them.
+        The definition (:meth:`ProjectedGrid.definition`) is every value
+        the horizontal grid is built from, as given: two machines agree on
+        it to the bit, where computed latitudes differ in the last digit.
+        ``z_w`` and ``terrain_m`` are in because two grids can share every
+        scalar and still differ (a regenerated terrain field, a different
+        vertical stretching), and an observation set is bound to the
+        columns it was placed in, not to the namelist that nominally
+        produced them.
+        """
+
+        payload = {
+            "schema": TARGET_GRID_SCHEMA,
+            "name": self.name,
+            "map_proj": self.map_proj,
+            "nx": int(self.nx),
+            "ny": int(self.ny),
+            "nz": int(self.nz),
+            "dx_m": float(self.dx_m),
+            "dy_m": float(self.dy_m),
+            "truelat1": float(self.truelat1),
+            "truelat2": float(self.truelat2),
+            "stand_lon": float(self.stand_lon),
+            "earth_radius_m": float(EARTH_RADIUS_M),
+            "definition": self.projection.definition(),
+            "arrays": {
+                name: _array_sha256(array)
+                for name, array in (("z_w", self.z_w),
+                                    ("terrain_m", self.terrain_m))
+            },
+        }
+        return _payload_sha256(payload)
+
+    def legacy_identity_sha256(self) -> str:
+        """The v1 identity: the descriptor and the computed lat/lon too.
+
+        What every product written before v2 carries.  It reproduces only
+        on a machine that rounds the projection the way the writer did,
+        which is exactly how it was matched before.
         """
 
         payload = dict(self.descriptor())
@@ -134,15 +194,21 @@ class TargetGrid:
                                 ("z_w", self.z_w),
                                 ("terrain_m", self.terrain_m))
         }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                             allow_nan=False).encode("ascii")
-        return hashlib.sha256(encoded).hexdigest()
+        return _payload_sha256(payload)
+
+    def matches_identity(self, identity) -> bool:
+        """Whether ``identity`` names this grid, as v2 or as v1."""
+
+        if not isinstance(identity, str) or not identity:
+            return False
+        return (identity == self.identity_sha256()
+                or identity == self.legacy_identity_sha256())
 
     def require_identity(self, expected_sha256: str) -> None:
         """Fail closed unless this grid is exactly the one named."""
 
         actual = self.identity_sha256()
-        if actual != expected_sha256:
+        if not self.matches_identity(expected_sha256):
             raise GridMismatchError(
                 f"target grid identity {actual} does not match the required "
                 f"{expected_sha256}; refusing to grid observations onto a "
@@ -295,6 +361,39 @@ class TargetGrid:
         return cls.from_projection(
             projection, z_w=z_w, terrain_m=terrain,
             name=name or path.stem, source=f"wrfout:{path.name}")
+
+
+def identity_names_grid(grid, identity) -> bool:
+    """Whether a saved ``identity`` names ``grid``.
+
+    A :class:`TargetGrid` answers through
+    :meth:`TargetGrid.matches_identity`; any other object that states an
+    ``identity_sha256`` is held to that one value.
+    """
+
+    matches = getattr(grid, "matches_identity", None)
+    if callable(matches):
+        return bool(matches(identity))
+    return isinstance(identity, str) and identity == grid.identity_sha256()
+
+
+def _payload_sha256(payload: dict) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                         allow_nan=False).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _max_offset_deg(values, expected, *, longitude: bool = False) -> float:
+    """Largest degree offset between two coordinate arrays (inf if NaN)."""
+
+    offset = (np.asarray(values, dtype=np.float64)
+              - np.asarray(expected, dtype=np.float64))
+    if longitude:
+        offset = (offset + 180.0) % 360.0 - 180.0
+    if offset.size == 0:
+        return 0.0
+    largest = float(np.max(np.abs(offset)))
+    return largest if np.isfinite(largest) else float("inf")
 
 
 def _array_sha256(array: np.ndarray) -> str:

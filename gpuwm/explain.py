@@ -77,6 +77,12 @@ def set_invocation(tokens) -> None:
                    else tuple(str(token) for token in tokens))
 
 
+def invocation() -> tuple[str, ...] | None:
+    """The tokens :func:`set_invocation` recorded, or ``None``."""
+
+    return _INVOCATION
+
+
 def _shell_word(token: str) -> str:
     """``token`` spelled so a shell reads it back as one word."""
 
@@ -165,7 +171,8 @@ def render(message: str, *, explain: bool, command: str | None = None) -> str:
     return action
 
 
-def add_explain_flag(parser: argparse.ArgumentParser) -> None:
+def add_explain_flag(parser: argparse.ArgumentParser, *,
+                     nested: bool = False) -> None:
     """Register ``--explain`` on one parser, idempotently.
 
     Idempotent because the CLI adds the flag by sweeping every
@@ -174,6 +181,14 @@ def add_explain_flag(parser: argparse.ArgumentParser) -> None:
     estimator; ``run``/``resume`` are extended by the supervisor).  A
     second registration would be ``argparse.ArgumentError`` at import
     time, which is a startup crash rather than a message-layer bug.
+
+    ``nested`` is for a subcommand of a command that takes the flag
+    itself (``gpuwm research hardware`` under ``gpuwm research``).
+    argparse copies every value the selected child parsed, defaults
+    included, over the parent's, so a child that defaulted to False
+    erased a ``--explain`` typed before the subcommand's name.  A nested
+    child therefore supplies no default at all and records the flag
+    only when it is typed after the name; the parent keeps the default.
     """
 
     if any("--explain" in action.option_strings
@@ -181,6 +196,7 @@ def add_explain_flag(parser: argparse.ArgumentParser) -> None:
         return
     parser.add_argument(
         "--explain", action="store_true",
+        default=argparse.SUPPRESS if nested else False,
         help="print the full reasoning, alternate routes and per-item "
              "evidence behind this command's output, instead of the "
              "default one-line-per-item summary")
@@ -323,7 +339,12 @@ def warn_once(key: str, action: str, why: str = "") -> None:
     warn(action, why)
 
 
-def warn(action: str, why: str = "") -> None:
+#: Sentences a ``warn(..., once=True)`` call has already printed in this
+#: process.
+_PRINTED_ONCE: set[str] = set()
+
+
+def warn(action: str, why: str = "", *, once: bool = False) -> None:
     """Print one warning sentence and keep going.
 
     This is the voice of every check that found something worth saying
@@ -339,13 +360,21 @@ def warn(action: str, why: str = "") -> None:
     Every warning is additionally delivered to each observer registered
     with :func:`add_warning_observer`, which is how a machine consumer
     receives it as a field rather than as a line to recognize.
+
+    ``once`` prints a sentence at most once per process, for a check
+    that runs each time the same input is loaded (one ``gpuwm run``
+    loads its config several times).  Observers still receive every
+    call, so one attached after the first print keeps its record.
     """
 
     action = " ".join(str(action).split())
-    print(f"warning: {action}", file=sys.stderr)
-    if why and _EXPLAIN_ACTIVE:
-        for line in str(why).strip("\n").splitlines():
-            print(f"  {line}", file=sys.stderr)
+    if not (once and action in _PRINTED_ONCE):
+        if once:
+            _PRINTED_ONCE.add(action)
+        print(f"warning: {action}", file=sys.stderr)
+        if why and _EXPLAIN_ACTIVE:
+            for line in str(why).strip("\n").splitlines():
+                print(f"  {line}", file=sys.stderr)
     if not _WARNING_OBSERVERS:
         return
     record = {"action": action, "why": str(why)}

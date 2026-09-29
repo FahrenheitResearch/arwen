@@ -9,22 +9,28 @@ on the CPU backend so the seam is exercised where it lives, not in a
 mock.
 """
 
+from dataclasses import replace
 from datetime import datetime
 
 import numpy as np
 import pytest
 
 from gpuwm.config import RunConfig
+from gpuwm.core.diagnostics import update_diagnostics
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.experiment import (
-    MAX_BUBBLE_AMPLITUDE_K,
+    BUBBLE_AMPLITUDE_WARNING_K,
     BubbleConfig,
     PerturbationConfig,
     build_experiment,
     refuse_unrouted_perturbation,
 )
 from gpuwm.ingest.horiz import HorizontalSnapshot
-from gpuwm.ingest.init_perturbation import build_initial_state_perturbation
+from gpuwm.ingest.init_perturbation import (
+    RH_PRESERVE_QV_LIMIT_KG_KG,
+    build_initial_state_perturbation,
+    radiation_temperature_ceiling,
+)
 from gpuwm.ingest.real import (
     _mixing_ratio_to_relative_humidity,
     _temperature_from_potential_temperature,
@@ -110,13 +116,76 @@ def test_nonpositive_bubble_geometry_is_refused(key):
         build_experiment(raw, source="probe.toml")
 
 
-def test_amplitude_beyond_sanity_bound_is_refused_with_value_named():
+def test_a_12_5_k_bubble_builds_and_warns_with_the_value_named(
+        capsys, monkeypatch):
+    from gpuwm import explain
+
+    monkeypatch.setattr(explain, "_PRINTED_ONCE", set())
     raw = _experiment_raw({"bubbles": [_bubble_entry(amplitude_k=12.5)]})
-    with pytest.raises(
-            ValueError,
-            match=rf"amplitude_k = 12\.5 exceeds the "
-                  rf"{MAX_BUBBLE_AMPLITUDE_K:g} K sanity bound"):
+    exp = build_experiment(raw, source="probe.toml")
+    (bubble,) = exp.perturbation.bubbles
+    assert bubble.amplitude_k == 12.5
+    err = capsys.readouterr().err
+    assert "warning: perturbation bubble amplitude_k = 12.5 K" in err
+    assert f"above {BUBBLE_AMPLITUDE_WARNING_K:g} K" in err
+    assert "WRF's idealized warm bubble (3 K, em_quarter_ss)" in err
+
+
+def test_the_amplitude_warning_prints_once_and_reaches_every_observer(
+        capsys, monkeypatch):
+    """One command loads its config several times; the line prints once.
+
+    `gpuwm run` printed the same bubble sentence three times and `gpuwm
+    go` five.  A machine consumer attached after the first load (run-plan
+    collects warnings around its own load) must still receive it.
+    """
+    from gpuwm import explain
+
+    monkeypatch.setattr(explain, "_PRINTED_ONCE", set())
+    raw = _experiment_raw({"bubbles": [_bubble_entry(amplitude_k=12.5)]})
+    build_experiment(raw, source="probe.toml")
+    records = []
+    explain.add_warning_observer(records.append)
+    try:
         build_experiment(raw, source="probe.toml")
+        build_experiment(raw, source="probe.toml")
+    finally:
+        explain.remove_warning_observer(records.append)
+    err = capsys.readouterr().err
+    assert err.count("warning: perturbation bubble amplitude_k = 12.5 K") == 1
+    bubble_records = [record for record in records
+                      if "amplitude_k = 12.5 K" in record["action"]]
+    assert len(bubble_records) == 2
+
+
+def test_a_bubble_at_the_warning_level_builds_without_a_warning(capsys):
+    raw = _experiment_raw({"bubbles": [
+        _bubble_entry(amplitude_k=BUBBLE_AMPLITUDE_WARNING_K)]})
+    exp = build_experiment(raw, source="probe.toml")
+    assert "amplitude_k" not in capsys.readouterr().err
+    (row,) = exp.perturbation.receipt()["bubbles"]
+    assert "warning" not in row
+
+
+def test_the_amplitude_warning_is_recorded_in_the_perturbation_receipt(
+        tmp_path):
+    import json
+
+    from gpuwm.runtime import _write_initial_perturbation_receipt
+
+    exp = build_experiment(_experiment_raw({"bubbles": [
+        _bubble_entry(), _bubble_entry(amplitude_k=30.0)]}),
+        source="probe.toml")
+    small, large = exp.perturbation.receipt()["bubbles"]
+    assert "warning" not in small
+    assert large["amplitude_k"] == 30.0
+    assert large["warning"].startswith(
+        "perturbation bubble amplitude_k = 30 K is above 10 K and 10.0 "
+        "times WRF's idealized warm bubble (3 K, em_quarter_ss)")
+    path = _write_initial_perturbation_receipt(tmp_path, exp, ())
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert "warning" not in written["config"]["bubbles"][0]
+    assert written["config"]["bubbles"][1]["warning"] == large["warning"]
 
 
 def test_empty_bubbles_array_is_refused():
@@ -193,12 +262,21 @@ def _application_fixture(ny=20, nx=24, nz=6):
     return cfg, coord, grid, snapshot, terrain, source_orography
 
 
-def _initialize(perturbation_cfg=None, require_containment=True, **kwargs):
+def _rrtmgp(cfg):
+    """The fixture's configuration with RTE+RRTMGP on both streams."""
+    return replace(cfg, ra_lw_physics=4, ra_sw_physics=4,
+                   ra_rrtmg_variant="rte-rrtmgp")
+
+
+def _initialize(perturbation_cfg=None, require_containment=True,
+                radiation=None, **kwargs):
     cfg, coord, grid, snapshot, terrain, source_orography = (
         _application_fixture())
+    if radiation is not None:
+        cfg = radiation(cfg)
     applier = build_initial_state_perturbation(
         perturbation_cfg, grid, grid_id=1,
-        require_containment=require_containment)
+        require_containment=require_containment, cfg=cfg)
     return initialize_real(
         snapshot, cfg, coord, terrain,
         source_orography=source_orography, p_top=10000.0,
@@ -254,6 +332,28 @@ def test_applied_bubble_peaks_at_the_declared_center():
     np.testing.assert_array_equal(np.asarray(perturbed.state.qv),
                                   np.asarray(baseline.state.qv))
     # and the perturbed state still passes the hydrostatic gate.
+    residual = float(np.max(hydrostatic_residual(perturbed)))
+    baseline_residual = float(np.max(hydrostatic_residual(baseline)))
+    assert residual <= 4.0 * max(baseline_residual, 1.0e-3)
+
+
+def test_a_60_k_bubble_leaves_the_initial_state_hydrostatic():
+    """The bubble is written before alpha and geopotential are formed.
+
+    So the amplitude is not what keeps the initial state consistent: a
+    60 K bubble passes the same hydrostatic gate as the unperturbed
+    state, and every field stays finite.
+    """
+    bubble = BubbleConfig(center_lat=38.5, center_lon=-99.5,
+                          center_height_m=1500.0, radius_km=10.0,
+                          depth_m=1500.0, amplitude_k=60.0)
+    baseline, _ = _initialize()
+    perturbed, _ = _initialize(
+        perturbation_cfg=PerturbationConfig(bubbles=(bubble,)))
+    (row,) = perturbed.initial_perturbation["bubbles"]
+    assert row["max_theta_added_k"] > 40.0
+    for name in ("thp", "php", "mup", "qv"):
+        assert np.isfinite(np.asarray(getattr(perturbed.state, name))).all()
     residual = float(np.max(hydrostatic_residual(perturbed)))
     baseline_residual = float(np.max(hydrostatic_residual(baseline)))
     assert residual <= 4.0 * max(baseline_residual, 1.0e-3)
@@ -342,7 +442,8 @@ def test_apply_to_state_matches_the_initialize_real_seam():
     seam, grid = _initialize(perturbation_cfg=spec)
     baseline, _ = _initialize()
     applier = build_initial_state_perturbation(
-        spec, grid, grid_id=1, require_containment=True)
+        spec, grid, grid_id=1, require_containment=True,
+        cfg=_application_fixture()[0])
     state_receipt = applier.apply_to_state(baseline.state)
     assert state_receipt["application_point"] == "restored-prepared-state"
     (seam_row,) = seam.initial_perturbation["bubbles"]
@@ -358,6 +459,117 @@ def test_apply_to_state_matches_the_initialize_real_seam():
     # qv untouched on both routes without rh_preserve
     np.testing.assert_array_equal(np.asarray(baseline.state.qv),
                                   np.asarray(seam.state.qv))
+
+
+def _bubble(amplitude_k, **overrides):
+    return PerturbationConfig(bubbles=(BubbleConfig(
+        center_lat=38.5, center_lon=-99.5, center_height_m=1500.0,
+        radius_km=10.0, depth_m=1500.0, amplitude_k=amplitude_k,
+        **overrides),))
+
+
+def _restored(**kwargs):
+    """An unperturbed state with its EOS diagnosed, as the tree restores it."""
+    result, grid = _initialize(**kwargs)
+    update_diagnostics(result.state, _application_fixture()[0].hypsometric_opt)
+    return result, grid
+
+
+def test_apply_to_state_rebalances_the_geopotential_at_the_held_pressure():
+    """The prepared-tree route keeps p and re-integrates phi, as WRF does.
+
+    Without the rebalance the diagnostic held phi and raised p inside the
+    bubble instead: +25 % at the core of a 60 K bubble on a GFS 12/3 km
+    tree, which RRTMGP then refused at step 1 as a 363 K layer.  Here p
+    after the bubble equals p before it to FP32 precision, and the
+    geopotential equals what initialize_real forms from the same bubble.
+    """
+    spec = _bubble(60.0)
+    seam, grid = _initialize(perturbation_cfg=spec)
+    restored, _ = _restored()
+    state = restored.state
+    p_before = np.array(state.p, dtype=np.float64)
+    php_before = np.array(state.php, dtype=np.float64)
+    thp_before = np.array(state.thp, dtype=np.float64)
+    applier = build_initial_state_perturbation(
+        spec, grid, grid_id=1, require_containment=True,
+        cfg=_application_fixture()[0])
+    receipt = applier.apply_to_state(state)
+    assert receipt["geopotential"] == "rebalanced at the held pressure"
+    update_diagnostics(state, _application_fixture()[0].hypsometric_opt)
+    p_after = np.array(state.p, dtype=np.float64)
+    assert float(np.max(np.abs(p_after / p_before - 1.0))) < 2.0e-6
+    rise = np.array(state.php, dtype=np.float64) - php_before
+    assert float(rise.max()) > 1000.0          # the warm column is taller
+    assert np.all(rise[0] == 0.0)              # the ground stays put
+    bubble_columns = (np.array(state.thp, dtype=np.float64)
+                      != thp_before).any(axis=0)
+    assert bubble_columns.any()
+    assert np.all(rise[:, ~bubble_columns] == 0.0)
+    php_seam = np.asarray(seam.state.php, dtype=np.float64)
+    assert float(np.max(np.abs(np.asarray(state.php, dtype=np.float64)
+                               - php_seam))) < 0.05
+
+
+def test_the_rrtmgp_ceiling_is_the_top_of_its_gas_tables():
+    cfg = _application_fixture()[0]
+    ceiling = radiation_temperature_ceiling(_rrtmgp(cfg))
+    assert ceiling.kelvin == 355.0
+    assert "RTE+RRTMGP" in ceiling.tables
+    assert radiation_temperature_ceiling(cfg) is None      # radiation off
+    assert radiation_temperature_ceiling(
+        replace(_rrtmgp(cfg), ra_rrtmg_variant="rrtmg_legacy")) is None
+
+
+def test_a_layer_past_the_radiation_tables_is_refused_before_integration():
+    spec = _bubble(120.0)
+    with pytest.raises(ValueError, match=(
+            r"perturbation\.bubbles #1 heats a layer on domain d01 to "
+            r"3\d\d\.\d K at \d+ hPa, above 355 K, the top of the "
+            r"RTE\+RRTMGP gas-optics tables .* stop at step 1")):
+        _initialize(perturbation_cfg=spec, radiation=_rrtmgp)
+    # The same bubble under radiation with no such table runs.
+    result, _ = _initialize(perturbation_cfg=spec)
+    (row,) = result.initial_perturbation["bubbles"]
+    assert row["max_theta_added_k"] > 100.0
+
+
+def test_the_prepared_route_refuses_the_hot_layer_and_writes_nothing():
+    restored, grid = _restored()
+    state = restored.state
+    before = {name: np.array(getattr(state, name))
+              for name in ("thp", "php", "qv")}
+    applier = build_initial_state_perturbation(
+        _bubble(120.0), grid, grid_id=1, require_containment=True,
+        cfg=_rrtmgp(_application_fixture()[0]))
+    with pytest.raises(ValueError, match=r"above 355 K"):
+        applier.apply_to_state(state)
+    for name, value in before.items():
+        np.testing.assert_array_equal(np.asarray(getattr(state, name)), value)
+
+
+def test_rh_preserve_past_the_measured_vapour_limit_is_refused():
+    with pytest.raises(ValueError, match=(
+            r"perturbation\.bubbles #1 \(amplitude_k = 60 K, rh_preserve = "
+            r"true\) builds water vapour up to 0\.\d+ kg/kg on domain d01, "
+            rf"above the {RH_PRESERVE_QV_LIMIT_KG_KG:g} kg/kg")):
+        _initialize(perturbation_cfg=_bubble(60.0, rh_preserve=True))
+    restored, grid = _restored()
+    applier = build_initial_state_perturbation(
+        _bubble(60.0, rh_preserve=True), grid, grid_id=1,
+        require_containment=True, cfg=_application_fixture()[0])
+    qv = np.array(restored.state.qv)
+    with pytest.raises(ValueError, match=r"builds water vapour"):
+        applier.apply_to_state(restored.state)
+    np.testing.assert_array_equal(np.asarray(restored.state.qv), qv)
+
+
+def test_rh_preserve_under_the_vapour_limit_builds():
+    result, _ = _initialize(perturbation_cfg=_bubble(20.0, rh_preserve=True))
+    (row,) = result.initial_perturbation["bubbles"]
+    assert row["max_qv_delta_kg_kg"] > 0.0
+    assert float(np.max(np.asarray(result.state.qv))) <= (
+        RH_PRESERVE_QV_LIMIT_KG_KG)
 
 
 def test_restart_identity_omits_an_absent_block_and_binds_a_present_one():
@@ -385,14 +597,16 @@ def test_prepared_row_windows_preserve_whole_domain_bubble_bytes():
     full.state.p[...] = 80000.0
     windowed.state.p[...] = 80000.0
     applier = build_initial_state_perturbation(
-        spec, grid, grid_id=1, require_containment=True)
+        spec, grid, grid_id=1, require_containment=True,
+        cfg=_application_fixture()[0])
     expected = applier.apply_to_state(full.state)
     touched = 0
     for j in range(windowed.state.thp.shape[-2]):
         rows = slice(j, j+1)
         slab = SimpleNamespace(**{name: (getattr(windowed.state, name)[:, rows, :]
             if getattr(windowed.state, name).ndim == 3 else getattr(windowed.state, name))
-            for name in ('thb', 'thp', 'qv', 'p', 'phb', 'php')})
+            for name in ('thb', 'thp', 'qv', 'p', 'phb', 'php',
+                         'dphb_resid')})
         local = copy(applier)
         local._placed = tuple(replace(p, horizontal_km=p.horizontal_km[rows])
                               for p in applier._placed)
@@ -401,3 +615,7 @@ def test_prepared_row_windows_preserve_whole_domain_bubble_bytes():
     assert touched == expected['bubbles'][0]['cells_touched']
     np.testing.assert_array_equal(windowed.state.thp, full.state.thp)
     np.testing.assert_array_equal(windowed.state.qv, full.state.qv)
+    # The rebalance is per column, so row slabs rebuild the same php.
+    assert (np.asarray(full.state.php) != np.asarray(
+        _initialize()[0].state.php)).any()
+    np.testing.assert_array_equal(windowed.state.php, full.state.php)

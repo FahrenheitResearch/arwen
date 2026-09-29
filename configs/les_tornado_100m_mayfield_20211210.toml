@@ -60,10 +60,9 @@
 # d03 (500 m) and d04 (100 m) turn the PBL parameterization off and run WRF's
 # 3-D Smagorinsky closure, transcribed from v4.6.1 and certified on the
 # release line (gpuwm/core/dycore.py:914; dry-CBL oracle receipts in
-# docs/public/receipts/les/).  km_opt = 2 (prognostic TKE) is NOT used: it is
-# refused on a nest child until a nested prognostic-TKE domain has been run,
-# and the plan's optional km2 d04 arm is contingent on this km3 pair
-# succeeding first.
+# docs/public/receipts/les/).  km_opt = 2 (prognostic TKE) is not used here:
+# a nest child may run it and cold-starts its own TKE, and the plan's
+# optional km2 d04 arm is contingent on this km3 pair succeeding first.
 #
 # ---------------------------------------------------------------------------
 # MIXING LENGTH: mix_isotropic = 1 on BOTH children.  CHANGED 2026-08-09.

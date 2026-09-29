@@ -1498,6 +1498,69 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
     return records
 
 
+def device_working_bytes(cfg: PerturbationConfig,
+                         mass_shape: Sequence[int]) -> int:
+    """Peak device bytes :func:`apply_perturbations` holds beside the state.
+
+    A census of the arrays this module allocates on the state's device,
+    for a caller that has to admit the perturbation before the state
+    exists.  ``s`` is the compute dtype's width, ``M`` a field's points
+    and ``K = nz * ny * (nx // 2 + 1)`` its real-FFT spectrum points.
+
+    One draw (:func:`gaussian_random_field`) with the device FFT peaks at
+    the largest of its four stages: the spectrum multiply (the working
+    copy ``sM``, the old and new spectra ``2sK`` each and the kernel
+    ``sK``), the inverse transform (the output ``sM`` beside the spectrum,
+    the kernel and cuFFT's copy of its complex input), the normalisation
+    (a second ``sM`` beside the first) and the realized RMS (a float64 copy
+    and its square, ``16M``).  With ``fft_host`` only the finished field
+    reaches the device.
+
+    The application loops keep their last iteration's arrays bound while
+    the next draw runs: the draw, and the float32 increment (plus the
+    exponent, the factor and the scaled field for a lognormal field, and
+    the three Boolean masks and the scaled moment for a species).  Each
+    field's record adds a float64 RMS of its increment.  Temperature
+    fields hold the pressure and the Exner function for the whole call,
+    and ``qv`` leaves its increment for the moisture bounds.
+    """
+    nz, ny, nx = (int(extent) for extent in mass_shape)
+    width = 4 if cfg.compute_dtype == "float32" else 8
+    mass_points = nz * ny * nx
+
+    def draw_peak(shape) -> int:
+        points = math.prod(shape)
+        if cfg.fft_host:
+            return width * points
+        spectrum = shape[0] * shape[1] * (shape[2] // 2 + 1)
+        return max(width * points + 5 * width * spectrum,
+                   2 * width * points + 5 * width * spectrum,
+                   3 * width * points + 3 * width * spectrum,
+                   2 * width * points + 16 * points + 3 * width * spectrum)
+
+    held = 0
+    if any(SUPPORTED_FIELDS[name].exner_from_temperature
+           for name in cfg.field_names):
+        held += 2 * 4 * mass_points
+    peak = 0
+    kept = 0
+    for name in cfg.field_names:
+        shape = _expected_shape(name, nz, ny, nx)
+        points = math.prod(shape)
+        peak = max(peak, held + kept + draw_peak(shape))
+        kept = width * points + 4 * points
+        if cfg.spec(name).mode == "lognormal":
+            kept += 2 * width * points + 4 * points
+        peak = max(peak, held + kept + 16 * points)
+        if name == "qv":
+            held += 4 * mass_points
+    for _species in cfg.species:
+        peak = max(peak, held + kept + draw_peak((nz, ny, nx)))
+        kept = 3 * width * mass_points + 3 * mass_points + 4 * mass_points
+        peak = max(peak, held + kept + (width + 1) * mass_points)
+    return int(peak)
+
+
 def apply_perturbations(state, seed: int, cfg: PerturbationConfig
                         ) -> dict[str, Any]:
     """Perturb ``state`` in place and return the provenance for that member.

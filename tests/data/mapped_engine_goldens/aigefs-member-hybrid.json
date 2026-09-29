@@ -2,13 +2,13 @@
   "decode": {
     "mapping": {
       "name": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
-      "sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc"
+      "sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7"
     },
     "refusal": {
       "message": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "aigefs-member-hybrid",
     "verdict": "REFUSED"
   },
@@ -17,6 +17,7 @@
       "frames": [
         {
           "decoded_direct_fields": [
+            "air_pressure_at_mean_sea_level",
             "air_temperature",
             "air_temperature_2m",
             "eastward_wind",
@@ -24,10 +25,26 @@
             "geopotential_height",
             "northward_wind",
             "northward_wind_10m",
-            "specific_humidity",
-            "surface_pressure"
+            "specific_humidity"
           ],
           "fields": {
+            "air_pressure_at_mean_sea_level": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 105877.07500000001,
+              "minimum": 95001.675,
+              "missing": 0,
+              "sha256": "e7acfbad69a894901246d8812e4558684b50fd33d2ce23f5aa6bfb7c7a5655e5",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f000.grib2:3"
+              ]
+            },
             "air_temperature": {
               "axes": [
                 "vertical",
@@ -233,23 +250,6 @@
                 "mem001.aigefs.t00z.pres.f000.grib2:24",
                 "mem001.aigefs.t00z.pres.f000.grib2:25"
               ]
-            },
-            "surface_pressure": {
-              "axes": [
-                "y",
-                "x"
-              ],
-              "maximum": 104041.625,
-              "minimum": 50795.225000000006,
-              "missing": 0,
-              "sha256": "6e1ac25c5e49021890ce69b31f551600af02a22bb5eeb8d36cdc2ebd0e43510a",
-              "shape": [
-                721,
-                1440
-              ],
-              "source_references": [
-                "mem001.aigefs.t00z.sfc.f000.grib2:4"
-              ]
             }
           },
           "member": "1",
@@ -266,6 +266,7 @@
         },
         {
           "decoded_direct_fields": [
+            "air_pressure_at_mean_sea_level",
             "air_temperature",
             "air_temperature_2m",
             "eastward_wind",
@@ -273,10 +274,26 @@
             "geopotential_height",
             "northward_wind",
             "northward_wind_10m",
-            "specific_humidity",
-            "surface_pressure"
+            "specific_humidity"
           ],
           "fields": {
+            "air_pressure_at_mean_sea_level": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 105177.1875,
+              "minimum": 94788.9875,
+              "missing": 0,
+              "sha256": "0d9b81a579bccb135d9dda49f1ec4ea5fab920bd65a53aa7de56f1995179804a",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "mem001.aigefs.t00z.sfc.f006.grib2:3"
+              ]
+            },
             "air_temperature": {
               "axes": [
                 "vertical",
@@ -482,23 +499,6 @@
                 "mem001.aigefs.t00z.pres.f006.grib2:24",
                 "mem001.aigefs.t00z.pres.f006.grib2:25"
               ]
-            },
-            "surface_pressure": {
-              "axes": [
-                "y",
-                "x"
-              ],
-              "maximum": 103938.25,
-              "minimum": 50837.450000000004,
-              "missing": 0,
-              "sha256": "662d8f8aa81cab8503d73209a74f02b887375ebee09f85d5b53b6811718dc9df",
-              "shape": [
-                721,
-                1440
-              ],
-              "source_references": [
-                "mem001.aigefs.t00z.sfc.f006.grib2:4"
-              ]
             }
           },
           "member": "1",
@@ -544,7 +544,7 @@
       ],
       "mapping": {
         "name": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
-        "sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc"
+        "sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7"
       },
       "materialization": {
         "error": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
@@ -556,14 +556,14 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "aigefs-member-hybrid",
     "verdict": "INSPECTED"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "aigefs-member-hybrid"
 }

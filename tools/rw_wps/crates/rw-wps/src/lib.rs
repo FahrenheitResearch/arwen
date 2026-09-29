@@ -2170,7 +2170,13 @@ fn validate_mapped_output_contract(
                 .to_owned(),
         ));
     }
-    if target.boundary_interval_seconds.map(u64::from) != Some(boundary_interval_seconds) {
+    let accepted = match target.boundary_interval_seconds.map(u64::from) {
+        Some(spacing) if target.accept_boundary_interval_multiples && spacing > 0 => {
+            boundary_interval_seconds > 0 && boundary_interval_seconds % spacing == 0
+        }
+        declared => declared == Some(boundary_interval_seconds),
+    };
+    if !accepted {
         return Err(RwWpsError::Output(format!(
             "mapped target boundary interval {:?} does not match native manifest interval {boundary_interval_seconds}",
             target.boundary_interval_seconds
@@ -4072,6 +4078,10 @@ mod tests {
                 .contains("at most max_dom=4")
         );
         assert!(validate_mapped_output_contract(&target, 2, 10_800).is_err());
+        target.accept_boundary_interval_multiples = true;
+        validate_mapped_output_contract(&target, 2, 10_800).unwrap();
+        validate_mapped_output_contract(&target, 2, 3600).unwrap();
+        assert!(validate_mapped_output_contract(&target, 2, 5400).is_err());
     }
 
     #[test]

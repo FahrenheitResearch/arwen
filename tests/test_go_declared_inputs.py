@@ -261,3 +261,30 @@ def test_malformed_case_table_cannot_fall_through_to_the_prepared_route(tmp_path
     config.write_text('case_data = []\n')
     assert main(["go", str(config), "--dry-run"]) == 2
     assert "go: complete" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag,kept", [(None, 1), ("0", 0), ("3", 3)])
+def test_go_keeps_one_checkpoint_set_unless_told(
+        tmp_path, monkeypatch, capsys, launch_seams, flag, kept):
+    # `go` builds a run plan, so it inherits run-plan's one kept set; a
+    # later `gpuwm branch --from OUT/gpuwmrst_<earlier hour>` needs every
+    # set, and --keep-checkpoints 0 is how go keeps them.
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV, checkpoint_retention
+    monkeypatch.setenv(KEEP_CHECKPOINTS_ENV, "")
+    config = case(tmp_path)
+    out = tmp_path / "kept"
+    argv = ["go", str(config), "--outdir", str(out), "--run-stamp", "off",
+            "--products", "none", "--no-memory-gate"]
+    if flag is not None:
+        argv += ["--keep-checkpoints", flag]
+    assert main(argv) == 0
+    events = runplan.read_events(out / runplan.EVENTS_FILENAME)
+    resolved = next(event for event in events if event["event"] == "resolved_plan")
+    assert resolved["run_options"]["keep_checkpoints"] == kept
+    assert checkpoint_retention() == (kept or None)
+
+
+def test_go_refuses_a_negative_checkpoint_count(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        main(["go", str(case(tmp_path)), "--keep-checkpoints", "-1"])
+    assert "0 keeps every set" in capsys.readouterr().err

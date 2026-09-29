@@ -46,6 +46,21 @@ def _spec_zone(cfg: RunConfig) -> int:
     return int(cfg.spec_zone) if _boundary_forced(cfg) else 0
 
 
+def _frame_takes_table_w(cfg: RunConfig) -> bool:
+    """Whether the specified/nested frame integrates ``w`` from its table.
+
+    A nest always does (solve_em.F:1602-1611, ``spec_bdyupdate(w_2,
+    rw_tend)``); a specified domain does when it relaxes w
+    (``RunConfig.relax_w``).  Every other specified domain takes WRF's
+    root-domain zero-gradient copy.  The phi update and the pressure
+    diagnosis on the frame are the same either way, which is why the two
+    frame kernels differ in their ``w`` line alone.
+    """
+    from gpuwm.ingest.lateral_bc import specified_relaxes_w
+
+    return bool(getattr(cfg, "nested", False)) or specified_relaxes_w(cfg)
+
+
 def _mass_w_boundary_zone(cfg: RunConfig) -> int:
     """WRF advance_mu_t/advance_w omit only the physical outer row.
 
@@ -453,7 +468,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
 
     frame_kernel = None
     frame_args = None
-    if cfg.specified:
+    if cfg.specified and not _frame_takes_table_w(cfg):
         frame_kernel = get_kernel("acoustic", "advance_specified_phi_w")
         frame_args = (
             state.ph_pp, state.w_pp, state.p_pp, state.al_pp, state.rph_t,
@@ -462,7 +477,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             state.c1h, state.c2h, state.c1f, state.c2f, dtau_arg,
             np.int32(cfg.spec_zone), base3d, nz_arg, ny_arg, nx_arg,
         )
-    elif cfg.nested:
+    elif _frame_takes_table_w(cfg):
         frame_kernel = get_kernel("acoustic", "advance_nested_phi_w")
         frame_args = (
             state.ph_pp, state.w_pp, state.p_pp, state.al_pp, state.rph_t,
@@ -569,7 +584,7 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
               np.int32(nz), np.int32(ny), np.int32(nx)]
     kernel((blocks,), (_THREADS,), tuple(args))
 
-    if cfg.specified:
+    if cfg.specified and not _frame_takes_table_w(cfg):
         # The raw frame kernel preserves every eager FP32 round point in
         # spec_bdyupdate_ph and combines its independent zero-gradient w copy.
         n = ny * nx
@@ -582,9 +597,10 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
              state.c1h, state.c2h, state.c1f, state.c2f, DTYPE(dtau),
              np.int32(cfg.spec_zone), _base3d(state), np.int32(nz),
              np.int32(ny), np.int32(nx)))
-    elif cfg.nested:
+    elif _frame_takes_table_w(cfg):
         # solve_em.F:1577-1611 ELSE: spec_bdyupdate_ph followed by
-        # spec_bdyupdate(w_2, rw_tend, dts_rk).  This child-only raw kernel
+        # spec_bdyupdate(w_2, rw_tend, dts_rk).  A specified domain that
+        # relaxes w (relax_w) takes this same frame.  This child-only raw kernel
         # also repeats dyn's fused pressure diagnosis on the changed frame.
         n = ny * nx
         blocks = (n + _THREADS - 1) // _THREADS

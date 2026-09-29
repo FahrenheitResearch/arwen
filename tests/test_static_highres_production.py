@@ -1,9 +1,10 @@
 """Focused gates for the production high-resolution static geography lane.
 
 Covers the config surface (unknown keys refuse; absence is the identity),
-the footprint-parametric tile enumeration, the cache-hit path, refusal on
-synthetic coverage gaps, and the US-interior/coast refusal gates -- all
-without touching the network or any real raster.
+the footprint-parametric tile enumeration, the cache-hit path, and the
+US-interior/coast gates -- all without touching the network or any real
+raster.  Coverage gaps (cells a source does not reach) take the baseline
+and are covered in ``test_static_highres_coverage.py``.
 """
 from __future__ import annotations
 
@@ -18,10 +19,8 @@ import pytest
 from gpuwm.static.highres_fetch import (
     CoverageError,
     FootprintBBox,
-    SourceAbsent,
     domain_footprint,
     fetch_file,
-    fetch_three_dep_tiles,
     nlcd_year_for,
     three_dep_tile_ids,
 )
@@ -133,20 +132,6 @@ def test_fetch_file_records_sha_and_hits_cache(tmp_path):
     assert calls == ["https://example.invalid/a"]  # no second network touch
 
 
-def test_fetch_three_dep_refuses_naming_missing_tiles(tmp_path):
-    def urlopen(url, offset):
-        if "n40w099" in url:
-            raise SourceAbsent(f"{url} -> HTTP 404")
-        return _FakeResponse(b"elevation")
-
-    bbox = FootprintBBox(lat_min=38.05, lat_max=39.31,
-                         lon_min=-98.975, lon_max=-97.325)
-    with pytest.raises(CoverageError) as failure:
-        fetch_three_dep_tiles(bbox, tmp_path, urlopen=urlopen)
-    assert "n40w099" in str(failure.value)
-    assert "incomplete" in str(failure.value)
-
-
 # ---------------------------------------------------------------------------
 # Config surface
 # ---------------------------------------------------------------------------
@@ -167,7 +152,7 @@ def test_parse_static_table_accepts_and_resolves(tmp_path):
     assert config.echo() == {
         "enabled": "true", "cache_root": str(tmp_path / "hr-cache"),
         "on_refuse": "fallback-30s", "terrain_source": "auto",
-        "fields": "auto"}
+        "fields": "auto", "landcover_source": "auto"}
 
 
 def test_parse_static_table_refuses_unknown_key(tmp_path):
@@ -306,11 +291,12 @@ def _stub_the_overlay(monkeypatch, *, water_cells, halo):
     from gpuwm.static import highres as highres_module
 
     def fake_fetch_and_bind(bbox, cache_root, case_date, *, coverage, grid,
-                            baseline, urlopen=None):
+                            baseline, urlopen=None, landcover_source=None):
+        assert landcover_source.source_id == "annual-nlcd"
         return (_StubRaster("usgs-3dep-13as", "terrain"),
                 _StubRaster("annual-nlcd", "landcover"),
                 {("sand", "0-5cm"): _StubRaster("soilgrids-v2", "soil")},
-                {"nlcd_year": 2021, "nlcd_anachronism_years": 0,
+                {"landcover_year": 2021, "landcover_anachronism_years": 0,
                  "bytes_fetched": 0})
 
     def fake_resample_continuous(source, grid, *, method):
@@ -354,7 +340,7 @@ def test_a_coastal_domain_keeps_ocean_and_takes_high_resolution_land_use(
         tmp_path, monkeypatch):
     """A coast is not a refusal: the sea stays ocean and the lake stays lake.
 
-    The land-cover crosswalk has one open water class, so it cannot tell a
+    The NLCD crosswalk has one open water class, so it cannot tell a
     lake from the sea.  The discriminator is the domain's own 30-arc-second
     baseline water field, which is already on the model grid.  Open water on
     a cell the baseline calls WRF ocean category 17 becomes ocean; anywhere
@@ -369,7 +355,8 @@ def test_a_coastal_domain_keeps_ocean_and_takes_high_resolution_land_use(
                       water_cells=(_OCEAN_CELL, _INLAND_WATER_CELL),
                       halo=HALO)
 
-    config = HighresStaticConfig(enabled=True, cache_root=tmp_path)
+    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                                 landcover_source="annual-nlcd")
     fields, receipt = apply_highres_statics(
         baseline, grid, config=config, domain_id=1,
         case_date=date(2021, 5, 15), landuse_attrs=MODIS21_ATTRS)

@@ -67,11 +67,20 @@ _GIB = 1024.0 * 1024.0 * 1024.0
 PREP_EVENT_PREFIX = "GPUWM_PREP_EVENT "
 PREP_EVENT_SCHEMA = "gpuwm.prep-stage.v1"
 
+#: Set in a program's environment by a parent that reads step records off
+#: its output (``gpuwm go``'s stages, :func:`gpuwm.go_cli._run_stage`).  A
+#: preparation host in that program (:mod:`gpuwm.prep_output`) then passes
+#: each step line its preparer writes on to its own stderr, where the
+#: parent reads it; without it the host keeps the line to its log, since
+#: its stderr is a person's terminal.
+PREP_EVENT_PARENT_ENV = "GPUWM_PREP_EVENT_PARENT"
+
 
 @contextlib.contextmanager
 def prep_stage(stage: str, *, label: str | None = None,
                backend: str | None = None, count: int | None = None,
-               index: int | None = None):
+               index: int | None = None, grid_id: int | None = None,
+               stderr: bool = True):
     """Report an actual preparation operation on stderr, leaving JSON stdout.
 
     The small event envelope is shared with front-door child-output readers.
@@ -79,25 +88,36 @@ def prep_stage(stage: str, *, label: str | None = None,
     forecast module, or output directory is needed to report preparation.
     The yielded dictionary can carry an outcome/reason on completion, so an
     optional file export can finish without claiming it produced files.
+
+    A step taken grid by grid says ``index`` of ``count`` as its place
+    among the grids it builds, and the grid's own id in ``grid_id``.
+
+    ``stderr=False`` reports through :func:`emit_event` alone.  The stderr
+    line is for a parent that reads a preparer PROGRAM's output
+    (``gpuwm prep`` and ``gpuwm go`` turn it into words); a step taken in
+    the process that holds the run, like the experiment builder, is heard
+    by that process's own listener instead, and its stderr is the person's
+    terminal: ``gpuwm run --no-supervise`` and ``gpuwm run-plan`` printed
+    each such step as a raw JSON line.
     """
     import json
 
     fields = {"schema": PREP_EVENT_SCHEMA, "stage": stage,
               "label": label or stage.replace("_", " ")}
     fields.update({key: value for key, value in {
-        "backend": backend, "count": count, "index": index}.items()
+        "backend": backend, "count": count, "index": index,
+        "grid_id": grid_id}.items()
         if value is not None})
 
     def emit(event, **details):
         payload = {**fields, "event": event, **details}
-        print(PREP_EVENT_PREFIX + json.dumps(
-            payload, sort_keys=True,
-            allow_nan=False), file=sys.stderr, flush=True)
+        if stderr:
+            print(PREP_EVENT_PREFIX + json.dumps(
+                payload, sort_keys=True,
+                allow_nan=False), file=sys.stderr, flush=True)
         # Native run hosts may retain the existing preparation receipt as
         # metadata. The operation and its output are unchanged.
-        public = {key: value for key, value in payload.items() if key != "error"}
-        emit_event("warning", code="preparation_progress", phase="prepare",
-                   preparation=public, message=fields["label"])
+        emit_event("warning", **prep_record_event(payload))
 
     started = time.perf_counter()
     emit("started")
@@ -112,6 +132,56 @@ def prep_stage(stage: str, *, label: str | None = None,
         emit("finished", elapsed_seconds=time.perf_counter() - started,
              **{key: completion[key] for key in ("outcome", "reason")
                 if key in completion})
+
+
+def prep_progress(stage: str, *, label: str, done: int, count: int) -> None:
+    """Say how far a counted preparation step has got, on the same envelope.
+
+    :func:`prep_stage` says when a step starts and ends; a step that
+    builds many things in turn (the boundary times after the start state)
+    was silent in between, so a page watching a run could say only which
+    step was open for minutes at a time.  This is the ``progress`` action
+    of that envelope: ``index`` things of ``count`` are done.  A reader
+    that knows only the started/finished/failed actions passes it over.
+    """
+    import json
+
+    payload = {"schema": PREP_EVENT_SCHEMA, "stage": stage, "label": label,
+               "event": "progress", "index": int(done), "count": int(count)}
+    print(PREP_EVENT_PREFIX + json.dumps(payload, sort_keys=True, allow_nan=False),
+          file=sys.stderr, flush=True)
+    emit_event("warning", **prep_record_event(payload))
+
+
+def prep_record_event(record: dict) -> dict:
+    """The fields of the run event one preparation step record rides on.
+
+    A ``warning`` with code ``preparation_progress``: what a run page reads a
+    step from.  Shared by the step reporters above and by every parent that
+    reads a preparer program's step lines and says them again on its run's
+    stream, so a step heard in the process and a step read off a program's
+    output land as the same record.  A failure's own text stays with the
+    preparer's output and its log.
+    """
+
+    public = {key: value for key, value in record.items() if key != "error"}
+    return {"code": "preparation_progress", "phase": "prepare",
+            "preparation": public, "message": str(record.get("label", ""))}
+
+
+def relay_prep_record(record: dict) -> None:
+    """Say a step record read off a preparer program's output to this process's listeners.
+
+    A preparer that runs as its own program (``gpuwm prep``'s adapter, the
+    HRRR nest preparation) reports each step through :func:`emit_event` in
+    ITS process, where nobody listens; its parent reads the step's
+    ``GPUWM_PREP_EVENT`` line and says it here, so the listener that puts it
+    on the run's stream (:func:`gpuwm.runplan._preparation_relay`) hears it.
+    Without this a run page on the staged route showed no step and no
+    boundary-time count for the whole preparation.
+    """
+
+    emit_event("warning", **prep_record_event(record))
 
 
 def line(text: str, *, stream=None) -> None:
@@ -130,6 +200,23 @@ def format_elapsed(seconds: float) -> str:
     hours, remainder = divmod(int(seconds), 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+#: ``writing:`` phases whose work is not a write, in a reader's words.  The
+#: read-back of a new checkpoint is timed as a write, sized by the file it
+#: reads (:meth:`gpuwm.supervisor.RuntimeHeartbeat.__call__`), and the
+#: progress line said "writing verify checkpoint" while the run was reading
+#: back what it had already written.
+_WRITE_PHASE_WORDS = {"verify-checkpoint": "checking checkpoint"}
+
+
+def write_phase_words(phase: str) -> str:
+    """What one ``writing:<phase>`` heartbeat is doing, as a progress line says it."""
+
+    words = _WRITE_PHASE_WORDS.get(phase)
+    if words is not None:
+        return words
+    return "writing " + phase.replace("-", " ").replace("_", " ")
 
 
 class ForecastProgress:
@@ -175,6 +262,10 @@ class ForecastProgress:
         elif heartbeat.status.startswith("finalizing:"):
             stage = heartbeat.status.removeprefix("finalizing:")
             message = "Finishing: " + stage.replace("-", " ").replace("_", " ")
+        elif heartbeat.status.startswith("writing:"):
+            stage = heartbeat.status.removeprefix("writing:")
+            message = (f"Forecast: {format_elapsed(heartbeat.model_elapsed_seconds)} "
+                       "simulated; " + write_phase_words(stage))
         elif heartbeat.status == "failed":
             message = "Forecast worker reported a failure; reading diagnostics"
         else:
@@ -184,6 +275,7 @@ class ForecastProgress:
                 "prepare-case": "loading and preparing inputs",
                 "build-domain-tree": "initializing domains",
                 "resolve-schedule": "resolving forecast times",
+                "resolve-terrain-clock": "reading the terrain for the time step",
                 "cold-start-wrfout": "writing initial output",
                 "restore-checkpoint": "restoring checkpoint",
             }.get(stage, stage.replace("-", " ").replace("_", " "))
@@ -344,6 +436,13 @@ def emit_event(event: str, **fields) -> None:
             pass
 
 
+def event_sinks_installed() -> bool:
+    """Whether any run is listening, for emitters with a cost to measure."""
+
+    with _event_sink_lock:
+        return bool(_event_sinks)
+
+
 @contextlib.contextmanager
 def event_sink(sink):
     """Route transfer events to ``sink`` for the duration of the block.
@@ -400,9 +499,10 @@ class _Transfer:
     """One file's live state, as the monitor knows it."""
 
     __slots__ = ("name", "token", "host", "expected", "path", "seen",
-                 "final", "done", "failed")
+                 "final", "started", "done", "failed", "cancelled")
 
-    def __init__(self, name, token, host, expected, path):
+    def __init__(self, name, token, host, expected, path, *,
+                 started: bool = True):
         self.name = name
         self.token = token
         self.host = host
@@ -410,8 +510,12 @@ class _Transfer:
         self.path = None if path is None else Path(path)
         self.seen = 0
         self.final: int | None = None
+        # False only for a file the request declared up front (see
+        # TransferMonitor.begin) that no worker has picked up yet.
+        self.started = started
         self.done = False
         self.failed = False
+        self.cancelled = False
 
     def moved(self) -> int:
         """Bytes this file has moved, from the best source available.
@@ -482,6 +586,10 @@ class TransferMonitor:
         self._lock = threading.Lock()
         self._files: dict[str, _Transfer] = {}
         self._order: list[str] = []
+        # True once the request has said up front which files it will
+        # move (see `begin`); only then is there a whole-request count
+        # to put on the event stream.
+        self._declared = False
         self._baselines: dict[Path, dict[str, int]] = {}
         self._first_start: float | None = None
         self._last_said = 0.0
@@ -540,20 +648,28 @@ class TransferMonitor:
 
     def start(self, name: str, *, token: str | None = None,
               host: str | None = None, expected_bytes: int | None = None,
-              path=None) -> None:
-        """One file's transfer has begun.  Says so immediately."""
+              path=None, on_disk: bool = False) -> None:
+        """One file's transfer has begun.  Says so immediately.
+
+        ``on_disk`` is a file already at its destination that is checked
+        before anything moves, and its line says that instead of naming
+        a host it is not asking.
+        """
 
         record = _Transfer(name, token, host,
                            int(expected_bytes) if expected_bytes else None,
                            path)
         with self._lock:
-            if name not in self._files:
+            declared = self._files.get(name)
+            if declared is None:
                 self._order.append(name)
+            elif record.expected is None:
+                record.expected = declared.expected
             self._files[name] = record
             self._arm_directory(record.path)
             if self._first_start is None:
                 self._first_start = self._clock()
-            text = self._start_line(record)
+            text = self._start_line(record, on_disk=on_disk)
         self._say_line(text)
         # Idempotent, and normally a no-op: the pool calls `begin` before
         # any worker exists.  Kept here so a caller driving the monitor
@@ -615,15 +731,44 @@ class TransferMonitor:
             if record is not None:
                 record.seen += int(count)
 
+    def relay(self, name: str):
+        """A ``(received, total)`` sink for one transfer attempt of ``name``.
+
+        For a transport that reports a RUNNING count for its object rather
+        than chunks -- the Rust backbone, which holds the object in memory
+        until it is whole, so nothing grows on disk to be counted.  Each
+        report becomes :meth:`observe` of what is new since the last one
+        and :meth:`declare` of the size.  One relay per attempt: a
+        backbone asked again counts from zero, and the bytes it moves the
+        second time are moved all the same.
+        """
+
+        last = 0
+
+        def relay(received: int, total: int | None = None) -> None:
+            nonlocal last
+            if total:
+                self.declare(name, total)
+            if received > last:
+                self.observe(name, received - last)
+                last = received
+
+        return relay
+
     def finish(self, name: str, *, size: int | None = None,
                seconds: float | None = None, host: str | None = None,
-               failed: bool = False) -> None:
+               failed: bool = False, cancelled: bool = False) -> None:
         """One file's transfer has ended, well or badly.
 
-        A FAILED file is finished too, and says so.  A monitor that only
-        heard about successes would leave the consolidated line counting
-        a file that stopped moving minutes ago as in flight, which is the
-        same lie about progress in a smaller box.
+        A FAILED file is finished too, and says so, but it is not DONE.
+        A monitor that only heard about successes would leave the
+        consolidated line counting a file that stopped moving minutes
+        ago as in flight; one that counted a failure as done told a
+        reader the request was closer to finished than it was.
+
+        ``cancelled`` is a file the pool stopped because ANOTHER file
+        failed the request: it did not complete, and it is not the
+        failure either.
         """
 
         with self._lock:
@@ -632,8 +777,10 @@ class TransferMonitor:
                 record = _Transfer(name, None, host, None, None)
                 self._files[name] = record
                 self._order.append(name)
+            record.started = True
             record.done = True
-            record.failed = bool(failed)
+            record.failed = bool(failed) and not cancelled
+            record.cancelled = bool(cancelled)
             if size is not None:
                 record.final = int(size)
             elif record.final is None:
@@ -642,18 +789,42 @@ class TransferMonitor:
                 record.host = host
             moved = record.final
             token = record.token
+        extra = {"cancelled": True} if cancelled else {}
         self._emit("fetch_completed", file=name, token=token,
                    host=record.host, bytes=moved,
                    seconds=(None if seconds is None
                             else round(float(seconds), 6)),
-                   failed=bool(failed))
+                   failed=bool(failed or cancelled), **extra)
+
+    def stopped(self, name: str, *, in_flight: int, queued: int) -> None:
+        """Say that ``name`` failed the request and the rest was stopped.
+
+        Without it the log goes from a run of healthy progress lines
+        straight to a refusal, and the files that were cut short say
+        nothing at all.
+        """
+
+        if not in_flight and not queued:
+            return
+        parts = []
+        if in_flight:
+            parts.append(f"stopping the {in_flight} "
+                         f"file{'' if in_flight == 1 else 's'} in flight")
+        if queued:
+            parts.append(f"not starting the {queued} "
+                         f"file{'' if queued == 1 else 's'} still queued")
+        self._say_line(f"{self.label}: {name} failed, so the request "
+                       f"cannot complete; {' and '.join(parts)}")
 
     # -- the consolidated line ----------------------------------------
 
-    def _start_line(self, record: _Transfer) -> str:
+    def _start_line(self, record: _Transfer, *,
+                    on_disk: bool = False) -> str:
         head = f"{self.label}: "
         if record.token:
             head += f"{record.token}: "
+        if on_disk:
+            return f"{head}{record.name} is already on disk; checking it here"
         parts = []
         if record.host:
             parts.append(str(record.host))
@@ -705,13 +876,13 @@ class TransferMonitor:
         reused object does not report it as freshly moved, and a file
         that grows in place is counted for its growth only.
 
-        ACCURATE ABOUT ITS LIMIT: for a backbone that stages OUTSIDE the
-        destination, this still reads zero while a single object is in
-        flight.  What it does recover is every file that has actually
-        landed -- including one the backbone named differently from the
-        name this route asked for, which no per-file stat could match --
-        so a window of several files stops reporting nothing until the
-        end.
+        ITS LIMIT: for a backbone that stages OUTSIDE the destination,
+        this still reads zero while a single object is in flight; the
+        in-flight count of such a transfer comes from the backbone's own
+        progress output instead (see :meth:`relay`).  What this does
+        recover is every file that has actually landed -- including one
+        the backbone named differently from the name this route asked
+        for, which no per-file stat could match.
         """
 
         baseline = self._baselines.get(directory)
@@ -733,7 +904,16 @@ class TransferMonitor:
         return gained
 
     def _snapshot(self):
-        """(done, total, moved, expected-or-None, in-flight records)."""
+        """(done, failed, total, moved, expected-or-None, in-flight records).
+
+        ``total`` is every file the request declared up front (see
+        :meth:`begin`), not only the ones that have started: counting
+        started files made the denominator grow as the fetch ran (0 of
+        6, 6 of 12, 16 of 22, 35 of 38), so a reader could not tell how
+        much was left.  ``done`` counts files that COMPLETED; a failed
+        file is counted as failed, and a file the pool stopped because
+        another one failed is neither.
+        """
 
         records = [self._files[name] for name in self._order]
         # Grouped by destination, and the two accounts are combined with
@@ -751,22 +931,41 @@ class TransferMonitor:
         for directory, group in grouped.items():
             moved += max(sum(record.moved() for record in group),
                          self._directory_gain(directory))
-        done = sum(1 for record in records if record.done)
+        done = sum(1 for record in records if record.done
+                   and not record.failed and not record.cancelled)
+        failed = sum(1 for record in records if record.failed)
         expected = None
         if records and all(record.expected or record.done
                            for record in records):
             expected = sum(record.expected if record.expected
                            else (record.final or 0) for record in records)
-        flight = [record for record in records if not record.done]
-        return done, len(records), moved, expected, flight
+        flight = [record for record in records
+                  if record.started and not record.done]
+        return done, failed, len(records), moved, expected, flight
 
-    def _progress_line(self, done, total, moved, expected, elapsed) -> str:
+    def _progress_line(self, done, total, moved, expected, elapsed,
+                       failed=0) -> str:
         volume = (_size(moved) if expected is None
                   else f"{_size(moved)} of {_size(expected)}")
         rate = (f"{moved / elapsed / _MIB:.1f} MiB/s aggregate"
                 if elapsed > 0.0 else "starting")
-        return (f"{self.label}: {done} of {total} files done, "
+        failures = f", {failed} failed" if failed else ""
+        return (f"{self.label}: {done} of {total} files done{failures}, "
                 f"{volume}, {rate}")
+
+    @staticmethod
+    def _acquisition(done, total, moved) -> dict:
+        """The whole-request count, for a front end's files line.
+
+        The block the ERA5 route already publishes, so the consumers
+        that fold it (the TUI's and the remote worker's pipeline
+        progress, which the desktop draws as "Files: done / total")
+        show the real total without learning a new shape.
+        """
+
+        return {"schema": "arwen.acquisition-progress.v1",
+                "files_total": int(total), "files_completed": int(done),
+                "transferred_bytes": int(moved)}
 
     def tick(self, *, force: bool = False) -> None:
         """Sample every transfer and say where the request is, if it is time."""
@@ -782,12 +981,15 @@ class TransferMonitor:
                 return
             self._last_said = now
             self._said = True
-            done, total, moved, expected, flight = self._snapshot()
+            done, failed, total, moved, expected, flight = self._snapshot()
             elapsed = (now - self._first_start
                        if self._first_start is not None else 0.0)
-            text = self._progress_line(done, total, moved, expected, elapsed)
+            text = self._progress_line(done, total, moved, expected, elapsed,
+                                       failed=failed)
             moving = [(record.name, record.moved(), record.expected)
                       for record in flight]
+            whole = (self._acquisition(done, total, moved)
+                     if self._declared else None)
         if self._tty():
             self._write("\r" + text)
             self._pending_newline = True
@@ -796,20 +998,39 @@ class TransferMonitor:
         for name, bytes_moved, record_expected in moving:
             self._emit("fetch_progress", file=name, bytes=bytes_moved,
                        expected_bytes=record_expected)
+        if whole is not None:
+            self._emit("fetch_progress", acquisition=whole)
 
     # -- the thread that makes the line appear without a caller -------
 
-    def begin(self) -> None:
-        """Start the ticker, ON THE CALLER'S THREAD, before any transfer.
+    def begin(self, files=()) -> None:
+        """Learn the whole request, then start the ticker, before any transfer.
 
-        WHY IT IS NOT STARTED LAZILY BY THE FIRST ``start``.  Creating a
-        thread costs real time, and paying it inside whichever worker
-        happened to call first makes that worker late relative to its
-        siblings -- which reorders the transfers themselves.  A route
+        ``files`` is ``(name, expected_bytes-or-None)`` for every file the
+        request will move, in order.  Declared HERE, before any worker
+        exists, so the very first consolidated line says out of how many
+        (``0 of 38 files done`` rather than ``0 of 6``) and neither a
+        queued nor a failed file can make the denominator move.  Sizes
+        known up front count toward the expected total; while any file's
+        size is unknown the line states the bytes moved without one.
+
+        WHY THE TICKER IS NOT STARTED LAZILY BY THE FIRST ``start``.
+        Creating a thread costs real time, and paying it inside whichever
+        worker happened to call first makes that worker late relative to
+        its siblings -- which reorders the transfers themselves.  A route
         test that pinned the order its objects were asked for caught
         exactly that.  Started once, up front, no worker pays it.
         """
 
+        with self._lock:
+            for name, expected in files:
+                if name in self._files:
+                    continue
+                self._order.append(name)
+                self._files[name] = _Transfer(
+                    name, None, None, int(expected) if expected else None,
+                    None, started=False)
+                self._declared = True
         self._ensure_ticker()
 
     def _ensure_ticker(self) -> None:
@@ -850,6 +1071,16 @@ class TransferMonitor:
         if self._pending_newline:
             self._pending_newline = False
             self._write("\n")
+        if self._declared:
+            # The last word on the whole request, so a front end that
+            # folds the latest count does not keep the one from the final
+            # tick, up to a cadence before the last file landed.
+            with self._lock:
+                done, _failed, total, moved, _expected, _flight = (
+                    self._snapshot())
+                self._declared = False
+            self._emit("fetch_progress",
+                       acquisition=self._acquisition(done, total, moved))
 
     def __enter__(self) -> "TransferMonitor":
         return self
@@ -861,4 +1092,5 @@ class TransferMonitor:
 __all__ = ["ByteCounter", "ForecastProgress", "format_elapsed", "LOG_INTERVAL_S", "TRANSFER_EVENTS",
            "TRANSFER_LOG_INTERVAL_S", "TRANSFER_TTY_INTERVAL_S",
            "TTY_INTERVAL_S", "TransferMonitor", "emit_event", "event_sink",
-           "format_transfer_done_line", "line", "line_buffer_stdout"]
+           "format_transfer_done_line", "line", "line_buffer_stdout", "prep_progress", "prep_record_event",
+           "prep_stage", "relay_prep_record"]

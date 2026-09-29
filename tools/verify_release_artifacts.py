@@ -38,6 +38,10 @@ import zipfile
 
 _PINS_MEMBER = "gpuwm/data/bridges/bridge-pins.json"
 
+#: The checkout this verifier sits in; the history a reused native binary
+#: is proved against when --repo-root is not given.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 #: PyPI's per-file cap, taken at its STRICTER reading.  "100 MB" is
 #: spelled 100,000,000 B in some of warehouse's own copy and
 #: 104,857,600 B (100 MiB) in others, and a cut must not depend on
@@ -327,6 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     # rather than assert a blanket claim that stopped being true the day
     # a vendored artifact joined the bundle.
     stamped: list[str] = []
+    #: label -> the earlier commit a reused binary was built at.
+    reused: dict[str, str] = {}
     vendored_by_marker: list[str] = []
     for platform, bundle in sorted(pins.platforms.items()):
         assert len(bundle.binaries) == len(by_name)
@@ -396,7 +402,14 @@ def main(argv: list[str] | None = None) -> int:
                     vendored_by_marker.append(label)
                 else:
                     bridge_assets.verify_source_revision(
-                        payload, expected=args.source_rev, label=label)
+                        payload, expected=args.source_rev, label=label,
+                        equivalent=lambda built, crate=artifact.crate: (
+                            bridge_assets.native_input_difference(
+                                repo or REPO_ROOT, crate, built,
+                                args.source_rev)))
+                    built = bridge_assets.embedded_source_revisions(payload)
+                    if built and built[0] != args.source_rev:
+                        reused[label] = built[0]
                     stamped.append(label)
             for pin in bundle.assets:
                 payload = archive.read(pin.path)
@@ -488,6 +501,12 @@ def main(argv: list[str] | None = None) -> int:
         # a name missing from both would be bytes nobody proved.
         "binaries_proved_by_source_rev_stamp": sorted(stamped),
         "binaries_proved_by_contract_marker": sorted(vendored_by_marker),
+        # Stamped binaries whose stamp names an earlier ancestor commit at
+        # which every declared build input of their crate is the same git
+        # object (gpuwm.bridge_assets.native_input_difference): the cut
+        # reused them instead of recompiling identical sources.  A subset
+        # of the stamp list above, named so the reuse is never silent.
+        "binaries_reused_from_identical_inputs": dict(sorted(reused.items())),
         "installed_module": str(installed),
         "installed_version": gpuwm.__version__ if not args.dry_run else None,
         # Bytes and hash come from the size pass above rather than being

@@ -668,6 +668,8 @@ def test_run_route_wires_initializer_preparer_and_provenance(tmp_path):
     node = SimpleNamespace(cfg=child_dc, grid=grid)
     model = SimpleNamespace(
         node=lambda gid: node, _input_catalog=object(),
+        _prepared_by_grid_id={2: SimpleNamespace(static_sampling_contract=
+            "wps-sampling-portable-v1")},
         schedule=SimpleNamespace(
             period_ticks=60, clock=SimpleNamespace(tick_den=1)))
     runner = build_real_relocation_runner(exp, None, model, tmp_path)

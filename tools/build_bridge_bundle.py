@@ -262,9 +262,15 @@ def _pin_bundle(archive: Path, release: str,
                             "one this release speaks to; rebuild it from "
                             f"{artifact.crate} in the release checkout")
                 else:
+                    # A binary reused from an earlier commit whose build
+                    # inputs are unchanged at source_rev is accepted on
+                    # that proof, read from this checkout's history.
                     bridge_assets.verify_source_revision(
                         payload, expected=source_rev,
-                        label=f"{archive.name}: {name}")
+                        label=f"{archive.name}: {name}",
+                        equivalent=lambda built, crate=artifact.crate: (
+                            bridge_assets.native_input_difference(
+                                REPO_ROOT, crate, built, source_rev)))
             except bridge_assets.BridgeAssetError as error:
                 raise SystemExit(f"build_bridge_bundle: {error}; refusing "
                                  "to pin a bundle that is not provably "

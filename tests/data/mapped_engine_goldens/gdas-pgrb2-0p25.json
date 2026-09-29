@@ -262,7 +262,6 @@
           }
         },
         "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
-        "header_sha256": "c99ce38933074439375c5b4b72f86bbaf11a4a3ff47db4b4910500bd8e4bc20c",
         "inputs": [
           {
             "name": "gdas.t06z.pgrb2.0p25.f000",
@@ -282,6 +281,7 @@
           "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
         },
         "member": null,
+        "portable_header_sha256": "2778b1860d4982c57c0353f0671d6c239364411cd01ada51770db211ccb94e59",
         "source_cycle": "2026-08-17T06:00:00",
         "valid_time": "2026-08-17T06:00:00",
         "vertical": {
@@ -551,7 +551,6 @@
           }
         },
         "grid_fingerprint": "f391584a7d270a121a9f1b19cb91a2c521d995050945ad074a3cd716403d522e",
-        "header_sha256": "95e7df489cb59200c7a13dd47a283e2b68e04f2b108360c4d3b98476d214dc20",
         "inputs": [
           {
             "name": "gdas.t06z.pgrb2.0p25.f000",
@@ -571,6 +570,7 @@
           "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
         },
         "member": null,
+        "portable_header_sha256": "713ec578379babdfd472eb1728c483dd88c0681f22c7c812b8f40d7f320d1bef",
         "source_cycle": "2026-08-17T06:00:00",
         "valid_time": "2026-08-17T07:00:00",
         "vertical": {
@@ -581,11 +581,12 @@
         "vertical_units": "Pa"
       }
     ],
+    "header_rule": "gpuwm-portable-frame-header-v1",
     "mapping": {
       "name": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
-      "sha256": "f6de7a0a42d86ba1aa7e8cd84d30db79870843c25ccb6aa7ad3a3dbe8b4c4fc5"
+      "sha256": "eee8342a5a9a57f17d267dd48ad5edbb1a72f6d34c8803bd2ba1010668e0268d"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "gdas-pgrb2-0p25",
     "verdict": "DECODED"
   },
@@ -1533,14 +1534,10 @@
       ],
       "mapping": {
         "name": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
-        "sha256": "f6de7a0a42d86ba1aa7e8cd84d30db79870843c25ccb6aa7ad3a3dbe8b4c4fc5"
+        "sha256": "eee8342a5a9a57f17d267dd48ad5edbb1a72f6d34c8803bd2ba1010668e0268d"
       },
       "materialization": {
         "frame_count": 2,
-        "frame_header_sha256": [
-          "c99ce38933074439375c5b4b72f86bbaf11a4a3ff47db4b4910500bd8e4bc20c",
-          "95e7df489cb59200c7a13dd47a283e2b68e04f2b108360c4d3b98476d214dc20"
-        ],
         "frame_header_sha256_portable": [
           "2778b1860d4982c57c0353f0671d6c239364411cd01ada51770db211ccb94e59",
           "713ec578379babdfd472eb1728c483dd88c0681f22c7c812b8f40d7f320d1bef"
@@ -1553,7 +1550,7 @@
       "status": "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "gdas-pgrb2-0p25",
     "verdict": "INSPECTED"
   },
@@ -1561,6 +1558,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "gdas-pgrb2-0p25"
 }

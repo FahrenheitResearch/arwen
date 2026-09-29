@@ -17,9 +17,9 @@
 //!   binade can flip knife-edge stencil selections on shared ground).
 //!
 //! float32 sin/cos/exp/log go through [`super::npmath`]'s numpy-kernel
-//! ports; tan/atan/atan2/asin/acos/log10/sqrt/pow go through `std`
-//! (bit-equal to numpy on the reference platform, measured -- see the
-//! `npmath` module docs).
+//! ports; tan/atan/atan2/asin/acos/log10/pow use its portable libm wrappers.
+//! sqrt uses the correctly rounded hardware operation. Sampling positions
+//! must not depend on the platform math library (cross-machine moving nests).
 //!
 //! The compiler-band data the sampler consumes (`_lon_boundary_band`,
 //! `_lat_integer_band`, `_geogrid_longitude` band stepping) is computed
@@ -28,10 +28,12 @@
 //! re-derives float32 ULP logic.
 
 use super::npmath::{
-    nextafter_down, nextafter_up, np_cosf, np_expf, np_logf, np_modf,
-    np_powf, np_sinf, spacing_abs,
+    nextafter_down, nextafter_up, np_acosf, np_asinf, np_atan2f, np_atanf,
+    np_cosf, np_expf, np_log10f, np_logf, np_modf, np_powf, np_sinf,
+    np_tanf, spacing_abs,
 };
-use super::{ProjectedGrid, ProjectionKind, State, Wps32Twin};
+use super::{ProjectedGrid, ProjectionKind, Wps32Twin};
+use super::portable::State;
 use crate::error::Result;
 use crate::EARTH_RADIUS_M;
 
@@ -56,14 +58,14 @@ pub struct LambertTwin {
 
 impl LambertTwin {
     pub fn new(grid: &ProjectedGrid) -> Self {
-        let spec = &grid.spec;
+        let spec = &grid.sampling.spec;
         let hemi: f32 = if spec.truelat1 < 0.0 { -1.0 } else { 1.0 };
         let tl1 = spec.truelat1 as f32;
         let tl2 = spec.truelat2 as f32;
         let cone: f32 = if (spec.truelat1 - spec.truelat2).abs() > 0.1 {
-            let num = np_cosf(tl1 * RAD32).log10() - np_cosf(tl2 * RAD32).log10();
-            let den = ((45.0f32 - tl1.abs() / 2.0) * RAD32).tan().log10()
-                - ((45.0f32 - tl2.abs() / 2.0) * RAD32).tan().log10();
+            let num = np_log10f(np_cosf(tl1 * RAD32)) - np_log10f(np_cosf(tl2 * RAD32));
+            let den = np_log10f(np_tanf((45.0f32 - tl1.abs() / 2.0) * RAD32))
+                - np_log10f(np_tanf((45.0f32 - tl2.abs() / 2.0) * RAD32));
             num / den
         } else {
             np_sinf(tl1.abs() * RAD32)
@@ -80,8 +82,8 @@ impl LambertTwin {
         let ctl1r = np_cosf(tl1 * RAD32);
         let rsw = rebydx * ctl1r / cone
             * np_powf(
-                ((90.0f32 * hemi - spec.ref_lat as f32) * RAD32 / 2.0).tan()
-                    / ((90.0f32 * hemi - tl1) * RAD32 / 2.0).tan(),
+                np_tanf((90.0f32 * hemi - spec.ref_lat as f32) * RAD32 / 2.0)
+                    / np_tanf((90.0f32 * hemi - tl1) * RAD32 / 2.0),
                 cone,
             );
         let arg = cone * dlon * RAD32;
@@ -98,19 +100,17 @@ impl Wps32Twin for LambertTwin {
         let r2 = xx * xx + yy * yy;
         let r = r2.sqrt() / self.rebydx;
         let mut lon =
-            self.stand_lon + DEG32 * (self.hemi * xx).atan2(yy) / self.cone;
+            self.stand_lon + DEG32 * np_atan2f(self.hemi * xx, yy) / self.cone;
         let chi1 = (90.0f32 - self.hemi * self.tl1) * RAD32;
         let chi2 = (90.0f32 - self.hemi * self.tl2) * RAD32;
         let chi = if chi1 == chi2 {
             2.0f32
-                * (np_powf(r / chi1.tan(), 1.0f32 / self.cone)
-                    * (chi1 * 0.5).tan())
-                .atan()
+                * np_atanf(np_powf(r / np_tanf(chi1), 1.0f32 / self.cone)
+                    * np_tanf(chi1 * 0.5))
         } else {
             2.0f32
-                * (np_powf(r * self.cone / np_sinf(chi1), 1.0f32 / self.cone)
-                    * (chi1 * 0.5).tan())
-                .atan()
+                * np_atanf(np_powf(r * self.cone / np_sinf(chi1), 1.0f32 / self.cone)
+                    * np_tanf(chi1 * 0.5))
         };
         let mut lat = (90.0f32 - chi * DEG32) * self.hemi;
         if r2 == 0.0 {
@@ -142,8 +142,8 @@ impl Wps32Twin for LambertTwin {
         let ctl1r = np_cosf(self.tl1 * RAD32);
         let rm = self.rebydx * ctl1r / self.cone
             * np_powf(
-                ((90.0f32 * self.hemi - lat) * RAD32 / 2.0).tan()
-                    / ((90.0f32 * self.hemi - self.tl1) * RAD32 / 2.0).tan(),
+                np_tanf((90.0f32 * self.hemi - lat) * RAD32 / 2.0)
+                    / np_tanf((90.0f32 * self.hemi - self.tl1) * RAD32 / 2.0),
                 self.cone,
             );
         let arg = self.cone * dlon * RAD32;
@@ -153,7 +153,7 @@ impl Wps32Twin for LambertTwin {
     }
 
     fn adopt_public_pole(&mut self, grid: &ProjectedGrid) {
-        if let State::Lambert(state) = grid.state() {
+        if let State::Lambert(state) = &grid.sampling.state {
             self.polei = state.polei as f32;
             self.polej = state.polej as f32;
             self.rebydx = state.rebydx as f32;
@@ -173,7 +173,7 @@ pub struct MercatorTwin {
 
 impl MercatorTwin {
     pub fn new(grid: &ProjectedGrid) -> Self {
-        let spec = &grid.spec;
+        let spec = &grid.sampling.spec;
         let lat1 = spec.ref_lat as f32;
         let lon1 = spec.ref_lon as f32;
         let knowni = spec.known_x as f32;
@@ -182,7 +182,7 @@ impl MercatorTwin {
         let dlon = spec.dx as f32 / (EARTH_RADIUS_M as f32 * clain);
         let mut rsw = 0.0f32;
         if spec.ref_lat != 0.0 {
-            rsw = np_logf((0.5f32 * ((lat1 + 90.0) * RAD32)).tan()) / dlon;
+            rsw = np_logf(np_tanf(0.5f32 * ((lat1 + 90.0) * RAD32))) / dlon;
         }
         MercatorTwin { lat1, lon1, knowni, knownj, dlon, rsw }
     }
@@ -191,7 +191,7 @@ impl MercatorTwin {
 impl Wps32Twin for MercatorTwin {
     fn ij_to_latlon32(&self, x: f32, y: f32) -> (f32, f32) {
         let lat = 2.0f32
-            * np_expf(self.dlon * (self.rsw + y - self.knownj)).atan()
+            * np_atanf(np_expf(self.dlon * (self.rsw + y - self.knownj)))
             * DEG32
             - 90.0;
         let mut lon = (x - self.knowni) * self.dlon * DEG32 + self.lon1;
@@ -214,13 +214,13 @@ impl Wps32Twin for MercatorTwin {
         }
         let i = self.knowni + (dlon / (self.dlon * DEG32));
         let j = self.knownj
-            + np_logf((0.5f32 * ((lat + 90.0) * RAD32)).tan()) / self.dlon
+            + np_logf(np_tanf(0.5f32 * ((lat + 90.0) * RAD32))) / self.dlon
             - self.rsw;
         (i, j)
     }
 
     fn adopt_public_pole(&mut self, grid: &ProjectedGrid) {
-        if let State::Mercator(state) = grid.state() {
+        if let State::Mercator(state) = &grid.sampling.state {
             self.dlon = state.dlon as f32;
             self.rsw = state.rsw as f32;
         }
@@ -241,7 +241,7 @@ pub struct PolarTwin {
 
 impl PolarTwin {
     pub fn new(grid: &ProjectedGrid) -> Self {
-        let spec = &grid.spec;
+        let spec = &grid.sampling.spec;
         let hemi: f32 = if spec.truelat1 < 0.0 { -1.0 } else { 1.0 };
         let tl1 = spec.truelat1 as f32;
         let stand_lon = spec.stand_lon as f32;
@@ -265,8 +265,8 @@ impl Wps32Twin for PolarTwin {
         let yy = (y - self.polej) * self.hemi;
         let r2 = xx * xx + yy * yy;
         let gi2 = np_powf(self.rebydx * self.scale_top, 2.0);
-        let mut lat = DEG32 * self.hemi * ((gi2 - r2) / (gi2 + r2)).asin();
-        let arccos = (xx / r2.sqrt()).acos();
+        let mut lat = DEG32 * self.hemi * np_asinf((gi2 - r2) / (gi2 + r2));
+        let arccos = np_acosf(xx / r2.sqrt());
         let mut lon = if yy > 0.0 {
             reflon + DEG32 * arccos
         } else {
@@ -297,7 +297,7 @@ impl Wps32Twin for PolarTwin {
     }
 
     fn adopt_public_pole(&mut self, grid: &ProjectedGrid) {
-        if let State::Polar(state) = grid.state() {
+        if let State::Polar(state) = &grid.sampling.state {
             self.polei = state.polei as f32;
             self.polej = state.polej as f32;
             self.rebydx = state.rebydx as f32;
@@ -347,6 +347,7 @@ pub fn twin_for(grid: &ProjectedGrid) -> Result<Box<dyn Wps32Twin>> {
         ProjectionKind::Lambert => Box::new(LambertTwin::new(grid)),
         ProjectionKind::Mercator => Box::new(MercatorTwin::new(grid)),
         ProjectionKind::Polar => Box::new(PolarTwin::new(grid)),
+        ProjectionKind::Rows => Box::new(super::rows::RowsTwin::new(grid)),
     })
 }
 
@@ -444,7 +445,7 @@ pub fn sampling_surface(
         for i in 0..nxe {
             let xf = (1 - halo as i64 + i as i64) as f64;
             let (la32, lo32) = twin.ij_to_latlon32(xf as f32, yf as f32);
-            let (la64, lo64) = grid.ij_to_latlon(xf, yf);
+            let (la64, lo64) = grid.sampling_ij_to_latlon(xf, yf);
             let k = j * nxe + i;
             lat32[k] = la32;
             lon32[k] = lo32;
@@ -511,7 +512,7 @@ pub fn sampling_surface(
         for i in 0..ncx {
             let xf = 0.5 - halo as f64 + i as f64;
             let (la32, _) = twin.ij_to_latlon32(xf as f32, yf as f32);
-            let (_, lo64) = grid.ij_to_latlon(xf, yf);
+            let (_, lo64) = grid.sampling_ij_to_latlon(xf, yf);
             let k = j * ncx + i;
             lat_c[k] = la32;
             lon_c[k] = lo64;

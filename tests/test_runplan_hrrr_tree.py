@@ -46,7 +46,11 @@ def _plan(tmp_path, **intent):
     path = tmp_path / "plan.json"
     path.write_text(json.dumps({
         "schema": PLAN_SCHEMA, "name": "hrrr-tree", "route": "prepared",
-        "config": {"intent": {**_HRRR_TREE, **intent}},
+        # A None drops a default key (a --root-dx/--chain intent has no
+        # --ladder).
+        "config": {"intent": {key: value for key, value in
+                              {**_HRRR_TREE, **intent}.items()
+                              if value is not None}},
         "run_options": {"geog_root": str(geog)},
         "output_root": str(tmp_path / "run")}), encoding="utf-8")
     return load_plan(path)
@@ -180,6 +184,28 @@ def test_the_hierarchy_stage_passes_all_nine_required_flags(tmp_path,
     # The flag rw-wps REJECTS must appear here and nowhere else, which
     # is the whole reason these two argv are not built by one helper.
     assert "--stock-wrf-namelist-input" not in _stage(staged, "prepare")
+
+
+def test_the_hierarchy_stage_carries_the_configs_acknowledgements(
+        tmp_path, monkeypatch):
+    """The namelists this stage imports cannot spell a governance
+    declaration, so the config's acknowledgements ride as --ack.  Without
+    them a shortwave-only tree (every PBL-off LES suite among them) was
+    refused at the hierarchy import after its fetch and
+    root preparation, for the acknowledgement its config declares."""
+    from gpuwm.hrrr_hierarchy_direct import _parser
+
+    staged, _captured, _tree, _config = _drive(
+        tmp_path, monkeypatch,
+        physics_profile="wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        ladder=None, root_dx_km=2.25, chain="3", hours=1)
+    hierarchy = _stage(staged, "hierarchy")
+    parsed = _parser().parse_args(hierarchy[3:])
+    assert parsed.ack == ["constant-downward-longwave-v1"]
+
+    (tmp_path / "plain").mkdir()
+    staged, *_rest = _drive(tmp_path / "plain", monkeypatch)
+    assert "--ack" not in _stage(staged, "hierarchy")
 
 
 def test_the_source_manifest_digest_is_of_the_file_the_fetch_wrote(

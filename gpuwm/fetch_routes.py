@@ -40,20 +40,16 @@ as printed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-import errno
+from datetime import datetime, timedelta, timezone
 import functools
 import hashlib
-from http.client import IncompleteRead
 import json
 from pathlib import Path
 import re
 import shlex
-import socket
 import time
 from types import MappingProxyType
 from typing import Mapping, Sequence
-from urllib.error import HTTPError, URLError
 
 from gpuwm import fetch_endpoints, fetch_pool, source_adapters
 from gpuwm.fetch_endpoints import Endpoint
@@ -77,7 +73,7 @@ ROUTE_TABLE_SCHEMA = "gpuwm-fetch-routes-v1"
 #: resolving a key shape nothing was measured against.  Kept in sync by
 #: ``tests/test_fetch_routes.py``.
 ROUTE_TABLE_SHA256 = (
-    "b087a367a7a132ab0e11962da1ed8a303d9edab1821aab932047a847b9a66e2b"
+    "ba839020dfe10f529e3c6e8242fd84ae3ec92398ed148bf97c4b8c1951b8c6af"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -185,6 +181,20 @@ class DonorRow:
 
 
 @dataclass(frozen=True)
+class PublicationEra:
+    """A dated file layout and its preparation compatibility, all table facts."""
+
+    label: str
+    valid_from: datetime
+    valid_until: datetime | None
+    cycle_hours: tuple[int, ...]
+    resolution_degrees: float
+    files: tuple[FileRow, ...]
+    prep_refusal: str
+    steps: tuple[tuple[int, int], ...] = ()
+
+
+@dataclass(frozen=True)
 class Route:
     source_id: str
     label: str
@@ -213,6 +223,7 @@ class Route:
     record_subset_supported: bool
     record_subset_why: str
     prep: Mapping[str, object]
+    publication_eras: tuple[PublicationEra, ...] = ()
 
     def host(self, name: str | None) -> Host:
         """One named endpoint, or the head of the ladder.
@@ -291,6 +302,18 @@ def _build_routes() -> Mapping[str, Route]:
                 raw["record_subset"].get("supported", False)),
             record_subset_why=str(raw["record_subset"].get("why", "")),
             prep=MappingProxyType(dict(raw.get("prep", {}))),
+            publication_eras=tuple(
+                PublicationEra(
+                    label=str(era["label"]),
+                    valid_from=datetime.fromisoformat(era["valid_from"]),
+                    valid_until=(datetime.fromisoformat(era["valid_until"])
+                                 if era.get("valid_until") else None),
+                    cycle_hours=tuple(era.get("cycle_hours", raw["cycle_hours"])),
+                    resolution_degrees=float(era["resolution_degrees"]),
+                    files=tuple(_file_row(row) for row in era.get("files", raw["files"])),
+                    prep_refusal=str(era.get("prep_refusal", "")),
+                    steps=tuple((int(last), int(step)) for last, step in era.get("steps", [])),
+                ) for era in raw.get("publication_eras", [])),
         )
     for route in routes.values():
         if not route.hosts:
@@ -303,7 +326,16 @@ def _build_routes() -> Mapping[str, Route]:
                     f"{ROUTE_TABLE_NAME}: route {route.source_id} endpoint "
                     f"{host.name} does not say what it is for; a ladder "
                     "whose refusal cannot name each rung is not a ladder")
-        for row in route.files:
+        for era in route.publication_eras:
+            if ((era.valid_until is not None and era.valid_until <= era.valid_from)
+                    or era.resolution_degrees <= 0 or not era.files):
+                raise ValueError(
+                    f"{route.source_id}: publication era {era.label} has an invalid "
+                    "date interval, nonpositive resolution or empty file set; "
+                    "cannot resolve its dated grid and file layout")
+        files = route.files + tuple(
+            row for era in route.publication_eras for row in era.files)
+        for row in files:
             bad = unknown_tokens(row.path)
             if bad:
                 raise ValueError(
@@ -312,11 +344,105 @@ def _build_routes() -> Mapping[str, Route]:
     return MappingProxyType(routes)
 
 
+#: The file formats a ``source_root`` row may declare, as the leading bytes
+#: of a file say them (:func:`sniff_format`).
+SOURCE_ROOT_FORMATS = frozenset({"grib1", "grib2", "netcdf"})
+
+
+def _source_root_row(source_id: str, raw: Mapping[str, object]
+                     ) -> Mapping[str, object]:
+    """One refusal row's ``source_root`` layout, checked at load.
+
+    The layout is how a folder of bytes this ArWen cannot download binds
+    to the source's preparation: which files are the ordered inputs and
+    which file each supplement role is.  A malformed row fails here, at
+    import, rather than as a wrong binding on a user's folder.
+    """
+
+    label = f"{ROUTE_TABLE_NAME}: refusal {source_id} source_root"
+
+    def patterns(value, key):
+        if (not isinstance(value, list) or not value
+                or any(not isinstance(item, str) or not item for item in value)):
+            raise ValueError(f"{label}.{key} must be a non-empty list of names")
+        return tuple(value)
+
+    def file_format(value, key):
+        if value not in SOURCE_ROOT_FORMATS:
+            raise ValueError(f"{label}.{key} must be one of "
+                             f"{sorted(SOURCE_ROOT_FORMATS)}")
+        return str(value)
+
+    inputs = raw.get("inputs")
+    if not isinstance(inputs, Mapping):
+        raise ValueError(f"{label}.inputs must be an object")
+    supplements = []
+    for index, row in enumerate(raw.get("supplements") or ()):
+        key = f"supplements[{index}]"
+        if not isinstance(row, Mapping) or not str(row.get("role", "")):
+            raise ValueError(f"{label}.{key} must name a role")
+        fetch = row.get("fetch")
+        if fetch is not None and not (isinstance(fetch, Mapping)
+                                      and str(fetch.get("source", ""))):
+            raise ValueError(f"{label}.{key}.fetch must name a source")
+        if fetch is not None:
+            # Named breakage: the printed fetch line for this file would
+            # name a source the fetch door refuses as unknown.
+            try:
+                source_adapters.get_source_adapter(str(fetch["source"]))
+            except ValueError as error:
+                raise ValueError(f"{label}.{key}.fetch: {error}") from error
+            # Named breakage: a key the printed fetch line does not read
+            # is dropped from it without a word.  Whether that line needs
+            # --retrieve is the donor adapter's fetch_requires_retrieve,
+            # the fact the fetch door itself gates the flag on, so a row
+            # restating it could only disagree with the door.
+            unread = sorted(set(fetch) - {"source"})
+            if unread:
+                raise ValueError(
+                    f"{label}.{key}.fetch carries {unread}, which no printed "
+                    "fetch line reads; it names only the donor source, whose "
+                    "adapter states whether its fetch needs --retrieve")
+        supplements.append(MappingProxyType({
+            "role": str(row["role"]),
+            "match": patterns(row.get("match"), f"{key}.match"),
+            "format": file_format(row.get("format"), f"{key}.format"),
+            "input": bool(row.get("input", False)),
+            "fetch": (MappingProxyType(dict(fetch)) if fetch else None),
+            "why": str(row.get("why", "")),
+        }))
+    request = raw.get("request")
+    if request is not None and not (
+            isinstance(request, Mapping) and str(request.get("dataset", ""))
+            and str(request.get("keywords", ""))):
+        raise ValueError(f"{label}.request must name a dataset and keywords")
+    if request is not None and request.get("lattice_deg") is not None and not (
+            isinstance(request["lattice_deg"], (int, float))
+            and request["lattice_deg"] > 0):
+        raise ValueError(f"{label}.request.lattice_deg must be a positive "
+                         "grid spacing in degrees")
+    return MappingProxyType({
+        "why": str(raw.get("why", "")),
+        "inputs": MappingProxyType({
+            "match": patterns(inputs.get("match"), "inputs.match"),
+            "exclude": (patterns(inputs["exclude"], "inputs.exclude")
+                        if inputs.get("exclude") else ()),
+            "format": file_format(inputs.get("format"), "inputs.format"),
+        }),
+        "supplements": tuple(supplements),
+        "request": (MappingProxyType(dict(request)) if request else None),
+    })
+
+
 def _build_refusals() -> Mapping[str, Mapping[str, object]]:
     document = _load_table()
-    return MappingProxyType({
-        source_id: MappingProxyType(dict(raw))
-        for source_id, raw in dict(document.get("refusals", {})).items()})
+    refusals = {}
+    for source_id, raw in dict(document.get("refusals", {})).items():
+        row = dict(raw)
+        if row.get("source_root") is not None:
+            row["source_root"] = _source_root_row(source_id, row["source_root"])
+        refusals[source_id] = MappingProxyType(row)
+    return MappingProxyType(refusals)
 
 
 _ROUTES = _build_routes()
@@ -362,6 +488,98 @@ def acquisition_refusal_reason(source: str) -> str:
     return why or "No automatic acquisition route is registered for it."
 
 
+def source_root_layout(source: str) -> Mapping[str, object] | None:
+    """How a hand-staged folder binds to ``source``'s preparation, or None.
+
+    Read from the source's refusal row: a source this fetch door cannot
+    download still has a folder its bytes arrive in, and which of those
+    files are the ordered inputs and which is each supplement role is a
+    table fact about the source, the same kind of fact a route's file
+    rows state for the folder a download writes.
+    """
+
+    return (acquisition_refusal(source) or {}).get("source_root")
+
+
+def supplement_fetch_retrieves(fetch: Mapping[str, object]) -> bool:
+    """Does a supplement's printed ``gpuwm fetch`` line need ``--retrieve``?
+
+    The donor source's own adapter says so (``fetch_requires_retrieve``),
+    the one statement of the fact that the fetch door, the wizard and the
+    fetch hints read too: that source's default fetch writes a request and
+    a retrieval script rather than the file, so a line without the flag
+    leaves the supplement's file absent and the folder's preparation
+    refuses it, and a line carrying it for any other source is refused.
+    """
+
+    return source_adapters.get_source_adapter(
+        str(fetch["source"])).fetch_requires_retrieve
+
+
+def local_prep_line(source: str) -> str:
+    """The ``gpuwm prep`` line a folder laid out as the row says runs as."""
+
+    source_id = _canonical(source)
+    return (f"gpuwm prep --source {source_id} --source-root DIR "
+            "--experiment-config CONFIG.toml "
+            "--wps-namelist CONFIG.namelist.wps")
+
+
+def local_input_remedy(source: str) -> str:
+    """What to do with bytes this door cannot download, as a runnable line.
+
+    Every line printed here runs as written once the capitalized
+    placeholders are filled in.  A row that declares its folder layout
+    gets the short ``--source-root`` line, because the preparation binds
+    that folder itself; a row that does not carries its own remedy text.
+    """
+
+    source_id = _canonical(source)
+    row = acquisition_refusal(source_id) or {}
+    if row.get("remedy"):
+        return str(row["remedy"])
+    layout = row.get("source_root")
+    if layout is None:
+        return (f"bring the files yourself and name each one to `gpuwm prep "
+                f"--source {source_id}`; `gpuwm sources {source_id}` lists "
+                "the products its preparation reads.")
+    donors = [
+        f"{supplement['match'][0]} is what `gpuwm fetch --source "
+        f"{supplement['fetch']['source']} --cycle CYCLE --hours HOURS "
+        "--area AREA"
+        + (" --retrieve" if supplement_fetch_retrieves(supplement["fetch"])
+           else "")
+        + " --out DIR` writes there"
+        for supplement in layout["supplements"] if supplement["fetch"]]
+    return (
+        "bring the bytes yourself into one folder DIR"
+        + (f" ({'; '.join(donors)})" if donors else "")
+        + f"; `{local_prep_line(source_id)}` binds that folder's files "
+        f"itself, and `gpuwm go CONFIG.toml --data-dir DIR` runs the whole "
+        f"chain from a `gpuwm domain --source {source_id}` config.")
+
+
+def sniff_format(path: Path) -> str | None:
+    """``grib1``, ``grib2`` or ``netcdf`` from a file's leading bytes.
+
+    The edition octet sits at the same offset in both GRIB editions, and
+    a NetCDF file is either the classic ``CDF`` header or the HDF5
+    signature NetCDF-4 writes.  Anything else, or a file that cannot be
+    read, answers None.
+    """
+
+    try:
+        with Path(path).open("rb") as stream:
+            head = stream.read(8)
+    except OSError:
+        return None
+    if head[:4] == b"GRIB" and len(head) == 8:
+        return {1: "grib1", 2: "grib2"}.get(head[7])
+    if head[:3] == b"CDF" or head == b"\x89HDF\r\n\x1a\n":
+        return "netcdf"
+    return None
+
+
 def all_fetchable_sources() -> tuple[str, ...]:
     """Every ``--source`` the fetch front door accepts, sorted."""
 
@@ -389,6 +607,21 @@ def canonical_source(source: str) -> str:
     return _canonical(source)
 
 
+def table_route(source: str) -> Route | None:
+    """The route-table row for ``source``, or None for a source outside the table (never a refusal).
+
+    The date guidance (:mod:`gpuwm.source_availability`) reads the row's
+    lead spacing and ladder through :func:`resolve_leads`, which asks no
+    server, so the lengths and start hours it offers are ones the fetch
+    takes: a 3-hour window on a source whose files come every 6 hours once
+    reached this resolver inside a page request and failed the whole
+    source list.  A source outside the table has its own transport, which
+    sets its own spacing.
+    """
+
+    return _ROUTES.get(_canonical(source))
+
+
 def route_for(source: str) -> Route:
     """The route for ``source``, or the refusal that names why there is none."""
 
@@ -398,16 +631,14 @@ def route_for(source: str) -> Route:
         return route
     refusal = _REFUSALS.get(source_id)
     if refusal is not None:
-        remedy = ""
-        if refusal.get("remedy_source_root"):
-            remedy = (
-                "  remedy: bring the bytes yourself -- `gpuwm prep --source "
-                f"{source_id} --source-root DIR --source-manifest "
-                "DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the "
-                "designed door for a source this ArWen cannot download.")
+        # The remedy is a line that runs.  It used to name a
+        # SHA256SUMS manifest pair beside --source-root, which the mapped
+        # preparation refuses outright ("--source-root is not used") and
+        # the member route accepts only while authoring.
         raise ValueError(
             f"--source {source_id}: no fetch route.\n"
-            f"  why: {refusal['why']}\n{remedy}".rstrip())
+            f"  why: {refusal['why']}\n"
+            f"  remedy: {local_input_remedy(source_id)}")
     if source_id in LEGACY_ROUTE_SOURCES:
         raise ValueError(
             f"--source {source_id} has its own transport in gpuwm.fetch and "
@@ -429,11 +660,7 @@ def route_for(source: str) -> Route:
             f"ArWen has no way to download its bytes.  {adapter.source_id} "
             "IS runnable: bring the files yourself and the prepared route "
             "reads them")
-        remedy = (
-            "  remedy: `gpuwm prep --source "
-            f"{adapter.source_id} --source-root DIR --source-manifest "
-            "DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the "
-            "designed door for a source this ArWen cannot download.\n")
+        remedy = f"  remedy: {local_input_remedy(adapter.source_id)}\n"
     else:
         why = (
             f"the registry row is not runnable ({adapter.status.value}); "
@@ -453,18 +680,72 @@ def route_for(source: str) -> Route:
 # Cycle and lead grammar
 # --------------------------------------------------------------------------
 
+
+def publication_era(route: Route, cycle: datetime) -> PublicationEra | None:
+    """Select the UTC half-open date interval without probing a server."""
+
+    if not route.publication_eras:
+        return None
+    if cycle.tzinfo is not None:
+        cycle = cycle.astimezone(timezone.utc).replace(tzinfo=None)
+    matches = [era for era in route.publication_eras
+               if era.valid_from <= cycle
+               and (era.valid_until is None or cycle < era.valid_until)
+               and cycle.hour in era.cycle_hours]
+    if len(matches) != 1:
+        first = min(era.valid_from for era in route.publication_eras)
+        if cycle < first:
+            raise ValueError(
+                f"{route.label} begins {first:%Y-%m-%dT%H} UTC; this cycle predates it")
+        reason = "no publication era" if not matches else "overlapping publication eras"
+        raise ValueError(
+            f"--source {route.source_id} --cycle {cycle:%Y-%m-%dT%H}: {reason}; "
+            "the route table cannot select a file layout for this cycle")
+    return matches[0]
+
+
+def _era_cycles(era: PublicationEra) -> tuple[datetime, ...]:
+    """The first instance of each cycle hour inside an era's interval."""
+    cycles = []
+    for hour in era.cycle_hours:
+        cycle = era.valid_from.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if cycle < era.valid_from:
+            cycle += timedelta(days=1)
+        if era.valid_until is None or cycle < era.valid_until:
+            cycles.append(cycle)
+    return tuple(cycles)
+
+
+def first_preparable_cycle(route: Route) -> datetime | None:
+    """One authority for the calendar's bound and the fetch's remedy."""
+    return min((cycle for era in route.publication_eras if not era.prep_refusal
+                for cycle in _era_cycles(era)), default=None)
+
+
+def planning_cycles(route: Route) -> tuple[datetime, ...]:
+    """Stand-in cycles for pricing the newest preparable layout at each hour."""
+    if not route.publication_eras:
+        return tuple(datetime(2001, 1, 1, hour) for hour in route.cycle_hours)
+    cycles = [cycle for era in route.publication_eras if not era.prep_refusal
+              for cycle in _era_cycles(era)]
+    return tuple(max(cycle for cycle in cycles if cycle.hour == hour)
+                 for hour in route.cycle_hours if any(cycle.hour == hour for cycle in cycles))
+
+
+def _lead_steps(route: Route, cycle: datetime) -> tuple[tuple[int, int], ...]:
+    era = publication_era(route, cycle)
+    if era is not None and era.steps:
+        return era.steps
+    for cycle_hours, steps in route.ladders:
+        if cycle_hours is None or cycle.hour in cycle_hours:
+            return steps
+    raise ValueError(f"--source {route.source_id}: no lead ladder for the {cycle:%H}Z cycle")
+
+
 def ladder_for(route: Route, cycle: datetime) -> tuple[int, ...]:
     """Every forecast lead ``cycle`` publishes, in order."""
 
-    steps = None
-    for cycle_hours, entry in route.ladders:
-        if cycle_hours is None or cycle.hour in cycle_hours:
-            steps = entry
-            break
-    if steps is None:
-        raise ValueError(
-            f"--source {route.source_id}: no lead ladder for the "
-            f"{cycle:%H}Z cycle")
+    steps = _lead_steps(route, cycle)
     leads: list[int] = []
     previous = 0
     for index, (through, step) in enumerate(steps):
@@ -522,7 +803,8 @@ def resolve_leads(route: Route, cycle: datetime, hours: int, *,
     ladder = ladder_for(route, cycle)
     last = start_hour + hours
     if last > ladder[-1]:
-        extended = _extended_cycle_hours(route)
+        era = publication_era(route, cycle)
+        extended = () if era is not None and era.steps else _extended_cycle_hours(route)
         reach = ""
         if extended:
             extended_last = max(
@@ -552,17 +834,13 @@ def resolve_leads(route: Route, cycle: datetime, hours: int, *,
 
 
 def _ladder_words(route: Route, cycle: datetime) -> str:
-    for cycle_hours, steps in route.ladders:
-        if cycle_hours is None or cycle.hour in cycle_hours:
-            parts = []
-            previous = 0
-            for index, (through, step) in enumerate(steps):
-                start = 0 if index == 0 else previous + step
-                parts.append(
-                    f"f{start:03d}..f{through:03d} every {step} h")
-                previous = through
-            return ", then ".join(parts)
-    return ""
+    parts = []
+    previous = 0
+    for index, (through, step) in enumerate(_lead_steps(route, cycle)):
+        start = 0 if index == 0 else previous + step
+        parts.append(f"f{start:03d}..f{through:03d} every {step} h")
+        previous = through
+    return ", then ".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -671,6 +949,7 @@ class DonorRequest:
 @dataclass(frozen=True)
 class FetchPlan:
     route: Route
+    files: tuple[FileRow, ...]
     host: Host
     cycle: datetime
     leads: tuple[int, ...]
@@ -766,11 +1045,12 @@ def resolve_mode(source: str, mode: str | None) -> str:
 
     Full files are the default and the pipeline; record subsetting is an
     opt-in bandwidth saver, and a route that cannot honour it refuses in
-    its own words rather than silently degrading.
+    its own words rather than silently degrading.  ``auto`` asks for the
+    default, so it takes the full-file route like an omitted mode does.
     """
 
     route = route_for(source)
-    if mode is None or mode == "full-file":
+    if mode is None or mode in ("full-file", "auto"):
         return "full-file"
     if mode == "idx-subset":
         if route.record_subset_supported:
@@ -781,10 +1061,6 @@ def resolve_mode(source: str, mode: str | None) -> str:
             f"  why: {route.record_subset_why}.\n"
             "  remedy: drop --mode (full-file is the default and the "
             "pipeline).")
-    if mode == "auto":
-        raise ValueError(
-            f"--mode auto: --source {route.source_id} has one byte "
-            "transport, so there is nothing to probe.  Drop --mode.")
     raise ValueError(f"--mode {mode}: unknown transport")
 
 
@@ -820,6 +1096,15 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
             "  where the crop happens: `gpuwm prep` maps the source onto "
             "your domain, so the namelist geometry is the crop.")
     resolve_cycle(route, cycle)
+    era = publication_era(route, cycle)
+    if era is not None and era.prep_refusal:
+        first = first_preparable_cycle(route)
+        remedy = (f" Use a cycle from {first:%Y-%m-%dT%H} UTC onward, the first "
+                  "publication this preparation can read." if first is not None else "")
+        raise ValueError(
+            f"--source {route.source_id} --cycle {cycle:%Y-%m-%dT%H}: "
+            f"{era.label}: {era.prep_refusal}{remedy}")
+    files = era.files if era is not None else route.files
     leads = resolve_leads(route, cycle, hours, cadence=cadence,
                           start_hour=start_hour)
     if host is not None:
@@ -857,11 +1142,11 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     # Lead-major, so the pool's in-order admitted prefix is a contiguous
     # run of COMPLETE valid times: an interrupted fetch leaves a series a
     # shorter window can still be prepared from, never half of every hour.
-    for row in route.files:
+    for row in files:
         if row.leads == "none":
             emit(row, None)
     for lead in leads:
-        for row in route.files:
+        for row in files:
             if row.leads == "none":
                 continue
             if row.leads == "first" and lead != leads[0]:
@@ -896,7 +1181,7 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     else:
         primary = tuple(
             Path(obj.relpath) for obj in objects
-            if any(row.primary and row.role == obj.role for row in route.files))
+            if any(row.primary and row.role == obj.role for row in files))
 
     supplement_spec = route.prep.get("supplement")
     supplements: tuple[Path, ...] = ()
@@ -922,7 +1207,7 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
                 f"unknown supplement origin {origin!r}")
 
     return FetchPlan(
-        route=route, host=chosen, cycle=cycle, leads=leads,
+        route=route, files=files, host=chosen, cycle=cycle, leads=leads,
         member=member_name, objects=tuple(objects), compose=tuple(compose),
         donors=donors, primary_files=primary, supplement_files=supplements,
         supplement_role=supplement_role,
@@ -954,12 +1239,14 @@ _CHUNK = 1 << 20
 _RECOVERY_REQUEST_NAME = "fetch-recovery-request.json"
 _RECOVERY_SCHEMA = "gpuwm-fetch-recovery-v1"
 _RECOVERY_DIRECTORY = ".fetch-verified"
-_TRANSFER_ATTEMPTS = 3
-_RETRY_WAIT_LIMIT = 30.0
+#: Rounds per object: the one number every source's fetch shares
+#: (:data:`gpuwm.fetch_endpoints.TRANSIENT_ATTEMPTS`).
+_TRANSFER_ATTEMPTS = fetch_endpoints.TRANSIENT_ATTEMPTS
+_RETRY_WAIT_LIMIT = fetch_endpoints.TRANSIENT_WAIT_LIMIT_S
 
 
 def _magic_for(plan: FetchPlan, role: str) -> str:
-    for row in plan.route.files:
+    for row in plan.files:
         if row.role == role:
             return row.magic
     return "GRIB"
@@ -1062,16 +1349,23 @@ def _download_object(url: str, dest: Path, *, magic: str, opener=None,
             declared_size(dest, int(declared))
         except (TypeError, ValueError):          # pragma: no cover
             pass
-    with response, part.open("wb") as handle:
-        while True:
-            chunk = response.read(_CHUNK)
-            if not chunk:
-                break
-            handle.write(chunk)
-            digest.update(chunk)
-            written += len(chunk)
-            if progress is not None:
-                progress(len(chunk))
+    try:
+        with response, part.open("wb") as handle:
+            while True:
+                # Another file already failed this request: the rest of
+                # this one would be bytes nobody uses.
+                fetch_pool.raise_if_stopped()
+                chunk = response.read(_CHUNK)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                digest.update(chunk)
+                written += len(chunk)
+                if progress is not None:
+                    progress(len(chunk))
+    except fetch_pool.TransferCancelled:
+        part.unlink(missing_ok=True)
+        raise
     if declared is not None and int(declared) != written:
         part.unlink(missing_ok=True)
         raise ValueError(
@@ -1084,27 +1378,17 @@ def _download_object(url: str, dest: Path, *, magic: str, opener=None,
 
 
 def _retry_delay(error: BaseException, attempt: int) -> float | None:
-    """Bound transient recovery without repeatedly asking for absent objects."""
-    if isinstance(error, HTTPError):
-        if error.code not in {408, 429, 500, 502, 503, 504}:
-            return None
-        from gpuwm.nomads_governor import retry_after_seconds
-        requested = retry_after_seconds(error) or 0.0
-        if requested > _RETRY_WAIT_LIMIT:
-            return None
-        return max(2.0 ** attempt, requested)
-    if isinstance(error, URLError):
-        reason = error.reason
-        if isinstance(reason, socket.gaierror) and reason.errno != socket.EAI_AGAIN:
-            return None
+    """Bound transient recovery without repeatedly asking for absent objects.
+
+    The network faults are the shared classification
+    (:func:`gpuwm.fetch_endpoints.retry_delay`).  A ``ValueError`` is this
+    route's own: a payload that did not verify, which a fresh transfer
+    can repair.
+    """
+    if isinstance(error, ValueError):
         return 2.0 ** attempt
-    if isinstance(error, (TimeoutError, ConnectionError, IncompleteRead, ValueError)):
-        return 2.0 ** attempt
-    if isinstance(error, OSError) and error.errno in {
-            errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNABORTED,
-            errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH}:
-        return 2.0 ** attempt
-    return None
+    return fetch_endpoints.retry_delay(error, attempt,
+                                       wait_limit_s=_RETRY_WAIT_LIMIT)
 
 
 def _download_along_ladder(plan: FetchPlan, obj: PlannedObject, dest: Path, *,
@@ -1112,77 +1396,41 @@ def _download_along_ladder(plan: FetchPlan, obj: PlannedObject, dest: Path, *,
                            ladder: Sequence[Endpoint] | None = None) -> dict:
     """Move one object, asking each endpoint in turn until one serves.
 
-    The endpoints publish the same key with the same bytes, so a host
-    that refuses, throttles, or serves something that does not verify
-    is a reason to ask the next one -- not a reason to end the fetch.
-    Faults that are not an endpoint's fault (an interrupt, a full disk)
-    propagate unchanged, because the next endpoint would fail
-    identically and walking the ladder over them would only bury the
-    real refusal.
+    The rounds, the waits between them and the refusal once they are
+    spent are the tree's one shared retry
+    (:func:`gpuwm.fetch_endpoints.ask_along_ladder`): a transient fault
+    (a reset connection, a body cut short, HTTP 408, 429 or 5xx) is
+    asked again 2, 4, 8 and 16 s later, a permanent refusal falls
+    through to the next endpoint once, and a fault on this computer
+    propagates unchanged.  This route adds one fault of its own: a
+    payload that did not verify, which a fresh transfer can repair.
 
     ``ladder`` is this OBJECT's order, which is the request's ladder
     with any rung that provably already holds the object promoted to
     the head (see :func:`_probe_transfer_ladders`).  It is a reorder,
     never a shorter list, so everything below is unchanged by it.
-
-    After each round, transient endpoints get another attempt, at most
-    three rounds with bounded waits. Permanent refusals still fall
-    through once but do not enter another round. A longer Retry-After
-    defers that endpoint instead of ignoring its requested cooldown.
     Exhaustion names each endpoint and preserves completed files.
     """
 
-    ladder = ladder or plan.ladder or (plan.host,)
-    attempts: list[tuple[Endpoint, str]] = []
-    active = tuple(ladder)
-    last_error = None
-    for attempt in range(1, _TRANSFER_ATTEMPTS + 1):
-        retry = []
-        wait = 0.0
-        for position, endpoint in enumerate(active):
-            url = endpoint.url(obj.key) if obj.key else obj.url
-            try:
-                entry = fetch(url, dest, magic=magic, opener=opener)
-            except BaseException as error:        # noqa: BLE001 - classified
-                delay = _retry_delay(error, attempt)
-                # Local storage failures cannot be repaired by another endpoint.
-                if (isinstance(error, OSError)
-                        and not isinstance(error, (URLError, TimeoutError, ConnectionError))
-                        and delay is None):
-                    raise
-                reason = ("the response ended early" if isinstance(error, IncompleteRead)
-                          else "HTTP 408 -- the request timed out"
-                          if isinstance(error, HTTPError) and error.code == 408
-                          else fetch_endpoints.fault_reason(error))
-                if reason is None:
-                    raise
-                last_error = error
-                attempts.append((endpoint, reason))
-                if delay is not None:
-                    retry.append(endpoint)
-                    wait = max(wait, delay)
-                dest.with_name(dest.name + ".part").unlink(missing_ok=True)
-                remaining = active[position + 1:]
-                progress(
-                    f"fetch {plan.source_id}: {endpoint.name} did not serve "
-                    f"{obj.relpath} ({reason})"
-                    + (f"; asking {remaining[0].name}" if remaining else ""))
-                continue
-            return {**entry, "endpoint": endpoint.name}
-        if not retry or attempt == _TRANSFER_ATTEMPTS:
-            break
-        progress(f"fetch {plan.source_id}: retrying {obj.relpath} in {wait:g} s "
-                 f"(attempt {attempt + 1}/{_TRANSFER_ATTEMPTS}); "
-                 "completed files are kept")
-        time.sleep(wait)
-        active = tuple(retry)
-    if attempts:
-        raise ValueError(fetch_endpoints.ladder_refusal(
-            f"fetch {plan.source_id}: {obj.relpath}", attempts)
-            + " Completed files are kept; start this forecast again to retry "
-              "the remaining files.") from last_error
-    raise ValueError(
-        f"fetch {plan.source_id}: {obj.relpath} has no endpoint to ask")
+    part = dest.with_name(dest.name + ".part")
+
+    def transfer(endpoint: Endpoint) -> dict:
+        url = endpoint.url(obj.key) if obj.key else obj.url
+        return fetch(url, dest, magic=magic, opener=opener)
+
+    endpoint, entry = fetch_endpoints.ask_along_ladder(
+        ladder or plan.ladder or (plan.host,), transfer,
+        label=f"fetch {plan.source_id}", name=obj.relpath,
+        progress=progress, delay=_retry_delay,
+        discard=lambda _endpoint: part.unlink(missing_ok=True),
+        attempts=_TRANSFER_ATTEMPTS,
+        # No new round for a request another file has already failed,
+        # and no waiting out this round's backoff to find that out.
+        pause=lambda seconds: fetch_pool.sleep_unless_stopped(
+            seconds, sleep=time.sleep),
+        tail=(" Completed files are kept; start this forecast again to "
+              "retry the remaining files."))
+    return {**entry, "endpoint": endpoint.name}
 
 
 def _probe_transfer_ladders(
@@ -1313,6 +1561,35 @@ def _verified_reuse(dest: Path, entry: dict | None, *, magic: str) -> bool:
     return digest == entry.get("sha256")
 
 
+def _reusable_entry(out: Path, plan: FetchPlan, obj: PlannedObject,
+                    prior: Mapping[str, dict]) -> dict | None:
+    """The receipt entry OBJ is reused from, or None when it must move."""
+    known = _recovery_entry(out, plan, obj) or prior.get(obj.relpath)
+    if _verified_reuse(out / obj.relpath, known, magic=_magic_for(plan, obj.role)):
+        return known
+    return None
+
+
+def request_cached(plan: FetchPlan, out: Path) -> bool:
+    """Whether OUT already holds every object of PLAN, byte-verified.
+
+    Read-only: nothing is created, moved or written.  A yes means
+    :func:`run_plan` would reuse every object and ask no host for any of
+    them, so a caller may skip the provider's publication check.  A
+    directory recorded for a different request answers no.
+    """
+    out = _io_path(Path(out))
+    if not out.is_dir():
+        return False
+    try:
+        check_prior_request(out, plan)
+    except ValueError:
+        return False
+    prior = _prior_entries(out)
+    return all(_reusable_entry(out, plan, obj, prior) is not None
+               for obj in plan.objects)
+
+
 #: What an unpinned request records where it used to record one host.
 #:
 #: The guard below exists to stop two different CYCLES publishing one
@@ -1400,13 +1677,24 @@ def check_prior_request(out: Path, plan: FetchPlan | None = None, *,
 def _quarantine(out: Path, progress) -> Path | None:
     """Move an existing fetch aside; nothing is deleted."""
 
+    entries = [entry for entry in sorted(out.iterdir())
+               if not entry.name.startswith("quarantine-")]
+    if not entries:
+        return None
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     aside = out / f"quarantine-{stamp}"
+    generation = 0
+    while True:
+        try:
+            aside.mkdir()
+            break
+        except FileExistsError:
+            # A fast retry or a repeated clock value must preserve every
+            # earlier generation, including directories of source objects.
+            generation += 1
+            aside = out / f"quarantine-{stamp}-{generation}"
     moved = 0
-    for entry in sorted(out.iterdir()):
-        if entry.name.startswith("quarantine-"):
-            continue
-        aside.mkdir(parents=True, exist_ok=True)
+    for entry in entries:
         entry.replace(aside / entry.name)
         moved += 1
     if moved:
@@ -1475,9 +1763,8 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     reuse: dict[str, dict] = {}
     pending: list[PlannedObject] = []
     for obj in plan.objects:
-        known = _recovery_entry(out, plan, obj) or prior.get(obj.relpath)
-        dest = out / obj.relpath
-        if _verified_reuse(dest, known, magic=_magic_for(plan, obj.role)):
+        known = _reusable_entry(out, plan, obj, prior)
+        if known is not None:
             reuse[obj.relpath] = known
         else:
             pending.append(obj)
@@ -1530,11 +1817,8 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
             else obj.url, action=_get,
             token=_object_token(obj),
             # WHERE IT LANDS, so the in-flight byte count can be read off
-            # the growing file.  The transport reports its own chunks
-            # here, but a route whose copy is owned by something else --
-            # the Rust fetch bridge shells out and reports nothing until
-            # it exits -- has no other accurate source, and this one costs
-            # a stat().
+            # the growing file when the transport says nothing of its
+            # own; it costs a stat().
             path=dest))
 
     # WHERE THE BYTES ARE ACTUALLY COMING FROM, not where the ladder
@@ -1769,11 +2053,13 @@ def write_handoff(plan: FetchPlan, out: Path, *,
         header.append(
             "# For a standalone preparation, first run")
         header.append(
-            f"#   gpuwm-member-prep --member-set {plan.member_set} "
-            f"--member {plan.member} \\")
+            f"#   gpuwm-member-prep --member-set {_q(plan.member_set)} "
+            f"--member {_q(plan.member)} \\")
         header.append(
-            f"#     --cycle {plan.cycle:%Y-%m-%dT%H} --inputs "
-            f"{out.resolve() / 'upstream'} --output {out.resolve() / 'members'}")
+            f"#     --cycle {plan.cycle:%Y-%m-%dT%H} "
+            f"--steps {','.join(str(lead) for lead in plan.leads)} --inputs "
+            f"{_q(out.resolve() / 'upstream')} "
+            f"--output {_q(out.resolve() / 'members')}")
         header.append(
             "# first, and point --input-list at the verified member tree "
             "it publishes.")
@@ -1883,22 +2169,60 @@ def _q(value) -> str:
     return text if all(ch not in text for ch in ' \t"\'') else shlex.quote(text)
 
 
+def render_prep_command(argv: Sequence[str]) -> str:
+    """One ``gpuwm prep`` line from a bound argument vector.
+
+    Every printed handoff renders through here, so a route's printed line
+    and its written document are two spellings of the same tokens.
+    """
+
+    return "gpuwm prep " + " ".join(_q(token) for token in argv)
+
+
+def named_flags(flags: Sequence[str]) -> str:
+    """``--a, --b and --c``: the flags a handoff leaves to its reader."""
+
+    flags = list(flags)
+    if len(flags) < 2:
+        return "".join(flags)
+    return ", ".join(flags[:-1]) + " and " + flags[-1]
+
+
+def prep_handoff_lines(label: str, out: Path) -> tuple[str, ...]:
+    """The ``next:`` block for a fetch that published its prep arguments.
+
+    Read back from the published ``prep-arguments.json``, not rebuilt:
+    that document is what the chained doors compose from, so the printed
+    line is its argv verbatim and the flags named as the reader's are
+    its ``caller_supplies``.  The line this replaced printed
+    ``--source`` and ``--input-list`` only and pointed at
+    ``prep-command.txt`` for the rest, so pasting it with the four flags
+    it named was refused for the ``--supplement`` binding and the
+    manifest flag it had left out.
+    """
+
+    out = Path(out)
+    document = json.loads(
+        _io_path(out / PREP_ARGUMENTS_NAME).read_text(encoding="utf-8"))
+    lines = [
+        f"fetch {label}: next: feed the mapped front door, source already "
+        "bound:",
+        "  " + render_prep_command(document["argv"]),
+        f"  # {named_flags(document['caller_supplies'])} are yours.",
+    ]
+    lines.extend(
+        f"  # still needed: --supplement {role}=FILE"
+        for role in document.get("unbound_supplement_roles") or ())
+    lines.append(
+        "  # the same command, one flag per line, with the route's notes: "
+        f"{(out / PREP_COMMAND_NAME).resolve()}")
+    return tuple(lines)
+
+
 def handoff_lines(plan: FetchPlan, out: Path) -> tuple[str, ...]:
     """The ``next:`` block the fetch front door prints when it finishes."""
 
-    out = Path(out)
-    lines = [
-        f"fetch {plan.source_id}: next: feed the mapped front door, source "
-        "already bound:",
-        f"  gpuwm prep --source "
-        f"{plan.route.prep.get('source', plan.source_id)} --input-list "
-        f"{_q((out / INPUT_LIST_NAME).resolve())}",
-        f"  # the supplement bindings and the whole command are written out "
-        f"at {(out / PREP_COMMAND_NAME).resolve()}",
-        "  # --wps-namelist, --experiment-config, --geog-root and "
-        "--output-root are yours.",
-    ]
-    return tuple(lines)
+    return prep_handoff_lines(plan.source_id, out)
 
 
 __all__ = [
@@ -1906,11 +2230,15 @@ __all__ = [
     "Endpoint", "FetchPlan", "FileRow", "Host", "INPUT_LIST_NAME",
     "LADDER_IDENTITY", "LEGACY_ROUTE_SOURCES", "MANIFEST_NAME", "PATH_TOKENS",
     "PREP_ARGUMENTS_NAME", "PREP_ARGUMENTS_SCHEMA",
-    "PREP_COMMAND_NAME", "PlannedObject", "ROUTE_MANIFEST_SCHEMA",
+    "PREP_COMMAND_NAME", "PlannedObject", "PublicationEra", "ROUTE_MANIFEST_SCHEMA",
     "ROUTE_TABLE_NAME", "ROUTE_TABLE_SCHEMA", "ROUTE_TABLE_SHA256", "Route",
     "SHA256SUMS_NAME", "all_fetchable_sources", "check_prior_request",
-    "endpoint_ladder", "handoff_lines", "ladder_for", "member_tokens",
-    "packaged_route_table_sha256", "refusal_ids", "resolve_cycle",
+    "endpoint_ladder", "first_preparable_cycle", "handoff_lines", "ladder_for",
+    "member_tokens", "named_flags", "packaged_route_table_sha256", "planning_cycles",
+    "prep_handoff_lines", "publication_era", "refusal_ids", "render_prep_command",
+    "resolve_cycle",
     "resolve_leads", "resolve_member", "resolve_mode", "resolve_request",
-    "route_for", "route_ids", "run_plan", "unknown_tokens", "write_handoff",
+    "route_for", "route_ids", "run_plan", "table_route", "unknown_tokens",
+    "write_handoff", "SOURCE_ROOT_FORMATS", "local_input_remedy",
+    "local_prep_line", "sniff_format", "source_root_layout",
 ]

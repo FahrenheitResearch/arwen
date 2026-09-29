@@ -1054,10 +1054,13 @@ fn render_one(
     }
     let finite_min = band.display_min;
     let finite_max = band.display_max;
-    let display_units = band.display_units;
+    let display_units = band.display_units.clone();
 
+    let category = mesh_category_style(product, &band);
     let scale = if product.difference {
         diverging_scale(finite_min.abs().max(finite_max.abs()))
+    } else if let Some(style) = category.as_ref() {
+        style.scale.clone()
     } else {
         // The PRESCALED entry: this route has already moved its own decade,
         // and the entry that takes a decade off the range it is handed
@@ -1104,6 +1107,10 @@ fn render_one(
     request.visual_mode = ProductVisualMode::FilledMeteorology;
     request.title = Some(product.title(&display_units, labels));
     request.cbar_tick_step = None;
+    if let Some(style) = category.as_ref() {
+        request.legend = style.colormap_options.legend;
+        request.render_density = style.colormap_options.render_density;
+    }
     request.subtitle_left = Some(format!("valid {}", caption_time(valid_label)));
     request.subtitle_right = Some(
         config
@@ -1150,6 +1157,27 @@ fn render_one(
     Ok(output)
 }
 
+/// The category legend for a panel that draws a plane of category codes as
+/// its own codes: one band per code, labelled with the code, coloured
+/// exactly as its cells are.  `None` for a difference, a logarithm, a
+/// plane moved onto a decade, and any field that is not a code plane.  The
+/// cells are whole polygons on this route already, so only the legend was
+/// at stake: a vegetation plane was drawn against a nine-band continuous
+/// bar whose bands matched no code.
+fn mesh_category_style(
+    product: &MeshProduct,
+    band: &MeshBand,
+) -> Option<rustwx_products::viewer::StoreVariableStyle> {
+    if product.difference || product.log || band.factor != 1.0 {
+        return None;
+    }
+    rustwx_products::viewer::category_style_for_store_variable(
+        &product.field,
+        &band.display_units,
+        Some((band.display_min as f32, band.display_max as f32)),
+    )
+}
+
 /// One mesh panel's band: the decade its legend speaks in, the bounds its
 /// levels are cut on, and the field-unit floor below which a cell takes the
 /// empty fill.
@@ -1171,7 +1199,7 @@ struct MeshBand {
 
 /// Settle a panel's range and then its decade, in that order.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): levels cut on one
+/// WHAT BREAKAGE THIS PREVENTS (gate law): levels cut on one
 /// decade colouring cells that sit on another.  A `@LO[..HI]` range is in
 /// the FIELD's units, and the decade used to be taken off the raw data
 /// before the clamp was applied, so a mixing ratio clamped three decades
@@ -1307,6 +1335,24 @@ fn nice_ceiling(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_code_plane_drawn_as_its_codes_takes_the_category_legend() {
+        let band = mesh_band("", 1.0, 17.0, None);
+        let plain = parse_mesh_product("mesh:ivgtyp").expect("parses");
+        let style = mesh_category_style(&plain, &band).expect("a vegetation plane is codes");
+        assert_eq!(style.legend_mode, rustwx_render::LegendMode::Categories);
+        assert_eq!(style.colormap_options.legend.mode, rustwx_render::LegendMode::Categories);
+        // A difference, a logarithm and a field that is not a code plane
+        // keep their own scales.
+        for token in ["meshdiff:ivgtyp", "mesh:ivgtyp~log", "mesh:qi"] {
+            let product = parse_mesh_product(token).expect("parses");
+            assert!(mesh_category_style(&product, &band).is_none(), "{token}");
+        }
+        // A range that does not start on a whole code is not a code band.
+        let ranged = mesh_band("", 1.0, 17.0, Some((2.5, None)));
+        assert!(mesh_category_style(&plain, &ranged).is_none());
+    }
 
     #[test]
     fn the_grammar_parses_fields_reductions_levels_and_the_log_modifier() {

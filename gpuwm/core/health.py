@@ -25,8 +25,9 @@ from typing import Any
 import numpy as np
 
 
-# A four-domain NSSL-2 step currently reaches 527 descriptors after its lazy
-# persistent microphysics and nest scratch is materialized.  Keep a power-of-
+# A four-domain NSSL-2 step currently reaches 528 descriptors after its lazy
+# persistent microphysics and nest scratch is materialized (527 until the
+# surface layer began publishing USTM as a surface field).  Keep a power-of-
 # two ceiling with substantial headroom so scheduled physics can add state
 # without invalidating a run after it has already advanced.
 MAX_HEALTH_FIELDS = 1024
@@ -370,22 +371,27 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
                 # blow-up without pretending to enforce the scheme's own
                 # bounds.
                 #
-                # THE BREAKAGE IT CAUGHT, and the reading that keeps it at
-                # this number.  A 2.7 km specified domain forced from the
-                # monthly WIF climatology stopped at 3 h 36 min on
+                # THE BREAKAGE IT CAUGHT, twice, and the reading that keeps
+                # it at this number.  A 2.7 km specified domain forced from
+                # the monthly WIF climatology stopped at 3 h 36 min on
                 # nwfa(k=0, j=ny-1, i=0), its lowest level at the
-                # north-west boundary corner, reading 1.0114111e15.  The
-                # cause was upstream: the spec_bdy_final finalizer forced
-                # only u/v/theta/phi/qv back onto their boundary tables, so
-                # the supplied aerosol spec row and the relax zone beside
-                # it fed each other and the corner grew 74x in the
-                # first hour from 6.94e8, while qv in that same cell moved
-                # 1.2 percent over that hour (0.0044067 to 0.0044585) and
-                # 4.2 percent by the last frame before the stop.  With that
-                # fixed the same hour holds the corner at 6.96e8, five and
-                # a half decades under this ceiling, so the ceiling never
-                # stood between a legitimate value and a run: raising it
-                # would only have moved where the runaway was noticed.
+                # north-west boundary corner, reading 1.0114111e15; the
+                # corner grew 74x in the first hour from 6.94e8, while qv
+                # in that same cell moved 1.2 percent over that hour
+                # (0.0044067 to 0.0044585) and 4.2 percent by the last
+                # frame before the stop.  A 2.25 km specified parent
+                # stopped at 3.9 h on nwfa(nz-1, ny-1, i), the lid layer of
+                # its north boundary row, reading 1.0268e15 after growing
+                # from 5.5e8.  Both grew on the specified ring, which the
+                # final positive-definite scalar stage moved by its
+                # vertical advection, a term WRF computes and never
+                # applies (moist._exclude_specified_ring_advection).  With
+                # that fixed the ring holds its table (5.46e8 at the lid,
+                # 4 h),
+                # five and a half decades under this ceiling, so the
+                # ceiling never stood between a legitimate value and a
+                # run: raising it would only have moved where the runaway
+                # was noticed.
                 "nwfa", "nifa"):
         return FieldRule("moment", 0.0, 1.0e15)
     if leaf in ("qvolg", "qvolh"):
@@ -884,6 +890,11 @@ class StateHealthValidator:
         self.fields: tuple[HealthField, ...] = ()
         self.excluded_integer_fields: tuple[HealthField, ...] = ()
 
+    @property
+    def host_scan_bytes(self) -> int:
+        """Bytes scanned on the CPU; resident fields are scanned on the GPU."""
+        return 0
+
     def _refresh(self) -> None:
         collected = (collect_state_fields(
             self.state, backend="gpu", extra_tables=self.extra_tables)
@@ -1116,6 +1127,15 @@ class StoreHealthValidator:
         self._device_validator = (StateHealthValidator(
             bundle.template, field_provider=self._device_fields)
             if self.device else None)
+
+    @property
+    def host_scan_bytes(self) -> int:
+        """Bytes :meth:`validate` reads on the CPU: the whole host store,
+        or none when the store is on the device and the kernel scans it."""
+        if self.device:
+            return 0
+        return sum(int(getattr(value, 'nbytes', 0) or 0)
+                   for value in self.bundle.store.values())
 
     def _device_fields(self):
         fields, self.coverage = _store_health_descriptors(

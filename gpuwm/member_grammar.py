@@ -60,6 +60,20 @@ SUPPORTED_LAYOUTS = ("file_per_member",)
 _ORDINAL_FIELD = re.compile(r"\{ordinal:0([1-9])d\}")
 _PATH_FIELDS = ("{yyyymmdd}", "{hh}", "{fff}", "{token}")
 
+#: The GRIB2 Section 1 octets a rewrite declares as its writer, spelled
+#: as the Rust inventory's columns.  Generic vocabulary: which centre,
+#: subcentre and table versions a writer stamps.
+WRITER_KEYS = ("center", "subcenter", "master_table_version",
+               "local_table_version")
+
+#: Product definition templates that carry no ensemble octets at all
+#: (WMO 4.0, 4.8, 4.15).  A rewrite whose member identity is its path may
+#: declare only these: a template that carries ensemble or statistic
+#: octets has an identity that must be read from the bytes, and letting
+#: the path stand in for it would admit an ensemble mean or another
+#: member's trajectory under a member's name.
+TEMPLATES_WITHOUT_ENSEMBLE_OCTETS = (0, 8, 15)
+
 
 class MemberGrammarError(ValueError):
     """A members document that cannot be trusted, with the reason."""
@@ -122,13 +136,74 @@ class MemberVerification:
     member set, AIGEFS 31, RRFS contradicts itself between products and
     domains), so the declared member set is the only sizing authority
     and this octet is never used to size anything.
+
+    A class's own ``verification`` is what the producer stamps.  A class
+    may also declare ``rewrites``: copies of the same members that a
+    front door serves under another writer's octets.  Each rewrite is a
+    whole contract of its own, selected only for a file whose every
+    message carries the rewrite's declared ``writer`` (Section 1)
+    octets, and it says where member identity lives in those bytes:
+    ``perturbation_number`` ``"ordinal"`` when the ensemble octets
+    survived the rewrite, ``"path"`` when the writer dropped them and
+    the member path component is the only identity left.
     """
 
     product_definition_templates: tuple[int, ...]
-    type_of_ensemble_forecast: int
+    #: The first declared value, which is the whole declaration for a
+    #: source that stamps one value; None for a path-identity rewrite,
+    #: whose templates carry no such octet.
+    type_of_ensemble_forecast: int | None
     ensemble_size: int | None
     type_of_generating_process: int | None
     forecast_generating_process_id: int | None
+    #: Every typeOfEnsembleForecast value the class declares.  A list in
+    #: the document means the same member's bytes arrive stamped more
+    #: than one way depending on which door served them (one measured
+    #: source's operational server stamps 6 where its mirror's rewritten
+    #: copy stamps 3), and any declared value verifies.
+    ensemble_types: tuple[int, ...] = ()
+    #: A rewrite's name; None for the producer's own encoding.
+    name: str | None = None
+    #: A rewrite's Section 1 octets as (key, accepted values) pairs,
+    #: every one of which each message must carry; empty for the
+    #: producer's own encoding.
+    writer: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    #: Where member identity lives: "ordinal" (perturbationNumber) or
+    #: "path" (the member's path component, for a rewrite that dropped
+    #: the ensemble octets).
+    member_identity: str = "ordinal"
+
+    def accepted_ensemble_types(self) -> tuple[int, ...]:
+        """Every typeOfEnsembleForecast value that verifies this class."""
+
+        if self.ensemble_types:
+            return self.ensemble_types
+        if self.type_of_ensemble_forecast is None:
+            return ()
+        return (self.type_of_ensemble_forecast,)
+
+    def declared_ensemble_type(self) -> int | list[int] | None:
+        """The declaration as the document spells it, for receipts."""
+
+        accepted = self.accepted_ensemble_types()
+        if not accepted:
+            return None
+        return accepted[0] if len(accepted) == 1 else list(accepted)
+
+    def writer_admits(self, row: Mapping[str, str]) -> bool:
+        """Whether one inventory row carries this rewrite's writer octets.
+
+        A row without the column (an inventory that predates it) does not
+        carry the octet, so it never selects a rewrite.
+        """
+
+        if not self.writer:
+            return False
+        for key, accepted in self.writer:
+            value = str(row.get(key, "-")).strip()
+            if value in ("", "-") or int(value) not in accepted:
+                return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -140,6 +215,8 @@ class MemberIdentity:
     ordinal: int
     token: str
     verification: MemberVerification
+    #: The class's declared rewrites, in the order the document lists them.
+    rewrites: tuple[MemberVerification, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,20 +231,33 @@ class StatisticIdentity:
     derived_forecast: int | None
 
 
-def _verification(value: Mapping[str, object], label: str) -> MemberVerification:
-    _require_keys(
-        value,
-        allowed=frozenset({
-            "product_definition_templates", "type_of_ensemble_forecast",
-            "perturbation_number", "ensemble_size",
-            "type_of_generating_process", "forecast_generating_process_id",
-        }),
-        required=frozenset({
-            "product_definition_templates", "type_of_ensemble_forecast",
-            "perturbation_number",
-        }),
-        label=label,
-    )
+def _integer_set(value: object, label: str) -> tuple[int, ...]:
+    """One integer or a non-empty list of distinct integers."""
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return (value,)
+    if (isinstance(value, Sequence) and not isinstance(value, str) and value
+            and all(isinstance(item, int) and not isinstance(item, bool)
+                    for item in value)
+            and len(set(value)) == len(value)):
+        return tuple(int(item) for item in value)
+    raise MemberGrammarError(
+        f"{label} must be an integer or a non-empty list of distinct integers")
+
+
+def _verification(value: Mapping[str, object], label: str, *,
+                  rewrite: bool = False) -> MemberVerification:
+    allowed = {
+        "product_definition_templates", "type_of_ensemble_forecast",
+        "perturbation_number", "ensemble_size",
+        "type_of_generating_process", "forecast_generating_process_id",
+    }
+    required = {"product_definition_templates", "perturbation_number"}
+    if rewrite:
+        allowed |= {"name", "writer", "note"}
+        required |= {"name", "writer"}
+    _require_keys(value, allowed=frozenset(allowed),
+                  required=frozenset(required), label=label)
     templates = value["product_definition_templates"]
     if (not isinstance(templates, Sequence) or isinstance(templates, str)
             or not templates
@@ -175,30 +265,100 @@ def _verification(value: Mapping[str, object], label: str) -> MemberVerification
         raise MemberGrammarError(
             f"{label}.product_definition_templates must be a non-empty "
             "list of integers")
-    if value["perturbation_number"] != "ordinal":
+    identity = value["perturbation_number"]
+    if identity != "ordinal" and not (rewrite and identity == "path"):
         # The only rule the four measured ensembles share is that the
         # perturbation number IS the member ordinal.  A grammar wanting
         # any other relationship is declaring a contract this build
         # would not verify, which must refuse rather than half-apply.
+        # The one exception is a declared rewrite whose writer dropped
+        # the ensemble octets, where the path component is all that is
+        # left to carry the member.
         raise MemberGrammarError(
-            f"{label}.perturbation_number must be the literal 'ordinal': "
-            "every supported ensemble encodes the member ordinal as "
+            f"{label}.perturbation_number must be the literal 'ordinal'"
+            + (" or, for a rewrite without ensemble octets, 'path'"
+               if rewrite else "")
+            + ": every supported ensemble encodes the member ordinal as "
             "perturbationNumber, and a different relationship needs an "
             "engine extension, not a silent pass-through")
-    for key in ("type_of_ensemble_forecast", "ensemble_size",
-                "type_of_generating_process",
+    for key in ("ensemble_size", "type_of_generating_process",
                 "forecast_generating_process_id"):
         item = value.get(key)
         if item is not None and not isinstance(item, int):
             raise MemberGrammarError(f"{label}.{key} must be an integer")
+    if identity == "path":
+        carrying = sorted(set(int(t) for t in templates)
+                          - set(TEMPLATES_WITHOUT_ENSEMBLE_OCTETS))
+        if carrying:
+            raise MemberGrammarError(
+                f"{label} takes member identity from the path but declares "
+                f"templates {carrying}, which carry ensemble or statistic "
+                "octets: those bytes name their own identity, and letting "
+                "the path stand in for it would admit an ensemble mean or "
+                "another member's trajectory under this member's name")
+        present = sorted({"type_of_ensemble_forecast", "ensemble_size"}
+                         & set(value))
+        if present:
+            raise MemberGrammarError(
+                f"{label} takes member identity from the path but declares "
+                f"{present}; the templates it admits carry no such octet, "
+                "so the declaration could never be checked")
+        ensemble_types: tuple[int, ...] = ()
+    else:
+        if "type_of_ensemble_forecast" not in value:
+            raise MemberGrammarError(
+                f"{label} is missing required keys "
+                "['type_of_ensemble_forecast']")
+        ensemble_types = _integer_set(
+            value["type_of_ensemble_forecast"],
+            f"{label}.type_of_ensemble_forecast")
+    writer: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    if rewrite:
+        declared_writer = value["writer"]
+        if not isinstance(declared_writer, Mapping) or not declared_writer:
+            raise MemberGrammarError(
+                f"{label}.writer must name at least one of {list(WRITER_KEYS)}: "
+                "a rewrite is selected by the writer octets its bytes "
+                "carry, and one that names none would claim every file "
+                "the producer's own contract refuses, a deterministic "
+                "product included")
+        unknown = sorted(set(declared_writer) - set(WRITER_KEYS))
+        if unknown:
+            raise MemberGrammarError(
+                f"{label}.writer declares unknown octets {unknown}; this "
+                f"build reads {list(WRITER_KEYS)}")
+        writer = tuple(
+            (key, _integer_set(declared_writer[key], f"{label}.writer.{key}"))
+            for key in WRITER_KEYS if key in declared_writer)
+        name = value["name"]
+        if not isinstance(name, str) or not name.strip():
+            raise MemberGrammarError(f"{label}.name must be a non-empty string")
     return MemberVerification(
         product_definition_templates=tuple(int(t) for t in templates),
-        type_of_ensemble_forecast=int(value["type_of_ensemble_forecast"]),
+        type_of_ensemble_forecast=(ensemble_types[0] if ensemble_types
+                                   else None),
         ensemble_size=value.get("ensemble_size"),
         type_of_generating_process=value.get("type_of_generating_process"),
         forecast_generating_process_id=value.get(
             "forecast_generating_process_id"),
+        ensemble_types=ensemble_types,
+        name=str(value["name"]) if rewrite else None,
+        writer=writer,
+        member_identity=str(identity),
     )
+
+
+def _rewrites(value: object, label: str) -> tuple[MemberVerification, ...]:
+    if (not isinstance(value, Sequence) or isinstance(value, str)
+            or not value):
+        raise MemberGrammarError(f"{label} must be a non-empty list")
+    rewrites = tuple(
+        _verification(item, f"{label}[{index}]", rewrite=True)
+        for index, item in enumerate(value))
+    names = [rewrite.name for rewrite in rewrites]
+    if len(set(names)) != len(names):
+        raise MemberGrammarError(f"{label} names a rewrite twice")
+    return rewrites
 
 
 def _class_ordinals(value: object, label: str) -> tuple[int, ...]:
@@ -281,7 +441,8 @@ class MemberGrammar:
             _require_keys(
                 declaration,
                 allowed=frozenset({
-                    "ordinals", "member_id", "token", "verification", "note",
+                    "ordinals", "member_id", "token", "verification",
+                    "rewrites", "note",
                 }),
                 required=frozenset({
                     "ordinals", "member_id", "token", "verification",
@@ -290,6 +451,8 @@ class MemberGrammar:
             )
             verification = _verification(
                 declaration["verification"], f"{label}.verification")
+            rewrites = (_rewrites(declaration["rewrites"], f"{label}.rewrites")
+                        if "rewrites" in declaration else ())
             for ordinal in _class_ordinals(declaration["ordinals"],
                                            f"{label}.ordinals"):
                 member_id = _expand_ordinal(
@@ -308,7 +471,8 @@ class MemberGrammar:
                 ordinals_seen[ordinal] = class_name
                 members[member_id] = MemberIdentity(
                     member_id=member_id, class_name=str(class_name),
-                    ordinal=ordinal, token=token, verification=verification)
+                    ordinal=ordinal, token=token, verification=verification,
+                    rewrites=rewrites)
         if len(members) != self.declared_member_count:
             raise MemberGrammarError(
                 f"{source} declares declared_member_count="
@@ -504,5 +668,6 @@ __all__ = [
     "MEMBERS_SCHEMA", "SUPPORTED_LAYOUTS",
     "MemberGrammar", "MemberGrammarError", "MemberIdentity",
     "MemberIdentityRefusal", "MemberVerification", "StatisticIdentity",
+    "TEMPLATES_WITHOUT_ENSEMBLE_OCTETS", "WRITER_KEYS",
     "load_member_grammar",
 ]

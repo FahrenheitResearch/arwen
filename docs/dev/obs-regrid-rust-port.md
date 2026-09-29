@@ -3,7 +3,7 @@
 `gpuwm/verify/obs/regrid.py` was the last `scipy` site on a shipped data
 path. Every remap plan the observation battery builds went through
 `scipy.spatial.cKDTree`, and the apply half moved the field values with
-`numpy.add.at`. Drew's Python boundary (2026-08-16) names
+`numpy.add.at`. The project's Python boundary (2026-08-16) names
 "regrid/transform" verbatim, so both halves belong in Rust.
 
 Both halves now run on `tools/rustwx/crates/obs-regrid` by default,
@@ -11,7 +11,7 @@ reached through `gpuwm/obs_regrid_bridge.py`.
 
 ## What was seeded, and what was not
 
-`crates/rustwx-regrid` in Drew's consolidated workspace
+`crates/rustwx-regrid` in the project's consolidated workspace
 (`%USERPROFILE%\rusty-weather-consolidated`) is the seed, and it supplies
 the **shape** rather than the arithmetic:
 

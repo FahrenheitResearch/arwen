@@ -40,6 +40,16 @@
           "parameter": 5,
           "level_type": 100,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 3,
+          "parameter": 5,
+          "level_type": 100,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -72,6 +82,16 @@
           "parameter": 0,
           "level_type": 100,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 0,
+          "parameter": 0,
+          "level_type": 100,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -103,6 +123,16 @@
           "parameter": 0,
           "level_type": 100,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 1,
+          "parameter": 0,
+          "level_type": 100,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -134,6 +164,16 @@
           "parameter": 2,
           "level_type": 100,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 2,
+          "parameter": 2,
+          "level_type": 100,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -165,6 +205,16 @@
           "parameter": 3,
           "level_type": 100,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 2,
+          "parameter": 3,
+          "level_type": 100,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -211,16 +261,7 @@
       "derivation": "pressure-from-coordinate"
     },
     "surface_pressure": {
-      "selectors": [
-        {
-          "format": "grib2",
-          "discipline": 0,
-          "category": 3,
-          "parameter": 0,
-          "level_type": 1,
-          "pdt": 1
-        }
-      ],
+      "selectors": [],
       "units": {
         "source": "Pa",
         "target": "Pa"
@@ -237,7 +278,8 @@
       "staggering": "none",
       "missing": {
         "kind": "reject"
-      }
+      },
+      "derivation": "surface-pressure-from-sea-level"
     },
     "skin_temperature": {
       "provider": "composition_bound",
@@ -269,6 +311,17 @@
           "level_type": 103,
           "level_value": 2,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 0,
+          "parameter": 0,
+          "level_type": 103,
+          "level_value": 2,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -319,6 +372,17 @@
           "level_type": 103,
           "level_value": 10,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 2,
+          "parameter": 2,
+          "level_type": 103,
+          "level_value": 10,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -349,6 +413,17 @@
           "level_type": 103,
           "level_value": 10,
           "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 2,
+          "parameter": 3,
+          "level_type": 103,
+          "level_value": 10,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
         }
       ],
       "units": {
@@ -452,12 +527,59 @@
       "missing": {
         "kind": "preserve_mask"
       }
+    },
+    "air_pressure_at_mean_sea_level": {
+      "selectors": [
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 3,
+          "parameter": 1,
+          "level_type": 101,
+          "pdt": 1
+        },
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 3,
+          "parameter": 1,
+          "level_type": 101,
+          "pdt": 0,
+          "master_table_version": 4,
+          "local_table_version": 0
+        }
+      ],
+      "units": {
+        "source": "Pa",
+        "target": "Pa"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
     }
   },
   "derivations": [
     {
       "name": "pressure-from-coordinate",
       "operation": "pressure_from_vertical_coordinate"
+    },
+    {
+      "name": "surface-pressure-from-sea-level",
+      "operation": "surface_pressure_from_sea_level",
+      "sea_level_pressure": "air_pressure_at_mean_sea_level",
+      "level_height": "geopotential_height",
+      "pressure": "air_pressure",
+      "surface_height": "terrain_height"
     }
   ],
   "target": {

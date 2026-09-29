@@ -52,10 +52,11 @@ type, held in both directions [tests/test_documented_source_spellings.py].
 
 ## 5.2 Fetch: which sources download, which refuse by name
 
-`gpuwm fetch --source` accepts 14 ids: 13 download, and `era5` is templated rather
-than downloaded. The ERA5 route emits the exact two-part `cdsapi` request
-(pressure-level z/t/u/v/r at all 37 levels plus 16 single-level fields) and then
-validates a retrieval you fetched with your own CDS key (`--validate`)
+`gpuwm fetch --source` accepts 14 ids. `era5` downloads keyless from the ARCO
+store with `--era5-provider arco`. With the CDS provider, it emits the exact
+two-part `cdsapi` request (pressure-level z/t/u/v/r at all 37 levels plus 16
+single-level fields), or retrieves it with `--retrieve` and configured
+credentials. Validate the CDS retrieval with `--validate`
 [docs/public/SOURCES.md; docs/public/DATA.md]. Ten sources ride a packaged route
 table (`gpuwm/authorities/rw-wps-fetch-routes.v1.json`, one engine); `gfs`, `gdas`,
 `hrrr`, and `era5` keep hand-written transports predating the table.
@@ -155,15 +156,21 @@ the horizon named (GDAS stops at f009); a fitted domain reaching a pole refuses
 naming the fitted size, but only where a smaller domain cannot help -- a drawn
 `--polygon` that reaches the pole, and a `--point` so close to one that even the
 minimum layout contains it.  A point carries no extent, so the fit chooses one
-and bounds its own choice: at most 6,000 km per axis, and clear of the
-projection pole, both of which SHRINK the domain rather than refuse it
-[docs/public/CLI-OPTIONS.md]. Neither is a warning -- an ordinary mid-latitude
-point on an ordinary card is sized by them, so a `warning:` would flag the
-normal case; the plan summary states which one bound in one line beside the
-sizing line (`domain: point request: extent capped at ...`) and stderr stays
-clean. That domain is still continental, so its fetch box is large and says so
-once: the advisory names `--polygon`, the flag that asks for different ground,
-because on those two bounds a bigger or smaller card buys no different grid. The box widens with latitude as a conformal domain's corners
+and bounds its own choice: at most `--point-extent-km` per axis (default
+6,000 km), clear of the projection pole, and less than one trip around the
+globe in longitude, all of which SHRINK the domain rather than refuse it
+[docs/public/CLI-OPTIONS.md]. The last one matters on Mercator, which has no
+pole to stop a tropical root from wrapping onto its own ground, and on
+Lambert, whose root crosses it before it reaches the pole. An extent
+below the smallest root the ladder hosts gets that smallest root, and the plan
+summary says so rather than reporting a cap. None of this is a warning -- an
+ordinary mid-latitude point on an ordinary card is sized by these bounds, so a
+`warning:` would flag the normal case; the plan summary states which one bound
+in one line beside the sizing line (`domain: point request: extent capped at
+...`) and stderr stays clean. That domain is still continental, so its fetch
+box is large and says so once: the advisory names `--point-extent-km` and
+`--polygon`, the flags that ask a point for less or different ground, because
+on these bounds a bigger or smaller card buys no different grid. The box widens with latitude as a conformal domain's corners
 fan out (measured under the default 12 km ladder: 108 degrees of longitude at
 30 N, 147 at 48.5, 179 at 58), and once it passes 180 the fetch takes the
 source's full band with the forecast grid and latitude bounds unchanged -- a

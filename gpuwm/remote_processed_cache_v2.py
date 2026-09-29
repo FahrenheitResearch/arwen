@@ -179,7 +179,8 @@ def sync(args, command, stream_command):
     key = value["publication_sha256"]
     destination, lease_path = objects / key, leases / (key + ".lock")
     result_path = destination / "native-result.json"
-    limit = viewer._cache_bytes(getattr(args, "cache_bytes", None) or viewer.DEFAULT_CACHE_BYTES)
+    chosen = getattr(args, "cache_bytes", None)
+    limit = viewer._cache_bytes(viewer.DEFAULT_CACHE_BYTES if chosen is None else chosen)
     transferred = 0
     with Lease(root / "writer.lock", timeout=180) as writer:
         if writer.file is None:

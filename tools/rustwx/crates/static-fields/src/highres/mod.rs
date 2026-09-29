@@ -304,6 +304,102 @@ pub fn resample_mapped_categories(
     )
 }
 
+/// [`resample_mapped_categories`] for an 8-bit band held as bytes: the
+/// same validity, the same unmapped-category refusal and the same
+/// fractions, at four bytes per source pixel instead of eleven.
+/// `carrier` supplies only the georeference (its `values` are unread).
+pub fn resample_mapped_categories_u8(
+    raw: &[u8],
+    carrier: &Raster,
+    label: &str,
+    spec: &GridSpec,
+    mapping: &BTreeMap<i64, i64>,
+    category_count: usize,
+    nodata: Option<f64>,
+) -> Result<Stack3> {
+    if raw.len() != carrier.ny * carrier.nx {
+        return Err(invalid(
+            "category values and validity mask shapes differ".to_string(),
+        ));
+    }
+    // An 8-bit sample equals the sentinel only when the sentinel is a
+    // whole number in 0..=255; any other sentinel masks nothing, exactly
+    // as the f64 comparison does.
+    let sentinel: Option<u8> = nodata
+        .filter(|value| {
+            value.is_finite()
+                && value.fract() == 0.0
+                && (0.0..=255.0).contains(value)
+        })
+        .map(|value| value as u8);
+    let mut seen = [false; 256];
+    for value in raw {
+        seen[*value as usize] = true;
+    }
+    let unknown: Vec<i64> = (0..256usize)
+        .filter(|value| {
+            seen[*value]
+                && Some(*value as u8) != sentinel
+                && !mapping.contains_key(&(*value as i64))
+        })
+        .map(|value| value as i64)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(invalid(format!(
+            "raster {label} contains unmapped categories {unknown:?}"
+        )));
+    }
+    let mut table = [0i16; 256];
+    for (source, target) in mapping {
+        if (0..=255).contains(source) {
+            table[*source as usize] = *target as i16;
+        }
+    }
+    let mapped: Vec<i16> = raw
+        .iter()
+        .map(|value| {
+            if Some(*value) == sentinel {
+                0
+            } else {
+                table[*value as usize]
+            }
+        })
+        .collect();
+    let valid: Vec<bool> = mapped.iter().map(|value| *value > 0).collect();
+    let (dst_crs, dst_transform, (ny, nx)) = raster_geometry(spec)?;
+    warp::reproject_category_fractions(
+        &mapped,
+        &valid,
+        carrier,
+        &dst_crs,
+        dst_transform,
+        ny,
+        nx,
+        category_count,
+    )
+}
+
+/// Metres per degree of latitude on the mean sphere.
+const METRES_PER_DEGREE: f64 = 111_320.0;
+
+/// `(longitude, latitude)` window margin in degrees for a margin stated
+/// in metres (`margin_degrees` in `gpuwm/static/highres_fetch.py`).  On a
+/// geographic raster a metre margin read as degrees widened a 2 km margin
+/// to 2000 degrees, so the land-cover window was the whole raster.  The
+/// longitude margin is widened by the footprint's most poleward latitude,
+/// floored at cos 87 degrees.
+pub fn margin_degrees(lat_min: f64, lat_max: f64, margin_m: f64) -> (f64, f64) {
+    let extreme = lat_min.abs().max(lat_max.abs()).min(90.0);
+    let shrink = extreme
+        .to_radians()
+        .cos()
+        .max(87.0f64.to_radians().cos());
+    (
+        margin_m / (METRES_PER_DEGREE * shrink),
+        margin_m / METRES_PER_DEGREE,
+    )
+}
+
 /// `_require_coverage`: every target value must be finite.
 pub fn require_coverage(name: &str, values: &[f64]) -> Result<()> {
     let count = values.iter().filter(|value| !value.is_finite()).count();

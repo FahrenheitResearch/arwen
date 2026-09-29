@@ -3035,7 +3035,7 @@ def _run_stream_impl(plan: StreamPlan, *, backend, progress=print) -> dict:
             if program.get("status") == "PASS":
                 return program
             started_at = program.get("started_at")
-        else:
+        if not preexisting:
             records = []
             started_at = _iso(backend.now())
             program = _program_payload(

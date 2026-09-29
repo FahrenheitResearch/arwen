@@ -8,7 +8,7 @@
       "message": "mapped frame at 1974-04-03 12:00:00 lacks required fields ['terrain_height']",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "era5-1974-grib1",
     "verdict": "REFUSED"
   },
@@ -1435,7 +1435,7 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "era5-1974-grib1",
     "verdict": "INSPECTED"
   },
@@ -1443,6 +1443,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "era5-1974-grib1"
 }

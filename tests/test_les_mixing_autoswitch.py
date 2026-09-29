@@ -1,5 +1,5 @@
 # tests/test_les_mixing_autoswitch.py
-"""The anisotropic-K remedy is DEFAULT-ON, as an auto-switch (Drew, 2026-08-16).
+"""The anisotropic-K remedy is DEFAULT-ON, as an auto-switch (project ruling, 2026-08-16).
 
 The criterion is unchanged and still lives in one place --
 ``gpuwm.config.anisotropic_w_mixing_ratio``,

@@ -39,7 +39,8 @@ same code objects the route calls, never a restatement of their rules.
 
 It also prices the run: device-memory envelope from the product's own
 allocation estimator, and wall-clock/output projections scaled from the
-committed 3 km anchor receipt (``evidence/grounding-3km-conus-run-report.json``),
+committed 3 km anchor receipt
+(``docs/public/receipts/obsbattery/grounding-3km-conus-run-report.json``),
 which is the only in-tree measurement of this engine at this resolution.
 
 Exit status is 0 when every gate admits the config and 1 when any refuses,
@@ -65,13 +66,22 @@ RECEIPT_SCHEMA = "gpuwm-battery-route-preflight-v1"
 #: The committed anchor this tool scales its projections from.  It is a
 #: real forecast receipt in this tree, not a constant: 796x636x49 at
 #: dx 3 km, dt 15 s, Thompson/YSU/MM5/Noah with the 4/4 radiation pair.
-ANCHOR_RECEIPT = Path("evidence") / "grounding-3km-conus-run-report.json"
+#: It lives with the public receipts, not under ``evidence/``, because the
+#: public export drops ``evidence/**``: read from there, the projection went
+#: missing from every public run of this tool with only "not found" to say
+#: why, and the speed-anchor receipt cited a report the release did not carry.
+ANCHOR_RECEIPT = (Path("docs") / "public" / "receipts" / "obsbattery"
+                  / "grounding-3km-conus-run-report.json")
 
-#: The device-memory fit published beside that anchor
-#: (``evidence/grounding-3km-conus-sizing.md``): slope 0.75-0.84 KiB/cell,
-#: best single value 0.80, intercept 2.9-3.4 GiB on the RTX 5090.  Carried
-#: here as the INDEPENDENT cross-check on the allocation estimator, which
-#: is the authority; two routes agreeing is the point.
+#: The device-memory fit published beside that anchor: slope 0.75-0.84
+#: KiB/cell, best single value 0.80, intercept 2.9-3.4 GiB on the RTX 5090.
+#: Carried here as the INDEPENDENT cross-check on the allocation estimator,
+#: which is the authority; two routes agreeing is the point.  Every receipt
+#: this tool writes names FIT_SOURCE as the fit's source, so it is the
+#: shipped copy: the notes under ``evidence/`` it was taken from are not in
+#: a public install, and a public reader was sent to a file they do not have.
+FIT_SOURCE = (Path("docs") / "public" / "receipts" / "obsbattery"
+              / "grounding-3km-conus-sizing.md")
 FIT_SLOPE_KIB_PER_CELL = (0.75, 0.80, 0.84)
 FIT_INTERCEPT_GIB = (2.9, 3.4)
 
@@ -237,7 +247,7 @@ def _memory_estimate(exp) -> dict[str, object]:
         "envelope_family": str(estimate.envelope_family),
         "cells": cells,
         "independent_fit_gib": fit,
-        "fit_source": "evidence/grounding-3km-conus-sizing.md",
+        "fit_source": FIT_SOURCE.as_posix(),
     }
 
 
@@ -271,7 +281,7 @@ def _anchor_projection(exp, *, repository_root: Path) -> dict[str, object]:
     frames = int(float(exp.run_seconds) // cadence) + 1 if cadence > 0 else 0
     return {
         "available": True,
-        "anchor": str(ANCHOR_RECEIPT).replace("\\", "/"),
+        "anchor": ANCHOR_RECEIPT.as_posix(),
         "anchor_cells": anchor_cells,
         "anchor_seconds_per_sim_minute": round(anchor_rate, 4),
         "anchor_bytes_per_frame": int(anchor_bytes_per_frame),
@@ -354,7 +364,7 @@ def evaluate(config_path: Path, *,
     projection = _anchor_projection(exp, repository_root=repository_root)
     if projection.get("available"):
         gates.append(Gate(
-            "arwen.wall_clock_projection", str(ANCHOR_RECEIPT), "INFO",
+            "arwen.wall_clock_projection", ANCHOR_RECEIPT.as_posix(), "INFO",
             f"{projection['projected_seconds_per_sim_minute']} s/sim-min -> "
             f"{projection['projected_wall_hours']} h wall, "
             f"{projection['projected_output_gib']} GiB of wrfout"))

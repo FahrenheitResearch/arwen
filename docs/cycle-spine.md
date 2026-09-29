@@ -292,6 +292,39 @@ device, not out of a recorded series.
 | `--child-nx` / `--child-ny` | `199` | child grid points; must be a whole number of parent cells |
 | `--child-dx-m METRES` | `1000.0` | child spacing; must divide `--parent-dx-m` exactly |
 
+### Pictures: each boundary drawn as it lands
+
+Every boundary the cycle keeps is written as a frame,
+`ROOT/wrfout/wrfout_d01_<valid time>`, once its receipt is on disk, and
+drawn into `ROOT/png/` while the next leg runs, by the same every-frame
+render the forecast routes use. When the cycle ends, the end-of-run
+render draws only the boundaries it cannot prove were drawn. Windowed
+pictures (rainfall totals, 1 h and run maxima) are drawn only when the
+renderer finds a field one folds in the boundaries on whole hours; a
+boundary written from the parent's prognostic planes holds none, so the
+run says so in one line and draws no window. `ROOT/events.jsonl` carries an `output_committed` and a
+`live_products_ready` event per boundary, in the event schema every
+other route writes.
+
+A frame carries every 2-D plane of the boundary that sits on the
+parent's latitude/longitude grid, and the parent's
+`composite_reflectivity` becomes its reflectivity. Nothing the boundary
+does not carry is drawn: a parent with no terrain gets no Terrain Height
+map, and a parent with no column mass no `MU` picture. The grid is the
+parent's own `XLAT`/`XLONG` planes when its series carries them, else
+`--parent-geo-file`, else the first `--placement-obs-file`. The spacing
+is `--parent-dx-m` when given, else measured off the coordinates, and
+the frame records which.
+
+Two parents draw nothing, and the run says why in one line: a parent on
+an MPAS mesh (its boundaries are cell arrays and its anchor carries no
+cell coordinates, so nothing can be placed on a map), and a replayed
+grid with no coordinates named for it (pass `--parent-geo-file`).
+
+| Flag | Default | Why that default |
+|---|---|---|
+| `--render-products LIST` | the renderer's default set | the same spelling `gpuwm render --products` takes. `none` keeps no frames and draws nothing |
+
 ### A note on `--cycle-seconds` and `--parent-dt-seconds`
 
 `--cycle-seconds 900` with `--parent-dt-seconds 120` is 7.5 parent steps

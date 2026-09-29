@@ -21,12 +21,23 @@ class MemoryAdmissionError(ValueError):
         self.recovery_error = None
 
 
-def error_document(error: MemoryAdmissionError) -> dict:
+def error_document(error: ValueError) -> dict:
+    """The machine document for a memory refusal.
+
+    ``error`` is a :class:`MemoryAdmissionError` or any other refusal that
+    carries a ``memory`` record (``gpuwm run-plan``'s refusal of a draft
+    too big for its card).  A message written in two layers is given
+    whole, both layers, without the marker between them.
+    """
+
+    from gpuwm.explain import render
+
     result = {"schema": "arwen.configuration-error.v1", "kind": "memory",
-              "error": str(error), "created": False, "memory": error.memory}
-    if error.recovery is not None:
+              "error": render(str(error), explain=True), "created": False,
+              "memory": error.memory}
+    if getattr(error, "recovery", None) is not None:
         result["recovery"] = error.recovery
-    if error.recovery_error is not None:
+    if getattr(error, "recovery_error", None) is not None:
         result["recovery_error"] = error.recovery_error
     return result
 

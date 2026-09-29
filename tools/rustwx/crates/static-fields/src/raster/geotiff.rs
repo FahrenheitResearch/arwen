@@ -787,6 +787,91 @@ impl TiffReader {
         Ok(out)
     }
 
+    /// The band's sample type.
+    pub fn sample_type(&self) -> SampleType {
+        self.sample
+    }
+
+    /// Read a window `(col_off, row_off, width, height)` of an 8-bit
+    /// band as its raw bytes, one per pixel.  A categorical raster read
+    /// this way costs one byte per pixel instead of the eight
+    /// [`Self::read_window_raw`] spends, which is what lets a 100 m
+    /// global land-cover window of a large domain fit in memory.  The
+    /// window must lie inside the image; a band of any other sample type
+    /// is refused by name.
+    pub fn read_window_u8(
+        &mut self,
+        col_off: usize,
+        row_off: usize,
+        win_w: usize,
+        win_h: usize,
+    ) -> Result<Vec<u8>> {
+        if self.sample != SampleType::U8 {
+            return Err(invalid(format!(
+                "{:?}: an 8-bit read was asked of a {:?} band",
+                self.path, self.sample
+            )));
+        }
+        if col_off + win_w > self.width || row_off + win_h > self.height {
+            return Err(invalid(format!(
+                "{:?}: window {col_off},{row_off} {win_w}x{win_h} \
+                 leaves the {}x{} image",
+                self.path, self.width, self.height
+            )));
+        }
+        let mut out = vec![0u8; win_w * win_h];
+        if win_w == 0 || win_h == 0 {
+            return Ok(out);
+        }
+        let blocks_across = if self.tiled {
+            self.width.div_ceil(self.block_w)
+        } else {
+            1
+        };
+        let block_row_lo = row_off / self.block_h;
+        let block_row_hi = (row_off + win_h - 1) / self.block_h;
+        let block_col_lo = col_off / self.block_w;
+        let block_col_hi = (col_off + win_w - 1) / self.block_w;
+        for block_row in block_row_lo..=block_row_hi {
+            let rows_in_block = if self.tiled {
+                self.block_h
+            } else {
+                (self.height - block_row * self.block_h).min(self.block_h)
+            };
+            for block_col in block_col_lo..=block_col_hi {
+                let index = block_row * blocks_across + block_col;
+                if index >= self.offsets.len() {
+                    return Err(invalid(format!(
+                        "{:?}: block index {index} out of range",
+                        self.path
+                    )));
+                }
+                let raw = self.block_bytes(index, rows_in_block)?;
+                let base_row = block_row * self.block_h;
+                let base_col = block_col * self.block_w;
+                let row_lo = row_off.max(base_row);
+                let row_hi = (row_off + win_h)
+                    .min(base_row + rows_in_block)
+                    .min(self.height);
+                let col_lo = col_off.max(base_col);
+                let col_hi = (col_off + win_w)
+                    .min(base_col + self.block_w)
+                    .min(self.width);
+                if col_lo >= col_hi {
+                    continue;
+                }
+                for row in row_lo..row_hi {
+                    let src = (row - base_row) * self.block_w
+                        + (col_lo - base_col);
+                    let dst = (row - row_off) * win_w + (col_lo - col_off);
+                    let len = col_hi - col_lo;
+                    out[dst..dst + len].copy_from_slice(&raw[src..src + len]);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Read a window as a masked, scaled [`Raster`]
     /// (`nodata_override` wins over the file tag; masking on RAW
     /// values before `scale_factor`, matching the Python readers).
@@ -1154,11 +1239,59 @@ pub fn write_band1(
     sample: SampleType,
     nodata: Option<f64>,
 ) -> Result<()> {
-    let (ny, nx) = (raster.ny, raster.nx);
-    if ny == 0 || nx == 0 || raster.values.len() != ny * nx {
+    write_band1_from(
+        path,
+        raster.ny,
+        raster.nx,
+        raster.values.len(),
+        &raster.transform,
+        &raster.crs,
+        sample,
+        nodata,
+        |at| raster.values[at],
+    )
+}
+
+/// [`write_band1`] for an 8-bit band held as bytes: the same file, byte
+/// for byte, as writing those values as an f64 [`Raster`] with
+/// [`SampleType::U8`], without the eight-byte-per-pixel copy.
+pub fn write_band1_u8(
+    path: &Path,
+    values: &[u8],
+    ny: usize,
+    nx: usize,
+    transform: &[f64; 6],
+    crs: &Crs,
+    nodata: Option<f64>,
+) -> Result<()> {
+    write_band1_from(
+        path,
+        ny,
+        nx,
+        values.len(),
+        transform,
+        crs,
+        SampleType::U8,
+        nodata,
+        |at| values[at] as f64,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_band1_from(
+    path: &Path,
+    ny: usize,
+    nx: usize,
+    count: usize,
+    transform: &[f64; 6],
+    crs: &Crs,
+    sample: SampleType,
+    nodata: Option<f64>,
+    value_at: impl Fn(usize) -> f64,
+) -> Result<()> {
+    if ny == 0 || nx == 0 || count != ny * nx {
         return Err(invalid(format!(
-            "cannot write {path:?}: raster is {ny}x{nx} with {} values",
-            raster.values.len()
+            "cannot write {path:?}: raster is {ny}x{nx} with {count} values"
         )));
     }
     let sample_bytes = sample.bytes();
@@ -1176,7 +1309,7 @@ pub fn write_band1(
                     let j = tile_row * WRITE_TILE + row;
                     let i = tile_col * WRITE_TILE + col;
                     let mut value = if j < ny && i < nx {
-                        raster.values[j * nx + i]
+                        value_at(j * nx + i)
                     } else {
                         0.0
                     };
@@ -1210,7 +1343,7 @@ pub fn write_band1(
     };
 
     // Geo tags.
-    let t = &raster.transform;
+    let t = transform;
     if t[1] != 0.0 || t[3] != 0.0 || t[0] <= 0.0 || t[4] >= 0.0 {
         return Err(invalid(format!(
             "cannot write {path:?}: transform {t:?} is not north-up \
@@ -1221,7 +1354,7 @@ pub fn write_band1(
     let tiepoint = [0.0, 0.0, 0.0, t[2], t[5], 0.0];
     let mut geo_shorts: Vec<u16> = Vec::new();
     let mut geo_doubles: Vec<f64> = Vec::new();
-    match &raster.crs {
+    match crs {
         Crs::Geographic => {
             geo_shorts.extend([1, 1, 0, 3]);
             geo_shorts.extend([1024, 0, 1, 2]); // geographic

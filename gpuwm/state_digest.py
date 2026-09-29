@@ -212,7 +212,8 @@ def _canonical_host(name: str, value) -> np.ndarray:
 
 def _canonical_digest_document(manifest: Mapping[str, object],
                                scalars: Mapping[str, object],
-                               scope: str) -> dict[str, object]:
+                               scope: str, *,
+                               before_hash=None) -> dict[str, object]:
     """The digest document, from an already-assembled member manifest.
 
     The ONLY place this module hashes anything.  Both roads -- the resident
@@ -224,7 +225,14 @@ def _canonical_digest_document(manifest: Mapping[str, object],
     this serialization would put the schema, the descriptor framing and the
     member order back in play, and every one of those is a way for two
     correct manifests to hash differently.
+
+    ``before_hash``, when given, is called once with the manifest's total
+    bytes before the first member is read, so a caller can say how much
+    it is about to hash (the run's finalization heartbeat does).
     """
+    if before_hash is not None:
+        before_hash(sum(int(getattr(value, "nbytes", 0) or 0)
+                        for value in manifest.values()))
     scalar_bytes = _canonical_scalar_bytes(scalars)
     digest = hashlib.sha256(
         b"gpuwm-canonical-state-v2:" + scope.encode("ascii") + b"\0"
@@ -272,7 +280,8 @@ def _dtbc_fp32_bits(clock) -> int:
 
 
 def canonical_state_digest(state, clock, *,
-                           scope: str = "trajectory") -> dict[str, object]:
+                           scope: str = "trajectory",
+                           before_hash=None) -> dict[str, object]:
     """Hash complete frame-time trajectory state in restart order."""
     if scope not in ("trajectory", "full"):
         raise ValueError(f"unknown canonical digest scope {scope!r}")
@@ -311,7 +320,8 @@ def canonical_state_digest(state, clock, *,
             "microphysics_updates": int(driver.microphysics_updates),
         }),
     }
-    return _canonical_digest_document(manifest, scalars, scope)
+    return _canonical_digest_document(manifest, scalars, scope,
+                                      before_hash=before_hash)
 
 
 def _canonical_store_manifest(store) -> dict[str, object]:
@@ -369,7 +379,8 @@ def _canonical_store_manifest(store) -> dict[str, object]:
 
 
 def canonical_store_digest(store, scalars, clock, *,
-                           scope: str = "trajectory") -> dict[str, object]:
+                           scope: str = "trajectory",
+                           before_hash=None) -> dict[str, object]:
     """:func:`canonical_state_digest` for a domain that has no resident state.
 
     ``store`` is the streamed domain's ``{member name: host array}`` mapping
@@ -416,7 +427,7 @@ def canonical_store_digest(store, scalars, clock, *,
         "elapsed_seconds": float(scalars["elapsed_seconds"]),
         "dtbc_fp32_bits": _dtbc_fp32_bits(clock),
         "driver": driver,
-    }, scope)
+    }, scope, before_hash=before_hash)
 
 
 __all__ = [

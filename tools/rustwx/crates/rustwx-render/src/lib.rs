@@ -45,6 +45,7 @@ pub use presentation::{
     LineworkRole, PolygonRole, ProductVisualMode, RenderPresentation, StaticPlotStyle,
 };
 pub use projected_map::{
+    PROJECTED_MAP_CACHE_BYTES,
     resolved_projection_for_options,
     GeographicBounds, ProjectedBasemap, ProjectedBasemapBuildOptions, ProjectedDomainBuildOptions,
     ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions, build_projected_domain,
@@ -99,7 +100,7 @@ use crate::render::{
     encode_rgba_png_profile_with_options, render_to_image as native_render_to_image, render_to_png,
     trim_vertical_canvas_whitespace,
 };
-pub use crate::text::format_tick;
+pub use crate::text::{format_tick, format_tick_labels};
 pub use crate::theme::{
     FooterTheme, MeshTheme, PresentationTheme, RenderTheme, RenderThemeFile, THEME_ENV,
     active_theme, install_theme,
@@ -774,6 +775,7 @@ fn with_render_state_profile_with_style<T>(
             },
         )
     };
+    let category_map = cmap.categories;
     let projected_domain = request.projected_domain.as_ref();
     let default_title = default_title(&request.field);
 
@@ -989,9 +991,22 @@ fn with_render_state_profile_with_style<T>(
             cbar_tick_step: request.cbar_tick_step,
             colorbar_mode: request.legend.mode,
             chrome_scale: request.chrome_scale,
-            supersample_factor: plot_style.supersample_factor(request.supersample_factor),
-            supersample_sharpen: plot_style.supersample_sharpen(request.supersample_sharpen),
-            raster_sample_mode: request.raster_sample_mode,
+            // A category map draws each grid value's own code. Interpolating
+            // codes paints values no cell holds, and averaging a supersampled
+            // frame blends two codes' colours into a third code's colour at
+            // every class edge, so both are off for a category legend.
+            supersample_factor: if category_map {
+                1
+            } else {
+                plot_style.supersample_factor(request.supersample_factor)
+            },
+            supersample_sharpen: !category_map
+                && plot_style.supersample_sharpen(request.supersample_sharpen),
+            raster_sample_mode: if category_map {
+                RasterSampleMode::Nearest
+            } else {
+                request.raster_sample_mode
+            },
             domain_frame: request.domain_frame,
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,
@@ -1062,11 +1077,12 @@ pub fn build_colormap(scale: &ColorScale, options: ColormapBuildOptions) -> Leve
 
 /// The colorbar tick VALUES the PNG renderer would label for `cmap` with the
 /// request's `cbar_tick_step` — the same `pick_ticks` over the same legend
-/// levels the production colorbar uses. Label each value with
-/// [`format_tick`] and position it at [`legend_tick_rel`] to reproduce the
-/// production colorbar's numbers exactly.
+/// levels the production colorbar uses, or for a category colormap the
+/// code at the centre of every band. Label the whole set with
+/// [`format_tick_labels`] and position each value at [`legend_tick_rel`] to
+/// reproduce the production colorbar's numbers exactly.
 pub fn colorbar_ticks(cmap: &LeveledColormap, cbar_tick_step: Option<f64>) -> Vec<f64> {
-    crate::render::pick_ticks(cmap.legend_levels_for_display(), cbar_tick_step)
+    crate::render::legend_ticks(cmap, cbar_tick_step)
 }
 
 const OVERLAY_ONLY_FILL_VALUE: f64 = 0.5;

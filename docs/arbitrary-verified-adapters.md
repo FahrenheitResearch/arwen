@@ -121,7 +121,7 @@ The command fails closed, before publication, on every check:
 |---|---|
 | Compiled selectors and record inventory | Every direct scalar field occurs exactly once at every valid time; every pressure field has exactly the descriptor's full level set; every soil selector occurs exactly once; members do not mix |
 | Units, axes, and staggering | Each target-required field exactly matches the descriptor's canonical target units, axes, and location and is unstaggered; the existing decoder then unpacks the selected real messages and executes their unit transforms and axis binding |
-| Soil layers | Temperature and moisture bind the same ordered, contiguous bounded layers; the declared identity or conservative policy has complete source coverage; missing land soil remains reject-only |
+| Soil layers | Temperature and moisture bind the same ordered, contiguous bounded layers; the declared identity or conservative policy has complete source coverage; a missing land soil value is rejected as a donor (or first repaired by the declared bounded column repair), and only a source with no soil value on any land cell is refused |
 | Grid family | Every selected record uses one shared regular latitude/longitude GDT 0 grid and scan mode `0x40` |
 | Vertical coverage | The lowest-pressure declared and observed source level is at or above `adapt.model_top_pa` |
 | Time series and identity | Valid times do not mix members; a multi-time series is uniformly spaced at the descriptor's boundary interval; every input and decoder is byte/SHA-256 bound |

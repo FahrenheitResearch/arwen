@@ -128,6 +128,7 @@ SOURCE_IDENTITY_KEYS = (
     "git_status_short",
     "distribution_manifest_sha256",
     "installed_wheel",
+    "installed_source_content",
 )
 
 
@@ -201,17 +202,19 @@ def argument_binding(arguments: Sequence[Any]) -> dict[str, Any]:
 def _experiment_argument_binding(token: str) -> Any:
     """Project only the governed forecast controls out of preparation argv.
 
-    The cache reader already excludes PREPARATION_INERT_RUN_FIELDS from
-    its domain comparison. Hashing the whole TOML here still rebuilt that
-    same cache when a runtime inflow seed or adaptive target changed. Use
-    that exact field table, leaving every other table and setting bound,
+    The cache reader already excludes PREPARATION_INERT_RUN_FIELDS and
+    INERT_DIAGNOSTIC_IDENTITY_FIELDS from its domain comparison. Hashing
+    the whole TOML here still rebuilt that same cache when a runtime
+    inflow seed or adaptive target changed. Use those exact field tables,
+    leaving every other table and setting bound,
     including scientific initial perturbations and forcing duration.
     The directory remains bound because relative input paths in a config
     have meaning there. A malformed config keeps the conservative byte pin.
     """
     from gpuwm.config_authority import read_config_authority
     from gpuwm.experiment import build_experiment_from_config_tables
-    from gpuwm.ingest.prepared_cache import PREPARATION_INERT_RUN_FIELDS
+    from gpuwm.ingest.prepared_cache import (
+        INERT_DIAGNOSTIC_IDENTITY_FIELDS, PREPARATION_INERT_RUN_FIELDS)
 
     try:
         authority = read_config_authority(Path(token))
@@ -220,7 +223,9 @@ def _experiment_argument_binding(token: str) -> Any:
             raw, source=str(authority.source), base_dir=authority.base_dir)
     except (OSError, ValueError, UnicodeDecodeError):
         return _argument_value(token)
-    inert = {path.removeprefix("run.") for path in PREPARATION_INERT_RUN_FIELDS
+    inert = {path.removeprefix("run.")
+             for path in (PREPARATION_INERT_RUN_FIELDS
+                          | INERT_DIAGNOSTIC_IDENTITY_FIELDS)
              if path.startswith("run.")}
     for table in (raw.get("shared", {}), *raw.get("domain", ())):
         for key in inert:

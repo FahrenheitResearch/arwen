@@ -44,9 +44,9 @@ STATIC_PYTHON_ENV: Final[str] = "GPUWM_STATIC_PYTHON"
 
 #: The exported symbol that identifies THIS contract, for
 #: :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`: a build that loads and
-#: answers the version probe but predates the field build cannot
-#: produce a single static field.
-ABI_MARKER: Final[bytes] = b"gpuwm_static_build_fields"
+#: answers the version probe but predates portable sampling cannot
+#: rebuild a prepared moving footprint with identical terrain and climatologies.
+ABI_MARKER: Final[bytes] = b"gpuwm_static_sampling_portable_v1"
 
 #: Stagger codes (`types::Stagger` in the crate).
 STAGGER_MASS: Final[int] = 0
@@ -140,6 +140,25 @@ def library_candidates() -> tuple[Path, ...]:
     return tuple(candidates)
 
 
+def _checkout_build_command() -> str:
+    """The checkout build of this library, spelled for the reader's shell.
+
+    Both refusals below print it.  The separator comes from
+    :data:`gpuwm.bridges.WINDOWS_SHELL`, the one shell rule every remedy
+    reads, because Windows PowerShell 5.1 rejects ``&&`` with a parser
+    error: the stale-build refusal hard-coded ``&&``, so on Windows the
+    line ``gpuwm doctor`` printed for a stale staged library could not be
+    pasted.  It ends with the ``cd`` back so a pasted block leaves the
+    shell where it started.
+    """
+
+    from gpuwm import bridges
+
+    separator = ";" if bridges.WINDOWS_SHELL else " &&"
+    return (f"cd {bridges.RUSTWX_CRATE_RELATIVE}{separator} cargo build "
+            f"--release -p static-fields --offline{separator} cd ../..")
+
+
 def resolve_static_bridge() -> Path:
     """First existing candidate, or a refusal listing every path."""
     override = os.environ.get(STATIC_BRIDGE_ENV)
@@ -152,13 +171,11 @@ def resolve_static_bridge() -> Path:
             raise FileNotFoundError(
                 f"{STATIC_BRIDGE_ENV} names a missing file: {candidate}")
     rendered = "\n  ".join(str(c) for c in library_candidates())
-    separator = ";" if os.name == "nt" else " &&"
     raise FileNotFoundError(
         "the Rust static-field library was not found; searched:\n  "
         + rendered
-        + "\n  # build it from a checkout:\n"
-        f"  cd tools/rustwx{separator} cargo build --release "
-        f"-p static-fields --offline{separator} cd ../..")
+        + "\n  # build it from a checkout:\n  "
+        + _checkout_build_command())
 
 
 _LIBRARY: ctypes.CDLL | None = None
@@ -217,16 +234,26 @@ def load() -> ctypes.CDLL:
     # way: a StaticBridgeError, which makes the builder row say
     # `unusable` with a remedy, and makes the static path take the
     # announced `GPUWM_STATIC_PYTHON` degradation rather than crash.
+    stale_build_remedy = (
+        "It is a build that predates this release. A moving nest whose statics "
+        "were prepared by another build or machine can refuse at its first move "
+        "on the overlap-statics equality check. Restage it with `gpuwm "
+        "fetch-bridges`, or rebuild from a checkout: "
+        + _checkout_build_command())
     try:
         _bind_entry_points(library, u8p=u8p, u64p=u64p, f64p=f64p, size=size)
+        marker = getattr(library, ABI_MARKER.decode("ascii"))
+        marker.argtypes = []
+        marker.restype = ctypes.c_uint32
+        if marker() != 1:
+            raise StaticBridgeError(
+                f"{path} answers static-fields ABI {observed} but reports an "
+                f"incompatible sampling contract. {stale_build_remedy}")
     except AttributeError as error:
         raise StaticBridgeError(
             f"{path} answers static-fields ABI {observed} but does not "
-            f"export an entry point this gpuwm binds ({error}); it is a "
-            f"build that predates this release.  Restage it with `gpuwm "
-            f"fetch-bridges`, or rebuild from a checkout: cd tools/rustwx"
-            f"{';' if os.name == 'nt' else ' &&'} cargo build --release "
-            f"-p static-fields --offline") from None
+            f"export an entry point this gpuwm binds ({error}). "
+            f"{stale_build_remedy}") from None
 
     _LIBRARY = library
     return library
@@ -269,6 +296,8 @@ def _bind_entry_points(library: ctypes.CDLL, *, u8p, u64p, f64p, size) -> None:
     library.gpuwm_static_build_fields.argtypes = [
         ctypes.c_uint64, u8p, size, ctypes.c_uint32, u64p]
     library.gpuwm_static_build_fields.restype = ctypes.c_int32
+    library.gpuwm_static_build_terrain.argtypes = [ctypes.c_uint64, u8p, size, ctypes.c_uint32, u64p]
+    library.gpuwm_static_build_terrain.restype = ctypes.c_int32
     library.gpuwm_static_fieldset_len.argtypes = [ctypes.c_uint64]
     library.gpuwm_static_fieldset_len.restype = ctypes.c_int64
     library.gpuwm_static_fieldset_name.argtypes = [
@@ -343,6 +372,15 @@ def grid_new(spec: dict) -> int:
 
 def grid_free(handle: int) -> None:
     load().gpuwm_static_grid_free(ctypes.c_uint64(handle))
+
+
+def grid_nest(parent, i, j, ratio, e_we, e_sn, dx, dy) -> int:
+    """Construct a child with its exact integer placement lineage."""
+    library = load()
+    handle = ctypes.c_uint64(0)
+    _check(library, library.gpuwm_static_grid_nest(
+        parent, i, j, ratio, e_we, e_sn, dx, dy, ctypes.byref(handle)), "grid_nest")
+    return int(handle.value)
 
 
 def grid_translated(reference: int, di_cells: int, dj_cells: int,
@@ -463,6 +501,18 @@ def fieldset_to_dict(handle: int) -> dict[str, np.ndarray]:
                f"field_read[{name}]")
         out[name] = array[0] if shape[0] == 1 else array
     return out
+
+
+def build_terrain(handle, path, halo):
+    library = load()
+    buffer, length = _utf8(str(path))
+    result = ctypes.c_uint64(0)
+    _check(library, library.gpuwm_static_build_terrain(
+        handle, buffer, length, int(halo), ctypes.byref(result)), "build_terrain")
+    try:
+        return fieldset_to_dict(result.value)["HGT_M"]
+    finally:
+        fieldset_free(result.value)
 
 
 def fieldset_free(handle: int) -> None:

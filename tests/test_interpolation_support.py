@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from conftest import requires_gpu
+from conftest import requires_gpu, requires_wps_masked_chain_bridge
 from gpuwm.ingest.interpolation_support import regular_source_support
 from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
 from gpuwm.ingest.horiz import _RegularGpuPlan
@@ -136,6 +136,7 @@ def test_support_follows_existing_cyclic_orientation(backend, centre):
 
 
 
+@requires_wps_masked_chain_bridge
 def test_actual_netcdf_source_preserves_every_horizontal_field(tmp_path, monkeypatch):
     import netCDF4
     import test_mapped_source as fixture

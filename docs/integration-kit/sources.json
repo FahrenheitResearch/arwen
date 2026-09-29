@@ -1,6 +1,6 @@
 {
   "certification_rule": "certified_stock_wrf requires implemented field/level/cadence policies plus acceptance by unchanged stock wrf.exe within the declared source/domain envelope",
-  "gpuwm_version": "2.7.7",
+  "gpuwm_version": "2.7.6",
   "readiness_rule": "runnable means the strict implementation route exists; stock-WRF certification is a separate exact evidence status",
   "registry_schema": "gpuwm-native-source-adapters-v1",
   "routes": {
@@ -765,7 +765,7 @@
       },
       "max_forecast_hour": 360,
       "member_set": null,
-      "notes": "ECMWF's open-data IFS oper product through the GENERIC mapped route: one 0.25-degree global GDT-0 GRIB2 file per three-hourly step carries the 14-level pressure state, the surface/2 m/10 m fields, in-band surface geopotential for terrain (converted to metres by the declared unit scale) and the four IFS soil layers, which the source addresses by ordinal on fixed-surface type 151 -- declared through the composition's indexed selector_depth_binding, not code.  2 m humidity derives from the published dewpoint.  Winds are earth-relative; CCSDS (DRT 42) packing decodes through the converged bridge.  LICENSING: this profile is authored against the 0.25-degree open-data distribution (CC-BY-4.0); ECMWF's native 9 km HRES is access-restricted -- a data-licensing fact, not a capability gap.  Snow and sea-ice fields remain policy-controlled (local-table/bitmap semantics not yet bound), and the route is not yet accepted by unchanged stock WRF.",
+      "notes": "ECMWF's open-data IFS oper product through the GENERIC mapped route: one 0.25-degree global GDT-0 GRIB2 file per three-hourly step carries the 14-level pressure state (earlier publications carry 13 levels without 10 hPa, spell the soil layers on depth-below-land surfaces and carry no surface geopotential; the mapping's era ladder, record aliases and terrain derivation read them), the surface/2 m/10 m fields, in-band surface geopotential for terrain (converted to metres by the declared unit scale) and the four IFS soil layers, which the source addresses by ordinal on fixed-surface type 151 -- declared through the composition's indexed selector_depth_binding, not code.  2 m humidity derives from the published dewpoint.  Winds are earth-relative; CCSDS (DRT 42) packing decodes through the converged bridge.  LICENSING: this profile is authored against the 0.25-degree open-data distribution (CC-BY-4.0); ECMWF's native 9 km HRES is access-restricted -- a data-licensing fact, not a capability gap.  Snow and sea-ice fields remain policy-controlled (local-table/bitmap semantics not yet bound), and the route is not yet accepted by unchanged stock WRF.",
       "packaged_profile": "ecmwf-open-data-oper-grib2-v1",
       "required_products": [
         "oper"

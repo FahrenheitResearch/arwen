@@ -314,3 +314,85 @@ def test_config_carrying_an_explicit_ladder_is_adopted(walk):
     assert "vertical levels differ" not in result.stderr, result.stderr
     assert "shape (0,)" not in result.stderr, result.stderr
     assert "vertical ladder is missing" not in result.stderr, result.stderr
+
+
+def test_a_root_the_source_does_not_cover_is_refused_before_its_inputs(
+        walk):
+    """The same estate prepared from a regional source that does not reach it.
+
+    Breakage it prevents: the domain was refused only at the root forcing
+    stage, after the whole cycle had been decoded and the root statics
+    built.  The door now refuses from the source row's declared coverage
+    before it normalizes, authors or decodes anything, and names that
+    coverage.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    window = get_source_adapter("icon-eu").coverage_window
+    data = walk / "data"
+    manifest = data / "inputs-uncovered.json"
+    output = walk / "out" / "uncovered"
+    result = _run(
+        [
+            "prep", "--source", "icon-eu",
+            "--input-list", str(data / "inputs.txt"),
+            "--supplement",
+            f"icon_eu_invariant_surface={data / 'hrrr.t21z.wrfprsf00.grib2'}",
+            "--author-input-manifest", str(manifest),
+            "--wps-namelist", str(walk / "namelist.wps"),
+            "--experiment-config", str(walk / "mycase.toml"),
+            "--geog-root", str(walk / "geog"),
+            "--output-root", str(output),
+        ],
+        cwd=walk,
+    )
+
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == PREPARATION_REFUSAL_EXIT_CODE, (
+        result.returncode, result.stderr)
+    assert "--source icon-eu does not cover this domain" in result.stderr
+    assert f"(lon {window.west:g}..{window.east:g})" in result.stderr
+    assert not manifest.exists()
+    assert not output.exists()
+
+
+def test_the_coverage_review_runs_where_the_domain_wizard_is_not_installed(
+        monkeypatch):
+    """The prep door's coverage review needs nothing the RW-WPS wheel drops.
+
+    Breakage it prevents: the review imported
+    ``gpuwm.domain_wizard``, which the standalone RW-WPS wheel excludes, so
+    every ``prep --experiment-config`` on a source that declares a coverage
+    window (hrrr, hrrr-prs, icon-eu, icon-d2, rap, rrfs) raised
+    ModuleNotFoundError there before it read the config.  The wizard is
+    made unimportable here the way the wheel leaves it, and the same
+    refusal must still come back.
+    """
+
+    import argparse
+    from types import SimpleNamespace
+
+    import gpuwm.experiment as experiment_module
+    from gpuwm import source_cli
+    from gpuwm.source_adapters import get_source_adapter
+
+    monkeypatch.setitem(sys.modules, "gpuwm.domain_wizard", None)
+    with pytest.raises(ImportError):
+        import gpuwm.domain_wizard  # noqa: F401
+    # A 300 km root on the central Plains, which ICON-EU's European grid
+    # cannot reach.
+    experiment = SimpleNamespace(
+        projection=SimpleNamespace(
+            map_proj="lambert", ref_lat=38.5, ref_lon=-97.5,
+            truelat1=38.5, truelat2=38.5, stand_lon=-97.5),
+        root=SimpleNamespace(run=SimpleNamespace(nx=100, ny=100, dx=3000.0)))
+    monkeypatch.setattr(experiment_module, "load_experiment",
+                        lambda path: experiment)
+    args = argparse.Namespace(experiment_config="case.toml")
+
+    refusal = source_cli._experiment_coverage_refusal(
+        args, get_source_adapter("icon-eu"))
+
+    assert refusal is not None
+    assert "--source icon-eu does not cover this domain" in refusal

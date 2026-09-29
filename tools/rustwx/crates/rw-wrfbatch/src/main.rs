@@ -36,6 +36,7 @@ mod mesh;
 #[path = "section.rs"]
 mod section;
 mod store_render;
+mod viewer_profile;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -53,7 +54,7 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 use rustwx_products::shared_context::TitleProvenance;
 use rusty_weather::batch_render::{
     BatchHourScope, BatchRenderDomain, BatchRenderEvent, BatchRenderLimits, BatchRenderRequest,
-    inspect_renderable_products, run_batch_render,
+    inspect_renderable_products_over, run_batch_render,
 };
 use wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_process_paths};
 
@@ -82,7 +83,11 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 /// * the `RENDERED` / `SKIPPED` / `FAILED` event words, and the
 ///   `SECTIONFILL` line that says which range a vertical cut's fill was
 ///   drawn over and the rule that set it
-///   `gpuwm.rustwx.run_renderer` reads;
+///   `gpuwm.rustwx.run_renderer` reads.  Events v2: a per-frame `SKIPPED`
+///   or `FAILED` reason opens with the input file of the frame it is
+///   about (`frame-attributed`), because a series invocation has many
+///   inputs and the reader used to put the LAST one in front of every
+///   line, naming F018 against an F000 reason;
 /// * the generic `var:` family and the `selectable_slugs` count of the
 ///   store-independent catalog -- the lane whose ABSENCE from a stale
 ///   build is what #106 was reported as (catalog 153 against this
@@ -90,6 +95,9 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 ///   vertical-section lane cut from the wrfout files directly, and the
 ///   `mesh:`/`meshdiff:` families, the polygon-mesh lane cut from an MPAS
 ///   history frame and its grid file with no regrid in between.
+///   Vocabulary v2: `all` is every NAMED product the frames can draw and
+///   no longer every stored variable; the stored variables are the
+///   `variables` keyword, asked for by name;
 ///
 /// The PRODUCT row carries a sixth field, `code`: a stable machine
 /// spelling of WHY the row has the status it has.  The detail column
@@ -107,14 +115,24 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 /// is the question a plan review asks and a store-aware listing cannot
 /// be asked until after the import.
 ///
+/// It also prints one `WRFOUT` row per selectable slug: the verdict of
+/// the wrfout import lane on that slug, fileless.  `drawable` rows carry
+/// the first forecast hour at which the product can exist (0 for an
+/// instantaneous field, the hour its window closes for a windowed one);
+/// `missing` rows name what no wrfout import writes.  The verdict is
+/// taken in the recipe's own vocabulary -- selectors against the
+/// selectors the import plans, recipe slugs against the grids it plans --
+/// which is what the NEEDS/PLANNED pair could not do on its own.
+///
 /// Changing any of those is changing this contract, so the literal
 /// changes with it and every binary predating the change fails the
 /// handshake instead of quietly answering the old grammar.
 const ABI_MARKER: &str = "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tcode\tCATALOG\t\
 gpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\tstore_field\t\
-gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
+gpuwm-rw-wrfbatch-wrfout-lane-v1\tWRFOUT\tslug\tkind\tverdict\tminimum_hour\tdetail\t\
+gpuwm-rw-wrfbatch-events-v2\tRENDERED\tSKIPPED\tFAILED\tframe-attributed\t\
 gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\trule\t\
-gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\tmeshdiff:\tselectable_slugs";
+gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\tmesh:\tmeshdiff:\tselectable_slugs";
 
 #[derive(Debug)]
 struct Args {
@@ -240,6 +258,28 @@ enum Invocation {
     Abi,
 }
 
+/// How many products one `--products` spelling asks for per frame.
+///
+/// Counted after the group keywords are expanded.  A keyword is ONE token
+/// and many products: counted as one, `--products windowed` (49 products)
+/// kept the GUI's 32-per-hour ceiling and refused its own whole-hour
+/// series with "49 per-hour products selected; GUI ceiling is 32".
+fn requested_product_count(spec: &str) -> usize {
+    let tokens = spec
+        .split(',')
+        .filter(|slug| !slug.trim().is_empty())
+        .count();
+    rusty_weather::render_all::partition_products(spec)
+        .map(|request| {
+            request.direct.len()
+                + request.derived.len()
+                + request.generic.len()
+                + request.windowed.len()
+        })
+        .unwrap_or_default()
+        .max(tokens)
+}
+
 /// The static product vocabulary, for `--list-products` with no inputs.
 ///
 /// The store-aware listing (which of these the imported frames can actually
@@ -248,11 +288,16 @@ enum Invocation {
 /// a user has after an unknown-product refusal.
 fn print_product_catalog() -> Result<(), CliError> {
     let slugs = rusty_weather::render_all::known_product_slugs();
-    println!("group keywords: all, direct, derived, heavy, windowed");
+    println!(
+        "group keywords: all, direct, derived, heavy, windowed, {VARIABLES_KEYWORD}"
+    );
     // The generic family's vocabulary belongs to the STORE, not this
     // build, so no slug list can be printed here; the store-aware listing
     // names each `var:` row it can serve.
-    println!("generic products: var:<stored 2-D variable name>");
+    println!(
+        "generic products: var:<stored 2-D variable name>; '{VARIABLES_KEYWORD}' draws every \
+         stored variable no named product draws ('all' draws named products only)"
+    );
     println!(
         "mesh products: mesh:<history variable>[:colmax|:colmin|:level=K][~log] and \
 meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
@@ -298,6 +343,18 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
     for field in crate::wrf_process::WrfProcessOptions::default().planned_store_fields() {
         println!("PLANNED\t{field}");
     }
+    for row in wrfout_lane_rows() {
+        println!(
+            "WRFOUT\t{}\t{}\t{}\t{}\t{}",
+            row.slug,
+            row.kind,
+            row.verdict,
+            row.minimum_hour
+                .map(|hour| hour.to_string())
+                .unwrap_or_default(),
+            row.detail
+        );
+    }
     // Not "total=": the store-aware listing already owns that word for its
     // own count of catalog ROWS (which includes rows no --products spelling
     // selects).  This is the size of the --products vocabulary.
@@ -307,6 +364,266 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
          for per-frame availability"
     );
     Ok(())
+}
+
+/// The keyword that draws every stored 2-D variable no named product draws.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): `all` used to expand to the
+/// store's whole catalog, generic rows included, and an 18 h run drawn
+/// with the TUI's default `all` published 137 of its 204 product folders
+/// as raw variables (`var_wrf_t2_1222df9c491fb635`) -- most of them the
+/// same grids the named products beside them already drew.  `all` is the
+/// named products now; the raw variables are this keyword, asked for by
+/// name.
+const VARIABLES_KEYWORD: &str = "variables";
+
+/// Named plots do not consume arbitrary diagnostic browse grids. Keep the
+/// full importer for catalog inspection, generic variables and unknown terms.
+fn named_product_request(products: &str) -> bool {
+    let known = rusty_weather::render_all::known_product_slugs();
+    let terms: Vec<_> = products.split(',').map(str::trim).collect();
+    !terms.is_empty() && terms.iter().all(|term| {
+        matches!(*term, "all" | "direct" | "derived" | "windowed")
+            || known.iter().any(|slug| slug == term)
+    })
+}
+
+fn rainfall_import_options(products: &str) -> Option<WrfProcessOptions> {
+    let requested: Vec<String> = products.split(',').map(|term| term.trim().to_string()).collect();
+    let profile = viewer_profile::ViewerProfile::new(&requested).ok()?;
+    // The recipe dependency table proves these products use only cumulative
+    // rain. They need no volume, parcel diagnostic or surface approximation.
+    (profile.options.only.iter().any(|name| name == "apcp")
+        && profile.options.only.iter().all(|name| matches!(name.as_str(), "apcp" | "orography")))
+        .then_some(profile.options)
+}
+
+/// One slug's verdict on the wrfout import lane, fileless.
+struct WrfoutLaneRow {
+    slug: String,
+    kind: &'static str,
+    verdict: &'static str,
+    minimum_hour: Option<u16>,
+    detail: String,
+}
+
+/// Every selectable slug's verdict on the wrfout import lane.
+///
+/// What a plan review has to know before a single frame exists: which
+/// products a LOCAL run can ever draw, and from which forecast hour.  The
+/// catalog door used to offer every product of every model -- NBM and
+/// ensemble families included -- and the default preset asked a local run
+/// for three products no wrfout carries the fields of, which drew zero
+/// pictures on every frame of every run and were never named.
+///
+/// Decided in the recipe's own vocabulary, from the import's own tables:
+/// a direct recipe's requirement SELECTORS against
+/// [`crate::wrf_process::WrfProcessOptions::planned_store_selectors`], a
+/// derived recipe's slug against the grids the import plans, and a window
+/// against the store lane's own planner for the first hour it closes.  It
+/// is a property of each product and of the import lane, never of a
+/// model: a source added to the registry changes nothing here.
+fn wrfout_lane_rows() -> Vec<WrfoutLaneRow> {
+    use std::collections::{HashMap, HashSet};
+
+    let options = crate::wrf_process::WrfProcessOptions::default().normalized();
+    let selectors: HashSet<String> = options
+        .planned_store_selectors()
+        .into_iter()
+        .map(|selector| selector.key())
+        .collect();
+    let grids: HashSet<String> = options.planned_store_fields().into_iter().collect();
+    let mut rows: HashMap<String, WrfoutLaneRow> = HashMap::new();
+    let mut put = |slug: &str, kind, verdict, minimum_hour, detail: String| {
+        rows.entry(slug.to_string()).or_insert(WrfoutLaneRow {
+            slug: slug.to_string(),
+            kind,
+            verdict,
+            minimum_hour,
+            detail,
+        });
+    };
+    // In the order the partition classifies a slug (windowed, then
+    // derived, then direct), so a slug two lanes claim gets the verdict
+    // of the lane that would actually draw it.
+    for product in rustwx_products::windowed::HrrrWindowedProduct::supported_products() {
+        match rusty_weather::render_all::windowed_store::minimum_window_hour(*product) {
+            Some(hour) => put(
+                product.slug(),
+                "windowed",
+                "drawable",
+                Some(hour),
+                format!("its window first closes at F{hour:03}"),
+            ),
+            None => put(
+                product.slug(),
+                "windowed",
+                "missing",
+                None,
+                "no stored forecast hour closes this window".to_string(),
+            ),
+        }
+    }
+    for entry in rustwx_products::derived::supported_derived_recipe_inventory() {
+        let kind = if entry.heavy { "heavy" } else { "derived" };
+        if grids.contains(entry.slug) {
+            put(entry.slug, kind, "drawable", Some(0), entry.title.to_string());
+        } else if entry.heavy {
+            put(
+                entry.slug,
+                kind,
+                "missing",
+                None,
+                format!(
+                    "no '{}' grid: only the heavy import stage computes it, and a \
+                     default wrfout import does not run that stage",
+                    entry.slug
+                ),
+            );
+        } else {
+            put(
+                entry.slug,
+                kind,
+                "missing",
+                None,
+                format!(
+                    "no '{}' grid: no wrf-core diagnostic of the wrfout import is \
+                     stored under this recipe slug",
+                    entry.slug
+                ),
+            );
+        }
+    }
+    for entry in rustwx_products::derived::blocked_derived_recipe_inventory() {
+        put(entry.slug, "derived", "missing", None, entry.reason.to_string());
+    }
+    for spec in rustwx_products::spec::direct_product_specs() {
+        match rustwx_models::plot_recipe_store_requirements(&spec.slug) {
+            Err(err) => put(
+                &spec.slug,
+                "direct",
+                "missing",
+                None,
+                format!("no plot recipe: {err}"),
+            ),
+            Ok(requirements) => {
+                let missing: Vec<String> = requirements
+                    .iter()
+                    .filter_map(|requirement| match requirement.selector {
+                        Some(selector) if selectors.contains(&selector.key()) => None,
+                        Some(selector) => Some(selector.key()),
+                        None => Some(format!(
+                            "{} (no canonical store selector exists for this field)",
+                            requirement.field_key
+                        )),
+                    })
+                    .collect();
+                if missing.is_empty() {
+                    put(&spec.slug, "direct", "drawable", Some(0), spec.title.clone());
+                } else {
+                    put(
+                        &spec.slug,
+                        "direct",
+                        "missing",
+                        None,
+                        format!("a wrfout import writes no {}", missing.join(", ")),
+                    );
+                }
+            }
+        }
+    }
+    rusty_weather::render_all::known_product_slugs()
+        .into_iter()
+        .map(|slug| {
+            rows.remove(&slug).unwrap_or_else(|| WrfoutLaneRow {
+                slug,
+                kind: "unclassified",
+                verdict: "missing",
+                minimum_hour: None,
+                detail: "no lane of this build classifies this slug for a wrfout import"
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The catalog keywords this binary expands against the imported store:
+/// `all`, `windowed` and [`VARIABLES_KEYWORD`], alone or together.
+///
+/// A keyword stands for what THESE frames can draw, read off the
+/// store-aware catalog: `all` is every named product, `windowed` every
+/// window the run's last stored frame closes, `variables` every stored
+/// variable no named product draws.  Anything else -- a slug list, or a
+/// keyword beside slugs -- is returned unchanged for the strict partition.
+fn expand_catalog_keywords(
+    spec: &str,
+    catalog: &rusty_weather::batch_render::BatchRenderCatalog,
+) -> Result<String, String> {
+    use rusty_weather::batch_render::BatchProductKind;
+
+    if !is_catalog_keyword_spec(spec) {
+        return Ok(spec.to_string());
+    }
+    let tokens: Vec<&str> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect();
+    let is = |token: &str, keyword: &str| token.eq_ignore_ascii_case(keyword);
+    let wants = |word: &str| tokens.iter().any(|token| is(token, word));
+    let slugs: Vec<&str> = catalog
+        .products
+        .iter()
+        .filter(|product| match product.kind {
+            BatchProductKind::Generic => wants(VARIABLES_KEYWORD),
+            BatchProductKind::Windowed => wants("all") || wants("windowed"),
+            _ => wants("all"),
+        })
+        .map(|product| product.slug.as_str())
+        .collect();
+    if slugs.is_empty() {
+        return Err(format!(
+            "'{spec}' names no product these frames can draw: windowed products need \
+             more than one stored whole-hour frame and a window the last of them closes, \
+             and '{VARIABLES_KEYWORD}' needs a stored variable no named product draws"
+        ));
+    }
+    Ok(slugs.join(","))
+}
+
+/// Whether `spec` is made only of the keywords [`expand_catalog_keywords`]
+/// expands: `all`, `windowed` and [`VARIABLES_KEYWORD`], alone or together.
+fn is_catalog_keyword_spec(spec: &str) -> bool {
+    let tokens: Vec<&str> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .collect();
+    !tokens.is_empty()
+        && tokens.iter().all(|token| {
+            ["all", "windowed", VARIABLES_KEYWORD]
+                .iter()
+                .any(|keyword| token.eq_ignore_ascii_case(keyword))
+        })
+}
+
+/// One per-frame event reason, opened with the input file of its frame.
+///
+/// A series invocation imports many files into one store, and a slot is
+/// not a filename; the Python reader used to put the LAST input in front
+/// of every line, so a skip at F000 was filed against the F018 file.  The
+/// importer knows which file each slot came from, so the line says it.
+/// An event with no frame, or a slot the import did not record, keeps its
+/// reason unchanged.
+fn frame_attributed(
+    sources: &std::collections::HashMap<u16, PathBuf>,
+    hour: Option<u16>,
+    reason: &str,
+) -> String {
+    match hour.and_then(|hour| sources.get(&hour)) {
+        Some(path) => format!("{}: {reason}", path.display()),
+        None => reason.to_string(),
+    }
 }
 
 fn parse_args() -> Result<Invocation, CliError> {
@@ -636,7 +953,12 @@ fn validate_request(args: &Args) -> Result<(), CliError> {
         mesh::split_product_spec(&args.products).map_err(CliError::Usage)?;
     let (store_products, section_products) =
         section::split_product_spec(&non_mesh).map_err(CliError::Usage)?;
-    if !store_products.trim().is_empty() || (mesh_products.is_empty() && section_products.is_empty())
+    // A spec made only of the catalog keywords this binary expands
+    // against the store (`all`, `windowed`, `variables`) names no slug
+    // the partition could check; it is expanded after the import.
+    if (!store_products.trim().is_empty()
+        || (mesh_products.is_empty() && section_products.is_empty()))
+        && !is_catalog_keyword_spec(&store_products)
     {
         rusty_weather::render_all::partition_products(&store_products)
             .map_err(|err| CliError::Usage(err.to_string()))?;
@@ -996,10 +1318,17 @@ fn run(args: Args) -> Result<(), String> {
         }
         return Ok(());
     }
-    let options = WrfProcessOptions {
+    let mut options = WrfProcessOptions {
         heavy_ecape: args.heavy,
+        named_products_only: !args.list_products && !args.heavy
+            && named_product_request(&store_products),
         ..WrfProcessOptions::default()
     };
+    if !args.heavy {
+        if let Some(rainfall) = rainfall_import_options(&store_products) {
+            options = rainfall;
+        }
+    }
     // Read before the import consumes the paths: the domain token and the
     // subtitle spacing come from the inputs' own global attributes, never
     // from the store (rw-store v1 retains no grid-spacing metadata).
@@ -1035,6 +1364,8 @@ fn run(args: Args) -> Result<(), String> {
     for note in &import.notes {
         eprintln!("{}", import_note_line(note));
     }
+    let frame_sources: std::collections::HashMap<u16, PathBuf> =
+        import.frame_sources.iter().cloned().collect();
 
     let run_manifest = args
         .store_root
@@ -1057,10 +1388,9 @@ fn run(args: Args) -> Result<(), String> {
         slots.sort_unstable();
         slots
     };
-    let first_slot = stored_slots
-        .first()
-        .copied()
-        .ok_or_else(|| format!("{} has no stored forecast slots", run_manifest.display()))?;
+    if stored_slots.is_empty() {
+        return Err(format!("{} has no stored forecast slots", run_manifest.display()));
+    }
     if args.list_products {
         return list_products(
             &args.store_root,
@@ -1088,18 +1418,21 @@ fn run(args: Args) -> Result<(), String> {
             BatchHourScope::Current(slot)
         }
     };
-    let catalog =
-        inspect_renderable_products(&args.store_root, &import.model, &import.run, first_slot)?;
-    let product_spec = if store_products.eq_ignore_ascii_case("all") {
-        catalog
-            .products
-            .iter()
-            .map(|product| product.slug.as_str())
-            .collect::<Vec<_>>()
-            .join(",")
-    } else {
-        store_products
+    // The catalog a keyword expands from is the one of the frames this
+    // launch draws, never the store's first frame alone: a series whose
+    // analysis frame stores no REFL_10CM dropped composite reflectivity
+    // from `all` on every frame (`inspect_renderable_products_over`).
+    let drawn_slots: Vec<u16> = match hour_scope {
+        BatchHourScope::AllStored => stored_slots.clone(),
+        BatchHourScope::Current(slot) => vec![slot],
     };
+    let catalog = inspect_renderable_products_over(
+        &args.store_root,
+        &import.model,
+        &import.run,
+        &drawn_slots,
+    )?;
+    let product_spec = expand_catalog_keywords(&store_products, &catalog)?;
     println!(
         "CATALOG products={} stored_hours={:?}",
         catalog.products.len(),
@@ -1113,10 +1446,7 @@ fn run(args: Args) -> Result<(), String> {
         BatchHourScope::AllStored => stored_slots.len().max(1),
         BatchHourScope::Current(_) => 1,
     };
-    let per_frame_products = product_spec
-        .split(',')
-        .filter(|slug| !slug.trim().is_empty())
-        .count();
+    let per_frame_products = requested_product_count(&product_spec);
     let mut limits = BatchRenderLimits::default();
     limits.max_hours = limits.max_hours.max(selected_frames);
     limits.max_products_per_hour = limits.max_products_per_hour.max(per_frame_products);
@@ -1178,11 +1508,21 @@ fn run(args: Args) -> Result<(), String> {
             println!("RENDERED {slug} {}", output_path.display());
             panel_georefs.push((output_path, georeference, georeference_absent_reason));
         }
-        BatchRenderEvent::ItemSkipped { slug, reason, .. } => {
-            println!("SKIPPED {slug} {reason}")
+        BatchRenderEvent::ItemSkipped {
+            hour, slug, reason, ..
+        } => {
+            println!(
+                "SKIPPED {slug} {}",
+                frame_attributed(&frame_sources, hour, &reason)
+            )
         }
-        BatchRenderEvent::ItemFailed { slug, error, .. } => {
-            eprintln!("FAILED {slug} {error}")
+        BatchRenderEvent::ItemFailed {
+            hour, slug, error, ..
+        } => {
+            eprintln!(
+                "FAILED {slug} {}",
+                frame_attributed(&frame_sources, hour, &error)
+            )
         }
         BatchRenderEvent::Finished(summary) => println!(
             "FINISHED rendered={} skipped={} failed={} elapsed_ms={}",
@@ -1406,8 +1746,123 @@ fn build_georef_manifest(
     }
 }
 
+/// Fold one batch's manifest into the one already on disk.
+///
+/// WHAT BREAKAGE THIS PREVENTS: the caller renders a run as many
+/// `rw_wrfbatch` invocations into ONE output directory (one per history
+/// file and per grid), and each invocation used to write the file from
+/// its own batch alone.  On a real 6 h two-grid run of 646 pictures the
+/// manifest listed 60, all of them the last grid's last frames, so a map
+/// could place none of the rest.  A batch now only adds and replaces.
+///
+/// A path the batch rendered again replaces its earlier record in
+/// whichever half held it, so a panel is never in both halves.  A file
+/// that is unreadable or declares another schema is not trusted: the
+/// batch starts a fresh record and the caller is told.
+fn merge_georef_manifest(existing: Option<GeorefManifest>, batch: GeorefManifest) -> GeorefManifest {
+    let Some(mut merged) = existing else {
+        return batch;
+    };
+    for (key, georeference) in batch.panels {
+        merged.without_georeference.retain(|absence| absence.path != key);
+        merged.panels.insert(key, georeference);
+    }
+    for absence in batch.without_georeference {
+        merged.panels.remove(&absence.path);
+        merged
+            .without_georeference
+            .retain(|held| held.path != absence.path);
+        merged.without_georeference.push(absence);
+    }
+    merged
+        .without_georeference
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    merged.schema = GEOREF_MANIFEST_SCHEMA.to_string();
+    merged.generated_utc = batch.generated_utc;
+    merged
+}
+
+/// Exclusive hold on `<out_dir>/render-georef.json.lock` for the
+/// read-merge-write, so two batches that finish together cannot each
+/// read the old file and have the later write drop the earlier batch.
+/// The lock file is removed when the guard drops.  A lock older than
+/// `GEOREF_LOCK_STALE` is left by a process that died holding it and is
+/// taken over rather than waited on forever.
+struct GeorefLock(std::path::PathBuf);
+
+const GEOREF_LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(120);
+const GEOREF_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+impl GeorefLock {
+    fn acquire(path: std::path::PathBuf) -> Result<Self, String> {
+        let started = std::time::Instant::now();
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self(path)),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists
+                    || err.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|meta| meta.modified())
+                        .ok()
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age > GEOREF_LOCK_STALE);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if started.elapsed() > GEOREF_LOCK_WAIT {
+                        return Err(format!(
+                            "another render held {} for {} s",
+                            path.display(),
+                            GEOREF_LOCK_WAIT.as_secs()
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(err) => return Err(format!("lock {}: {err}", path.display())),
+            }
+        }
+    }
+}
+
+impl Drop for GeorefLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Replace `target` with `json` through a sibling temporary file, so a
+/// reader never sees a half-written manifest.  A reader holding the file
+/// open can refuse the rename on Windows for a moment, so it is retried.
+fn replace_georef_file(target: &std::path::Path, json: &str) -> Result<(), String> {
+    let temporary = target.with_extension(format!("json.tmp-{}", std::process::id()));
+    std::fs::write(&temporary, json)
+        .map_err(|err| format!("write {}: {err}", temporary.display()))?;
+    let mut attempt = 0;
+    loop {
+        match std::fs::rename(&temporary, target) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < 200 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(format!("replace {}: {err}", target.display()));
+            }
+        }
+    }
+}
+
 /// Write `<out_dir>/render-georef.json` and print the `GEOREF` line.
 /// Default-on: an opt-in flag would leave a bare run showing the defect.
+/// The batch is MERGED into the manifest already there (see
+/// [`merge_georef_manifest`]) under an exclusive lock.
 fn write_georef_manifest(
     out_dir: &std::path::Path,
     panels: &[RenderedPanelGeoref],
@@ -1415,20 +1870,54 @@ fn write_georef_manifest(
     let generated_utc = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
-    let manifest = build_georef_manifest(out_dir, generated_utc, panels);
+    let batch = build_georef_manifest(out_dir, generated_utc, panels);
+    let batch_count = batch.panels.len() + batch.without_georeference.len();
     let manifest_path = out_dir.join("render-georef.json");
+    std::fs::create_dir_all(out_dir)
+        .map_err(|err| format!("create {}: {err}", out_dir.display()))?;
+    let _lock = GeorefLock::acquire(out_dir.join("render-georef.json.lock"))?;
+    let existing = match std::fs::read(&manifest_path) {
+        Ok(bytes) => match serde_json::from_slice::<GeorefManifest>(&bytes) {
+            Ok(mut held) if held.schema == GEOREF_MANIFEST_SCHEMA => {
+                // An earlier record whose picture has left the folder
+                // would place nothing; it is dropped rather than carried.
+                held.panels.retain(|key, _| out_dir.join(key).is_file());
+                held.without_georeference
+                    .retain(|absence| out_dir.join(&absence.path).is_file());
+                Some(held)
+            }
+            Ok(held) => {
+                eprintln!(
+                    "WARNING georef manifest {} declares schema {:?}; starting a fresh record",
+                    manifest_path.display(),
+                    held.schema
+                );
+                None
+            }
+            Err(err) => {
+                eprintln!(
+                    "WARNING georef manifest {} is unreadable ({err}); starting a fresh record",
+                    manifest_path.display()
+                );
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    let manifest = merge_georef_manifest(existing, batch);
     let json = serde_json::to_string_pretty(&manifest)
         .map_err(|err| format!("serialize {}: {err}", manifest_path.display()))?;
-    std::fs::write(&manifest_path, json)
-        .map_err(|err| format!("write {}: {err}", manifest_path.display()))?;
+    replace_georef_file(&manifest_path, &json)?;
     // A NEW stdout line type after FINISHED.  Safe against the pinned
     // grammar: gpuwm.rustwx matches known prefixes and ignores the rest,
-    // and no existing line changed.
+    // and no existing line changed.  The tallies are the whole manifest's;
+    // `batch=` is what this invocation added or replaced.
     println!(
-        "GEOREF {} panels={} without={}",
+        "GEOREF {} panels={} without={} batch={}",
         manifest_path.display(),
         manifest.panels.len(),
-        manifest.without_georeference.len()
+        manifest.without_georeference.len(),
+        batch_count
     );
     Ok(())
 }
@@ -1552,7 +2041,13 @@ fn list_products(
         .first()
         .copied()
         .ok_or("catalog listing needs at least one stored frame")?;
-    let catalog = inspect_renderable_products(store_root, model_slug, run_slug, first_slot)?;
+    // Every product ANY stored frame can draw: the render draws each one
+    // frame by frame and skips it by name where a frame lacks its fields.
+    // Decided from the first frame alone, a series whose analysis frame
+    // stores no REFL_10CM listed composite reflectivity as missing, and
+    // the render door dropped it from every frame of the series.
+    let catalog =
+        inspect_renderable_products_over(store_root, model_slug, run_slug, stored_slots)?;
     let renderable_slugs: std::collections::HashSet<&str> = catalog
         .products
         .iter()
@@ -1732,41 +2227,57 @@ fn list_products(
         ));
     }
 
-    let windowed_ready = catalog
-        .products
-        .iter()
-        .any(|product| product.kind == BatchProductKind::Windowed);
+    // Asked of the store's axis directly: the catalog now lists only the
+    // windows the run can close, so "no windowed row in the catalog" no
+    // longer means "the axis cannot serve windows".
+    let windowed_ready = windowed_store::windowed_axis_ready(store_root, model_slug, run_slug)
+        .map_err(|err| err.to_string())?;
     let windowed_slugs: Vec<String> =
         rustwx_products::windowed::HrrrWindowedProduct::supported_products()
             .iter()
             .map(|product| product.slug().to_string())
             .collect();
     if !windowed_ready {
-        // The two window-axis exclusions are the rows a consumer HAS to
-        // act on -- it must skip those slugs rather than forward them --
-        // so they are the two codes with the longest reach.  The prose
-        // beside each is unchanged, byte for byte, because it is what
-        // the render door prints and what its tests read.
-        let (reason, code) = if stored_slots.len() <= 1 {
-            (
-                "windowed accumulations need more than one stored whole-hour frame",
-                "windowed-needs-whole-hour-frames",
-            )
-        } else {
-            (
-                "exact-time ordinal axis; fixed-hour windows are undefined on it",
-                "windowed-ordinal-axis",
-            )
-        };
+        // The window-axis exclusion is the row a consumer HAS to act on --
+        // it must skip those slugs rather than forward them -- so it is
+        // the code with the longest reach.  The prose beside it is
+        // unchanged, byte for byte, because it is what the render door
+        // prints and what its tests read.  (An exact-time store is no
+        // longer excluded: its windows are served from its frames' leads,
+        // so `windowed-ordinal-axis` is not emitted any more.)
+        let (reason, code) = (
+            "windowed accumulations need more than one stored whole-hour frame",
+            "windowed-needs-whole-hour-frames",
+        );
         for slug in &windowed_slugs {
             rows.push((slug.clone(), "windowed", "excluded", reason.to_string(), code));
         }
     } else {
+        // The verdict is the run's last window: at its last whole-hour
+        // frame, which on an exact-time store may come before its last
+        // frame.  Asked of a frame between hours, every window would read
+        // "closes at whole forecast hours", which is true of that frame
+        // and says nothing about the run.
+        let frames = windowed_store::stored_window_frames(store_root, model_slug, run_slug)
+            .map_err(|err| err.to_string())?;
+        let through = frames
+            .iter()
+            .rev()
+            .find(|frame| frame.closes_windows())
+            .map(|frame| frame.slot);
+        let verdict_slots: Vec<u16> = match through {
+            Some(last) => stored_slots
+                .iter()
+                .copied()
+                .filter(|slot| *slot <= last)
+                .collect(),
+            None => stored_slots.to_vec(),
+        };
         match windowed_store::compute_windowed_products(
             store_root,
             model_slug,
             run_slug,
-            stored_slots,
+            &verdict_slots,
             &windowed_slugs,
         ) {
             Ok(outcome) => {
@@ -1824,6 +2335,16 @@ fn list_products(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_group_keyword_is_counted_as_the_products_it_expands_to() {
+        // The breakage: `--products windowed` sized the per-hour ceiling
+        // as one product and refused the 49 it expands to.
+        let windowed = requested_product_count("windowed");
+        assert!(windowed > 32, "windowed expands to {windowed}");
+        assert_eq!(requested_product_count("qpf_1h,qpf_total"), 2);
+        assert_eq!(requested_product_count(" , "), 0);
+    }
     use super::*;
 
     /// WHAT BREAKAGE THIS PREVENTS (gate law): `--list-products` printed ONE
@@ -2169,6 +2690,42 @@ mod tests {
             !fallback.is_empty() && fallback.contains("threaded neither"),
             "a lane that said nothing still gets a reason naming the gap: {fallback}"
         );
+    }
+
+    /// A later batch adds to the record instead of replacing it, and a
+    /// panel rendered again moves between the halves rather than
+    /// appearing in both.
+    #[test]
+    fn a_later_batch_merges_into_the_manifest_instead_of_replacing_it() {
+        let out_dir = PathBuf::from("C:\\proof\\out");
+        let first = build_georef_manifest(
+            &out_dir,
+            "2026-08-26T00:00:00Z".to_string(),
+            &[
+                (out_dir.join("d01_f001.png"), None, Some("first".to_string())),
+                (out_dir.join("d01_f002.png"), None, Some("first".to_string())),
+            ],
+        );
+        let second = build_georef_manifest(
+            &out_dir,
+            "2026-08-26T01:00:00Z".to_string(),
+            &[
+                (out_dir.join("d02_f001.png"), None, Some("second".to_string())),
+                (out_dir.join("d01_f002.png"), None, Some("again".to_string())),
+            ],
+        );
+        let merged = merge_georef_manifest(Some(first), second);
+        let paths: Vec<&str> = merged
+            .without_georeference
+            .iter()
+            .map(|absence| absence.path.as_str())
+            .collect();
+        assert_eq!(paths, ["d01_f001.png", "d01_f002.png", "d02_f001.png"]);
+        assert_eq!(merged.without_georeference[1].reason, "again");
+        assert_eq!(merged.generated_utc, "2026-08-26T01:00:00Z");
+        assert!(merge_georef_manifest(None, build_georef_manifest(&out_dir, String::new(), &[]))
+            .without_georeference
+            .is_empty());
     }
 
     #[test]

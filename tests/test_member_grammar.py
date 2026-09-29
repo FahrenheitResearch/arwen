@@ -176,8 +176,9 @@ def test_the_packaged_sets_declare_the_measured_control_conventions():
 
     One flags its control low-resolution control (type 1) and encodes an
     ensemble size that EXCLUDES it; the other flags its control exactly
-    like a perturbed member (type 3) and encodes a size that INCLUDES
-    it.  Both facts are table data; if either moved into code, the other
+    like a perturbed member (type 3 in its mirror's copy, 6 as its
+    operational server stamps it) and encodes a size that INCLUDES it.
+    Both facts are table data; if either moved into code, the other
     source would break.
     """
 
@@ -187,10 +188,10 @@ def test_the_packaged_sets_declare_the_measured_control_conventions():
         control = grammar.member_for_ordinal(0)
         assert control is not None
         conventions.add((
-            control.verification.type_of_ensemble_forecast,
+            control.verification.accepted_ensemble_types(),
             control.verification.ensemble_size == grammar.declared_member_count,
         ))
-    assert conventions == {(1, False), (3, True)}
+    assert conventions == {((1,), False), ((3, 6), True)}
 
 
 def test_path_component_member_identity_is_expressible_as_table_data():

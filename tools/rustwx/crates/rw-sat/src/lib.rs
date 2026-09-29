@@ -14,6 +14,7 @@ pub mod abi;
 pub mod cloud;
 pub mod composite;
 pub mod cwp;
+pub mod dmw;
 pub mod events;
 pub mod export;
 pub mod follow;

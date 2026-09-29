@@ -137,16 +137,16 @@ def _grid_binding_problems(namespace, where: str) -> list[str]:
             import netCDF4
             with netCDF4.Dataset(str(obs)) as ds:
                 bound = ds.getncattr("grid_identity_sha256")
-            required = _grid_identity(wrfout)
+            accepted = _grid_identities(wrfout)
         except Exception as error:              # pragma: no cover
             problems.append(f"{where}: could not compare {obs.name} with "
                             f"{wrfout.name}: {error}")
             continue
-        if bound != required:
+        if bound not in accepted:
             problems.append(
                 f"{where}: {obs.name} is bound to grid {bound[:16]}... but "
                 f"is paired with {wrfout.name}, which hashes "
-                f"{required[:16]}.... A grid identity digests z_w, so two "
+                f"{accepted[0][:16]}.... A grid identity digests z_w, so two "
                 "history files at different times are different grids and "
                 "the driver will refuse this pairing")
     return problems
@@ -191,6 +191,9 @@ def _filter_config_problems(namespace, where: str) -> list[str]:
         from gpuwm.da.letkf import Localization
         from gpuwm.da.radar_assimilation import (RadarAssimilationConfig,
                                                  RadarAssimilationError)
+        from gpuwm.da.velocity_dispersion import (
+            DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+            DEFAULT_VELOCITY_DISPERSION_RATIO)
     except Exception:                               # pragma: no cover
         return []
     hydrometeors = bool(getattr(namespace, "hydrometeors", False))
@@ -203,6 +206,12 @@ def _filter_config_problems(namespace, where: str) -> list[str]:
                 vertical_m=namespace.vertical_loc_m),
             rtps_alpha=namespace.rtps_alpha,
             relaxation=namespace.relaxation,
+            velocity_dispersion_ratio=getattr(
+                namespace, "velocity_dispersion_gate",
+                DEFAULT_VELOCITY_DISPERSION_RATIO),
+            velocity_dispersion_batch_ratio=getattr(
+                namespace, "velocity_dispersion_batch_gate",
+                DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO),
             analysis_fields=fields,
             velocity=True,
             reflectivity=bool(getattr(
@@ -224,15 +233,17 @@ def _filter_config_problems(namespace, where: str) -> list[str]:
     return []
 
 
-_GRID_IDENTITY_CACHE: dict[str, str] = {}
+_GRID_IDENTITY_CACHE: dict[str, tuple[str, str]] = {}
 
 
-def _grid_identity(wrfout: Path) -> str:
+def _grid_identities(wrfout: Path) -> tuple[str, str]:
+    """Both spellings of the grid's identity: current first, then v1."""
     key = str(wrfout)
     if key not in _GRID_IDENTITY_CACHE:
         from gpuwm.obs.target_grid import TargetGrid
-        _GRID_IDENTITY_CACHE[key] = TargetGrid.from_wrfout(
-            wrfout).identity_sha256()
+        grid = TargetGrid.from_wrfout(wrfout)
+        _GRID_IDENTITY_CACHE[key] = (grid.identity_sha256(),
+                                     grid.legacy_identity_sha256())
     return _GRID_IDENTITY_CACHE[key]
 
 
@@ -678,6 +689,23 @@ def baseline_arm(*, name, common, case, obs_paths, georef) -> dict:
     }
 
 
+def _dispersion_ratio(text: str):
+    """``none`` or a finite positive ratio, as the cycling door takes it."""
+
+    from gpuwm.da.velocity_dispersion import DispersionGateError, check_ratio
+
+    if text.strip().lower() == "none":
+        return None
+    try:
+        return check_ratio(text, "gate")
+    except DispersionGateError as refusal:
+        raise argparse.ArgumentTypeError(str(refusal)) from refusal
+
+
+def _dispersion_argv(value) -> str:
+    return "none" if value is None else f"{float(value):g}"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tools.da_cycle_plan",
@@ -743,6 +771,19 @@ def main(argv=None) -> int:
     parser.add_argument("--horizontal-loc-m", type=float, default=12000.0)
     parser.add_argument("--vertical-loc-m", type=float, default=3000.0)
     parser.add_argument("--rtps-alpha", type=float, default=0.9)
+    # The radial-velocity dispersion gate, carried into every cycle step
+    # the way --rtps-alpha is; the defaults are the cycling door's
+    # (gpuwm.da.velocity_dispersion names the breakage and the measurement).
+    from gpuwm.da.velocity_dispersion import (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+        DEFAULT_VELOCITY_DISPERSION_RATIO)
+    parser.add_argument("--velocity-dispersion-gate", type=_dispersion_ratio,
+                        default=DEFAULT_VELOCITY_DISPERSION_RATIO,
+                        metavar="RATIO|none")
+    parser.add_argument("--velocity-dispersion-batch-gate",
+                        type=_dispersion_ratio,
+                        default=DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+                        metavar="RATIO|none")
     parser.add_argument("--err-inflation", type=float, default=1.0)
     parser.add_argument("--wind-sigma-ms", type=float, default=1.5)
     parser.add_argument("--length-scale-km", type=float, default=50.0)
@@ -827,6 +868,10 @@ def main(argv=None) -> int:
         "--thin-cells", str(int(args.thin_cells)),
         "--memory-budget-mib", f"{float(args.memory_budget_mib):g}",
         "--solve-device", args.solve_device,
+        "--velocity-dispersion-gate",
+        _dispersion_argv(args.velocity_dispersion_gate),
+        "--velocity-dispersion-batch-gate",
+        _dispersion_argv(args.velocity_dispersion_batch_gate),
     ]
 
     index = wrfout_index(args.wrfout_dir)
@@ -928,6 +973,9 @@ def main(argv=None) -> int:
             "members": args.members,
             "free_legs": args.free_legs,
             "physics_profile": args.physics_profile,
+            "velocity_dispersion_ratio": args.velocity_dispersion_gate,
+            "velocity_dispersion_batch_ratio": (
+                args.velocity_dispersion_batch_gate),
             "prepared_content_sha256": args.prepared_content_sha256,
             "wrfout_dir": str(args.wrfout_dir),
             "georeference_rule": (

@@ -227,7 +227,12 @@ def metgrid_analysis_shapes(metadata):
 
 
 def metgrid_memory_admission(run, exp, *, preprocess_backend=None):
-    """Validate analyzed fields and report advisory preparation memory estimates."""
+    """Validate analyzed fields and report the advisory forecast memory estimate.
+
+    The preparation's own fit is decided, not advised, by the price
+    :func:`gpuwm.metem_forecast.prepare_metem_run` weighs before it
+    allocates; this receipt still records its phase estimate.
+    """
     from gpuwm.core.preflight import (device_memory_probe_subprocess, device_memory_probe_reason,
         profile_from_device_probe, estimate_phases)
     inventory = {gid:metgrid_analysis_shapes(item) for gid,item in run.metadata.items()}
@@ -245,12 +250,18 @@ def metgrid_memory_admission(run, exp, *, preprocess_backend=None):
         ingest_forcing_interval_seconds=run.interval_seconds,forcing_intervals=len(run.paths[1])-1,
         analysis_shapes_by_domain=inventory,sequential_domains=True,
         profile=profile, machine=machine, preprocess_backend=road)
-    device_over = free is not None and phases.peak_envelope_bytes > free
+    # The FORECAST's advisory only.  The preparation is no longer advised
+    # about: prepare_metem_run prices it and decides before it allocates
+    # (auto to the CPU, explicit cuda refused), so an over-budget
+    # preparation stopped being something this could only warn about.
+    device_over = free is not None and phases.forecast_envelope_bytes > free
     host = phases.streamed
-    host_over = host is not None and host.host_budget_bytes is not None and host.host_bytes > host.host_budget_bytes
+    # The one streamed host admission `gpuwm go`, `gpuwm check` and `gpuwm
+    # domain` read, so this advisory cannot pass a store they refuse.
+    host_over = host is not None and phases.streamed_host_refusal() is not None
     warnings = []
     if device_over:
-        warnings.append('The estimated preparation/forecast peak exceeds currently free VRAM. The requested settings are retained; allocation will report any actual memory failure. Free other memory or choose different settings if needed.')
+        warnings.append('The estimated forecast peak exceeds currently free VRAM. The requested settings are retained; allocation will report any actual memory failure. Free other memory or choose different settings if needed.')
     if host_over:
         warnings.append('The estimated streamed forecast store exceeds available host RAM. The requested settings are retained; allocation will report any actual memory failure. Free other memory or choose different settings if needed.')
     return {'policy':'advisory', 'warnings':warnings, 'preprocess_backend':road,

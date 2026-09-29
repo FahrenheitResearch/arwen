@@ -1151,30 +1151,36 @@
    8.035,
    46.485
   ],
-  "exact_fraction_floor": 0.55,
+  "exact_fraction_floor": 1.0,
   "filled": {
    "dtype": "float32",
    "file": "mosaic_filled.bin",
    "shape": [
-    180,
-    252
+    181,
+    253
    ]
   },
   "hole_mask": {
    "dtype": "uint8",
    "file": "mosaic_holes.bin",
    "shape": [
-    180,
-    252
+    181,
+    253
    ]
   },
-  "holes": 180,
-  "max_abs_delta_cap_m": 60.0,
-  "mean_abs_delta_cap_m": 8.0,
+  "holes": 0,
+  "lattice_bounds_wsen": [
+   7.964861111111111,
+   46.43486111111111,
+   8.035138888888888,
+   46.48513888888889
+  ],
+  "max_abs_delta_cap_m": 0.0,
+  "mean_abs_delta_cap_m": 0.0,
   "resolution_deg": 0.0002777777777777778,
   "shape": [
-   180,
-   252
+   181,
+   253
   ],
   "tiles": [
    "mosaic_west.tif",
@@ -1183,10 +1189,10 @@
   "transform": [
    0.0002777777777777778,
    0.0,
-   7.965,
+   7.964861111111111,
    0.0,
    -0.0002777777777777778,
-   46.485
+   46.48513888888889
   ]
  },
  "mosaic_clip_east": {

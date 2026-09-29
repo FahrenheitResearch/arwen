@@ -1085,6 +1085,21 @@ class NtPipeline:
             "grav": np.float32(grav),
         }
 
+    def retime(self, dt: float) -> None:
+        """Move the pipeline's step scalars to ``dt``, keeping the workspace.
+
+        ``dt``, ``delt`` and ``ztmst`` are the only values the constructor
+        derives from the model step.  The pipeline is cached by chunk shape
+        alone, so without this an adaptive clock would run every call after
+        the first on the step the pipeline happened to be built with.
+        """
+        import numpy as np
+
+        self._delt = float(dt) * int(self.scalars["stepcu"])
+        self.scalars["dt"] = np.float32(dt)
+        self.scalars["delt"] = np.float32(self._delt)
+        self.scalars["ztmst"] = np.float32(self._delt)
+
     def base(self, stage: str) -> int:
         return self._base.get(stage, 1)
 
@@ -1366,6 +1381,10 @@ class NewTiedtke:
                 stepcu=1, itimestep=2,
                 tiedtke_closure=bool(
                     getattr(cfg, "ntiedtke_tiedtke_closure", False))))
+        else:
+            # A reused pipeline takes this call's step: under an adaptive
+            # clock the model step moves while the chunk shape does not.
+            self._pipeline[1].retime(float(_nt_model_dt(cfg)))
         return self._pipeline[1]
 
     def __call__(self, *, atmosphere, fields, state, cfg):

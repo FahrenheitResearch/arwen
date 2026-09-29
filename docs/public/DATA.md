@@ -8,8 +8,8 @@ geography tree `gpuwm fetch-geog` downloads and stages. `gpuwm fetch
 | | sources |
 |---|---|
 | hand-written transports (this page, in detail) | `gfs`, `gdas`, `hrrr`, `era5` |
-| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `rap`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-eu`, `gem-gdps` |
-| refused by name, with a remedy | `20crv3`, `20crv3-cf`, `mapped` -- no public bytes, so `gpuwm prep --source-root` is the door |
+| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `rap`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
+| refused by name, with a remedy | `era5-l137`, `20crv3`, `20crv3-cf`, `mapped` -- no bytes at a path a fetch can resolve; the refusal prints the `gpuwm prep` line that runs on a folder you fill (`--source-root DIR`), or for `mapped` on your own mapping (see [SOURCES.md](SOURCES.md#sources-with-no-fetch-door)) |
 
 Registry aliases work everywhere a source id does: `gdps`, `ifs`,
 `hrrr-wrfprs`, `20cr`, `ai-gfs`. A registered source that is not
@@ -57,7 +57,13 @@ record bar and SHA-256 as the serial loop, one failed file still
 refuses by name, an interrupted fetch still records a contiguous
 verified prefix, and `fetch-manifest.json` receipts the run under
 `concurrency`: files, bytes, workers, host caps, wall seconds, the
-serial model and the effective speedup.
+serial model and the effective speedup.  The progress line counts the
+whole request from its first line (`0 of 38 files done`) and counts a
+failed file as failed.  The first file to fail, after its own retries,
+ends the download at once: files not yet started never start, files in
+flight are stopped, and the log names the file that failed and how many
+were stopped.  Files that landed stay on disk, and the next run checks
+and reuses them.
 
 Measured cold at the default 6 workers
 ([receipt](receipts/fetch-pool-cold-measured.json)): a 4-file GFS
@@ -71,19 +77,31 @@ than by the pool.
 
 ```bash
 gpuwm fetch --source gfs --cycle latest --hours 24 \
-  --area 25,-110,45,-85 --out data/gfs-latest
+  --area 25,-110,45,-85 --p-top-pa 5000 --out data/gfs-latest
 
 # or the whole objects from the S3 archive -- no CGI rate governor,
 # no spatial crop, and the archive keeps years, not 10 days
 gpuwm fetch --source gfs --cycle 2026-07-29T18 --hours 24 \
-  --mode full-file --out data/gfs-full
+  --mode full-file --p-top-pa 5000 --out data/gfs-full
 ```
+
+- **The model top sets the ladder.** Without `--p-top-pa` the fetch
+  takes the certified 21 levels, 1000 to 100 hPa, which serve a model
+  top of 10000 Pa or more. Every config `gpuwm domain` writes has a
+  5000 Pa top, so the lines above carry `--p-top-pa 5000`, which adds
+  the 70 and 50 hPa levels (134 records per file instead of 124; about
+  8% more bytes on a measured crop). The fetch line `gpuwm domain
+  --explain` prints carries the config's own top, and `gpuwm go` and `run-plan`
+  ask for it on their own. Preparation refuses a folder that stops
+  short of the config's top and names this flag.
 
 - **Two byte transports, both first-class.** The default downloads
   NOMADS `filter_gfs_0p25.pl` subsets: your spatial window
-  plus exactly the 124 records per forecast hour the `gfs_grib2_bridge`
-  requires (21 pressure levels x 5 variables, 11 surface, 8 soil).
-  Every file passes a 124-message envelope walk before it counts.
+  plus exactly the records per forecast hour the `gfs_grib2_bridge`
+  requires: 124 on the certified ladder (21 pressure levels x 5
+  variables, 11 surface, 8 soil), and 5 more for each level a higher
+  model top adds. Every file passes an envelope walk at its own record
+  count before it counts.
 - **`--mode full-file` takes the whole `pgrb2.0p25` objects along the
   endpoint ladder** instead -- the AWS S3 archive (`noaa-gfs-bdp-pds`)
   for every object it has already mirrored, NOMADS for one it has not
@@ -245,9 +263,12 @@ degrees is read as the complementary box crossing 180E:
 `--area 45,170,60,-170` is the 20-degree Pacific box over the
 dateline, never the 340-degree box that excludes it. `--point` /
 `--radius-km` boxes wrap across the seam the same way, and GFS
-antimeridian crops decode onto a continuous longitude axis. Boxes
-genuinely wider than 180 degrees must be requested as the full band or
-split.
+antimeridian crops decode onto a continuous longitude axis, as does a
+regional crop from any mapped source (ICON's remapped window included).
+A whole-globe source has no edge at 180 degrees on any route: its
+longitude ring is cut opposite the domain before the domain is paired
+with it. Boxes genuinely wider than 180 degrees must be requested as the
+full band or split.
 
 **Prime meridian.** The NOMADS CGI accepts one longitude interval in
 the `[0,360]` convention, so it cannot express a narrow box that crosses
@@ -266,12 +287,16 @@ re-encode one grid and pass the same envelope, exact-record-count,
 geometry, and SHA-256 contracts, the disclosed full-band result is the
 fail-closed route.
 
-**Area margin.** The front door must prove every model lake's nearest
-source-water donor lies inside the crop, and interior-continental lakes
+**Area margin.** The front door takes every model lake's nearest
+source-water donor from inside the crop, and interior-continental lakes
 can sit far from GFS-resolved water. `gpuwm domain` suggests a fetch
-area with the required margin already built in (interpolation-stencil
-halo plus a 15-degree lake-donor allowance); if you author your own
-area, allow 15 degrees beyond the outer domain.
+area with that margin already built in (interpolation-stencil halo plus
+a 15-degree lake-donor allowance); if you author your own area, allow 15
+degrees beyond the outer domain. A lake whose nearer donor could lie
+past a narrower crop's edge takes the crop's nearest water, and a lake
+in a crop with no GFS water takes the skin temperature GFS has there;
+both prepare, are counted under `source_coverage` in the preparation
+proof, and are said in one line.
 
 ### The manifest handoff (do not hand-author)
 
@@ -280,7 +305,10 @@ SHA-256 -- including the bridge executable's own hash. **You normally
 never author it yourself:** with the `--source-manifest` pair omitted,
 `gpuwm prep --source gfs` authors and digest-binds it from the fetched
 directory the series lives in, says so on stderr, and proceeds -- so
-bare prep follows the fetch directly. The explicit pair pins an
+bare prep follows the fetch directly. It writes that manifest beside
+`--output-root`, as `<output-root name>.gfs-input-manifest.json`, and
+leaves the download as fetched, so several preparations can start from
+one download at the same time. The explicit pair pins an
 existing manifest instead. To author one without running prep (a
 different namelist/config pairing, or a tail series), one command
 writes it from the fetch:
@@ -400,8 +428,13 @@ gpuwm fetch --source hrrr --cycle 2026-07-28T00 --hours 18 \
   domain` prints and what you should type -- the flag is
   `--valid-time`, validated there as an exact hourly HRRR cycle and
   handed to each stage under the name that stage takes.
-- The fetch prints the complete front-door handoff line
-  (`--source-manifest SHA256SUMS --source-manifest-sha256 <digest>`).
+- The fetch prints the front door's `gpuwm prep --source hrrr` line with
+  the source already bound (`--source-root`, `--source-manifest
+  SHA256SUMS --source-manifest-sha256 <digest>`, `--valid-time`) and
+  names the six flags left to you: `--domain-spec`, `--namelist-input`,
+  `--wps-namelist` and `--experiment-config`, which `gpuwm domain
+  --source hrrr` writes beside each other, plus `--geog-root` and
+  `--output-root`.  With those six added the line runs as printed.
 - **Disk:** the default is whole files, so budget **~1.1 GB per
   forecast hour** -- roughly 21 GB for f00..f18. That is one `wrfnat`
   (measured 703,971,338 B on a live 2026-07-29 23Z object) plus one
@@ -430,6 +463,7 @@ every row. Adding a model's front door is a row in that file.
 # differ by hours, so there is no accurate 'latest' to resolve)
 gpuwm fetch --source rap      --cycle 2026-08-16T00 --hours 6 --out data/rap
 gpuwm fetch --source icon-eu  --cycle 2026-08-17T12 --hours 6 --out data/icon
+gpuwm fetch --source icon-d2  --cycle 2026-09-27T12 --hours 3 --out data/icon-d2
 gpuwm fetch --source gefs     --cycle 2026-08-17T00 --hours 6 --out data/gefs --member c00
 gpuwm fetch --source aigfs    --cycle 2026-08-17T06 --hours 6 --out data/aigfs
 ```
@@ -470,12 +504,20 @@ drops them.
   orography, which is deliberately held out of the composed primary.
 
 **Cross-source donors are fetched for you.** AIGFS and AIGEFS publish no
-soil, no land mask, no orography, no skin temperature, no surface
-pressure and no 2 m humidity; their packaged profiles bind those
-canonicals to the **same-cycle GDAS analysis**. The fetch says so, pulls
-the donor into `<out>/donor-gdas/`, and binds it in
-`prep-command.txt` -- which is the difference between a source that
-runs and a source that refuses at init naming seven missing surfaces.
+soil, no land mask, no orography, no skin temperature and no 2 m
+humidity; their packaged profiles bind those canonicals to the
+**same-cycle GDAS analysis**. The fetch says so, pulls the donor into
+`<out>/donor-gdas/`, and binds it in `prep-command.txt` -- which is the
+difference between a source that runs and a source that refuses at init
+naming six missing surfaces. Surface pressure is derived at every lead
+from the source's own mean-sea-level pressure at the analysis terrain
+height, so it follows the forecast and each member, and AIGEFS files
+prepare the same way whether NOMADS or the AWS mirror served them. The
+mirror's January to April 2026 cycles, re-encoded by another GRIB writer
+(one form without the ensemble octets, one without the generating
+process), prepare too: both forms are declared, and where the ensemble
+octets are gone the `memNNN` folder is the member identity that is
+checked.
 
 **Ensembles keep member identity in the path.** Every AIGEFS member's
 leaf filename is byte-identical, so the download preserves the
@@ -523,7 +565,11 @@ What the route does accept:
   `gpuwm ... --source 20crv3 --author-input-manifest FILE --author-only`
   writes that manifest from the files you point `--source-root` at, and
   the run refuses anything whose name or SHA-256 differs. Mixed member
-  labels in one run are rejected.
+  labels in one run are rejected. Authoring ends by printing the
+  `gpuwm prep --source 20crv3` line with the manifest pair bound; it
+  runs as printed once you add `--wps-namelist`, `--geog-root`,
+  `--experiment-config` and `--output-root`. The GRIB2 decoders resolve
+  themselves, and naming either tool pins the Python decoder.
 - **Paired pressure-level and surface analyses** at a uniform
   three-hour cadence. 20CRv3 publishes analyses at successive valid
   times rather than forecast lead hours, so there is no forecast
@@ -551,10 +597,20 @@ route's identity is fixed rather than assembled per run. Design and
 implemented slice:
 [docs/native-20crv3-source-adapter-spec.md](../native-20crv3-source-adapter-spec.md).
 
-## ERA5 (reanalysis, Copernicus CDS)
+## ERA5 (reanalysis)
 
-ERA5 requires a personal (free) Copernicus CDS account and API key, so
-nothing is downloaded for you:
+Deterministic ERA5 reanalysis is available from the public, keyless ARCO store:
+
+```bash
+gpuwm fetch --source era5 --era5-provider arco --cycle 1999-05-03T00 --hours 24 \
+  --area 30,-105,42,-90 --out data/era5-arco
+```
+
+This downloads, validates and publishes `era5-combined.nc` plus
+`era5-arco-acquisition.json` in the output directory, with no account.
+
+The Copernicus CDS route and every ERA5 ensemble-member retrieval require a
+personal (free) CDS account and API key. For the CDS route, use these three steps:
 
 ```bash
 # 1. Emit the exact request + instructions
@@ -601,7 +657,14 @@ vendored `tools/rustwx` workspace, which brings machinery worth having
 on a 700 MB object:
 
 - **16 MiB parallel range GETs** for whole-file transfers -- one serial
-  TCP stream becomes tens.
+  TCP stream becomes several. One fetch keeps at most 48 chunk streams
+  open across all the files it moves at once (eight per file with the
+  default six files in flight). A stream that delivers under 64 KiB in
+  30 s is dropped and its chunk resumed from the byte it reached, and
+  nothing limits how long a whole request may take, so a slow link
+  finishes and a stalled stream costs 30 s instead of the run. While a
+  file moves, the progress line and the run's `fetch_progress` events
+  count its bytes as they arrive.
 - **`.idx` range coalescing** -- a 561-record selection collapses from
   561 requests to a handful.
 - **A cross-process NOMADS rate governor.** A lock file and shared
@@ -637,8 +700,14 @@ python`, which is recorded as the request it is.
 
 **Which host** -- `--transport` (every NCEP source). See the HRRR
 section: the hosts serve byte-identical objects under identical keys,
-so the default walks the source's endpoint ladder. Retention decides
-which rungs are asked at all; throughput decides which one serves. Each
+so the default walks the source's endpoint ladder. The one exception is
+AI-GEFS, whose two hosts both stay on its ladder but do not serve the
+same bytes: NOMADS marks each member with ensemble type 6 where the AWS
+copy of the same member says 3, the AWS surface files carry an extra
+surface pressure record, and the AWS pressure-level files are repacked
+copies whose heights sit within 0.08 gpm of the NOMADS ones. Preparation
+reads AI-GEFS from either host the same way and derives surface pressure
+itself on both. Retention decides which rungs are asked at all; throughput decides which one serves. Each
 requested object gets one HEAD against the archive first -- milliseconds
 against a multi-hundred-megabyte transfer -- and the archive takes any
 object it has already mirrored, while an object it has not caught up
@@ -649,6 +718,20 @@ an hour appear first is the point of polling it, but the transfer itself
 takes the archive once the archive has the file. Naming a host pins it,
 disables fall-through, and skips the probe -- a typed `--transport` is a
 decision, and a decision does not get second-guessed.
+
+The same host can live in the experiment: `transport = "s3"` in its
+`[fetch]` table takes the values `--transport` takes and is refused in the
+same words, and `gpuwm go` and `gpuwm run-plan` hand it to their fetch
+stage. `gpuwm go --transport HOST` (a run plan's `run_options.transport`)
+wins over the table, and the plan names which one it used: `gpuwm go`
+prints `the fetch pins host HOST, from --transport` or `from [fetch]
+transport`, and `gpuwm run-plan` records it as a `fetch` / `transport`
+entry of `automatic_resolutions`. `auto`, in the table or the flag, pins
+no host: it is the ladder written out and keys the same download as
+saying nothing, and `gpuwm go --transport auto` over a table that names
+a host prints `the fetch walks the host ladder, from --transport auto,
+over [fetch] transport = 'HOST'`. A GFS or GDAS table fetches the
+grib-filter crop, which has one transport, so `transport` there is refused.
 
 **How much of the object** -- `--mode auto|full-file|idx-subset`
 (HRRR, `--engine rust`). This is the byte transport, not the host.
@@ -907,22 +990,62 @@ attached to the download page). Underlying sources:
 |---|---|---|
 | `topo_gmted2010_30s` | 30-arc-sec terrain elevation | USGS/NGA GMTED2010 (Danielson & Gesch 2011, USGS OFR 2011-1073); U.S. public domain |
 | `modis_landuse_20class_30s_with_lakes` | Noah-modified 20-category IGBP land use + inland lakes | NASA MODIS (MCD12Q1-derived); NASA data are free and open |
-| `soiltype_top_30s`, `soiltype_bot_30s` | 16-category top-/bottom-layer soil texture | hybrid STATSGO (USDA, public domain) + FAO Digital Soil Map of the World |
+| `soiltype_top_30s`, `soiltype_bot_30s` | 16-category top-/bottom-layer soil texture | STATSGO inside CONUS (USDA NRCS, public domain) + the FAO-UNESCO Soil Map of the World (FAO Digital Soil Map of the World) elsewhere; FAO applies CC BY 4.0 to its datasets unless their metadata says otherwise, and the DSMW catalogue record states no licence |
 | `greenfrac_fpar_modis` | monthly green-vegetation-fraction climatology | NASA MODIS FPAR |
 | `lai_modis_10m` | monthly leaf-area-index climatology (10 arc-min) | NASA MODIS |
 | `albedo_modis` | monthly surface albedo climatology | NASA MODIS |
 | `maxsnowalb_modis` | maximum snow albedo | MODIS-derived (Barlage et al. 2005) |
 | `soiltemp_1deg` | 1-degree annual-mean deep-soil temperature | climatology distributed with WPS; NCAR's pages do not state the ultimate source |
+| `soilgrids` (seven directories) | Noah-MP soil composition and four-layer texture | ISRIC -- World Soil Information, SoilGrids250m (Hengl et al. 2017, PLOS ONE 12(2): e0169748), from whose 2017 texture classes NCAR generated the WPS tiles; CC BY 4.0 (ISRIC's terms for SoilGrids products since 2019), attribution required |
 
 If you publish work built on these fields, credit NCAR/UCAR's WPS
 geographical data distribution and the underlying providers (USGS for
-GMTED2010; NASA for the MODIS-derived fields).
+GMTED2010; NASA for the MODIS-derived fields; FAO and UNESCO for the
+soil texture outside the United States; ISRIC for SoilGrids250m, whose
+CC BY 4.0 licence makes that credit a condition of reuse).
 
 `gpuwm check` verifies the exact tiles your footprint intersects
 (presence and hashes) before anything expensive runs. Static fields
-arrive at 30 arcsec regardless of nest spacing; no
-VAR_SSO/orographic-drag, urban-fraction, or lake-depth datasets are
-produced in this release.
+arrive at 30 arcsec regardless of nest spacing unless `[static.highres]`
+is enabled (below), except terrain on a domain at 1 km or finer, which
+takes Copernicus GLO-30 by default when no `[static.highres]` block is
+declared; no VAR_SSO/orographic-drag, urban-fraction, or
+lake-depth datasets are produced in this release.
+
+**Islands at 0 m.** GMTED2010 holds 0 m on atolls and cays that lie at
+sea level, and on some islands it does not carry at all. A domain whose
+land is all such shoreline prepares at 0 m and says so once. Land held
+at exactly 0 m that has land on all four sides (an island three or more
+cells across, or a landmass) is refused by name: it is either terrain
+that never arrived or an island GMTED2010 lacks, and `[static.highres]`
+with `fields = "terrain"` gives it its Copernicus GLO-30 height.
+
+**Islands a source does not resolve.** A land cell whose source area
+holds no land at all (an atoll in an open-sea crop of a coarse source)
+takes the source's skin temperature of the sea there, and a soil column
+at that temperature with its soil category's field capacity as its
+water, where WPS writes a 285 K column saturated at 1.0. The preparation
+log and the prepared cache header count those cells.
+
+### High-resolution static sources (`[static.highres]`)
+
+With `[static.highres]` enabled, terrain, land use and soil are replaced
+from these sources, fetched on demand into the block's `cache_root`
+(docs/public/HIGHRES-TERRAIN.md). None needs an account. Cells a source
+does not cover keep the 30-arc-second baseline.
+
+| field | source | resolution | published over | terms |
+|---|---|---|---|---|
+| land use (default) | CGLC-MODIS-LCZ (Demuzere, He, Martilli, Zonato 2023, doi:10.5281/zenodo.7670653), one 2.28 GB GeoTIFF fetched once and checked against its published size and MD5 | 100 m, 2018 | 60 S to 78 N, all longitudes | CC BY 4.0, attribution required |
+| land use (`landcover_source = "annual-nlcd"`) | Annual NLCD Collection 1 (MRLC), the year nearest the case | 30 m | conterminous United States | public domain |
+| terrain (default abroad) | Copernicus DEM GLO-30 | ~30 m | 90 S to 84 N | Copernicus DEM licence, attribution required |
+| terrain (default in the US) | USGS 3DEP 1/3 arc-second | ~10 m | conterminous United States | public domain |
+| terrain (on request) | SRTM 1 arc-second v3 (OpenTopography mirror) | ~30 m | 56 S to 60 N | public domain |
+| soil texture | SoilGrids v2 (ISRIC WCS) | 250 m | global | CC BY 4.0, attribution required |
+
+CGLC-MODIS-LCZ is built from the Copernicus Global Land Service LC100 v3
+(Buchhorn et al. 2020) and the global Local Climate Zone map (Demuzere et
+al. 2022, Earth Syst. Sci. Data 14, 3835).
 
 ### `GPUWM_CASE_DATA_ROOT` layout
 
@@ -942,6 +1065,7 @@ $GPUWM_CASE_DATA_ROOT/
 | item | size | when |
 |---|---|---|
 | WPS_GEOG static tree (`gpuwm fetch-geog`) | ~2.2 GB download, ~30 GB unpacked; `--datasets wrf` skips the mesh-only soil archive for ~1.3 GB download, ~17 GB unpacked | once |
+| CGLC-MODIS-LCZ land cover (`[static.highres]`, default) | 2.28 GB | once per `cache_root` |
 | GFS subsets | ~3.3 KB/deg2/h (e.g. ~3 MB/h at 30x30 deg) | per case |
 | HRRR, default whole files | ~1.1 GB/h (~21 GB for f00..f18) -- `wrfnat` 704 MB + `wrfprs` 427 MB, measured | per case |
 | HRRR, `--mode idx-subset` | ~0.44 GB/h (~8.4 GB for f00..f18), measured; saves bandwidth, costs wall clock | per case |

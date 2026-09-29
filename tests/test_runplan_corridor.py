@@ -156,10 +156,9 @@ def _drive_to_prepare(plan_path: Path, monkeypatch) -> dict[str, list[str]]:
     def _stage(label, command, **kwargs):
         captured[label] = list(command)
         if label == "manifest":
-            out = Path(command[command.index("--out") + 1])
-            out.mkdir(parents=True, exist_ok=True)
-            (out / "gfs-input-manifest.json").write_text(
-                "{}", encoding="utf-8")
+            manifest = Path(command[command.index("--manifest-out") + 1])
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("{}", encoding="utf-8")
         if label == "prepare":
             raise go_cli.GoStageFailed(7)
 
@@ -334,12 +333,16 @@ def test_estimate_prices_the_corridor_off_the_real_arithmetic(tmp_path,
     entry, = corridor["domains"]
     assert entry["domain"] == "d02"
     assert entry["grid_id"] == 2 and entry["parent_id"] == 1
-    # Parent extent at CHILD resolution -- the root's own grid times the
-    # nest's refinement ratio, not the nest's 45x45.  This is the whole
-    # reason the number is worth showing: the corridor is far larger
-    # than the nest that moves across it.
-    assert entry["corridor_nx"] == root.run.nx * 3
-    assert entry["corridor_ny"] == root.run.ny * 3
+    # The ground the nest can REACH at child resolution, not the parent's
+    # whole extent (root.nx*3 x root.ny*3, which is what this priced and
+    # sealed before 2.8).  The itinerary moves d02 one parent cell east
+    # and nowhere else, so its corridor is its 45x45 footprint widened by
+    # three child cells on the east side, starting at its own placement.
+    assert entry["corridor_nx"] == 45 + 3 < root.run.nx * 3
+    assert entry["corridor_ny"] == 45 < root.run.ny * 3
+    assert entry["window_child_cells"] == [(30 - 1) * 3, (30 - 1) * 3,
+                                           48, 45]
+    assert entry["whole_frame"] is False
     assert entry["cells"] == entry["corridor_nx"] * entry["corridor_ny"]
     assert entry["cells"] > 45 * 45
 
@@ -347,8 +350,10 @@ def test_estimate_prices_the_corridor_off_the_real_arithmetic(tmp_path,
     assert entry["bytes_per_cell"] == CORRIDOR_BYTES_PER_CELL
     assert entry["host_bytes"] == entry["cells"] * CORRIDOR_BYTES_PER_CELL
     assert corridor["host_bytes"] == entry["host_bytes"] > 0
+    # host_gib is rounded to four places, which a corridor this small
+    # (a few megabytes) resolves only to the last place.
     assert corridor["host_gib"] == pytest.approx(
-        corridor["host_bytes"] / 1024 ** 3, rel=1e-3)
+        corridor["host_bytes"] / 1024 ** 3, abs=5e-5)
     assert "No GPU residency" in corridor["basis"]
 
 

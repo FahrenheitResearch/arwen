@@ -622,7 +622,7 @@ impl Viewer {
                         if matches!(pending.request.action,Action::SyncNativePlots{..}) {
                             binding.authority(&reply["native_plots"])?;
                             details["native_plots"]=reply["native_plots"].clone();
-                            return Ok(if reply["native_plots"]["waiting"]==true {"Native plots are still being prepared."}else{"Native plot gallery is ready."}.into());
+                            return Ok(remote::native_plots_message(&reply["native_plots"]));
                         }
                         if matches!(pending.request.action,Action::SyncProcessedFrame{..}|Action::SyncProcessedFrameV2{..}){
                             binding.authority(&reply["processed_frame"])?;

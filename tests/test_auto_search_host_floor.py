@@ -68,6 +68,19 @@ def test_host_impossible_streaming_can_keep_that_domain_resident(tmp_path):
     exp = _experiment(tmp_path, 2, root_n=704, child_n=63)
     root_floor = st.radiation_footprint(exp.root.run, exp.tiles).store_bytes(704 * 704 * 49)
     assert root_floor > exp.tiles.host_budget_bytes
+    # The 63x63 child's every tiling does more than 4x the necessary work.
+    # Auto keeps the redundancy limit (since the 1,190-tile road of
+    # 2026-09-26), so with the root held resident by its host store there
+    # is no streamed road left, and the card's 22 GiB holds the tree: it
+    # runs resident inside the external margin and says so.
+    assert st._inbound_stream_tiling(st._config_tree_nodes(exp.domains)[1],
+                                     exp.tiles) is None
+    result, rows = _walk(exp, free_gib=22)
+    assert not rows[1].stream and not rows[2].stream
+    assert "inside the" in rows[2].reason and "redundancy limit" in rows[2].reason
+    # The road this test is about -- the host-blocked root resident beside
+    # a streamed child -- is the one the explicit knob asks for by name.
+    exp = replace(exp, tiles=replace(exp.tiles, max_redundancy=False))
     result, rows = _walk(exp, free_gib=22)
     assert not rows[1].stream and rows[2].stream
     assert result.configured_mixed_envelope_bytes <= int(21.5 * GIB)

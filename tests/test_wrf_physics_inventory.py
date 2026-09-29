@@ -513,3 +513,34 @@ def test_the_moist_prune_is_a_measured_no_op_for_every_pre_p3_package():
         bdy = [item["name"] for item in bundle["wrfbdy"]["variables"]]
         assert [n for n in frozen_input if n not in names] == [], mp_physics
         assert [n for n in frozen_bdy if n not in bdy] == [], mp_physics
+
+
+@pytest.mark.parametrize("mp_physics", supported_stock_wrf_mp_physics())
+def test_every_exported_member_names_a_carrier_the_prepared_cache_writes(
+        mp_physics):
+    """The export reads ``state/<state_key>``; that array has to exist.
+
+    The Thompson, Morrison and P3 number rows used to name their Registry
+    spelling (qnr, qni, ...), while the scheme's state allocates nr, ni,
+    ... and the prepared cache writes those, so the export found nothing
+    and wrote QNRAIN and QNICE as zero over seeded numbers.  Measured on a
+    real DomainState for each package: every member gpuwm has a species
+    for names an array that state allocates and the cache serializes.
+    """
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core.state import DomainState
+    from gpuwm.state_serialization_contract import STATE_SERIALIZED_ATTRS
+
+    state = DomainState(
+        RunConfig(nx=4, ny=3, nz=2, dx=1000.0, dy=1000.0, ztop=5000.0,
+                  dt=5.0, run_seconds=10.0, moist=True,
+                  mp_physics=mp_physics),
+        array_module=np)
+    for field in stock_wrf_physics_inventory(mp_physics).wrfinput_fields:
+        key = field.state_key
+        if key is None:
+            continue
+        assert key in STATE_SERIALIZED_ATTRS, (field.netcdf_name, key)
+        assert getattr(state, key, None) is not None, (
+            field.netcdf_name, key)

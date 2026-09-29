@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm-data"
-description = "Physics reference tables for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups)"
+description = "Physics reference tables and map assets for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups, Natural Earth and US Census basemaps)"
 readme = "README.md"
 license = "Apache-2.0"
 # `licenses/*` joined at 2.7.0.  A `pip install gpuwm-data` used to
@@ -73,17 +73,18 @@ include = ["gpuwm_data"]
 # tests/test_companion_distribution.py fails if any file lands outside it.
 gpuwm_data = ["VERSION", "data/**/*"]
 
-# The two exclusion classes travelled here with the files they name; they
-# are the same two the root pyproject.toml documented while these
-# directories lived under gpuwm/.  Nothing may be excluded for any other
-# reason, and tests/test_package_data_coverage.py pins both lists exactly.
+# One exclusion class travelled here with the files it names; it is one of
+# the two the root pyproject.toml documented while these directories lived
+# under gpuwm/.  Nothing may be excluded for any other reason, and
+# tests/test_package_data_coverage.py pins the list exactly.
 #
-# 1. License-driven: the four RFMIP reference-result NetCDFs are
-#    CC-BY-NC-SA-4.0 (data/rrtmgp/PROVENANCE.md).  They stay in-repo as
-#    test fixtures; shipping them would attach a non-commercial
-#    restriction to the wheel.  Their license text
-#    (LICENSE-CC-BY-NC-SA-4.0) still ships so PROVENANCE.md resolves.
-# 2. Size-driven externalized assets: the two largest Thompson tables
+# The other class (license-driven: the four CC-BY-NC-SA-4.0 RFMIP
+# reference results) retired in 2.8.0 with the files themselves: no RFMIP
+# file is in this tree any more, the tests fetch them from upstream, and
+# tests/test_package_data_coverage.py::test_no_rfmip_file_is_carried
+# holds it so.
+#
+# Size-driven externalized assets: the two largest Thompson tables
 #    would put this wheel over PyPI's cap by themselves (freezeH2O.dat is
 #    243 MiB and additionally exceeds GitHub's 100 MiB blob limit).  Both
 #    are published as GitHub release assets and staged by
@@ -95,10 +96,6 @@ gpuwm_data = ["VERSION", "data/**/*"]
 #    MANIFEST.in carries the same two exclusions for the sdist.
 [tool.setuptools.exclude-package-data]
 gpuwm_data = [
-    "data/rrtmgp/rfmip-clear-sky-reference-lw-down.nc",
-    "data/rrtmgp/rfmip-clear-sky-reference-lw-up.nc",
-    "data/rrtmgp/rfmip-clear-sky-reference-sw-down.nc",
-    "data/rrtmgp/rfmip-clear-sky-reference-sw-up.nc",
     "data/thompson/tables/freezeH2O.dat",
     "data/thompson/tables/qr_acr_qg_V4.dat",
 ]

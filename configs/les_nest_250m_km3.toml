@@ -23,8 +23,9 @@
 #     COARSE LES at the gray-zone edge rather than a canonical one;
 #   * d02 at 750 m still runs the 1-D YSU PBL and is itself inside the gray
 #     zone.  Treat its sub-kilometre structure as indicative;
-#   * km_opt = 2 cannot be substituted here: prognostic TKE on a nest child
-#     is refused until a nested prognostic-TKE domain has been run.
+#   * this file's receipts are km_opt = 3 runs.  km_opt = 2 on d03 also loads
+#     and runs: a nest child cold-starts its own TKE under any parent
+#     (docs/public/LES.md section 4).
 #
 # MIXING LENGTH: d03 runs mix_isotropic = 1, and DID NOT ALWAYS.
 # ---------------------------------------------------------------------------

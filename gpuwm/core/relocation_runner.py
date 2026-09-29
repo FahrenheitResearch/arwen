@@ -228,7 +228,8 @@ class RelocationRunner:
                  provider=None, staging: str = "host",
                  reground_descendant=None,
                  receipts_path=None, initializer=None,
-                 static_provenance=None, track_writer=None):
+                 static_provenance=None, track_writer=None,
+                 reach_clamp=None):
         if not getattr(config, "enabled", False):
             raise RelocationRefusal(
                 "RelocationRunner requires [relocation] enabled = true; a "
@@ -299,6 +300,11 @@ class RelocationRunner:
         self.track_cadence_periods = (
             None if track_writer is None
             else self._track_periods(track_writer, config, schedule))
+        #: The ``reach_speed_m_s`` bound on the tracked mover
+        #: (:class:`gpuwm.core.nest_reach.ReachClamp`), or None for a
+        #: scripted itinerary.  The statics corridor is sized to it, so
+        #: it is enforced here on every route, like max_move_parent_cells.
+        self.reach_clamp = reach_clamp
         self.receipts: list[dict] = []
         self.moves_executed = 0
         self.track_records = 0
@@ -326,7 +332,8 @@ class RelocationRunner:
                         provider=None, staging: str = "host",
                         receipts_path=None, initializer=None,
                         static_provenance=None, track_writer=None,
-                        reground_descendant=None) -> "RelocationRunner":
+                        reground_descendant=None,
+                        reach_clamp=None) -> "RelocationRunner":
         """Build from a validated experiment (the routes' entry point).
 
         ``provider`` overrides the config-derived source only for the
@@ -341,12 +348,16 @@ class RelocationRunner:
                 "this [relocation] already names its follow source "
                 "([relocation.follow] or [[relocation.move]]); a second, "
                 "programmatic provider would silently shadow it")
+        if reach_clamp is None and relocation.grid_id is not None:
+            from gpuwm.core.nest_reach import reach_clamp_for
+            reach_clamp = reach_clamp_for(exp, int(relocation.grid_id))
         return cls(config=relocation, schedule=schedule,
                    on_child_built=on_child_built, provider=provider,
                    staging=staging, receipts_path=receipts_path,
                    initializer=initializer, track_writer=track_writer,
                    reground_descendant=reground_descendant,
-                   static_provenance=static_provenance)
+                   static_provenance=static_provenance,
+                   reach_clamp=reach_clamp)
 
     # -- the restart state -------------------------------------------------
     #
@@ -492,7 +503,8 @@ class RelocationRunner:
 
     # -- the shift policy -------------------------------------------------
 
-    def _clamped_shift(self, node, shift) -> tuple[int, int, list[str]]:
+    def _clamped_shift(self, node, shift, elapsed_seconds: float = 0.0
+                       ) -> tuple[int, int, list[str]]:
         """Bound the desired shift; every adjustment is named."""
         from dataclasses import replace as _replace
 
@@ -509,6 +521,20 @@ class RelocationRunner:
             if (bounded_i, bounded_j) != (di, dj):
                 clamps.append("max_move_parent_cells")
                 di, dj = bounded_i, bounded_j
+
+        # THE REACH BOUND, on the same footing: a bound, not a verdict.
+        # The statics corridor covers the ground the nest can reach and
+        # no more, so a move past reach_speed_m_s would have no statics;
+        # the move it is allowed to make is made, and the receipt names
+        # the bound.  Measured from the declared start at this model
+        # time, so a run extended on restart moves as the longer run
+        # would have.
+        if self.reach_clamp is not None:
+            reached_i, reached_j, reached = self.reach_clamp.bound(
+                node, (di, dj), elapsed_seconds)
+            if reached:
+                clamps.append("reach_speed_m_s")
+                di, dj = reached_i, reached_j
 
         # THE OVERLAP FLOOR IS A BOUND, NOT A VERDICT.  It used to be
         # enforced only by check_admissible, which raises -- so a follow
@@ -1193,14 +1219,17 @@ class RelocationRunner:
             return self._record(model, {
                 "event": "held", "elapsed_seconds": elapsed,
                 "reason": "follow source requested the null shift"})
-        executed_i, executed_j, clamps = self._clamped_shift(node, (di, dj))
+        executed_i, executed_j, clamps = self._clamped_shift(
+            node, (di, dj), elapsed)
         if (executed_i, executed_j) == (0, 0):
             return self._record(model, {
                 "event": "held", "elapsed_seconds": elapsed,
                 "requested_shift_parent_cells": [di, dj],
                 "clamped_by": clamps,
                 "reason": "the requested shift clamps to the null move at "
-                          "the parent's admissible band"})
+                          "the parent's admissible band"
+                          + (" or the nest's reach (reach_speed_m_s)"
+                             if "reach_speed_m_s" in clamps else "")})
         if self._segment is None:
             self._segment = base_segment(node.cfg)
         # The preparer's pre-move seam, duck-typed and optional: a
@@ -1361,6 +1390,10 @@ class RelocationRunner:
         if self.containment is not None:
             summary["containment_moves_executed"] = int(
                 self.containment_moves_executed)
+        if self.reach_clamp is not None:
+            # The bound every move was held to, as numbers, so a ledger
+            # whose clamped_by names reach_speed_m_s says what it was.
+            summary["reach"] = self.reach_clamp.receipt()
         if self.track_writer is not None:
             # How many records, how many emissions were skipped, and the
             # first few faults if any.  A track file that quietly wrote

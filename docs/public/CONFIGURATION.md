@@ -192,7 +192,29 @@ leaving the surface-pressure floor at zero so no ground can reach it.
 carry no clock: `dt_child = dt_parent / parent_time_step_ratio`
 exactly, chained in float32 exactly as WRF chains it.
 `history_interval_s` is per-domain and must divide into whole domain
-steps. The adaptive time step (`use_adaptive_time_step`) is refused.
+steps. With the adaptive time step on (`use_adaptive_time_step` in
+`[shared]`, `docs/ADAPTIVE-TIMESTEP.md`) each domain's step instead follows
+its own measured Courant number between `min_time_step` and
+`max_time_step`, landing on every output time.
+
+Steep ground under a strong wind at crest height takes a shorter step.
+Before a forecast starts, each domain is read for its steepest slope, its
+highest ground and the strongest wind its start state and boundary data
+carry over the forecast window from the ground up to that height. Where
+the engine's measured stability map (`gpuwm/terrain_clock.py`,
+`gpuwm/terrain_clock_map.json`) says the configured step and substep count
+do not hold there, the domain runs the smallest whole division of its step
+the map holds, with the fewest substeps (the configured count or 6) that
+hold it, prints one line saying so and records it under `terrain_clock` in
+the run report. A nest's step ratio grows by whatever division its parent
+does not already give it, so every cadence stays a whole number of steps.
+Under the adaptive clock the held step caps `max_time_step`, and a count
+the rule raises becomes `min_time_step_sound`, the fewest substeps that
+clock takes whatever step it adapts to. A domain the map holds runs
+exactly as configured. The map was measured with fixed steps, up to 15 s
+at 3 km; an adaptive `max_time_step` above that range is left to the
+adaptive clock's own vertical and horizontal CFL limits, which set the
+step a 3 km CONUS run takes (typically 15 to 35 s).
 
 Each `[[domain]]` may also carry an offset-free `start_time`. It defaults to
 `[experiment].start_time`; d01 must equal that root start. A delayed child is
@@ -226,7 +248,7 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 61,
+**Which keys a `[[domain]]` table may override.** Exactly these 62,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow
@@ -248,12 +270,20 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
     target_cfl  target_hcfl  max_step_increase_pct
     starting_time_step  starting_time_step_den
     max_time_step  max_time_step_den  min_time_step  min_time_step_den
+    min_time_step_sound
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
-(`cu_physics = 3`): which closure members vote in the ensemble, and
-whether the shallow scheme runs. They are per domain because the scheme
-they configure is, and they are validated inert on any domain that does
-not select `cu_physics = 3`.
+(`cu_physics = 3`): which closure the deep scheme uses (0, the default,
+is the mean of all sixteen members; 1 to 16 run one member alone, with
+a warning that only 0 has been compared against WRF), and whether the
+shallow scheme runs. They are per domain because the scheme they
+configure is, and they are validated inert on any domain that does not
+select `cu_physics = 3`. On a tree where some domains run Grell-Freitas
+and others do not, a value in `[shared]` reaches the Grell-Freitas
+domains and leaves the others at 0; a value written into a non-Grell
+domain's own table is refused. The HRRR route writes both keys into its
+namelists, where WRF reads each once for the whole run, so on that
+route every Grell-Freitas domain of a tree takes the same values.
 
 The eleven numerics from `diff_6th_slopeopt` through `tke_budget` are
 per domain because WRF declares every one of them `max_domains` and the
@@ -279,6 +309,9 @@ absolute number of seconds while a nest's step is a fraction of the
 root's, so a `min_time_step` written once in `[shared]` reaches every
 domain unchanged and can sit ABOVE the step it was meant to protect on
 an inner nest. Set the clamps per domain on a refinement tree.
+`min_time_step_sound` is per domain because the ground that needs it is:
+the steep-terrain rules set it on the domains whose substep count they
+raise and leave every other domain at WRF's derived count.
 
 `sase_flux_diag` and `hmix_k_diag` are output-only diagnostics, and
 they are per domain for the same reason: their cost scales with the
@@ -305,17 +338,17 @@ them, so the list is stated here rather than left to be discovered. A
 `[[domain]]` table carrying any other key is **refused** naming the
 key, not accepted and not silently dropped: a config that appeared to
 ask for it while the `[shared]` value ran on every nest would be a
-wrong answer reported as a success. Put them in `[shared]`.  One
-per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
-(SASE) is selected run-wide in `[shared]`, never per nest.
+wrong answer reported as a success. Put them in `[shared]`.
+`bl_pbl_physics` takes every scheme per domain, SASE (900) included.
 
 | TOML key | WRF equivalent | default | allowed | note |
 |---|---|---|---|---|
-| `time_step_sound` | `time_step_sound` | 4 | even, > 0 | WRF 0 = auto imports as 4, recorded |
+| `time_step_sound` | `time_step_sound` | 4 | even, > 0 | WRF 0 = auto imports as 4, recorded. A domain whose terrain is steeper than four substeps were measured stable on (a slope of 0.70 in any direction at `epssm` 0.5, lower at smaller `epssm`) runs 6 and the run says so; a larger value is never lowered (`gpuwm/acoustic_adaptation.py`). Under the adaptive clock the count follows the step, and the 6 is held as `min_time_step_sound` |
+| `min_time_step_sound` | -- (ArWen) | 0 | even, >= 0, per domain | under the adaptive clock, the fewest acoustic substeps per step: the count the clock derives from its step (WRF's `time_step_sound = 0` rule, 4 at any step under about 3.3 s at 1 km) is raised to this. 0 keeps WRF's count. The steep-terrain rules set it on each adaptive domain whose count they raise. Nothing reads it under a fixed clock |
 | `epssm` | `epssm` | 0.1 | per-domain | acoustic off-centering; scalar namelist assignment changes d01 only (Registry tail keeps 0.1), preserved per-domain |
 | `smdiv` | `smdiv` | 0.1 | finite | 3-D divergence damping |
 | `emdiv` | `emdiv` | 0.0 (ArWen legacy) | finite | WRF Registry default 0.01 is emitted explicitly on import |
-| `km_opt` | `km_opt` | 1 | 1 (constant K), 2 (1.5-order prognostic TKE), 3 (3-D Smagorinsky), 4 (2-D Smagorinsky), 0 (no operator -- with `bl_pbl_physics = 900`, or with `km_opt_zero_acknowledgement`) | `diff_opt=2` form implied; WRF -1 must-set honored: omission refuses. **2 and 3 are the LES closures and carry extra conditions:** `km_opt=2` is admitted only with `bl_pbl_physics=0`, and is refused on a nest child under a TKE-carrying parent (see `gpuwm/experiment.py`). `km_opt=3` has no nest restriction. See `docs/public/LES.md` |
+| `km_opt` | `km_opt` | 1 | 1 (constant K), 2 (1.5-order prognostic TKE), 3 (3-D Smagorinsky), 4 (2-D Smagorinsky), 0 (no operator -- with `bl_pbl_physics = 900`, or with `km_opt_zero_acknowledgement`) | `diff_opt=2` form implied; WRF -1 must-set honored: omission refuses. **2 and 3 are the LES closures and carry extra conditions:** `km_opt=2` is admitted only with `bl_pbl_physics=0`; on a nest child it cold-starts its own TKE whatever the parent runs, and under a `km_opt=2` parent the load warns that the tree is not yet verified (see `gpuwm/experiment.py`). `km_opt=3` has no nest restriction. See `docs/public/LES.md` |
 | `km_opt_zero_acknowledgement` | (none) | `""` | the exact id `no-horizontal-mixing-operator-v1` | admits `km_opt = 0` with a PBL scheme that produces no horizontal mixing of its own -- i.e. a run with NO horizontal mixing operator, WRF's `diff_opt = 0`. Refused by default because that is what a mis-set switch looks like; the acknowledged path is the single-variable research control that varies the closure while holding the mixing at none. A literal id, not a boolean, so no stray `= true` reaches it. Refused where it would acknowledge nothing (`km_opt != 0`, or SASE, which supplies the producer). Not needed with `bl_pbl_physics = 900` |
 | `hmix_k_diag` | (none) | false | bool, per domain | publishes the horizontal eddy viscosities the run's own producer used, under that producer's name: `XKMH`/`XKHH` for `km_opt = 4`, `SASE_KMH`/`SASE_KHH` for the SASE closure. Same units (m2 s-1), same mass grid, so the two are directly comparable. A run with no producer publishes neither pair -- an absent variable cannot be misread as a measured zero. Two extra (nz, ny, nx) planes per frame |
 | `c_s` | `c_s` | 0.25 | > 0 | Smagorinsky constant (smag2d kernel); per-domain |
@@ -340,7 +373,9 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 | `moist_adv_opt` | `moist_adv_opt` | 1 | 0, 1 in TOML; import pins 1 | PD limiter; `scalar_adv_opt` must match (WRF option 1 on both) |
 | `top_lid` | `top_lid` | **true** (ArWen) | bool | WRF Registry default is false (open top); ArWen defaults to the rigid lid after the 2026-07-18 open-top NaN probes -- imports emit the Registry value explicitly, flip back only with a stability receipt |
 | `moist_cq` | -- (WRF always applies cq) | **false** (ArWen) | bool | imported WRF experiments pin `true` explicitly |
-| `spec_zone`, `relax_zone`, `spec_exp` | `&bdy_control` | 1, 4, 0.0 | | `spec_exp` acts on the root (specified) branch only, exactly as in WRF's `lbc_fcx_gcx`; nonzero on a nested child is refused |
+| `spec_zone`, `relax_zone`, `spec_exp` | `&bdy_control` | 1, 4, 0.0 | | `spec_exp` acts on the root (specified) branch only, exactly as in WRF's `lbc_fcx_gcx`; nonzero on a nested child is refused. `gpuwm downscale --point` sets `relax_zone` to two parent cells and `spec_exp` to 0 |
+| `relax_timescale_s` | -- (ArWen) | 0.0 | >= 0 | Davies relaxation time scale in seconds on the first relaxed row: `fcx = ramp / relax_timescale_s`, `gcx = ramp / (5 relax_timescale_s)`. 0 is WRF's recipe (`0.1/dt`, `1/(50 dt)`, a time scale of 10 of the domain's own steps). A nest reads it in WRF's nested operation order. `gpuwm downscale --point` sets it to the time a 20 m/s flow takes to cross one child cell, never shorter than 10 child steps |
+| `relax_w` | -- (ArWen) | false | bool | a specified domain relaxes `w` toward its boundary table and takes the table's `w` on the specified rows, as a WRF nest does. False is WRF's root rule: `w` is not relaxed and the specified rows copy the first interior row. Needs a `w` table (an offline child's parent history carries `W`); without one the run stops at its first step saying so. `gpuwm downscale --point` sets it |
 
 ### Physics cadences and scheme knobs
 
@@ -420,22 +455,30 @@ center_lon = -99.5
 center_height_m = 1500.0 # bubble center, metres AGL
 radius_km = 10.0         # horizontal radius
 depth_m = 1500.0         # vertical HALF-depth
-amplitude_k = 2.5        # peak theta perturbation, (0, 10] K
+amplitude_k = 2.5        # peak theta perturbation, K (above 10 K warns)
 rh_preserve = false      # optional: adjust qv so RH survives the theta change
 ```
 
 The block is honored on two routes: `gpuwm run` / `gpuwm ingest`
 (applied inside each domain's `initialize_real`, geopotential
-rebalanced) and the prepared domain-tree forecast runner (applied to
-the restored sealed states -- the preparation stays the pure analysis,
-so a bubble-on arm and its control can share one preparation).
+rebalanced) and the prepared domain-tree forecast runner (`gpuwm sim`
+or `gpuwm go` on a tree; applied to the restored sealed states, then
+the geopotential is rebalanced at the held pressure as WRF's
+`em_quarter_ss` does -- the preparation stays the pure analysis, so a
+bubble-on arm and its control can share one preparation).
 Refusals (never silent): unknown keys; nonpositive
-`radius_km`/`depth_m`/`amplitude_k`; `amplitude_k` above the 10 K
-sanity bound (refused with the value named); a center outside the
+`radius_km`/`depth_m`/`amplitude_k`; a center outside the
 coarse domain; an enabled bubble that touches zero cells on a domain
-that contains its center. Routes that do not thread the block (the
-prepared-cache front doors and the single-domain prepared runner)
-refuse it by name rather than dropping it. What was actually written
+that contains its center; a bubble that heats a layer above the top of
+the radiation's temperature table (355 K under RTE+RRTMGP, which stops
+the forecast at step 1 on such a layer); `rh_preserve` building more
+than 0.09 kg/kg of water vapour (3 km forecasts that built 0.092 kg/kg
+and more went non-finite within six minutes; 0.084 kg/kg ran). Routes
+that do not thread the block (the prepared-cache front doors and the
+single-domain prepared runner) refuse it by name rather than dropping
+it. An `amplitude_k` above 10 K runs with a warning that names it
+beside WRF's 3 K idealized bubble, and the warning is recorded in the
+receipt. What was actually written
 -- per-domain cells touched, max theta delta, qv adjustment under
 `rh_preserve` -- lands in `initial-perturbation.json` in the run
 directory (the tree runner's `evidence/`), written before integration
@@ -681,7 +724,7 @@ fail-loud unimplemented).
 
 ## Not implemented (refused or dropped with a reason)
 
-Moving nests, adaptive time step,
+Moving nests,
 vertical nest refinement, FDDA nudging
 (active `grid_fdda`/`grid_sfdda`/`obs_nudge_opt` refuse; inert keys
 drop), stochastic physics (SPP/SPPT/SKEBS), `mp_zero_out` (documented

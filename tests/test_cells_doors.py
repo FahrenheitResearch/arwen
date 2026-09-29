@@ -261,6 +261,11 @@ def test_analyze_refuses_by_name_without_titan(series, tmp_path, monkeypatch, ca
     assert code == 2
     assert "titan storm-cell engine" in err and cells_titan.TITAN_ENV in err
     assert "second segmentation" in err
+    # Optional, not a build instruction: nothing public depends on titan,
+    # so the message names no repository and no build command.
+    assert "is off on this install" in err and "does not ship" in err
+    assert "cargo" not in err and "titan-rs" not in err
+    assert "gpuwm cells export works without it" in err
 
 
 def test_analyze_door_tracks_the_storm_and_catalogs_it(series, tmp_path, capsys):

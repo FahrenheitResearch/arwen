@@ -1061,6 +1061,171 @@ def test_a_child_is_named_after_its_parent_run_not_a_layout_folder():
         "/cases/parent-run/wrfout_d01_2026-09-09_12_00_00")) == "parent-run"
 
 
+def _frame_under(root, *parts):
+    """An empty history frame at ``root/parts.../wrfout_d01_*``."""
+    folder = root.joinpath(*parts)
+    folder.mkdir(parents=True, exist_ok=True)
+    frame = folder / "wrfout_d01_2026-09-26_12_00_00"
+    frame.write_bytes(b"")
+    return frame
+
+
+def _write_run_manifest(folder, name, **extra):
+    from gpuwm import runplan
+
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / runplan.MANIFEST_FILENAME).write_text(json.dumps(
+        {"schema": runplan.MANIFEST_SCHEMA, "name": name, **extra}),
+        encoding="utf-8")
+
+
+def test_a_downscale_of_a_run_plan_forecast_is_named_after_that_forecast(
+        tmp_path):
+    """A run-plan forecast writes its frames to ``<run>/chain/run/wrfout``.
+
+    'chain' is a layout folder like 'run' and 'wrfout', so a child of that
+    forecast was named "Downscale of chain · d02 ×12 · 0.25 km" in every
+    run browser.  The parent is named by its own manifest, which is the
+    name a run browser shows for it, and by its run folder where there is
+    no manifest.
+    """
+    from gpuwm.offline_child_run import child_run_name
+
+    frame = _frame_under(tmp_path, "run-parent3km", "chain", "run", "wrfout")
+    assert child_run_name(frame, grid_id=2, ratio=12, dx=250.0) == (
+        "Downscale of run-parent3km · d02 ×12 · 0.25 km")
+
+    _write_run_manifest(tmp_path / "run-parent3km", "Front Range 3 km",
+                        route="prepared")
+    assert child_run_name(frame, grid_id=2, ratio=12, dx=250.0) == (
+        "Downscale of Front Range 3 km · d02 ×12 · 0.25 km")
+
+
+def test_a_parent_given_by_a_relative_path_is_named_as_an_absolute_one(
+        tmp_path, monkeypatch):
+    """``gpuwm downscale chain/run/wrfout`` run from inside the parent's
+    run folder hands the frames on as typed.  Walking the typed text ran
+    out of folders at ``.`` before the run folder, so the manifest was
+    never read and the child was named "Downscale of wrfout"; a
+    downscale of a downscale given as ``.`` had no folder name at all."""
+    from pathlib import Path
+
+    from gpuwm.offline_child_run import child_run_name
+
+    run = tmp_path / "run-parent3km"
+    _frame_under(tmp_path, "run-parent3km", "chain", "run", "wrfout")
+    monkeypatch.chdir(run)
+    frame = Path("chain/run/wrfout/wrfout_d01_2026-09-26_12_00_00")
+    assert child_run_name(frame, grid_id=2, ratio=12, dx=250.0) == (
+        "Downscale of run-parent3km · d02 ×12 · 0.25 km")
+    _write_run_manifest(run, "Front Range 3 km", route="prepared")
+    assert child_run_name(frame, grid_id=2, ratio=12, dx=250.0) == (
+        "Downscale of Front Range 3 km · d02 ×12 · 0.25 km")
+
+    # The gpuwm go run the forecast bound, reached the same way.
+    stamp = "run-20260927-091721Z_i202609270000Z"
+    _frame_under(run, "chain", stamp, "run", "wrfout")
+    _write_run_manifest(run / "chain" / stamp, "config", route="prepared")
+    _write_run_manifest(
+        run, "Front Range 3 km", route="prepared",
+        native_run={"run_dir": f"/elsewhere/run-parent3km/chain/{stamp}"})
+    assert child_run_name(
+        Path(f"chain/{stamp}/run/wrfout/wrfout_d01_2026-09-26_12_00_00"),
+        grid_id=2, ratio=12, dx=250.0) == (
+        "Downscale of Front Range 3 km · d02 ×12 · 0.25 km")
+
+    # A grandchild whose parent downscale is the current folder.
+    child = tmp_path / "child-1km"
+    _frame_under(tmp_path, "child-1km")
+    _write_run_manifest(child, "Downscale of Front Range 3 km · d02 ×3 · 1 km",
+                        route="downscale")
+    monkeypatch.chdir(child)
+    assert child_run_name(
+        Path("wrfout_d01_2026-09-26_12_00_00"),
+        grid_id=3, ratio=3, dx=1000.0 / 3) == (
+        "Downscale of Front Range 3 km · d02 ×3 · 1 km · d03 ×3 · 0.333 km")
+
+
+def test_a_run_plan_chain_that_claims_a_stamped_folder_names_the_forecast(
+        tmp_path):
+    """``<run>/chain/run-<stamp>/run/wrfout``: the stamped folder the chain
+    claimed is not the run a person started; the run-plan forecast above
+    it is."""
+    from gpuwm.offline_child_run import child_run_name
+
+    frame = _frame_under(tmp_path, "gfs-parent", "chain",
+                         "run-20260927-091721Z_i202609270000Z", "run",
+                         "wrfout")
+    _write_run_manifest(tmp_path / "gfs-parent", "GFS parent",
+                        route="prepared")
+    assert child_run_name(frame, grid_id=2, ratio=3, dx=1000.0) == (
+        "Downscale of GFS parent · d02 ×3 · 1 km")
+
+
+def test_a_native_run_gives_way_to_the_forecast_that_bound_it(tmp_path):
+    """The ``gpuwm go`` run a run-plan forecast drives writes its own
+    manifest, named after its config file.  The forecast records it as
+    its ``native_run``; the child is named after the forecast, including
+    in a copy of the folder whose manifests still hold the paths they
+    were written with."""
+    from gpuwm.offline_child_run import child_run_name
+
+    stamp = "run-20260927-091721Z_i202609270000Z"
+    frame = _frame_under(tmp_path, "run-parent3km", "chain", stamp, "run",
+                         "wrfout")
+    _write_run_manifest(tmp_path / "run-parent3km" / "chain" / stamp,
+                        "config", route="prepared")
+    _write_run_manifest(
+        tmp_path / "run-parent3km", "Front Range 3 km", route="prepared",
+        native_run={"run_dir": f"/elsewhere/runs/run-parent3km/chain/{stamp}"})
+    assert child_run_name(frame, grid_id=2, ratio=12, dx=250.0) == (
+        "Downscale of Front Range 3 km · d02 ×12 · 0.25 km")
+
+    # A standalone `gpuwm go` run is its own run: nothing above binds it.
+    alone = _frame_under(tmp_path / "case", stamp, "run", "wrfout")
+    _write_run_manifest(tmp_path / "case" / stamp, "front-range",
+                        route="prepared")
+    assert child_run_name(alone, grid_id=2, ratio=3, dx=1000.0) == (
+        "Downscale of front-range · d02 ×3 · 1 km")
+
+
+def test_a_grandchild_extends_its_parent_downscale_name(tmp_path):
+    """A downscale's frames sit in its own folder beside its manifest,
+    whose name already says "Downscale of"; its child adds its own grid
+    to that name instead of wrapping it in a second "Downscale of"."""
+    from gpuwm.offline_child_run import child_run_name
+
+    frame = _frame_under(tmp_path, "child-1km")
+    _write_run_manifest(tmp_path / "child-1km",
+                        "Downscale of Front Range 3 km · d02 ×3 · 1 km",
+                        route="downscale")
+    assert child_run_name(frame, grid_id=3, ratio=3, dx=1000.0 / 3) == (
+        "Downscale of Front Range 3 km · d02 ×3 · 1 km · d03 ×3 · 0.333 km")
+
+
+def test_a_manifest_that_is_not_the_parents_does_not_name_it(tmp_path):
+    """Frames copied into an ordinary folder inside some run keep that
+    folder's name: the search for a manifest stops at the first folder
+    that is neither a layout folder nor a stamped run folder.  A file
+    that is not a named run manifest is not read as one."""
+    from gpuwm import runplan
+    from gpuwm.offline_child_run import child_run_name
+
+    frame = _frame_under(tmp_path, "some-run", "imports", "wrf-parent")
+    _write_run_manifest(tmp_path / "some-run", "Some other run",
+                        route="prepared")
+    assert child_run_name(frame, grid_id=2, ratio=3, dx=1000.0) == (
+        "Downscale of wrf-parent · d02 ×3 · 1 km")
+
+    frame = _frame_under(tmp_path, "run-parent", "chain", "run", "wrfout")
+    manifest = tmp_path / "run-parent" / runplan.MANIFEST_FILENAME
+    for text in ("{not json", json.dumps({"schema": "other", "name": "x"}),
+                 json.dumps({"schema": runplan.MANIFEST_SCHEMA, "name": " "})):
+        manifest.write_text(text, encoding="utf-8")
+        assert child_run_name(frame, grid_id=2, ratio=3, dx=1000.0) == (
+            "Downscale of run-parent · d02 ×3 · 1 km")
+
+
 def _start_child_progress(progress, tmp_path):
     """Publish one child's manifest and stream, as ``run`` does."""
     outdir = tmp_path / "child-run"
@@ -1091,6 +1256,10 @@ def test_child_publishes_the_manifest_every_other_run_publishes(tmp_path):
         assert manifest["schema"] == runplan.MANIFEST_SCHEMA
         assert manifest["route"] == "downscale"
         assert manifest["pid"] == os.getpid()
+        # ...with the identity a page checks before it calls the run alive
+        # (a bare pid can be reused by another program after a crash).
+        from gpuwm import proc_identity
+        assert proc_identity.alive(manifest["process"], os.getpid())
         assert manifest["run_id"]
         # The binding a reader checks: run_dir == outputs_dir == the run's
         # own directory, and a plan source naming the exact config it ran

@@ -2,7 +2,7 @@
 
 The cross-lane proof — a real Dutch PVOL through the real ``rw_odim`` writer
 and back out of this reader — is recorded in
-``Downloads/intl-da-odim/da-bridge-crosslane.md``; it needs a 27 MB volume off
+the ODIM DA-bridge cross-lane record; it needs a 27 MB volume off
 a 24-hour feed, so it cannot live in the suite.  What lives here is the part
 that is pure Python and would otherwise only ever be exercised by that file:
 the promise that the schema string and the censor vocabulary tell the same

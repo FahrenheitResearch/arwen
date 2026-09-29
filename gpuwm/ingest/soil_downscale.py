@@ -129,6 +129,8 @@ from pathlib import PurePath
 
 import numpy as np
 
+from gpuwm.config_keys import KeyRow, key_rows
+
 
 #: Report the forcing mesh whenever the model resolves more than this many
 #: grid cells across one source cell.  Five is where a 0.25 degree quilt
@@ -680,6 +682,7 @@ __all__ = [
     "SOURCE_MESH_ADVISORY_RATIO",
     "SoilMeshPlan",
     "INGEST_TABLE_KEYS",
+    "INGEST_TABLE_ROWS",
     "declared_soil_texture_downscale",
     "downscale_deep_soil_temperature",
     "downscale_soil_moisture",
@@ -700,7 +703,15 @@ __all__ = [
 #: decision along with it.  A `gpuwm go` config carries no ``[case_data]``
 #: at all, and that is the door most users come through -- a switch they
 #: cannot reach from it is not shipped.
-INGEST_TABLE_KEYS = ("soil_texture_downscale",)
+#:
+#: Each key is one declared row (:mod:`gpuwm.config_keys`), and the key
+#: list is read off the rows, so the table and its types cannot drift.
+INGEST_TABLE_ROWS = key_rows(
+    KeyRow("soil_texture_downscale", "boolean", True,
+           "downscale the initial land soil state below the forcing's "
+           "mesh; false keeps WPS's plain interpolation"),
+)
+INGEST_TABLE_KEYS = tuple(INGEST_TABLE_ROWS)
 
 
 def parse_ingest_table(table, *, source: str) -> dict:
@@ -712,12 +723,11 @@ def parse_ingest_table(table, *, source: str) -> dict:
         raise ValueError(
             f"[ingest] of {source} has unknown key(s): {unknown}; known "
             f"keys are {list(INGEST_TABLE_KEYS)}")
-    value = table.get("soil_texture_downscale")
-    if value is not None and not isinstance(value, bool):
-        raise ValueError(
-            f"soil_texture_downscale in [ingest] of {source} must be true "
-            "or false")
-    return {"soil_texture_downscale": value}
+    # ``None`` when absent, not the row's default: callers tell a
+    # declaration from silence (declared_soil_texture_downscale).
+    return {key: (row.check(table[key], where=f"[ingest] of {source}")
+                  if key in table else None)
+            for key, row in INGEST_TABLE_ROWS.items()}
 
 
 def declared_soil_texture_downscale(source=None) -> bool:
@@ -752,12 +762,10 @@ def declared_soil_texture_downscale(source=None) -> bool:
         if table is not None:
             declared = parse_ingest_table(
                 table, source=str(source))["soil_texture_downscale"]
+    row = INGEST_TABLE_ROWS["soil_texture_downscale"]
     if declared is None:
-        return True
-    if not isinstance(declared, bool):
-        raise ValueError(
-            "soil_texture_downscale in [ingest] must be true or false")
-    return declared
+        return row.default
+    return row.check(declared, where="[ingest]")
 
 
 def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,

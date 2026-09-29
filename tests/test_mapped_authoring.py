@@ -554,6 +554,44 @@ def test_manifest_authoring_binds_exact_order_roles_decoders_and_round_trips(
         )
 
 
+def test_a_path_the_caller_chose_is_reauthored_over_a_different_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    """``replace_different`` is the door's own path: a manifest an earlier
+    binding left there is replaced by a sealed, verified one, and a second
+    identical authoring then matches it rather than rewriting it."""
+
+    monkeypatch.setattr(
+        "gpuwm.mapped_authoring.bridge_identity",
+        _fake_bridge_identity,
+    )
+    primary_a, primary_b, provenance, inventory, dump = _manifest_case(tmp_path)
+    manifest = tmp_path / "inputs.json"
+    manifest.write_text("old-valid-manifest\n", encoding="utf-8")
+    arguments = dict(
+        mapping_path=GFS_MAPPING,
+        composition_path=GFS_COMPOSITION,
+        primary_files=(primary_a, primary_b),
+        supplement_files={
+            "gfs_valid_time_terrain": (primary_a, primary_b),
+        },
+        provenance_files={
+            "gfs_valid_time_terrain_provenance": provenance,
+        },
+        grib2_inventory=inventory,
+        grib2_dump=dump,
+        replace_different=True,
+    )
+    receipt = author_input_manifest(manifest, **arguments)
+    assert receipt["reauthored"] is True
+    assert _sha(manifest) == receipt["manifest"]["sha256"]
+    assert not list(tmp_path.glob(".inputs.json.candidate-*"))
+    again = author_input_manifest(manifest, **arguments)
+    assert again["reauthored"] is False
+    assert again["manifest"]["sha256"] == receipt["manifest"]["sha256"]
+
+
 def test_authoring_refuses_overwrite_and_wrong_role_without_damage(
     tmp_path,
     monkeypatch,

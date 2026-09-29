@@ -648,11 +648,14 @@ def _footer(fig, crop: int, nx: int, ny: int, *, top: float,
              fontsize=7.5, color="#444444", wrap=True)
 
 
-#: Products the Rust route asks for.  ``all`` expands from the store
+#: Products the Rust route asks for.  Both keywords expand from the store
 #: catalog, which is what the streamed lane wants: a snapshot carries
 #: whatever the run wrote, and naming a fixed list here would silently
-#: drop a field the day one is added to the snapshot.
-RUST_PRODUCTS = "all"
+#: drop a field the day one is added to the snapshot.  ``all`` is every
+#: named product the frames can draw; ``variables`` is every stored field
+#: no named product draws, which is how the column updraft extremes
+#: (``W_UP_MAX``/``W_DN_MAX``) reach a panel at all.
+RUST_PRODUCTS = "all,variables"
 
 
 def sibling_wrfout(npz_path: Path) -> Path:

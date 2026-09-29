@@ -6,20 +6,128 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 
 _THREADS = 256
+
+#: Column capacities ``wrf_real_vertical_interpolate`` is compiled at.  A
+#: column is the source levels plus the surface pseudo-level, and each tier
+#: is the ``WRF_VI_MAX_LEVELS`` size of the kernel's three per-thread column
+#: arrays.  64 is the kernel source's own default, so every source up to 63
+#: levels (GFS and ERA5 pressure levels, HRRR native levels) keeps the
+#: binary it always ran; 160 holds ERA5's 137 model levels plus the surface
+#: and ICON's model levels; 256 is headroom above those.  A column deeper
+#: than the top tier runs on the packaged CPU bridge instead
+#: (:func:`wrf_vertical_route`), which takes any level count.
+WRF_VERT_INTERP_LEVEL_TIERS = (64, 160, 256)
+
+_WRF_VI_DEFINE = "WRF_VI_MAX_LEVELS"
+
+
+def wrf_vert_interp_level_tier(column_levels: int) -> int | None:
+    """Smallest compiled tier holding ``column_levels``, or ``None`` above
+    the top tier (that column runs on the CPU bridge)."""
+
+    column_levels = int(column_levels)
+    for tier in WRF_VERT_INTERP_LEVEL_TIERS:
+        if column_levels <= tier:
+            return tier
+    return None
+
+
+def wrf_vertical_route(source_levels: int) -> dict[str, object]:
+    """Which engine interpolates a ``source_levels``-deep column, and why.
+
+    This is the entry the CUDA preprocessing receipt records for every
+    vertical geometry it prepares, so a reader of a preparation can tell
+    which backend ran the vertical interpolation and at what depth.
+    """
+
+    source_levels = int(source_levels)
+    column_levels = source_levels + 1
+    tier = wrf_vert_interp_level_tier(column_levels)
+    if tier is None:
+        return {
+            "source_levels": source_levels,
+            "column_levels": column_levels,
+            "backend": "cpu",
+            "kernel_level_tier": None,
+            "reason": (
+                f"the {column_levels}-level column ({source_levels} source "
+                "levels plus the surface) is deeper than the CUDA kernel's "
+                f"top tier of {WRF_VERT_INTERP_LEVEL_TIERS[-1]} levels, so "
+                "the parallel CPU bridge ran this vertical interpolation"),
+        }
+    return {
+        "source_levels": source_levels,
+        "column_levels": column_levels,
+        "backend": "cuda",
+        "kernel_level_tier": tier,
+        "reason": (
+            f"the {column_levels}-level column ({source_levels} source "
+            f"levels plus the surface) fits the CUDA kernel's {tier}-level "
+            "tier"),
+    }
+
+
+def _wrf_vert_kernel(tier: int):
+    """The WRF-real vertical kernel compiled for one column tier."""
+
+    if tier == WRF_VERT_INTERP_LEVEL_TIERS[0]:
+        # The source's own #ifndef default: the module every shallow
+        # source has always launched, shared with vertical_interpolate_logp.
+        return get_kernel("vert_interp", "wrf_real_vertical_interpolate")
+    return get_kernel_int_defines(
+        "vert_interp", "wrf_real_vertical_interpolate",
+        ((_WRF_VI_DEFINE, int(tier)),))
+
+
+def _deep_column_bridge(column_levels: int):
+    """The CPU bridge for a column above the top CUDA tier, resolved up front."""
+
+    from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+
+    try:
+        return CpuPreprocessBackend()
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"a {column_levels}-level vertical column is deeper than the "
+            "CUDA kernel's top tier of "
+            f"{WRF_VERT_INTERP_LEVEL_TIERS[-1]} levels, so its vertical "
+            "interpolation runs on the parallel CPU bridge, and that "
+            f"bridge is not installed here.\n{exc}") from exc
+
+
+def _bridge_vertical(bridge, values, sfc_value, source, sfc_pressure, target,
+                     *, interp_in_logp, extrap, force_sfc_in_vinterp,
+                     zap_close_levels, vboundb):
+    """Run a descending, validated column set on the CPU bridge; device out."""
+
+    cp = _cupy()
+    output = bridge.wrf_vertical_interpolate(
+        values, sfc_value, source, sfc_pressure, target,
+        interp_in_logp=bool(interp_in_logp), extrap=extrap,
+        force_sfc_in_vinterp=int(force_sfc_in_vinterp),
+        zap_close_levels=float(zap_close_levels), vboundb=int(vboundb))
+    return cp.asarray(output, dtype=cp.float32)
 
 
 @dataclass(frozen=True)
 class _WrfVertGeometryPlan:
-    """Validated, contiguous pressure geometry shared by value fields."""
+    """Validated, contiguous pressure geometry shared by value fields.
+
+    ``kernel_level_tier`` is the compiled column tier that runs this
+    geometry, or ``None`` when the column is deeper than the top tier and
+    ``cpu_bridge`` runs it instead.
+    """
 
     source: object
     surface_pressure: object
     target: object
     source_shape: tuple[int, int, int]
     reverse_values: bool
+    kernel_level_tier: int | None = WRF_VERT_INTERP_LEVEL_TIERS[0]
+    cpu_bridge: object | None = None
 
 
 def _prepare_wrf_vert_interp_geometry(source_pressure, surface_pressure,
@@ -35,8 +143,9 @@ def _prepare_wrf_vert_interp_geometry(source_pressure, surface_pressure,
         raise ValueError("surface_pressure must be (y, x)")
     if target.shape[1:] != source.shape[1:]:
         raise ValueError("source and target horizontal shapes differ")
-    if source.shape[0] + 1 > 64:
-        raise ValueError("column exceeds the kernel's 64-level capacity")
+    column_levels = int(source.shape[0]) + 1
+    tier = wrf_vert_interp_level_tier(column_levels)
+    bridge = None if tier is not None else _deep_column_bridge(column_levels)
     if (not bool(cp.isfinite(source).all())
             or not bool(cp.isfinite(sfc_pressure).all())
             or not bool(cp.isfinite(target).all())):
@@ -61,6 +170,8 @@ def _prepare_wrf_vert_interp_geometry(source_pressure, surface_pressure,
         target=cp.ascontiguousarray(target),
         source_shape=tuple(map(int, source.shape)),
         reverse_values=bool(ascending),
+        kernel_level_tier=tier,
+        cpu_bridge=bridge,
     )
 
 
@@ -92,11 +203,18 @@ def _wrf_vert_interp_gpu_prepared(
         values = values[::-1]
     values = cp.ascontiguousarray(values)
     sfc_value = cp.ascontiguousarray(sfc_value)
+    if plan.kernel_level_tier is None:
+        return _bridge_vertical(
+            plan.cpu_bridge, values, sfc_value, plan.source,
+            plan.surface_pressure, plan.target,
+            interp_in_logp=interp_in_logp, extrap=extrap,
+            force_sfc_in_vinterp=force_sfc_in_vinterp,
+            zap_close_levels=zap_close_levels, vboundb=vboundb)
     output = cp.empty(plan.target.shape, dtype=cp.float32)
     nsource, ny, nx = plan.source_shape
     ntarget = int(plan.target.shape[0])
     ncolumn = ny * nx
-    kernel = get_kernel("vert_interp", "wrf_real_vertical_interpolate")
+    kernel = _wrf_vert_kernel(plan.kernel_level_tier)
     kernel(((ncolumn + _THREADS - 1) // _THREADS,), (_THREADS,),
            (values, sfc_value, plan.source, plan.surface_pressure,
             plan.target, output, np.int32(nsource), np.int32(ntarget),
@@ -190,7 +308,10 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
     ``interp_in_logp=False`` is WRF's forced ``interp_type=1`` for the
     full-pressure field; ``extrap='temperature'`` selects the
     ``t_extrap_type=2`` CRC below-ground branch.  A target above the source
-    top is WRF-fatal and rejected here before launch.
+    top is WRF-fatal and rejected here before launch.  The kernel runs at
+    the smallest :data:`WRF_VERT_INTERP_LEVEL_TIERS` tier holding the
+    column; a column deeper than the top tier runs on the CPU bridge and
+    comes back on the device all the same.
     """
     cp = _cupy()
     if extrap not in ("constant", "temperature"):
@@ -209,8 +330,9 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
         raise ValueError("surface fields must be (y, x)")
     if target.shape[1:] != values.shape[1:]:
         raise ValueError("source and target horizontal shapes differ")
-    if values.shape[0] + 1 > 64:
-        raise ValueError("column exceeds the kernel's 64-level capacity")
+    column_levels = int(values.shape[0]) + 1
+    tier = wrf_vert_interp_level_tier(column_levels)
+    bridge = None if tier is not None else _deep_column_bridge(column_levels)
     if not 0 <= int(force_sfc_in_vinterp) <= target.shape[0]:
         raise ValueError("force_sfc_in_vinterp must be within target levels")
     finite = (bool(cp.isfinite(values).all())
@@ -240,11 +362,17 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
     sfc_value = cp.ascontiguousarray(sfc_value)
     sfc_pressure = cp.ascontiguousarray(sfc_pressure)
     target = cp.ascontiguousarray(target)
+    if tier is None:
+        return _bridge_vertical(
+            bridge, values, sfc_value, source, sfc_pressure, target,
+            interp_in_logp=interp_in_logp, extrap=extrap,
+            force_sfc_in_vinterp=force_sfc_in_vinterp,
+            zap_close_levels=zap_close_levels, vboundb=vboundb)
     output = cp.empty(target.shape, dtype=cp.float32)
     nsource, ny, nx = values.shape
     ntarget = target.shape[0]
     ncolumn = ny * nx
-    kernel = get_kernel("vert_interp", "wrf_real_vertical_interpolate")
+    kernel = _wrf_vert_kernel(tier)
     kernel(((ncolumn + _THREADS - 1) // _THREADS,), (_THREADS,),
            (values, sfc_value, source, sfc_pressure, target, output,
             np.int32(nsource), np.int32(ntarget), np.int32(ncolumn),
@@ -255,4 +383,6 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
     return output
 
 
-__all__ = ["interpolate_logp_gpu", "wrf_vert_interp_gpu"]
+__all__ = ["WRF_VERT_INTERP_LEVEL_TIERS", "interpolate_logp_gpu",
+           "wrf_vert_interp_gpu", "wrf_vert_interp_level_tier",
+           "wrf_vertical_route"]

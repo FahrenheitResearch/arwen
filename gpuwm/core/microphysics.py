@@ -816,6 +816,14 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         if not isinstance(binding, NSSL2ProductionBinding):
             raise NSSL2ProductionConfigurationError(
                 "mp_physics=18 requires its persistent production binding")
+        # The binding was built on the step the domain started with.  An
+        # adaptive clock moves dt every root step, and the binding's
+        # validate() refuses any step but its own, so the selector moves
+        # the binding to this call's step first.  Same buffers, new step.
+        stepped = binding.with_step(dt)
+        if stepped is not binding:
+            driver.nssl2_binding = stepped
+            binding = stepped
         return apply_nssl2_production(
             state,
             cfg,

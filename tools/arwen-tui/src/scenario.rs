@@ -37,7 +37,7 @@ const HELP: [&str; 7] = [
     "Height above ground in metres, at least 0. The peak occurs at this height.",
     "Positive radius in kilometres. The engine refuses a bubble that touches no cells.",
     "Positive HALF-depth in metres, from center to the top or bottom of the ellipse.",
-    "Potential-temperature increase: greater than 0 and at most 10 K. Warm bubbles only.",
+    "Potential-temperature increase: greater than 0 K. Above 10 K the engine warns.",
     "True adjusts water vapor inside the bubble to keep RH. False leaves vapor unchanged.",
 ];
 
@@ -163,9 +163,6 @@ fn parsed(values: &[String; 7]) -> Result<[Value; 7], String> {
         if numbers[index] <= 0.0 {
             return Err(format!("{} must be greater than zero.", LABELS[index]));
         }
-    }
-    if numbers[5] > 10.0 {
-        return Err("Peak theta increase must be at most 10 K.".into());
     }
     let rh = values[6]
         .parse::<bool>()
@@ -792,7 +789,7 @@ impl Form {
                         "Shape the initial atmosphere",
                         theme::heading(),
                     )),
-                    Line::from("Cosine-squared warm bubbles: 0 < peak <= 10 K."),
+                    Line::from("Cosine-squared warm bubbles: peak above 0 K."),
                     Line::from("Applied once to initial state; engine checks grid placement."),
                 ])
                 .style(Style::default().fg(theme::MUTED)),
@@ -936,7 +933,6 @@ mod tests {
             (3, "0"),
             (4, "-1"),
             (5, "0"),
-            (5, "10.01"),
             (5, "nan"),
             (5, "inf"),
             (5, "true"),
@@ -951,6 +947,13 @@ mod tests {
         boundary[2] = "0".into();
         boundary[5] = "10".into();
         assert!(parsed(&boundary).is_ok());
+        // Above 10 K is the engine's warning to give, not the editor's
+        // refusal: the bubble is kept as typed.
+        for peak in ["10.01", "12.5", "60"] {
+            let mut large = values();
+            large[5] = peak.into();
+            assert!(parsed(&large).is_ok(), "refused peak {peak}");
+        }
     }
 
     #[test]

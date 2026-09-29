@@ -20,10 +20,14 @@ def test_presets_use_supported_catalog_selectors_and_stored_snow_fields():
         "general", "tornado", "hurricane", "snow", "rain", "wind"]
     assert [row["id"] for row in document["presets"][6:]] == [
         "fire", "temperature", "aviation", "terrain", "coastal"]
-    # 24, not 25: simulated_ir_satellite left this preset and the
-    # hurricane one when the lane record gained its reason.  A preset
-    # that promises a product the lane can never draw is drift.
-    assert len(document["presets"][0]["products"]) == 24
+    # 22: simulated_ir_satellite left this preset when the lane record
+    # gained its reason, and 10m_wind_gusts and precipitation_type left it
+    # when a run of the default preset was measured drawing 20 of 24:
+    # no wrfout carries a gust or a precipitation category.  cloud_cover
+    # (a total cloud fraction no wrfout carries) became cloud_cover_levels,
+    # the layer panel the same history does draw.  A preset that promises
+    # a product the lane can never draw is drift.
+    assert len(document["presets"][0]["products"]) == 22
     root = Path(__file__).resolve().parents[1]
     inventory = json.loads((root / "tools/rustwx/crates/rustwx-products/tests/fixtures/"
                            "product_catalog_inventory_v1.json").read_text())
@@ -31,7 +35,11 @@ def test_presets_use_supported_catalog_selectors_and_stored_snow_fields():
     for preset in document["presets"]:
         assert len(preset["products"]) == len(set(preset["products"]))
         assert preset["label"] and preset["description"]
-        assert set(preset["products"]) <= known | {"var:SNOWH", "var:SNOW"}
+        # Stored variables in STORE spelling: `var:SNOWH` named no stored
+        # variable (the import stores it as wrf_snowh) and was dropped on
+        # every run.
+        assert set(preset["products"]) <= known | {"var:wrf_snowh",
+                                                   "var:wrf_snow"}
     # New task presets use canonical engine selectors only. The stored-field
     # escape hatch remains limited to the existing snow request above.
     for preset in document["presets"][6:]:
@@ -77,7 +85,7 @@ def test_reading_presets_imports_no_forecast_or_gpu_runtime():
     code = """
 import sys
 from gpuwm.tui_products import presets
-assert len(presets()['presets'][0]['products']) == 24
+assert len(presets()['presets'][0]['products']) == 22
 assert 'cupy' not in sys.modules
 assert 'gpuwm.runplan' not in sys.modules
 assert 'gpuwm.prepared_single_domain_forecast' not in sys.modules
@@ -103,15 +111,25 @@ def test_no_preset_ships_a_product_this_lane_can_never_fill():
     assert "GRIB" in reason
 
 
-def test_the_catalog_states_every_lane_unserved_preset_product_once():
-    """At plan review, with the recorded reason verbatim."""
+def test_the_catalog_states_every_lane_unserved_preset_product_once(
+        monkeypatch):
+    """At plan review, with the recorded reason verbatim.
+
+    No shipped preset names an unserved product any more, so the block is
+    empty for every one of them; the statement itself is proven on a
+    preset that does name one.
+    """
     record = tui_products.lane_capabilities()
     block = tui_products.preset_availability(record)
     assert set(block) == {row["id"] for row in tui_products.presets()["presets"]}
-    for slug in ("cloud_cover", "10m_wind_gusts", "precipitation_type"):
-        assert block["general"][slug] == record["unavailable"][slug]
-    assert "2m_temperature" not in block["general"]
-    assert "composite_reflectivity" not in block["general"]
+    assert all(rows == {} for rows in block.values()), block
+    monkeypatch.setattr(tui_products, "presets", lambda: {"presets": [
+        {"id": "probe", "products": ["2m_temperature", "cloud_cover",
+                                     "10m_wind_gusts"]}]})
+    probe = tui_products.preset_availability(record)["probe"]
+    for slug in ("cloud_cover", "10m_wind_gusts"):
+        assert probe[slug] == record["unavailable"][slug]
+    assert "2m_temperature" not in probe
 
 
 def test_the_catalog_document_carries_the_statement_and_its_basis(monkeypatch):
@@ -120,7 +138,7 @@ def test_the_catalog_document_carries_the_statement_and_its_basis(monkeypatch):
     monkeypatch.setattr(runplan, "render_catalog",
                         lambda: {"engine": "rust", "products": [{"name": "2m_temperature"}]})
     document = tui_products.catalog_document()
-    assert "10m_wind_gusts" in document["preset_availability"]["general"]
+    assert document["preset_availability"]["general"] == {}
     assert document["preset_availability_basis"]
     assert document["lane_record_sha256"] == tui_products.lane_capabilities()["sha256"]
     # The curated list still round-trips byte-identical: narrowing it
@@ -151,11 +169,9 @@ def test_the_picker_does_not_price_a_preset_against_a_fileless_plan(monkeypatch)
         lambda *a, **k: pytest.fail("the picker launched the renderer"))
     document = tui_products.catalog_document()
     general = document["preset_availability"]["general"]
-    record = tui_products.lane_capabilities()
-    assert general == {
-        slug: record["unavailable"][slug]
-        for slug in ("10m_wind_gusts", "precipitation_type", "cloud_cover")}
-    assert "2m_temperature" not in general
+    # The general preset names nothing this lane cannot draw, and the
+    # renderer was not launched to learn that.
+    assert general == {}
     basis = document["preset_availability_basis"]
     assert basis == tui_products.PRESET_AVAILABILITY_BASIS
     assert "store catalog at render time" in basis

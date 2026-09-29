@@ -53,10 +53,12 @@ from gpuwm.physics_compat import (
 from gpuwm.core.mynn_radiation import (
     merge_mynn_bl_clouds,
     mynn_bl_cloud_active,
+    mynn_bl_cloud_supplied,
     wrf_itimestep,
 )
 
-#: The k-distribution, cloud-optics and RFMIP NetCDFs.  Same files, same
+#: The k-distribution and cloud-optics NetCDFs and the trace-gas
+#: climatology derived from the RFMIP inputs.  Same files, same
 #: relative layout, same bytes as when they sat at ``gpuwm/data/rrtmgp``;
 #: they ship in the ``gpuwm-data`` companion distribution since 2.5.0
 #: because the wheel carrying them measured 103.62 MiB against PyPI's
@@ -95,7 +97,7 @@ RRTMGP_TABLE_FILES: tuple[str, ...] = (
     "rrtmgp-gas-sw-g224.nc",
     "rrtmgp-clouds-lw-bnd.nc",
     "rrtmgp-clouds-sw-bnd.nc",
-    "rfmip-clear-sky-inputs.nc",
+    "rrtmgp-trace-gas-climatology.json",
 )
 
 
@@ -1572,6 +1574,25 @@ def coefficient_gas_names(kind: str) -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=2)
+def gas_table_temperature_range_k(kind: str) -> tuple[float, float]:
+    """``(lowest, highest)`` of one gas table's ``temp_ref``, read alone.
+
+    Every RRTMGP call refuses a layer temperature outside this span
+    (``_validate_host_range`` and the fused validation kernel both read
+    it from the loaded tables).  A caller that can see a temperature
+    before any integration, such as the initial-state perturbation,
+    reads the same two numbers here without packing the tables.
+    """
+    if kind not in ("lw", "sw"):
+        raise ValueError("kind must be 'lw' or 'sw'")
+    filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
+                else "rrtmgp-gas-sw-g224.nc")
+    with netcdf4_session(), Dataset(_table(filename), "r") as nc:
+        temp_ref = _array(nc["temp_ref"][:], np.float64)
+    return float(np.min(temp_ref)), float(np.max(temp_ref))
+
+
+@lru_cache(maxsize=2)
 def load_gas_tables(kind: str) -> GasTables:
     """Load and pack the v1.9 LW or SW gas k-distribution in float64."""
     kind = kind.lower()
@@ -1681,6 +1702,41 @@ def load_gas_tables(kind: str) -> GasTables:
                 tsi_default=float(nc["tsi_default"].getValue()),
             )
     return GasTables(**kwargs)
+
+
+from gpuwm.core.rfmip_upstream import (  # noqa: E402
+    TRACE_CLIMATOLOGY_SHA256, TRACE_CLIMATOLOGY_SOURCE)
+
+
+@dataclass(frozen=True)
+class TraceClimatology:
+    trace_vmr: dict
+    pressure_layer_pa: np.ndarray
+    ozone_vmr: np.ndarray
+
+
+@lru_cache(maxsize=1)
+def load_trace_climatology() -> TraceClimatology:
+    """The RFMIP-derived trace-gas and ozone climatology, pin-verified."""
+    import hashlib
+    import json
+
+    raw = _table("rrtmgp-trace-gas-climatology.json").read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != TRACE_CLIMATOLOGY_SHA256:
+        raise ValueError(
+            f"rrtmgp/rrtmgp-trace-gas-climatology.json has sha256 {digest}, "
+            f"pinned {TRACE_CLIMATOLOGY_SHA256}: the radiation would run on "
+            "a climatology nobody derived; reinstall gpuwm-data")
+    table = json.loads(raw)
+    if (table["source"]["sha256"] != TRACE_CLIMATOLOGY_SOURCE["sha256"]
+            or table["source"]["bytes"] != TRACE_CLIMATOLOGY_SOURCE["bytes"]):
+        raise ValueError("trace-gas climatology names a different source file")
+    return TraceClimatology(
+        trace_vmr={gas: float(value)
+                   for gas, value in table["trace_vmr"].items()},
+        pressure_layer_pa=np.asarray(table["pressure_layer_pa"], np.float64),
+        ozone_vmr=np.asarray(table["ozone_vmr"], np.float64))
 
 
 @lru_cache(maxsize=2)
@@ -2156,6 +2212,135 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
     return cp.ascontiguousarray(
         cp.where(qcld < qcldmin, DTYPE(0.0),
                  cp.where(rhum >= DTYPE(1.0), DTYPE(1.0), fraction)))
+
+
+#: The schemes that hand radiation their own radii (WRF's has_reqc/has_reqi
+#: table, module_physics_init.F:1004-1033), keyed by cloud-optics coupling.
+#: P3 is in it for the liquid radius only: WRF moves P3's ice onto the snow
+#: species at P3's own radius (module_ra_rrtmg_sw.F:10851-10863), so the ice
+#: rule below never reaches it.
+SCHEME_RADII_COUPLINGS = ("wsm6", "thompson", "nssl", "p3")
+
+#: A cloudy layer whose liquid radius is at or below this (microns) carries
+#: the microphysics' no-cloud background, not a droplet size: WRF's 2.5 um
+#: (module_ra_rrtmg_sw.F:10781-10788, module_ra_rrtmg_lw.F:12184-12191), which
+#: catches the Thompson/WSM6/WDM6 background of 2.49 um.  It is a radius
+#: test and nothing more: NSSL's background (2.51 um) is its smallest
+#: computed radius too, so a layer MYNN gave water is found by the merge
+#: itself (gpuwm.core.mynn_radiation.mynn_bl_cloud_supplied), never by a
+#: radius, and resolved cloud keeps the scheme's own size.
+_CLOUDY_BACKGROUND_LIQUID_MAX_UM = 2.5
+#: WRF's liquid radius for such a layer: 10.5 um over water, 7.5 um over land
+#: (the same two blocks), typical of marine and continental stratocumulus.
+CLOUDY_LIQUID_RADIUS_OCEAN_UM = 10.5
+CLOUDY_LIQUID_RADIUS_LAND_UM = 7.5
+#: WRF's ice threshold: at or below 5 um a cloudy layer takes the
+#: Kristjansson-Mitchell temperature table instead (_sw.F:10801-10812,
+#: _lw.F:12200-12211), index clamped to 1..75 as there.
+_CLOUDY_BACKGROUND_ICE_MAX_UM = 5.0
+
+
+def _supplied_mask(mask, shape, name):
+    import cupy as cp
+
+    mask = cp.asarray(mask)
+    if mask.dtype != cp.bool_ or mask.shape != shape:
+        raise ValueError(
+            f"{name} must be a boolean {shape} array, got {mask.dtype} "
+            f"{mask.shape}")
+    return mask
+
+
+def cloudy_background_radii(effc, effi, cldfra, tlay, xland, *, scheme,
+                            supplied_liquid=None, supplied_ice=None):
+    """The radii WRF's RRTMG coupling hands its optics for a cloudy layer.
+
+    A layer can be cloudy where the microphysics has no cloud of its own:
+    MYNN's subgrid cloud (``icloud_bl = 1``) adds QC_BL/QI_BL where the
+    resolved condensate is below threshold (:func:`merge_mynn_bl_clouds`),
+    and there the scheme's radius is its no-cloud background, 2.49 um for
+    liquid and 4.99 um for ice under Thompson.  WRF's RRTMG wrappers never
+    radiate those: a cloudy layer at or below 2.5 um liquid takes 10.5 um
+    over water and 7.5 um over land, and at or below 5 um ice takes the
+    temperature table (module_ra_rrtmg_sw.F:10779-10812, the same block in
+    module_ra_rrtmg_lw.F:12183-12211; gpuwm.core.rrtmg_legacy_prep
+    transcribes it for the legacy engine).  The RTE+RRTMGP adapter read the
+    background radius straight into its cloud optics, which triples a
+    liquid layer's optical depth at a given water path.
+
+    ``supplied_liquid``/``supplied_ice`` (from
+    :func:`gpuwm.core.mynn_radiation.mynn_bl_cloud_supplied`) mark the
+    layers the MYNN merge gave water.  They take the same sizes whatever
+    radius the scheme wrote there, because that radius is not a size for
+    MYNN's water: WRF's radius tests miss NSSL's background (2.51 um liquid,
+    10.01 um ice), a trace of Thompson liquid at its 2.51 um floor and a
+    trace of Thompson ice sized above 5 um, and would radiate MYNN's water
+    at those.  On the product nest below, the ice case alone reached more
+    than 80 percent of land columns from mid-morning.  The legacy engine does the same
+    (gpuwm.core.rrtmg_legacy).  A layer MYNN did not supply keeps WRF's
+    radius tests alone, so resolved cloud at a scheme's smallest radius
+    keeps that radius.
+
+    THE BREAKAGE THIS CLOSES, measured on a 750 m coastal-basin product
+    nest (MYNN ``icloud_bl = 1``, Thompson, a hot late-August day at solar
+    noon): land-mean surface shortwave 549 W m-2 on RTE+RRTMGP against 701
+    on legacy RRTMG (556 against 710 over land with no resolved cloud
+    water), the brightest land column 932 against 937, and 2 m temperature
+    colder at every one of 13 ASOS stations.  One clear column through both
+    engines agrees within 5 W m-2; three overcast subgrid layers of 0.05
+    g/kg put 170 W m-2 on the ground through RTE+RRTMGP at the 2.49 um
+    background, 477 at the 7.5 um WRF uses, and 479 through legacy RRTMG
+    (tests/test_rrtmgp_subgrid_cloud_radii.py).
+
+    ``effc``/``effi``/``cldfra``/``tlay`` are ``(ncol, nlay)`` (microns, 0-1,
+    K); ``xland`` is WRF's land/water flag per column (1 land, 2 water),
+    any shape of ``ncol`` values; exactly 1.5 is neither, as in WRF.
+    ``supplied_*`` are ``(ncol, nlay)`` booleans or ``None``.  Returns new
+    ``(effc, effi)`` arrays; ``effi`` is returned as given for P3.
+    """
+    import cupy as cp
+    from gpuwm.core.rrtmg_legacy_prep import _RETAB
+
+    if scheme not in SCHEME_RADII_COUPLINGS:
+        raise ValueError(
+            f"cloudy_background_radii is WRF's rule for the schemes that "
+            f"hand radiation their own radii {SCHEME_RADII_COUPLINGS}; "
+            f"{scheme!r} computes its radii in the adapter")
+    effc = cp.ascontiguousarray(cp.asarray(effc, dtype=DTYPE))
+    if effc.ndim != 2:
+        raise ValueError("effc must have shape (ncol,nlay)")
+    effi = _device_profile(effi, effc.shape, "effi")
+    cldfra = _device_profile(cldfra, effc.shape, "cldfra")
+    tlay = _device_profile(tlay, effc.shape, "tlay")
+    xland = cp.asarray(xland, dtype=DTYPE).reshape(-1)
+    if xland.shape != (effc.shape[0],):
+        raise ValueError(
+            f"xland must hold one value per column ({effc.shape[0]}), "
+            f"got {xland.size}")
+    cloudy = cldfra > DTYPE(0.0)
+    background = cloudy & (effc <= DTYPE(_CLOUDY_BACKGROUND_LIQUID_MAX_UM))
+    if supplied_liquid is not None:
+        background |= cloudy & _supplied_mask(
+            supplied_liquid, effc.shape, "supplied_liquid")
+    water = (xland > DTYPE(1.5))[:, None]
+    land = (xland < DTYPE(1.5))[:, None]
+    effc = cp.where(background & water, DTYPE(CLOUDY_LIQUID_RADIUS_OCEAN_UM),
+                    cp.where(background & land,
+                             DTYPE(CLOUDY_LIQUID_RADIUS_LAND_UM), effc))
+    if scheme == "p3":
+        return cp.ascontiguousarray(effc), effi
+    redo = cloudy & (effi <= DTYPE(_CLOUDY_BACKGROUND_ICE_MAX_UM))
+    if supplied_ice is not None:
+        redo |= cloudy & _supplied_mask(
+            supplied_ice, effc.shape, "supplied_ice")
+    whole = cp.trunc(tlay)
+    index = cp.clip(cp.trunc(tlay - DTYPE(179.0)).astype(cp.int32), 1, 75)
+    corr = tlay - whole
+    table = cp.asarray(_RETAB, dtype=DTYPE)
+    tabulated = (table[index - 1] * (DTYPE(1.0) - corr)
+                 + table[index] * corr)
+    effi = cp.where(redo, cp.maximum(tabulated, DTYPE(5.0)), effi)
+    return cp.ascontiguousarray(effc), cp.ascontiguousarray(effi)
 
 
 # WRF drives the LW/SW stochastic generators with distinct seed advances
@@ -2705,7 +2890,9 @@ class RRTMGPRadiation:
     columns are packed only at the scheme boundary.  Trace gases use RFMIP
     experiment-zero climatology plus :func:`trace_gases` date selection and
     explicit case overrides.  Water vapor comes from the model and ozone is
-    interpolated from the median RFMIP climatological profile.
+    interpolated from the median RFMIP climatological profile.  Both come
+    from :func:`load_trace_climatology`, the table derived from the RFMIP
+    input file, which is not itself shipped.
     """
 
     #: RTE resolves the full level stack, so the top level's upward
@@ -2776,26 +2963,20 @@ class RRTMGPRadiation:
                 "above-model column adapter")
         self.lw_cloud_tables = load_cloud_tables("lw")
         self.sw_cloud_tables = load_cloud_tables("sw")
-        with netcdf4_session(), Dataset(
-                _table("rfmip-clear-sky-inputs.nc"), "r") as ncfile:
-            ncfile.set_auto_mask(False)
-            for gas, rfmip_name in _RFMIP_GAS_NAMES.items():
-                variable = ncfile[rfmip_name + "_GM"]
-                scale = float(getattr(variable, "units", "1").replace(" ", ""))
-                self.trace_vmr[gas] = float(variable[0]) * scale
-            for gas, value in trace_gases(
-                    self.start_time, self.trace_gas_overrides).items():
-                if gas not in self.trace_vmr:
-                    # Defensive parity with the pure policy validation: table
-                    # and packaged RFMIP names must never drift silently.
-                    raise ValueError(
-                        f"unknown trace gas {gas!r}; known well-mixed gases: "
-                        f"{sorted(self.trace_vmr)}")
-                self.trace_vmr[gas] = value
-            pressure = np.median(
-                np.asarray(ncfile["pres_layer"][:], np.float64), axis=0)
-            ozone = np.median(
-                np.asarray(ncfile["ozone"][0], np.float64), axis=0)
+        climatology = load_trace_climatology()
+        for gas in _RFMIP_GAS_NAMES:
+            self.trace_vmr[gas] = climatology.trace_vmr[gas]
+        for gas, value in trace_gases(
+                self.start_time, self.trace_gas_overrides).items():
+            if gas not in self.trace_vmr:
+                # Defensive parity with the pure policy validation: table
+                # and packaged RFMIP names must never drift silently.
+                raise ValueError(
+                    f"unknown trace gas {gas!r}; known well-mixed gases: "
+                    f"{sorted(self.trace_vmr)}")
+            self.trace_vmr[gas] = value
+        pressure = climatology.pressure_layer_pa
+        ozone = climatology.ozone_vmr
         order = np.argsort(pressure)
         self._ozone_logp = cp.asarray(np.log(pressure[order]), dtype=DTYPE)
         self._ozone_vmr = cp.asarray(ozone[order], dtype=DTYPE)
@@ -3162,6 +3343,12 @@ class RRTMGPRadiation:
         qi_bl = self._columns(fields["qi_bl"]) if active_bl else None
         cldfra_bl = (
             self._columns(fields["cldfra_bl"]) if active_bl else None)
+        # Read before the merge, which writes qc/qi in place.
+        supplied_liquid, supplied_ice = mynn_bl_cloud_supplied(
+            qc_cols, qi_cols, qc_bl=qc_bl, qi_bl=qi_bl,
+            cldfra_bl=cldfra_bl,
+            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
+            icloud_bl=getattr(cfg, "icloud_bl", 0))
         qc_cols, qi_cols, cldfra = merge_mynn_bl_clouds(
             qc_cols, qi_cols, cldfra, qc_bl=qc_bl, qi_bl=qi_bl,
             cldfra_bl=cldfra_bl,
@@ -3170,6 +3357,26 @@ class RRTMGPRadiation:
             itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
                        if active_bl else 1),
         )
+        if scheme in SCHEME_RADII_COUPLINGS:
+            # After the MYNN merge, so its subgrid cloud and fraction are
+            # the cloud being sized: see cloudy_background_radii.
+            if fields.get("xland") is None:
+                raise ValueError(
+                    f"{scheme} radiation coupling requires fields['xland']: "
+                    "a cloudy layer at the microphysics' no-cloud radius is "
+                    "sized 7.5 um over land and 10.5 um over water, and "
+                    "without the land/water flag it would be radiated at "
+                    "the background radius, which put 150 W m-2 too little "
+                    "shortwave on the ground under MYNN subgrid cloud")
+            effc_cols, effi_cols = cloudy_background_radii(
+                kwargs["effc"], kwargs["effi"], cldfra, tlay,
+                fields["xland"], scheme=scheme,
+                supplied_liquid=supplied_liquid, supplied_ice=supplied_ice)
+            kwargs["effc"] = effc_cols
+            kwargs["effi"] = effi_cols
+            effective_fields["effc"] = effc_cols
+            if scheme != "p3":
+                effective_fields["effi"] = effi_cols
         ncol = play.shape[0]
         # ONE reduction per firing buys the whole above-model fast path.
         # WRF's mass coordinate fills the top interface from a scalar
@@ -3179,7 +3386,19 @@ class RRTMGPRadiation:
         # not the tolerance `_validate_model_top_interface` uses: a
         # one-ULP spread would be invisible to that and would still change
         # the synthetic cap.
-        uniform_top = bool(cp.all(plev[:, -1] == plev[0, -1]))
+        #
+        # Inside a CUDA graph capture the reduction cannot be read back (a
+        # device-to-host copy on a capturing stream is refused, which is
+        # what took every radiation-due captured step down), so a captured
+        # step takes the general per-column path instead.  That path is not
+        # an assumption: it computes the same values
+        # (`_extend_above_model_profile`), only without the cached rows.
+        from gpuwm.core.rrtm_lw import _stream_is_capturing
+
+        if _stream_is_capturing(cp):
+            uniform_top = False
+        else:
+            uniform_top = bool(cp.all(plev[:, -1] == plev[0, -1]))
         if declared_p_top is None:
             # Once per firing, not once per chunk: it synchronizes, and
             # `plev` does not vary across the chunks that follow.
@@ -4332,11 +4551,13 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
     return PlanckSourceResult(lay, lev, sfc)
 
 
-def _rfmip_profiles(tables, sites, experiments):
+def _rfmip_profiles(tables, sites, experiments, inputs=None):
+    from gpuwm.core.rfmip_upstream import fetch_rfmip
+
     sites = np.asarray(sites, dtype=np.intp)
     experiments = np.asarray(experiments, dtype=np.intp)
-    with netcdf4_session(), Dataset(
-            _table("rfmip-clear-sky-inputs.nc"), "r") as nc:
+    source = fetch_rfmip("rfmip-clear-sky-inputs.nc", path=inputs)
+    with netcdf4_session(), Dataset(source, "r") as nc:
         nc.set_auto_mask(False)
         nsite, nexp = sites.size, experiments.size
         play_site = np.asarray(nc["pres_layer"][sites], np.float64)
@@ -4374,12 +4595,18 @@ def _rfmip_profiles(tables, sites, experiments):
             np.tile(sza, nexp), np.tile(tsi, nexp))
 
 
-def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:
-    """Run the shipped RFMIP clear-sky oracle profiles on the GPU.
+def rfmip_clear_sky(*, sites=None, experiments=None,
+                    inputs=None) -> RFMIPResult:
+    """Run the RFMIP clear-sky oracle profiles on the GPU.
 
     This reproduces the upstream physics-index-1/forcing-index-1 examples:
     one-angle LW, default solar spectrum normalized to each RFMIP TSI, and
     nighttime columns explicitly zeroed after the SW solve.
+
+    The RFMIP input file is not shipped (see
+    :mod:`gpuwm.core.rfmip_upstream`): ``inputs`` names a local copy, and
+    without it the pinned upstream file is fetched into the RFMIP cache.
+    Either way its SHA-256 is verified before a byte is read.
     """
     import cupy as cp
 
@@ -4388,7 +4615,7 @@ def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:
                    else np.asarray(experiments))
     lw = load_gas_tables("lw")
     (play, plev, tlay, tlev, tsfc, vmr, emiss, _albedo,
-     _sza, _tsi) = _rfmip_profiles(lw, sites, experiments)
+     _sza, _tsi) = _rfmip_profiles(lw, sites, experiments, inputs)
     dplay = cp.asarray(play, dtype=DTYPE)
     dplev = cp.asarray(plev, dtype=DTYPE)
     dtlay = cp.asarray(tlay, dtype=DTYPE)
@@ -4407,7 +4634,7 @@ def rfmip_clear_sky(*, sites=None, experiments=None) -> RFMIPResult:
 
     sw = load_gas_tables("sw")
     (play, plev, tlay, _tlev, _tsfc, vmr, _emiss, albedo,
-     sza, tsi) = _rfmip_profiles(sw, sites, experiments)
+     sza, tsi) = _rfmip_profiles(sw, sites, experiments, inputs)
     optics_sw = gas_optics(
         sw, cp.asarray(play, dtype=DTYPE), cp.asarray(plev, dtype=DTYPE),
         cp.asarray(tlay, dtype=DTYPE), cp.asarray(vmr, dtype=DTYPE))
@@ -4445,10 +4672,13 @@ __all__ = ["CloudOpticsResult", "CloudTables", "DATA_DIR", "FluxResult",
            "GasOpticsResult", "GasTables", "HydrometeorPaths",
            "MCICA_PERMUTESEED_LW", "MCICA_PERMUTESEED_SW",
            "PlanckSourceResult", "RFMIPResult", "RRTMGPRadiation",
-           "RRTMGP_TOA_PRESSURE_PA",
+           "RRTMGP_TOA_PRESSURE_PA", "TRACE_CLIMATOLOGY_SHA256",
+           "TRACE_CLIMATOLOGY_SOURCE", "TraceClimatology",
            "add_cloud_optics", "cal_cldfra1",
            "cloud_optics", "delta_scale", "gas_optics",
+           "gas_table_temperature_range_k",
            "hydrometeor_paths", "load_cloud_tables", "load_gas_tables",
+           "load_trace_climatology",
            "lw_rte", "mcica_cloud_masks", "planck_sources",
            "rfmip_clear_sky", "rrtmgp_above_model_layer_counts",
            "sw_rte", "trace_gases"]

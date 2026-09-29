@@ -65,6 +65,13 @@ class WrfTreeInputs:
     #: stock real.exe pair completed its simulation and then failed with
     #: AttributeError before the report was written.
     physics_profile_assertion: Mapping[str, object] | None = None
+    #: The tree runner's acoustic substep derivation, filled in by the
+    #: runner itself (``prepared_domain_tree_forecast._with_terrain_acoustics``)
+    #: from these domains' static terrain, as on the prepared door.
+    acoustic_substeps: Mapping[str, object] | None = None
+    #: The tree runner's long-step derivation, filled in beside the
+    #: substep one (``gpuwm.terrain_clock.clock_receipt``).
+    terrain_clock: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -372,7 +379,7 @@ def door_render_plan(outdir, *, render_products=None, render_dir=None,
 
 
 def arm_door_first_products(plan: dict, *, outdir, started):
-    """This door's early render of the first committed frame, or ``None``.
+    """This door's renders of each committed frame as it lands, or ``None``.
 
     Built by the shared
     :func:`gpuwm.prepared_single_domain_forecast._route_owned_first_products`
@@ -390,6 +397,26 @@ def arm_door_first_products(plan: dict, *, outdir, started):
         SimpleNamespace(render_products=plan['render_products'],
                         render_dir=plan['render']),
         outdir=Path(outdir), observer=None, started=started)
+
+
+def stop_door_renders(first_products, error: BaseException) -> None:
+    """Stop this door's renders with a forecast that did not finish.
+
+    A stop draws nothing more (the desktop and the terminal kill a run
+    5 s after asking it to stop); a failure finishes drawing the frames
+    it wrote rather than let the render die mid-picture with this
+    process.  Nothing raises: the forecast's own failure is the news.
+    """
+
+    if first_products is None:
+        return
+    try:
+        if isinstance(error, KeyboardInterrupt):
+            getattr(first_products, 'halt', lambda: None)()
+        else:
+            first_products.wait()
+    except BaseException:  # noqa: BLE001 - the failure is the news
+        pass
 
 
 def draw_door_products(plan: dict, *, first_products=None, door: str) -> bool:
@@ -536,12 +563,17 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                                 init=inputs.experiment.start_time,
                                 can_draw=missing is None)
         first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
-        run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
-                          restart=None if restart is None else io_path(restart), health_debug=health_debug,
-                          progress_options=progress_options,
-                          initialization=WrfInitialization(inputs),
-                          **({} if first_products is None
-                             else {'first_products': first_products}))
+        try:
+            run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
+                              restart=None if restart is None else io_path(restart),
+                              health_debug=health_debug,
+                              progress_options=progress_options,
+                              initialization=WrfInitialization(inputs),
+                              **({} if first_products is None
+                                 else {'first_products': first_products}))
+        except BaseException as error:
+            stop_door_renders(first_products, error)
+            raise
         try:
             draw_door_products(plan, first_products=first_products, door=DOOR)
         except GoStageFailed as failure:

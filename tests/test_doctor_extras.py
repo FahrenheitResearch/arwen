@@ -325,7 +325,66 @@ def test_a_shared_import_name_does_not_make_the_other_wheel_look_present(
     # installed box is missing one of them by definition.
     assert cu12.status == "info" and cu13.status == "info"
     # The CUDA major read off the driver is preserved and used.
-    assert "THIS is the pair's matching extra" in cu13.detail
+    assert "driver serves CUDA 13, so this extra's CUDA 13 wheel can run here" in cu13.detail
+
+
+@pytest.mark.parametrize("installed, driver", [("cupy-cuda12x", 13), ("cupy-cuda13x", 13),
+                                               ("cupy-cuda12x", 12)])
+def test_a_driver_runs_every_older_cuda_major_so_a_working_extra_is_never_called_wrong(
+        monkeypatch, installed, driver):
+    """A CUDA 13 driver runs the cupy-cuda12x wheel: cuBLAS loads and kernels run.
+
+    The extras block read the driver's newest CUDA as the one major the
+    box accepts and told a working [gpu-cu12] install on a CUDA 13 driver
+    that the matching extra was [gpu-cu13], "not this one", on the same
+    report whose runtime checks had just verified it.
+    """
+
+    _fake_metadata(monkeypatch,
+                   requires=['cupy-cuda12x>=13.0; extra == "gpu-cu12"',
+                             'cupy-cuda13x>=13.6; extra == "gpu-cu13"'],
+                   extras=["gpu-cu12", "gpu-cu13"])
+    monkeypatch.setattr(doctor, "_import_probe",
+                        lambda module, distribution=None: (True, "14.0.1"))
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: driver)
+
+    def _only(name):
+        if doctor._canonical(name) == installed:
+            return "14.0.1"
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _only)
+    reported = _by_name(doctor._extras_checks())
+    major = int(installed[len("cupy-cuda"):-1])
+    held = reported[f"pip extra [gpu-cu{major}]"]
+    other_major = {12: 13, 13: 12}[major]
+    other = reported[f"pip extra [gpu-cu{other_major}]"]
+    assert held.status == "info" and other.status == "info"
+    assert "not this one" not in held.detail + held.brief
+    assert f"this extra's CUDA {major} wheel can run here" in held.detail
+    if driver == 12:
+        # Only an extra NEWER than the driver cannot run on it, and says so.
+        assert "serves CUDA 12 at most" in other.detail
+        assert "the extra that can run here is [gpu-cu12]" in other.detail
+    else:
+        assert "can run here" in other.detail and "at most" not in other.detail
+
+
+def test_an_unread_driver_names_no_extra_as_the_one_that_runs(monkeypatch):
+    _fake_metadata(monkeypatch,
+                   requires=['cupy-cuda12x>=13.0; extra == "gpu-cu12"',
+                             'cupy-cuda13x>=13.6; extra == "gpu-cu13"'],
+                   extras=["gpu-cu12", "gpu-cu13"])
+    monkeypatch.setattr(doctor, "_import_probe",
+                        lambda module, distribution=None: (False, "not installed"))
+    monkeypatch.setattr(doctor, "_driver_cuda_major", lambda: None)
+    monkeypatch.setattr(importlib.metadata, "version",
+                        lambda name: (_ for _ in ()).throw(
+                            importlib.metadata.PackageNotFoundError(name)))
+    reported = _by_name(doctor._extras_checks())
+    for extra in ("gpu-cu12", "gpu-cu13"):
+        detail = reported[f"pip extra [{extra}]"].detail
+        assert "could not be read" in detail and "can run here" not in detail
 
 
 # ---------------------------------------------------------------------------

@@ -1593,6 +1593,38 @@ def test_disk_gate_refuses_before_any_fetch_or_child_process(tmp_path):
     assert payload["fixed_margin_bytes"] == 2 * 1024 ** 3
 
 
+def test_a_work_root_without_hard_links_streams_every_hour(
+        tmp_path, monkeypatch):
+    """A drive with no hard links (exFAT) streams every hour.
+
+    From the second hour on each preparation reuses the previous hour's
+    files.  On such a drive they are now copied and proven byte-identical
+    instead of linked (gpuwm.filesystem_paths.link_or_copy_verified), so
+    the stream no longer refuses the work root before its first fetch --
+    a refusal that cited only the copy's disk cost.
+    """
+    import errno
+    import os
+
+    def no_hard_links(source, destination, *args, **kwargs):
+        if os.name == "nt":
+            raise OSError(errno.EINVAL, "Incorrect function", str(source), 1,
+                          str(destination))
+        raise OSError(errno.EPERM, "Operation not permitted", str(source),
+                      None, str(destination))
+
+    monkeypatch.setattr(os, "link", no_hard_links)
+    plan = _make_plan(tmp_path, cycle_count=1, target_lead=2)
+    cycle = datetime(2026, 7, 23, 17)
+    backend = FakeBackend([cycle])
+
+    result = stream.run_stream(plan, backend=backend, progress=lambda _: None)
+
+    assert result["status"] == "PASS"
+    assert backend.downloads == Counter(
+        {(cycle, 0): 1, (cycle, 1): 1, (cycle, 2): 1})
+
+
 def test_node_budget_accepts_enforced_source_envelope_and_refuses_below_bound(
         tmp_path):
     # The accepted Node B deployment geometry: d01 72x70x49 hourly history,

@@ -33,6 +33,8 @@ name = "static_fields"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Fixed software arithmetic for cross-machine WPS sampling positions.
+libm = { version = "0.2.16", default-features = false, features = ["force-soft-floats"] }
 miniz_oxide = "0.8"
 rayon = { workspace = true }
 serde = { workspace = true }

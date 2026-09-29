@@ -2,13 +2,13 @@
   "decode": {
     "mapping": {
       "name": "rw-wps-ecmwf-open-data-oper-grib2.mapping.json",
-      "sha256": "1255405235db1f456c03de0f4757750568017b13cfed1b4a5f8b27bf3ead7c47"
+      "sha256": "95ff9698d9db7f346f3973333936e58fda5860c9f2e4f76da76b2ed2c1284185"
     },
     "refusal": {
       "message": "mapped frame at 2026-08-16 03:00:00 lacks required fields ['terrain_height']",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "ecmwf-open-data-oper",
     "verdict": "REFUSED"
   },
@@ -750,7 +750,7 @@
       ],
       "mapping": {
         "name": "rw-wps-ecmwf-open-data-oper-grib2.mapping.json",
-        "sha256": "1255405235db1f456c03de0f4757750568017b13cfed1b4a5f8b27bf3ead7c47"
+        "sha256": "95ff9698d9db7f346f3973333936e58fda5860c9f2e4f76da76b2ed2c1284185"
       },
       "materialization": {
         "error": "mapped frame at 2026-08-16 03:00:00 lacks required fields ['terrain_height']",
@@ -762,7 +762,7 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "ecmwf-open-data-oper",
     "verdict": "INSPECTED"
   },
@@ -770,6 +770,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "ecmwf-open-data-oper"
 }

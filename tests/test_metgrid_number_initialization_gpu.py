@@ -25,13 +25,13 @@ def _capture_geometry(monkeypatch):
     geometries = []
     prepare = CudaPreprocessBackend.prepare_wrf_vertical
 
-    def capture(source, surface, target):
+    def capture(self, source, surface, target):
         geometries.append(tuple(cp.asnumpy(value).astype(np.float64)
                                 for value in (source, surface, target)))
-        return prepare(source, surface, target)
+        return prepare(self, source, surface, target)
 
     monkeypatch.setattr(CudaPreprocessBackend, "prepare_wrf_vertical",
-                        staticmethod(capture))
+                        capture)
     return geometries
 
 

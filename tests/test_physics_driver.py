@@ -135,6 +135,40 @@ def test_wsm6_sr_accepts_only_proven_wrf_fp32_roundoff_without_mutation(
             sr=np.full(shape, np.nan, np.float32)))
 
 
+@pytest.mark.parametrize("mp_physics", [6, 16])
+def test_wsm6_family_sr_envelope_follows_the_step_it_is_handed(
+        monkeypatch, mp_physics):
+    """A driver built on a one-loop step, then run on a two-loop step."""
+    physics, driver, diagnostics, shape = _cpu_wsm6_diagnostics_driver(
+        monkeypatch, dt=60.0)
+    driver.mp_physics = mp_physics
+    (driver._sr_roundoff_upper, driver._sr_roundoff_max_ulps,
+     driver._wsm6_minor_loops) = physics._sr_roundoff_envelope(
+        mp_physics, 60.0)
+    one_loop = physics._sr_roundoff_envelope(mp_physics, 60.0)
+    two_loops = physics._sr_roundoff_envelope(mp_physics, 240.0)
+    assert two_loops[0] > one_loop[0]
+
+    def result(upper):
+        return diagnostics(
+            rainnc=np.ones(shape, np.float32),
+            rainncv=np.ones(shape, np.float32),
+            sr=np.full(shape, upper, np.float32))
+
+    # The constructor's envelope refuses what two minor loops can produce.
+    with pytest.raises(ValueError, match="validated range"):
+        driver.accept_microphysics(result(two_loops[0]))
+    driver.accept_microphysics(result(two_loops[0]), dt=240.0)
+    assert (driver._sr_roundoff_upper, driver._sr_roundoff_max_ulps,
+            driver._wsm6_minor_loops) == two_loops
+    # And it tightens again when the step comes back down.
+    with pytest.raises(ValueError, match="validated range"):
+        driver.accept_microphysics(result(two_loops[0]), dt=60.0)
+    assert driver._wsm6_minor_loops == one_loop[2]
+    driver.accept_microphysics(result(one_loop[0]), dt=90.0)
+    assert driver._wsm6_minor_loops == 1
+
+
 def test_wsm6_sr_roundoff_envelope_scales_with_minor_loop_count():
     from fractions import Fraction
 

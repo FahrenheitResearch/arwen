@@ -106,6 +106,9 @@ fn crs_for_transform_case(name: &str) -> Crs {
             known_y: 5.0,
             moad_cen_lat: 0.0,
             moad_cen_lon: 0.0,
+            lat_deg: Vec::new(),
+            lon0_deg: 0.0,
+            dlon_deg: 0.0,
         })
     };
     match name {
@@ -126,6 +129,9 @@ fn crs_for_transform_case(name: &str) -> Crs {
             known_y: 5.0,
             moad_cen_lat: 0.0,
             moad_cen_lon: 0.0,
+            lat_deg: Vec::new(),
+            lon0_deg: 0.0,
+            dlon_deg: 0.0,
         }),
         "polar_n" => Crs::ModelSphere(GridSpec {
             kind: static_fields::projection::ProjectionKind::Polar,
@@ -142,6 +148,9 @@ fn crs_for_transform_case(name: &str) -> Crs {
             known_y: 5.0,
             moad_cen_lat: 0.0,
             moad_cen_lon: 0.0,
+            lat_deg: Vec::new(),
+            lon0_deg: 0.0,
+            dlon_deg: 0.0,
         }),
         "polar_s" => Crs::ModelSphere(GridSpec {
             kind: static_fields::projection::ProjectionKind::Polar,
@@ -158,6 +167,9 @@ fn crs_for_transform_case(name: &str) -> Crs {
             known_y: 5.0,
             moad_cen_lat: 0.0,
             moad_cen_lon: 0.0,
+            lat_deg: Vec::new(),
+            lon0_deg: 0.0,
+            dlon_deg: 0.0,
         }),
         "igh" => Crs::InterruptedGoodeHomolosine,
         "aea" => Crs::AlbersConusNad83 {
@@ -894,6 +906,14 @@ fn merge_refusal_decisions_and_messages_match_python() {
     );
 }
 
+/// The terrain door's mosaic (`warp::mosaic`, which `derive_window` runs
+/// for both terrain kinds) against `rasterio.merge` on the same
+/// lattice-snapped bounds, the Python fallback's arithmetic.  The golden's
+/// bounds are the footprint the door is asked for, not the snapped ones.
+/// The two clips share one pixel grid whose centres are the whole
+/// arc-seconds, so the inherited lattice (the staged-tile kind) and the
+/// declared 1 arc-second lattice (the latitude-banded kind) are the same
+/// grid and both are held to the one golden.
 #[test]
 fn mosaic_matches_rasterio_merge_within_tolerance() {
     let meta = meta();
@@ -912,20 +932,29 @@ fn mosaic_matches_rasterio_merge_within_tolerance() {
         .map(|v| v.as_f64().unwrap())
         .collect();
     let resolution = mosaic_meta["resolution_deg"].as_f64().unwrap();
-    let (mosaic, holes) = warp::mosaic(
-        &tiles,
-        [bounds[0], bounds[1], bounds[2], bounds[3]],
-        Some(resolution),
-        None,
-    )
-    .expect("mosaic runs");
+    for declared in [Some(resolution), None] {
+        assert_mosaic_matches_rasterio(
+            mosaic_meta, &tiles, [bounds[0], bounds[1], bounds[2], bounds[3]],
+            declared);
+    }
+}
+
+fn assert_mosaic_matches_rasterio(
+    mosaic_meta: &serde_json::Value,
+    tiles: &[Raster],
+    bounds: [f64; 4],
+    resolution: Option<f64>,
+) {
+    let (mosaic, holes) = warp::mosaic(tiles, bounds, resolution, None)
+        .expect("mosaic runs");
     let expect_shape: Vec<usize> = mosaic_meta["shape"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| v.as_u64().unwrap() as usize)
         .collect();
-    assert_eq!((mosaic.ny, mosaic.nx), (expect_shape[0], expect_shape[1]));
+    assert_eq!((mosaic.ny, mosaic.nx), (expect_shape[0], expect_shape[1]),
+               "resolution {resolution:?}");
     let expect_transform: Vec<f64> = mosaic_meta["transform"]
         .as_array()
         .unwrap()
@@ -975,10 +1004,10 @@ fn mosaic_matches_rasterio_merge_within_tolerance() {
     let fraction = exact as f64 / compared as f64;
     let mean_delta = sum_delta / compared as f64;
     println!(
-        "mosaic vs rasterio.merge: exact fraction = {fraction:.5} of \
-         {compared} mutually covered, max |delta| among differing = \
-         {max_delta:.2} m, mean over compared = {mean_delta:.3} m, \
-         holes {holes} (rasterio {python_hole_count})"
+        "mosaic ({resolution:?}) vs rasterio.merge: exact fraction = \
+         {fraction:.5} of {compared} mutually covered, max |delta| among \
+         differing = {max_delta:.2} m, mean over compared = \
+         {mean_delta:.3} m, holes {holes} (rasterio {python_hole_count})"
     );
     assert!(fraction
         >= mosaic_meta["exact_fraction_floor"].as_f64().unwrap());

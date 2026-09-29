@@ -150,6 +150,40 @@ def wrf_num_sound_steps(dt: float, dx: float, dy: float,
     return max(2 * (int(300.0 * dt / spacing - 0.01) + 1), 4)
 
 
+def sound_steps_floor(run) -> int:
+    """``run.min_time_step_sound``, 0 for a config that predates the key."""
+    return int(getattr(run, "min_time_step_sound", 0) or 0)
+
+
+def adaptive_sound_steps(dt, run, max_msft: float = 1.0) -> int:
+    """The acoustic substep count the adaptive clock runs at step ``dt``.
+
+    WRF's count from the live step (:func:`wrf_num_sound_steps`), raised
+    to the floor a steep-terrain rule set on the domain
+    (``min_time_step_sound``).  Without the floor the clock handed back
+    the four substeps the rule had measured unstable over the domain's
+    ground, while the run's own line and report said six.  The floor is 0
+    on every domain no rule touched, where this is WRF's count unchanged.
+    """
+    return max(wrf_num_sound_steps(float(dt), run.dx, run.dy, max_msft),
+               sound_steps_floor(run))
+
+
+def least_sound_steps(run) -> int:
+    """The fewest acoustic substeps per step this domain's clock takes.
+
+    ``time_step_sound`` on a fixed clock.  On the adaptive clock the
+    configured count is not what runs: the count is derived from the live
+    step, and :func:`wrf_num_sound_steps` gives its floor of 4 at every
+    step short enough, raised to ``min_time_step_sound``.  The
+    steep-terrain rules read their measured maps at this count, because it
+    is the one the domain actually integrates with at its shortest steps.
+    """
+    if bool(getattr(run, "use_adaptive_time_step", False)):
+        return max(4, sound_steps_floor(run))
+    return int(run.time_step_sound)
+
+
 def maximum_map_factor(state=None, geography=None) -> float:
     """The static full-domain factor used by WRF's acoustic count."""
     best = 1.0
@@ -178,7 +212,7 @@ def acoustic_step_ceiling(cfg, max_map_factor: float = 1.0) -> int:
         upper = Fraction(wrf_default_clamps(cfg.dx, cfg.dy)[1])
     start = _interval(cfg.starting_time_step, cfg.starting_time_step_den)
     largest = max(float(cfg.dt), float(upper), float(start or 0))
-    return max(int(cfg.time_step_sound),
+    return max(int(cfg.time_step_sound), sound_steps_floor(cfg),
                wrf_num_sound_steps(largest, cfg.dx, cfg.dy, max_map_factor))
 
 
@@ -579,31 +613,37 @@ class AdaptiveClockDriver:
             else:
                 dt = ctl.next_dt(max_vert_cfl=vert, max_horiz_cfl=horiz)
                 stepping = False
-                if node.parent is None:
-                    # step_to_output_time is upstream's, and upstream
-                    # gates it `.not. grid%nested` (:325) -- a nest lands
-                    # on its parent's boundary by dividing it, not by
-                    # shortening itself.
-                    dt, stepping = ctl.step_to_time(
-                        dt, self._to_next_alarm_anywhere(clocks),
-                        quantise=self._quantise_root)
-                    root_stepping = stepping
-                    # THE RUN END IS A TIME TO LAND ON TOO.  The executor
-                    # loops `while root.ticks < run_ticks` and takes
-                    # whatever step the controller offers, so without this
-                    # the last one steps straight over the finish: a run
-                    # ended at 183385 ticks against a run_ticks of 180000
-                    # and was refused, correctly, by the tick-exact stop
-                    # check.  WRF gets this from its stop-time alarm; here
-                    # it is the same clamp step_to_time already applies to
-                    # an output frame, on a different deadline.
-                    left = Fraction(
-                        max(0, clock.run_ticks - clock.ticks),
-                        self.tick_den)
-                    if 0 < left < dt:
-                        dt = left
-                        stepping = True
-                        root_stepping = True
+            if node.parent is None:
+                # The starting step must honor alarms too: a configured
+                # starting_time_step can exceed the first output interval
+                # or the entire run. Skipping this on first_step silently
+                # loses that output or integrates past the stop time.
+                # Upstream lands its first step the same way: the
+                # first-step branch (adapt_timestep_em.F:130-138) falls
+                # through to the landing code (:285-360).
+                # step_to_output_time is upstream's, and upstream gates it
+                # `.not. grid%nested` (:321-322) -- a nest lands on its
+                # parent's boundary by dividing it, not by shortening
+                # itself.
+                dt, stepping = ctl.step_to_time(
+                    dt, self._to_next_alarm_anywhere(clocks),
+                    quantise=self._quantise_root)
+                root_stepping = stepping
+                # THE RUN END IS A TIME TO LAND ON TOO.  The executor
+                # loops `while root.ticks < run_ticks` and takes whatever
+                # step the controller offers, so without this the last one
+                # steps straight over the finish: a run ended at 183385
+                # ticks against a run_ticks of 180000 and was refused,
+                # correctly, by the tick-exact stop check.  WRF gets this
+                # from its stop-time alarm; here it is the same clamp
+                # step_to_time already applies to an output frame, on a
+                # different deadline.
+                left = Fraction(
+                    max(0, clock.run_ticks - clock.ticks), self.tick_den)
+                if 0 < left < dt:
+                    dt = left
+                    stepping = True
+                    root_stepping = True
 
             # The floor is checked on the CONTROLLER's own step, before
             # the nest divide, so a diverging run is named here rather
@@ -881,9 +921,8 @@ class AdaptiveClockDriver:
         if name == "dt":
             return float(dt)
         if name == "time_step_sound":
-            return wrf_num_sound_steps(
-                float(dt), run.dx, run.dy,
-                self.max_msft.get(int(run.grid_id), 1.0))
+            return adaptive_sound_steps(
+                dt, run, self.max_msft.get(int(run.grid_id), 1.0))
         raise KeyError(
             f"ADAPTIVE_DERIVED_RUN_FIELDS names {name!r} but "
             f"_derive_run_field does not compute it; add it here or "

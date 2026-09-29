@@ -105,7 +105,7 @@ Or in PowerShell:
 .\.venv\Scripts\Activate.ps1
 ```
 
-Use `13` when appropriate, or omit the CUDA option to use detection. The scripts install the checkout's matching `gpuwm-data` companion before the main editable package, stage external tables, and build the vendored GRIB, renderer, and terminal workspaces. Missing Rust prompts for rustup consent; `--yes` / `-Yes` supplies that consent. `--no-render` / `-NoRender` skips the renderer build, and `--no-fetch-tables` / `-NoFetchTables` defers the external table download. Neither skips the terminal build.
+Use `13` when appropriate, or omit the CUDA option to use detection. The scripts install the checkout's matching `gpuwm-data` companion before the main editable package, stage external tables, and build all six vendored workspaces: the GRIB bridges (`tools/grib1_bridge`), the renderer (`tools/rustwx`), the terminal (`tools/arwen-tui`), the Zarr reader (`tools/zarr_bridge`), the mapped decode engine (`tools/rw_wps`) and the dealiasing library (`tools/region_global_dealias`). Missing Rust prompts for rustup consent; `--yes` / `-Yes` supplies that consent. `--no-render` / `-NoRender` skips the renderer build, and `--no-fetch-tables` / `-NoFetchTables` defers the external table download. Neither skips the terminal build.
 
 For a manual terminal build, run `cargo build --release --locked --offline` **inside** `tools/arwen-tui`; its current toolchain requirement is Rust 1.94 or newer. Other native workspaces likewise use their own directory's vendored dependency configuration.
 
@@ -188,7 +188,7 @@ For a separate acquisition, use `gpuwm fetch --source era5 --era5-provider cds -
 
 ### Acquire data separately
 
-For ordinary Go use, leave download caching to the launch route unless you need a specific existing acquisition. For a manual pipeline, copy the acquisition command printed by `domain`, including its area and cadence. It already accounts for the fitted domain and required source margin.
+For ordinary Go use, leave download caching to the launch route unless you need a specific existing acquisition. For a manual pipeline, add `--explain` to the `domain` command that creates the configuration, and `--data-dir DIR` to choose the download folder, then copy the acquisition command it prints, including its area and cadence. Where `gpuwm go` can fetch the source itself, `domain` without `--explain` ends with that one `gpuwm go` line and prints no separate acquisition command. The printed command already accounts for the fitted domain and required source margin.
 
 The general fetch template is:
 
@@ -387,9 +387,9 @@ Then run it:
 gpuwm sim prepared/case --experiment-config configs/case.toml --wps-namelist configs/case.namelist.wps --outdir runs/prepared-case
 ```
 
-The WPS operand is required for a single-domain bundle and unused by a domain-tree runner. The default runner selection reads the bundle's format and domain count. Keep its complete contents and original authority files intact. A partial directory or changed input identity is refused.
+The WPS operand is required for a single-domain bundle and unused by a domain-tree runner. The default runner selection reads the bundle's format and domain count. Keep its complete contents and original authority files intact. A partial directory or changed input identity is refused, with one exception: a chained preparation that is still being produced (see PIPELINE-STAGES.md) is bound by its head, and the forecast waits at each boundary interval that is not prepared yet. A preparation whose producer failed, was stopped or went silent is refused.
 
-Sim performs no fetching. Rendering is off unless requested. `--render-products t2,refl` draws the **first committed history frame only** while integration continues; use a later `render --series` command for the complete history.
+Sim performs no fetching. Rendering is off unless requested. `--render-products t2,refl` draws those products from each committed history frame of every grid as it lands, while integration continues. The `gpuwm sim` line `gpuwm prep` prints carries `--render-products all`.
 
 Go can also reuse an existing preparation:
 

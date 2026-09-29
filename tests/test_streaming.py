@@ -661,10 +661,16 @@ def test_a_receipt_for_a_domain_that_did_stream_says_so_and_names_the_tiling():
         streaming.steppers_for_tree(model, options, decisions=decisions)
     receipt = streaming.streaming_receipt(options, decisions)
     assert receipt["streamed_any"] is True
+    # The tile count and the redundancy ride beside the tiling (measured
+    # 2026-09-26): the two numbers a streamed step's pace follows.
+    cfg = _cfg()
+    halo = 10 + 3 * cfg.time_step_sound // 2
+    ntiles, redundancy = streaming.tiling_shape(cfg, 64, 64, halo)
     assert receipt["domains"]["1"] == {
         "streamed": True, "reason": "[tiles] pins the tiling",
         "tile_nx": 64, "tile_ny": 64, "nbuffers": 2,
-        "halo": 10 + 3 * _cfg().time_step_sound // 2, "store": "host"}
+        "halo": halo, "store": "host",
+        "ntiles": ntiles, "redundancy": round(redundancy, 4)}
 
 
 @pytest.mark.parametrize("module", [
@@ -1361,7 +1367,8 @@ def test_the_per_domain_receipt_says_the_tree_wide_mode_was_overridden():
     receipt = streaming.streaming_receipt(exp.tiles, _decisions_for(exp))
     assert receipt["summary"] == (
         "[tiles] mode='off' tree-wide, overridden per domain "
-        "(d02 mode='on'): grid(s) [2] streamed, [1] ran resident")
+        "(d02 mode='on'): grid(s) [2] streamed (d02 tile 13x13 + halo 16, "
+        "9 tiles at 11.98x redundancy), [1] ran resident")
 
 
 def test_the_per_domain_receipt_fix_moves_no_shipped_receipt_byte():
@@ -1372,6 +1379,14 @@ def test_the_per_domain_receipt_fix_moves_no_shipped_receipt_byte():
     has learned to read is a shipped interface.  Pinned literally, not by
     content: the whole risk of re-keying the receipt is that it rewrites
     the receipts that were already right.
+
+    The line moved ONCE, deliberately, and only by addition: every
+    streamed grid now carries its tiling, tile count and redundancy, and
+    the receipt entry the two numbers.  A line that named the streamed
+    grid and nothing else printed a 1,190-tile sweep at 49.95x -- 237-547 s
+    per step -- exactly as it printed an ordinary streamed run (measured
+    2026-09-26).  Everything the line said before it still says, in
+    the same words and order.
     """
     raw = _raw_nested_experiment()
     raw["tiles"] = {"mode": "on", "tile_nx": 13, "tile_ny": 13}
@@ -1379,13 +1394,14 @@ def test_the_per_domain_receipt_fix_moves_no_shipped_receipt_byte():
     exp = _build(raw)
     receipt = streaming.streaming_receipt(exp.tiles, _decisions_for(exp))
     assert receipt["summary"] == (
-        "[tiles] mode='on': grid(s) [1] streamed, [2] ran resident")
+        "[tiles] mode='on': grid(s) [1] streamed (d01 tile 13x13 + halo 16, "
+        "25 tiles at 12.36x redundancy), [2] ran resident")
     assert receipt["configured_mode"] == "on"
     assert receipt["streamed_any"] is True
     assert receipt["domains"] == {
         "1": {"streamed": True, "reason": "[tiles] pins the tiling",
               "tile_nx": 13, "tile_ny": 13, "nbuffers": 2, "halo": 16,
-              "store": "host"},
+              "store": "host", "ntiles": 25, "redundancy": 12.3596},
         "2": {"streamed": False, "reason": "[tiles] mode = 'off'",
               "configured_mode": "off"}}
 

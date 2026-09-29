@@ -527,7 +527,8 @@ def initialize_and_export_regular_source_hierarchy(
     see :data:`gpuwm.native_hierarchy.STOCK_WRF_EXPORT_MODES`.
 
     ``statics_corridor`` opts the preparation into emitting sealed
-    child-resolution statics corridors (parent-extent statics per child,
+    child-resolution statics corridors (statics over the ground each
+    child can reach,
     :mod:`gpuwm.static.corridor`) beside the hierarchy artifacts:
     ``None`` emits nothing and leaves the bundle byte-for-byte
     unchanged; ``"all"`` covers every child domain; a sequence of grid
@@ -594,6 +595,10 @@ def initialize_and_export_regular_source_hierarchy(
             "source_orography": orography_receipt,
             "source_coverage": source_coverage_receipt,
         }
+        root_preprocessing = (input_provenance or {}).get("preprocessing", {})
+        if root_preprocessing.get("selection"):
+            catalog_provenance["preprocess_selection"] = dict(
+                root_preprocessing["selection"])
         catalog = NestedInputCatalog(
             snapshots=snapshots,
             static_catalog=static_catalog,

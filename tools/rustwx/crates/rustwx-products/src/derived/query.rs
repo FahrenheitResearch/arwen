@@ -183,6 +183,15 @@ pub(crate) fn compute_derived_query_field(
     derived_query_field_from_computed(surface.nx, surface.ny, recipe, &mut computed)
 }
 
+/// The units a non-heavy recipe's computed slot holds, which are the units
+/// its named product's colour bar is drawn in.  Read off the same mapping
+/// the queries use, so the two can never disagree.
+pub(super) fn computed_recipe_units(recipe: DerivedRecipe) -> &'static str {
+    debug_assert!(!recipe.is_heavy(), "heavy recipes hold no computed slot");
+    let mut probe = DerivedComputedFields::default();
+    computed_recipe_slot(recipe, &mut probe).1
+}
+
 /// The single recipe -> computed-field mapping behind both query shapes:
 /// a mutable slot reference plus the display units and the field name used
 /// in the not-computed error.

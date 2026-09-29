@@ -210,6 +210,26 @@ def test_native_status_reads_bound_progress_and_plain_failure_without_raw_frames
         ra.native_progress(case.record, case.status)
 
 
+def test_native_status_carries_the_pictures_missing_their_maps(case, monkeypatch):
+    """A run on another machine whose renderer had no map assets says so
+    in the same field the terminal workspace's local reader fills."""
+    warning = {"schema_version": "gpuwm.run-plan.event.v1", "sequence": 2, "event": "warning",
+        "emitted_unix_ms": ra._timestamp("2026-09-07T18:00:21Z"), "code": ra.RENDER_BASEMAP_MISSING,
+        "message": "no map assets resolve for the renderer, so pictures are drawn with no coastlines,\n"
+                   "borders or state lines; reinstall it: pip install --force-reinstall gpuwm-data==2.8.0",
+        "remedy": "pip install --force-reinstall gpuwm-data==2.8.0", "render_stage": "as-drawn"}
+    monkeypatch.setattr(ra, "_file_sha", lambda *_: pytest.fail("status must not hash meteorological payloads"))
+    assert "render_warning" not in ra.native_progress(case.record, case.status)
+    case.events.write_bytes(encoded(case.event) + encoded(warning))
+    result = ra.native_progress(case.record, case.status)
+    assert result["render_warning"] == (
+        "no map assets resolve for the renderer, so pictures are drawn with no coastlines, "
+        "borders or state lines; reinstall it: pip install --force-reinstall gpuwm-data==2.8.0")
+    other = {**warning, "code": "kernel_compile_progress", "sequence": 2}
+    case.events.write_bytes(encoded(case.event) + encoded(other))
+    assert "render_warning" not in ra.native_progress(case.record, case.status)
+
+
 def test_current_native_heartbeat_phase_is_not_replaced_by_an_older_stage_label(case, monkeypatch):
     from gpuwm.supervisor import HEARTBEAT_SCHEMA
     progress_path=case.output/"run-progress.json"

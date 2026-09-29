@@ -133,8 +133,10 @@ def prepare_spawn_statics(child_dc, parent_node, catalog, *,
             domain_id=child_dc.grid_id,
             case_date=valid_date,
             landuse_attrs=landuse_attrs)
-        receipt["highres_overlay"] = True
-        receipt["highres"] = overlay_receipt
+        # A block scoped by grid spacing leaves a coarser domain alone.
+        if overlay_receipt is not None:
+            receipt["highres_overlay"] = True
+            receipt["highres"] = overlay_receipt
     return {"static_fields": static_fields,
             "landuse_attrs": dict(landuse_attrs), "receipt": receipt}
 

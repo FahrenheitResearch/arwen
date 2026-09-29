@@ -39,7 +39,8 @@ from gpuwm.hrrr_route_inputs import (
 #: The sources the wizard accepts, in the order the prompt offers them.
 #: GFS leads because it is the only one of the three that a new install
 #: can fetch with no account and no manual step: HRRR is CONUS-only and
-#: ERA5 needs a personal Copernicus key.  The flag default stays era5 --
+#: ERA5's default wizard provider, Copernicus CDS, needs a personal key.
+#: The flag default stays era5 --
 #: changing it would edit every documented example -- so this is a
 #: default for the person who did not state a preference, not a change
 #: of the project's default.

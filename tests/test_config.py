@@ -240,11 +240,11 @@ def test_km_opt4_admits_pbl_off_vertical_diffusion(tmp_path):
     # out because a dry state is not an absent state -- the physics seam
     # hands every closure the persistent zero moisture planes and
     # nothing consumes their zero tendencies.  A dry km_opt=4 + YSU +
-    # classic-MM5 run is admitted here and reaches the driver.  The two
-    # per-scheme rows that DO refuse a dry column, MYJ's and SASE's, are
-    # each raised by their own validator on their own reason
-    # (tests/test_myj_port.py::
-    # test_a_dry_myj_run_is_refused_the_way_wrf_refuses_it).
+    # classic-MM5 run is admitted here and reaches the driver.  The one
+    # per-scheme row that DOES refuse a dry column, SASE's, is raised by
+    # its own validator on its own reason; YSU, MYJ, MYNN and Shin-Hong
+    # each run dry (tests/test_myj_port.py::
+    # test_a_dry_pbl_run_reaches_the_driver_and_mixes).
     cfg = load_config(_write_toml(
         tmp_path,
         dynamics="km_opt = 4\nbl_pbl_physics = 1\nsf_sfclay_physics = 91"))

@@ -25,11 +25,13 @@ const STANDARD_LEVEL_COUNT: usize = 37;
 const MAX_NATIVE_F64_COMPONENT_COUNT: u128 = 8;
 const ISO_VOLUME_COUNT: u128 = 5;
 const SURFACE_F32_PLANE_COUNT: u128 = 5;
-/// Ceiling for buffers owned directly by the volume path. This deliberately
-/// excludes wrf-core's memoization cache, whose lifetime is managed separately.
-/// The known 800x800x79 workflow needs 3,722,240,000 bytes (~3.47 GiB) by this
-/// accounting and therefore remains supported with useful allocation headroom.
-const MAX_WRF_VOLUME_OWNED_BYTES: u128 = 4 * 1024 * 1024 * 1024;
+/// The owned-buffer ceiling no host is held below, whatever memory it
+/// reports. Owned buffers deliberately exclude wrf-core's memoization cache,
+/// whose lifetime is managed separately. The known 800x800x79 workflow needs
+/// 3,722,240,000 bytes (~3.47 GiB) by this accounting. This was once the
+/// whole ceiling, so every grid under it builds its volumes on every host
+/// exactly as it did then.
+const WRF_VOLUME_OWNED_FLOOR_BYTES: u128 = 4 * 1024 * 1024 * 1024;
 
 /// Canonical isobaric levels (hPa), matching the model-ingest convention
 /// (`100..=1000` step 25 -> 37 levels). Levels outside a column's model range
@@ -50,8 +52,61 @@ fn standard_levels() -> Vec<u16> {
 /// that already owns independent 2-D products may retain them; a volume-only
 /// caller may instead return the error. The returned value is the total known
 /// owned byte count. The per-volume store ceiling remains an independent check
-/// in addition to the aggregate 4 GiB desktop working-set ceiling.
+/// in addition to the aggregate working-set ceiling, which is the memory this
+/// host has available now and never less than 4 GiB
+/// ([`volume_owned_ceiling`]).
 pub(crate) fn preflight_iso_volume_shape(nz: usize, cells: usize) -> Result<u64, String> {
+    preflight_iso_volume_shape_within(nz, cells, rusty_weather::host_memory::available_bytes())
+}
+
+/// The aggregate owned-byte ceiling for one volume build on a host that has
+/// `available_bytes` of memory available now (`None` where the platform does
+/// not say): that memory, never less than the 4 GiB floor.
+///
+/// WHAT BREAKAGE THE CEILING PREVENTS: a build larger than the memory the
+/// host has left runs it out of memory part way through the import, and the
+/// process is killed with every picture of the frame, not only the
+/// pressure-level ones. The ceiling leaves those products out instead and
+/// the frame's 2-D products still draw.
+///
+/// Why it reads the host: the floor alone was the ceiling, so a 3 km frame
+/// of about 1,000,000 columns at 55 levels (1132x906x55 needs 4,389,533,760
+/// owned bytes) drew none of its pressure-level charts on a 30 GiB worker
+/// with the memory to spare, and a 1792x1024x55 frame lost them on every
+/// host. The columns cannot be built in bounded chunks instead: wrf-core's
+/// `getvar` reads and derives every native field over the whole grid, and
+/// the 37-level volumes are whole-grid store products.
+fn volume_owned_ceiling(available_bytes: Option<u64>) -> u128 {
+    available_bytes.map_or(WRF_VOLUME_OWNED_FLOOR_BYTES, |bytes| {
+        u128::from(bytes).max(WRF_VOLUME_OWNED_FLOOR_BYTES)
+    })
+}
+
+/// [`preflight_iso_volume_shape`] on a host that reports `available_bytes`
+/// of memory available now, or `None` where the platform does not say.
+fn preflight_iso_volume_shape_within(
+    nz: usize,
+    cells: usize,
+    available_bytes: Option<u64>,
+) -> Result<u64, String> {
+    let owned_bytes = iso_volume_owned_bytes(nz, cells)?;
+    let ceiling = volume_owned_ceiling(available_bytes);
+    if owned_bytes > ceiling {
+        let host = match available_bytes {
+            Some(bytes) => format!("this process has {bytes} bytes available now"),
+            None => "this host does not report its available memory".to_string(),
+        };
+        return Err(format!(
+            "WRF volume path requires {owned_bytes} known owned bytes for {nz} levels x {cells} cells, exceeding the {ceiling}-byte host memory ceiling ({host}; no host is held below {WRF_VOLUME_OWNED_FLOOR_BYTES} bytes, 4 GiB), so the volumes are not built rather than risk the host killing the import with every picture of the frame"
+        ));
+    }
+    u64::try_from(owned_bytes)
+        .map_err(|_| format!("WRF volume owned-byte total {owned_bytes} does not fit u64"))
+}
+
+/// The complete known owned working set of one volume build, after the
+/// shape, store-volume and overflow checks. Host independent.
+fn iso_volume_owned_bytes(nz: usize, cells: usize) -> Result<u128, String> {
     if nz < 2 {
         return Err(format!(
             "WRF native pressure volume requires at least two levels, got {nz}"
@@ -89,17 +144,10 @@ pub(crate) fn preflight_iso_volume_shape(nz: usize, cells: usize) -> Result<u64,
             std::mem::size_of::<f32>() as u128,
         ],
     )?;
-    let owned_bytes = native_bytes
+    native_bytes
         .checked_add(iso_bytes)
         .and_then(|bytes| bytes.checked_add(surface_bytes))
-        .ok_or_else(|| "WRF volume owned-byte total overflows u128".to_string())?;
-    if owned_bytes > MAX_WRF_VOLUME_OWNED_BYTES {
-        return Err(format!(
-            "WRF volume path requires {owned_bytes} known owned bytes for {nz} levels x {cells} cells, exceeding the {MAX_WRF_VOLUME_OWNED_BYTES}-byte (4 GiB) desktop ceiling"
-        ));
-    }
-    u64::try_from(owned_bytes)
-        .map_err(|_| format!("WRF volume owned-byte total {owned_bytes} does not fit u64"))
+        .ok_or_else(|| "WRF volume owned-byte total overflows u128".to_string())
 }
 
 fn checked_byte_product(name: &str, factors: &[u128]) -> Result<u128, String> {
@@ -340,9 +388,13 @@ pub(crate) fn interpolate_field_at_levels(
 /// ([`build_iso_volumes`]) and post-processed (`TK`/`Z`/`P`) reader paths.
 ///
 /// File readers must call [`preflight_iso_volume_shape`] with trustworthy
-/// metadata before reading their 3-D inputs. This function repeats that guard,
-/// validates all input lengths, and uses fallible reservations for the large
-/// output, surface, and scratch buffers.
+/// metadata before reading their 3-D inputs. This function repeats that
+/// guard's shape, store-volume and overflow checks, validates all input
+/// lengths, and uses fallible reservations for the large output, surface, and
+/// scratch buffers. It does not repeat the host comparison: the reader made it
+/// before its reads, and the inputs it read are resident now, counted in the
+/// memory the host reports in use, so a second comparison would count them
+/// twice and could leave out the volumes of a frame already admitted and read.
 pub(crate) fn try_interpolate_iso_volumes(
     pressure_hpa: &[f64],
     temp_k: &[f64],
@@ -354,7 +406,7 @@ pub(crate) fn try_interpolate_iso_volumes(
     cells: usize,
     progress: &mut dyn FnMut(String),
 ) -> Result<(Vec<IsoVolume>, SurfaceFallback), String> {
-    preflight_iso_volume_shape(nz, cells)?;
+    iso_volume_owned_bytes(nz, cells)?;
     validate_interpolation_inputs(
         pressure_hpa,
         temp_k,
@@ -686,40 +738,119 @@ mod tests {
 
     #[test]
     fn volume_preflight_checks_store_and_owned_working_set_ceilings_without_allocating() {
+        // A host that does not report its memory is held at the floor, the
+        // fixed ceiling every host had before the ceiling read the host.
+        let floor_host = |nz, cells| preflight_iso_volume_shape_within(nz, cells, None);
         let largest_supported_grid = rustwx_core::MAX_VOLUME_ELEMENTS / STANDARD_LEVEL_COUNT;
         assert!(
-            u128::from(preflight_iso_volume_shape(2, largest_supported_grid).unwrap())
-                < MAX_WRF_VOLUME_OWNED_BYTES
+            u128::from(floor_host(2, largest_supported_grid).unwrap())
+                < WRF_VOLUME_OWNED_FLOOR_BYTES
         );
 
-        let error = preflight_iso_volume_shape(2, largest_supported_grid + 1)
-            .expect_err("one cell past the 37-level ceiling must be omitted");
-        assert!(error.contains("37-level"), "unexpected error: {error}");
-        assert!(
-            error.contains(&rustwx_core::MAX_VOLUME_ELEMENTS.to_string()),
-            "shared ceiling must be visible in the error: {error}"
-        );
+        // The store-volume ceiling holds on any host, however much it has.
+        for available in [None, Some(u64::MAX)] {
+            let error = preflight_iso_volume_shape_within(2, largest_supported_grid + 1, available)
+                .expect_err("one cell past the 37-level ceiling must be omitted");
+            assert!(error.contains("37-level"), "unexpected error: {error}");
+            assert!(
+                error.contains(&rustwx_core::MAX_VOLUME_ELEMENTS.to_string()),
+                "shared ceiling must be visible in the error: {error}"
+            );
+        }
 
         assert_eq!(
-            preflight_iso_volume_shape(79, 800 * 800).unwrap(),
+            floor_host(79, 800 * 800).unwrap(),
             3_722_240_000,
             "known 800x800x79 workflow remains below the 4 GiB owned-buffer cap"
         );
         assert_eq!(
-            preflight_iso_volume_shape(92, 800 * 800).unwrap(),
+            floor_host(92, 800 * 800).unwrap(),
             4_254_720_000,
             "largest accepted level count for this grid remains just under 4 GiB"
         );
-        let aggregate_error = preflight_iso_volume_shape(93, 800 * 800)
+        let aggregate_error = floor_host(93, 800 * 800)
             .expect_err("one level beyond the aggregate boundary must fail before getvar");
         assert!(
             aggregate_error.contains("4 GiB"),
             "unexpected aggregate error: {aggregate_error}"
         );
-        assert!(preflight_iso_volume_shape(usize::MAX, 1).is_err());
-        assert!(preflight_iso_volume_shape(1, 1).is_err());
-        assert!(preflight_iso_volume_shape(2, 0).is_err());
+        assert!(floor_host(usize::MAX, 1).is_err());
+        assert!(floor_host(1, 1).is_err());
+        assert!(floor_host(2, 0).is_err());
         assert!(checked_byte_product("test", &[u128::MAX, 2]).is_err());
+    }
+
+    /// THE BREAKAGE: the 4 GiB floor was the whole ceiling, so a 1132x906x55
+    /// frame (4,389,533,760 owned bytes) drew 43 pictures where an 880x704x55
+    /// frame drew 67 on a 30 GiB worker with the memory to spare: every
+    /// pressure-level chart was left out.
+    #[test]
+    fn a_frame_past_the_floor_builds_its_volumes_where_the_host_has_the_memory() {
+        const GIB: u64 = 1 << 30;
+        let large = (55, 1132 * 906);
+        assert_eq!(
+            preflight_iso_volume_shape_within(large.0, large.1, Some(8 * GIB)).unwrap(),
+            4_389_533_760
+        );
+        // A 1792x1024x55 CONUS 3 km frame on a host with 16 GiB available.
+        assert_eq!(
+            preflight_iso_volume_shape_within(55, 1792 * 1024, Some(16 * GIB)).unwrap(),
+            7_853_834_240
+        );
+        // Exactly the memory the host has is still admitted; one byte more is not.
+        assert!(preflight_iso_volume_shape_within(large.0, large.1, Some(4_389_533_760)).is_ok());
+        let short = preflight_iso_volume_shape_within(large.0, large.1, Some(4_389_533_759))
+            .expect_err("a build past the host's available memory must not start");
+        assert!(
+            short.contains(
+                "exceeding the 4389533759-byte host memory ceiling \
+                 (this process has 4389533759 bytes available now;"
+            ),
+            "the refusal names the host's measured memory: {short}"
+        );
+        let unreported = preflight_iso_volume_shape_within(large.0, large.1, None)
+            .expect_err("a host that does not say is held at the floor");
+        assert!(
+            unreported.contains("4294967296-byte host memory ceiling")
+                && unreported.contains("does not report its available memory"),
+            "unexpected refusal: {unreported}"
+        );
+        // A host with less than the floor still builds every grid under it,
+        // as every host did before the ceiling read the host.
+        assert_eq!(
+            preflight_iso_volume_shape_within(92, 800 * 800, Some(GIB)).unwrap(),
+            4_254_720_000
+        );
+        assert!(preflight_iso_volume_shape_within(93, 800 * 800, Some(GIB)).is_err());
+    }
+
+    /// The real entry point reads the host: on a host with the memory, the
+    /// 1132x906x55 frame is admitted where the fixed ceiling refused it.
+    #[test]
+    fn the_preflight_reads_the_memory_this_host_has_available() {
+        let need = 4_389_533_760u64;
+        match rusty_weather::host_memory::available_bytes() {
+            // Room for the frame with a GiB spare, so a host whose free
+            // memory moves while the test runs still answers the same.
+            Some(available) if available > need + (1 << 30) => {
+                assert_eq!(preflight_iso_volume_shape(55, 1132 * 906), Ok(need));
+            }
+            Some(available) if available + (1 << 30) < need => {
+                assert!(preflight_iso_volume_shape(55, 1132 * 906).is_err());
+            }
+            // Too close to call, or a platform that does not say.
+            _ => {}
+        }
+    }
+
+    /// The interpolator repeats the shape and store checks but not the host
+    /// comparison: its inputs are resident and already counted in use.
+    #[test]
+    fn the_interpolator_does_not_count_its_resident_inputs_against_the_host_again() {
+        assert!(iso_volume_owned_bytes(55, 1132 * 906).is_ok());
+        let largest_supported_grid = rustwx_core::MAX_VOLUME_ELEMENTS / STANDARD_LEVEL_COUNT;
+        assert!(iso_volume_owned_bytes(2, largest_supported_grid + 1).is_err());
+        assert!(iso_volume_owned_bytes(1, 1).is_err());
     }
 
     #[test]

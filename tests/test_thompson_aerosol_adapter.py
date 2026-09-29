@@ -1924,7 +1924,9 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
     :data:`_G3_ALLOWANCES` with its WRF justification.
 
     STILL RED, ACCURATELY, AND THE COUNT IS STATED TWICE.
-    MEASURED ON THIS TREE (RTX 5090, cupy 14.1.1):
+    MEASURED ON THIS TREE (RTX 5090, cupy 14.1.1; re-read 2026-09-24 on an
+    RTX 5070 Ti, sm_120, and an RTX 4090, sm_89, with the same three
+    fixtures red and the same counts on both card classes):
 
       * UNEXCEPTIONED -- a flat 2.0e-06 relative / 2.0e-04 dB gate on all
         twenty-three quantities, no bounds dict, no excluded levels, no
@@ -2010,8 +2012,9 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
 #: failed and the adapter launches the fallout's ``_with_presence`` entry
 #: points, so level 1 (qr 8.5265e-13 kg/kg, rr 1.1748e-12 kg/m3, L_qr true)
 #: gets its own fall speed as WRF's :3616 gives it.  Level 0 ``nr`` went
-#: 2.7239e-06 (34 ulp) -> 4.006e-07 (5 ulp) on a card (the RTX 4090 and the
-#: RTX 5090 read it bit for bit alike), and the fixture's worst over all 23
+#: 2.7239e-06 (34 ulp) -> 4.006e-07 (5 ulp) on a card (the RTX 4090, the
+#: RTX 5090 and the RTX 5070 Ti read it bit for bit alike), and the
+#: fixture's worst over all 23
 #: quantities on the card is that same 5 ulp.  The host build of the kernels
 #: (tools/thompson_real_column_parity) reads 8.012e-08 (1 ulp) and 3 ulp.
 #:
@@ -2572,8 +2575,10 @@ def _g3_ulp_rows(cp):
 #:   max(|entry|, |after|) is the scale there, worst ULPs anywhere in the
 #:   column, the level that sits at, which side is the scale there)``.
 #:
-#: MEASURED ON THIS TREE (RTX 5090, cupy 14.1.1, nvrtc defaults).  READ THE
-#: TWO ULP COLUMNS TOGETHER: ``aero-cold-overlap`` qr is 1.789 ulp at the
+#: MEASURED PER CARD CLASS.  This tuple is the sm_120 row (an RTX 5090 with
+#: cupy 14.1.1 and an RTX 5070 Ti with cupy 14.2.0 read it alike);
+#: :data:`_G3_ULP_PINS_BY_CARD_CLASS` carries every class measured, keyed by
+#: the device's compute capability.  READ THE TWO ULP COLUMNS TOGETHER: ``aero-cold-overlap`` qr is 1.789 ulp at the
 #: level the relative gate fails on and 18 ulps at level 1, so the relative
 #: metric and the ULP metric do not agree about where this column's worst
 #: disagreement is -- which is itself the reason for publishing both.
@@ -2598,6 +2603,44 @@ _G3_ULP_PINS = (
      "entry"),
     ("wp08-nusweep", "qr", 12, 60.00, "after", 60.00, 12, "after"),
 )
+
+#: The same nine cells on an RTX 4090 (sm_89, cupy 14.2.0), measured
+#: 2026-09-24.  Two cells read differently from sm_120, both in the last
+#: ulp of a rounding: ``aero-cold-overlap`` nr_per_kg is 17 ulps at level 1
+#: (16 on sm_120) and ``aero-reduces-to-classic`` nr_per_kg is 0.1592 at
+#: level 6 (0.1593).  The relative gate's miss set is the same nine cells on
+#: both classes.
+_G3_ULP_PINS_SM89 = (
+    ("aero-cloud-freeze-nc", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
+    ("aero-cold-overlap", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
+    ("aero-cold-overlap", "qr", 6, 1.789, "entry", 18.00, 1, "after"),
+    ("aero-cold-overlap", "nr_per_kg", 6, 0.6109, "entry", 17.00, 1, "after"),
+    ("aero-cold-overlap", "nc_per_kg", 4, 0.2292, "entry", 0.2292, 4,
+     "entry"),
+    ("aero-cold-overlap", "effc_m", 4, 1.11439e+07, "after", 1.11439e+07, 4,
+     "after"),
+    ("aero-reduces-to-classic", "qr", 6, 0.5850, "entry", 1.000, 0, "after"),
+    ("aero-reduces-to-classic", "nr_per_kg", 6, 0.1592, "entry", 3.000, 2,
+     "entry"),
+    ("wp08-nusweep", "qr", 12, 60.00, "after", 60.00, 12, "after"),
+)
+
+#: THE PINS ARE PER CARD CLASS.  A residual is one card's rounding of the
+#: port, not the port's number: the same kernels compiled for sm_89 and for
+#: sm_120 round a handful of cells differently, and a table measured on one
+#: card failed on the other.  Keyed by :func:`_card_class`.  A card class
+#: with no row here is held to the relative gate's miss set only, and the
+#: test says so on its output.
+_G3_ULP_PINS_BY_CARD_CLASS = {
+    "12.0": _G3_ULP_PINS,
+    "8.9": _G3_ULP_PINS_SM89,
+}
+
+
+def _card_class(cp) -> str:
+    """The device's compute capability as ``major.minor`` (``"8.9"``)."""
+    capability = str(cp.cuda.Device().compute_capability)
+    return f"{capability[:-1]}.{capability[-1]}"
 
 #: THE CEILING ON EVERYTHING ELSE.  Every one of the 496 (fixture, quantity)
 #: cells that is INSIDE the flat relative gate is also inside this many
@@ -2647,13 +2690,29 @@ _G3_WORST_ULP_BY_FIXTURE = {
     "aero-scav-rain": 4.0,
     "aero-sfc-emit": 0.0,
     "aero-warm-overlap": 5.0,
-    # 34.0 until the rain fallout was handed WRF's L_qr.  Measured 3.0 on
-    # the host build of the kernels (tools/thompson_real_column_parity),
-    # which reproduces the RTX 5090's published 34 ulp bit for bit when the
-    # fallout is launched the old way; to be re-read on the card.
-    "wp08-freeze": 3.0,
+    # 34.0 until the rain fallout was handed WRF's L_qr.  5.0 is the card's
+    # number, level 0 nr_per_kg, read on an RTX 5070 Ti (sm_120) and an
+    # RTX 4090 (sm_89) alike; the 3.0 this pin carried was the host build
+    # of the kernels (tools/thompson_real_column_parity), which is not the
+    # device, and every card failed on it.
+    "wp08-freeze": 5.0,
     "wp08-melt": 2.0,
     "wp08-nusweep": 60.0,
+}
+
+#: The same ratchet per card class.  The table above is sm_120's (an RTX
+#: 5070 Ti re-read it on 2026-09-24).  On an RTX 4090 (sm_89) three
+#: fixtures read one ulp apart from sm_120: ``aero-nc-effrad`` 2
+#: (``nr_per_kg``, 3 on sm_120), ``aero-nc-sed`` 4 (``nr_per_kg``, 3) and
+#: ``aero-reduces-to-classic`` 3 (``ni_per_kg`` 1 against 4 on sm_120, so
+#: its worst is ``nr_per_kg``'s 3).
+_G3_WORST_ULP_BY_CARD_CLASS = {
+    "12.0": _G3_WORST_ULP_BY_FIXTURE,
+    "8.9": dict(_G3_WORST_ULP_BY_FIXTURE, **{
+        "aero-nc-effrad": 2.0,
+        "aero-nc-sed": 4.0,
+        "aero-reduces-to-classic": 3.0,
+    }),
 }
 
 #: Round-trip slack on the four-significant-figure literals above.  It is NOT
@@ -2679,6 +2738,10 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
     3.  Every OTHER cell is inside :data:`_G3_CLEAN_ULP_CEILING` ulps at every
         level, and every fixture is inside its
         :data:`_G3_WORST_ULP_BY_FIXTURE` entry.
+
+    Assertions 2 and 3 read the card's own row of
+    :data:`_G3_ULP_PINS_BY_CARD_CLASS` and :data:`_G3_WORST_ULP_BY_CARD_CLASS`.
+    A card class with no row gets assertion 1 only, and says so.
 
     WHAT THIS BUYS THE READER.  ``aero-cold-overlap`` qc reads 1.000e+00
     relative and 1.000 ulp; ``aero-cold-overlap`` effc_m reads 8.102e-01
@@ -2718,9 +2781,23 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
         f"Above the gate with no ULP pin: {sorted(above - pinned)}; pinned "
         f"but no longer above the gate: {sorted(pinned - above)}")
     assert len(_G3_ULP_PINS) == 9, len(_G3_ULP_PINS)
+    for card_class, card_pins in _G3_ULP_PINS_BY_CARD_CLASS.items():
+        assert {(row[0], row[1]) for row in card_pins} == pinned, card_class
+    assert set(_G3_WORST_ULP_BY_CARD_CLASS) == set(
+        _G3_ULP_PINS_BY_CARD_CLASS)
+
+    card = _card_class(cp)
+    card_pins = _G3_ULP_PINS_BY_CARD_CLASS.get(card)
+    if card_pins is None:
+        print(f"card class sm_{card.replace('.', '')} has no measured ULP "
+              "row: the relative gate's miss set is asserted, the ULP "
+              f"numbers are not (measured classes: "
+              f"{sorted(_G3_ULP_PINS_BY_CARD_CLASS)})")
+        return
+    worst_by_fixture = _G3_WORST_ULP_BY_CARD_CLASS[card]
 
     for (fixture, field, level, at_level, scale_at_level,
-         worst, worst_level, scale_at_worst) in _G3_ULP_PINS:
+         worst, worst_level, scale_at_worst) in card_pins:
         ulps, primary = rows[fixture][field]
         assert int(np.argmax(primary)) == level, (
             f"{fixture}.{field}: the relative gate's worst level moved from "
@@ -2766,12 +2843,12 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
           f"({worst_clean[0][1]}.{worst_clean[0][2]} at level "
           f"{worst_clean[0][3]}); ceiling {_G3_CLEAN_ULP_CEILING}")
 
-    assert set(_G3_WORST_ULP_BY_FIXTURE) == set(_FIXTURES), sorted(
-        set(_G3_WORST_ULP_BY_FIXTURE) ^ set(_FIXTURES))
+    assert set(worst_by_fixture) == set(_FIXTURES), sorted(
+        set(worst_by_fixture) ^ set(_FIXTURES))
     for fixture in _FIXTURES:
         measured = max(float(ulps.max())
                        for ulps, _primary in rows[fixture].values())
-        pin = _G3_WORST_ULP_BY_FIXTURE[fixture]
+        pin = worst_by_fixture[fixture]
         assert measured <= pin * _G3_ULP_ROUND_TRIP, (
             f"{fixture}: worst ULP over all 23 quantities grew from {pin:.6g} "
             f"to {measured:.6g}")
@@ -2780,7 +2857,7 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
                 f"{fixture} is published as BIT-EXACT against WRF on every "
                 f"compared quantity and now measures {measured:.6g} ulps")
 
-    exact = sorted(name for name, pin in _G3_WORST_ULP_BY_FIXTURE.items()
+    exact = sorted(name for name, pin in worst_by_fixture.items()
                    if pin == 0.0)
     assert exact == ["aero-ccn-activate", "aero-ccn-sweep",
                      "aero-init-profile", "aero-sfc-emit"], exact
@@ -4079,30 +4156,39 @@ def test_the_wp08_freeze_residual_was_the_presence_gate_and_is_repaired():
 def test_the_reduces_to_classic_residual_is_the_classic_paths():
     """What is left on aero-reduces-to-classic, and whose it is.
 
-    THE ANSWER CHANGED IN WP-13a AND THE TEST CHANGED WITH IT.  It used to
-    assert that mp=28's qr was BITWISE IDENTICAL to the frozen mp=8 pipeline's
-    at 0-based levels 2 and 3, and read that identity as proof the residual was
-    inherited from the classic warm-rain/fallout path (:3790-3936 carries no
-    ``is_aerosol_aware`` branch, so both schemes run the same code there).
+    THE ANSWER CHANGED BACK, AND THE NAME IS TRUE AGAIN.  Since 2026-09-23
+    the classic rain evaporation writes WRF's L_qr hand-off too and the
+    mp=8 adapter launches the same ``_with_presence`` fallout forms mp=28
+    does, so on this column the two pipelines share the warm-rain and
+    fallout path bit for bit.  MEASURED on an RTX 5070 Ti (sm_120) and an
+    RTX 4090 (sm_89) alike: ``qr`` and ``nr_per_kg`` are BITWISE IDENTICAL
+    between mp=28 and mp=8 at 0-based levels 0-5, and both are bit-exact
+    against WRF at ``qr`` levels 1, 2, 4 and 5.
 
-    That identity is gone, and it is gone because mp=28 got NEARER TO WRF, not
-    further.  Restoring WRF's level-wise :3237-vs-:3568 sedimentation density
-    made mp=28 BIT-EXACT against WRF at qr levels 1, 2 and 4, where the mp=8
-    pipeline is 7.61e-05, 4.00e-05 and 6.27e-05 away.  So the surviving
-    residual is NOT the classic path's and is no longer claimed to be.
+    The one level where they differ is level 6, the near-cancellation level
+    :data:`_NEAR_CANCELLATION_LEVELS` names: it enters with 3.1695777e-07
+    kg/kg of rain and evaporates 99.958% of it, so its survivor is the
+    difference of two nearly equal float32 numbers.  The earlier form of
+    this test compared the two schemes there RELATIVELY (mp=28 1.2383e-04
+    against mp=8 7.1010e-05) and failed on every card, which is the metric
+    the allowance exists to replace.  In ulps of the entry value, the unit
+    that allowance states, mp=28 is 0.585 ulp from WRF and mp=8 0.335
+    (``nr_per_kg`` 0.159 and 0.091): both under one ulp, inside the 32-ulp
+    allowance.
 
-    What this test asserts instead is strictly stronger than the old bitwise
-    claim, and it is the claim the port actually wants to be able to make:
+    What this asserts:
 
-      1. at EVERY level of the column, mp=28 is at least as near WRF as the
-         frozen, model-validated mp=8 pipeline is;
-      2. at three qr levels mp=28 is bit-exact against WRF and mp=8 is not;
-      3. mp=8 is strictly further away at seven of the eight levels that carry
-         any rain at all, so (1) is not vacuous;
-      4. the two schemes really are different runs (nc is prognostic in one and
-         pinned at Nt_c in the other), so none of the above is a tautology.
-
-    A regression that moves mp=28 back onto mp=8's answer fails (1) or (2).
+      1. outside the near-cancellation level, mp=28 and mp=8 are bitwise
+         identical in ``qr`` and ``nr``, so the fixture's residual there is
+         the classic path's;
+      2. at the near-cancellation level both are inside the allowance, in
+         ulps of the entry value;
+      3. mp=28 is bit-exact against WRF at ``qr`` levels 1, 2 and 4;
+      4. the column carries rain at seven levels, so none of this is
+         vacuous;
+      5. the two schemes really are different runs (nc is prognostic in one
+         and pinned at Nt_c in the other), so (1) is a finding and not a
+         tautology.
     """
     import cupy as cp
 
@@ -4112,55 +4198,55 @@ def test_the_reduces_to_classic_residual_is_the_classic_paths():
     from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
 
     scenario = "aero-reduces-to-classic"
-    state, cfg, dt, _, after, _, _ = _build_case(cp, scenario)
+    state, cfg, dt, before, after, _, _ = _build_case(cp, scenario)
     _apply_thompson_aerosol(state, cfg, dt)
     cp.cuda.Stream.null.synchronize()
-    aerosol_qr = cp.asnumpy(state.qr).ravel().astype(np.float64)
 
     classic_state, _, _, _, _, _, _ = _build_case(cp, scenario)
     _apply_thompson(
         classic_state,
         SimpleNamespace(mp_physics=8, no_mp_heating=0, mp_tend_lim=10.0), dt)
     cp.cuda.Stream.null.synchronize()
-    classic_qr = cp.asnumpy(classic_state.qr).ravel().astype(np.float64)
 
-    want = _column(after, "qr").astype(np.float64)
+    cancellation = set(_NEAR_CANCELLATION_LEVELS[scenario])
+    for attribute, key in (("qr", "qr"), ("nr", "nr_per_kg")):
+        aerosol = cp.asnumpy(getattr(state, attribute)).ravel().astype(
+            np.float64)
+        classic = cp.asnumpy(getattr(classic_state, attribute)).ravel(
+            ).astype(np.float64)
+        want = _column(after, key).astype(np.float64)
+        entry = _column(before, key).astype(np.float64)
 
-    def distance(got, level):
-        reference = abs(want[level]) or 1.0
-        return abs(got[level] - want[level]) / reference
+        # (1) the shared classic path, bit for bit, off the cancellation.
+        differ = [level for level in range(want.size)
+                  if level not in cancellation
+                  and aerosol[level] != classic[level]]
+        assert not differ, (
+            f"{key}: mp=28 and the frozen mp=8 pipeline differ at 0-based "
+            f"levels {differ}; they share the warm-rain and fallout path on "
+            "this column")
 
-    # (1) mp=28 is never further from WRF than mp=8, anywhere in the column.
-    worse = [level for level in range(want.size)
-             if distance(aerosol_qr, level) > distance(classic_qr, level)]
-    assert not worse, (
-        "mp=28 is further from WRF than the frozen mp=8 pipeline at 0-based "
-        f"levels {worse}: "
-        + "; ".join(f"{lev}: {distance(aerosol_qr, lev):.4e} vs "
-                    f"{distance(classic_qr, lev):.4e}" for lev in worse))
+        # (2) the near-cancellation level, in ulps of the entry value.
+        for level in sorted(cancellation):
+            ulp = _ulps(entry[level])
+            for label, got in (("mp=28", aerosol), ("mp=8", classic)):
+                distance = abs(got[level] - want[level]) / ulp
+                assert distance <= _NEAR_CANCELLATION_ULPS, (
+                    f"{key} level {level}: {label} is {distance:.3f} ulp of "
+                    f"the entry value from WRF, past the "
+                    f"{_NEAR_CANCELLATION_ULPS} allowance")
 
-    # (2) and it is BIT-EXACT against WRF where mp=8 is not.
-    exact = [level for level in range(want.size)
-             if want[level] != 0.0 and aerosol_qr[level] == want[level]]
-    assert set(exact) >= {1, 2, 4}, exact
-    for level in (1, 2, 4):
-        assert classic_qr[level] != want[level], (
-            f"level {level}: mp=8 is bit-exact too, so mp=28 being bit-exact "
-            "is not a finding about the aerosol port")
-        assert distance(classic_qr, level) > 1.0e-5, (
-            level, distance(classic_qr, level))
+        if key == "qr":
+            # (3) bit-exact against WRF where WRF carries rain.
+            exact = [level for level in range(want.size)
+                     if want[level] != 0.0 and aerosol[level] == want[level]]
+            assert set(exact) >= {1, 2, 4}, exact
+            # (4) non-vacuous.
+            rain_levels = [level for level in range(want.size)
+                           if want[level] != 0.0 or classic[level] != 0.0]
+            assert len(rain_levels) == 7, rain_levels
 
-    # (3) non-vacuous: over the levels that carry rain, mp=8 is STRICTLY
-    #     further away almost everywhere -- this is a real ordering, not a tie.
-    rain_levels = [level for level in range(want.size)
-                   if want[level] != 0.0 or classic_qr[level] != 0.0]
-    assert len(rain_levels) == 7, rain_levels
-    strictly = [level for level in rain_levels
-                if distance(classic_qr, level) > distance(aerosol_qr, level)]
-    assert len(strictly) == len(rain_levels), (strictly, rain_levels)
-
-    # (4) Non-vacuous: the two schemes are genuinely different everywhere the
-    # aerosol physics is live, so the ordering above is a finding.
+    # (5) the two schemes are different runs.
     aerosol_nc = float(cp.asnumpy(state.nc).ravel()[0])
     classic_nc = float(cp.asnumpy(classic_state.nc).ravel()[0])
     assert aerosol_nc != classic_nc

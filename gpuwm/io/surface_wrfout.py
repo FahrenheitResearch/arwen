@@ -238,11 +238,26 @@ def write_surface_wrfout(path, snapshot: dict, *, time_str: str,
     in neither: they are not fields, and naming them on every frame would
     bury the entry that matters.
 
-    ``T`` and ``MU`` are placed BEFORE the shape rule and the other three
-    placeholders after it, because those two are the file's structure
-    rather than a stand-in for a measurement: a snapshot entry of the same
-    name is reported as already written instead of replacing the mass
-    coordinate with a surface plane.
+    ``T`` is placed BEFORE the shape rule, because it is the file's
+    structure rather than a stand-in for a measurement: a snapshot entry of
+    the same name is reported as already written instead of replacing the
+    mass coordinate with a surface plane.  The rotation pair
+    (``SINALPHA``/``COSALPHA``) goes in after it, so a lane that knows its
+    grid rotation publishes it.
+
+    ## What the file does not invent
+
+    A field the snapshot does not carry is not written as zeros.  THE
+    BREAKAGE: this writer used to add ``HGT`` and ``MU`` as zero planes,
+    and the renderer draws every plane a wrfout carries, so every frame
+    drawn with the default product set got a Terrain Height map reading
+    0 m across mountains and flat-zero ``wrf_hgt``, ``wrf_terrain`` and
+    ``wrf_mu`` pictures: on a ``gpuwm cycle`` boundary, four of the eleven
+    pictures were of fields the frame did not hold.  MEASURED on ``rw_wrfbatch`` (2.8 line): a frame without the two
+    reads and draws exactly its own planes (exit 0), and one without ``T``
+    is refused, so ``T`` is the one placeholder the file needs.  A lane
+    that has its terrain or column mass passes it (``HGT``/``HT``, ``MU``)
+    and it is written as the measurement it is.
 
     A 2-D array on a grid that is not this frame's is the one refusal, and
     it is :func:`_plane`'s, unchanged: it names a field placed where it
@@ -313,28 +328,27 @@ def write_surface_wrfout(path, snapshot: dict, *, time_str: str,
             composite, ny, nx, composite_key)[None, :, :]
         consumed.add(composite_key)
 
-    # The importer's preflight wants the mass-coordinate pair; a surface
-    # snapshot has no profile, so these are the stated zeros of a file that
-    # says it is surface-only, rather than invented values.
+    # The renderer opens a wrfout by its mass coordinate and refuses one
+    # without ``T``; a surface snapshot has no profile, so this is the
+    # stated zero of a file that says it is surface-only.  ``T`` is 3-D,
+    # (1, ny, nx), so it is never drawn as a plane.
     #
-    # These two go in BEFORE the shape rule, unlike the three below: they
-    # are STRUCTURAL, and ``T`` in particular is the one field here whose
-    # shape is (1, ny, nx) rather than (ny, nx).  A snapshot that happened
-    # to carry a 2-D ``T`` would otherwise replace the mass coordinate
-    # with a surface plane and the preflight would read a profile variable
-    # that is not one.  Placed first, such an entry is REPORTED in
-    # ``skipped`` as already written instead, so the lane is told.
+    # It goes in BEFORE the shape rule: it is STRUCTURAL, and a snapshot
+    # that happened to carry a 2-D ``T`` would otherwise replace the mass
+    # coordinate with a surface plane the renderer would read as a profile
+    # it is not.  Placed first, such an entry is REPORTED in ``skipped``
+    # as already written instead, so the lane is told.
+    #
+    # No ``MU`` and no ``HGT`` stand-in (see "What the file does not
+    # invent" above): the renderer needs neither to read the file and
+    # draws both, as a flat column mass and a 0 m terrain map.
     resolved.setdefault("T", np.zeros((1, ny, nx), np.float32))
-    resolved.setdefault("MU", np.zeros((ny, nx), np.float32))
 
     passed_through, skipped = _pass_through(
         snapshot, resolved, consumed, ny, nx)
 
-    # These three go in LAST, so a snapshot that carries one of them
-    # itself wins over the stand-in rather than being overwritten by it.
-    # They are stand-ins for a measurement, not structure: a lane that
-    # knows its terrain or its grid rotation should publish it.
-    resolved.setdefault("HGT", np.zeros((ny, nx), np.float32))
+    # These two go in LAST, so a snapshot that carries one of them itself
+    # wins over the placeholder rather than being overwritten by it.
     # The wrfout import reads these two to rotate grid-relative winds into
     # earth-relative ones.  A snapshot that does not carry the rotation is
     # declaring an unrotated grid, which is what the identity pair says.

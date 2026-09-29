@@ -27,6 +27,10 @@ MAX_EVENTS = 64 * 1024 * 1024
 MAX_LINE = 128 * 1024
 MAX_RECORDS = 100_000
 HEX = re.compile(r"[0-9a-f]{64}\Z")
+#: The run event saying the renderer had no map assets
+#: (``gpuwm.render.BASEMAP_MISSING_CODE``), spelled here because this module
+#: stays off the render stack; a test holds the two equal.
+RENDER_BASEMAP_MISSING = "render_basemap_missing"
 
 
 def _sha(payload):
@@ -1017,6 +1021,14 @@ def native_progress(record, state):
             message = " ".join(event["message"].split())
             if message:
                 result["error"] = message[:1600]
+        if (tag == "warning" and event.get("code") == RENDER_BASEMAP_MISSING
+                and isinstance(event.get("message"), str)):
+            # The renderer drew without its map files.  Same field the
+            # terminal workspace's local reader fills, so a job on another
+            # machine shows it the way a local one does.
+            warning = " ".join(event["message"].split())
+            if warning:
+                result["render_warning"] = warning[:1600]
         render_summary = event.get("render_summary")
         if render_summary is None and isinstance(event.get("summary"), dict):
             render_summary = event["summary"].get("render_summary")

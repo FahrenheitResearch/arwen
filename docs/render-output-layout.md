@@ -243,27 +243,42 @@ named after the render directory with `.render-scratch` appended
 render), created for one renderer
 invocation and removed when it finishes.
 
-It matters because the removal is best-effort by nature -- a
-memory-mapped hour file can hold its handle past the renderer's exit --
-and because scratch is present *during* the render whether or not it is
+It matters because the removal can fail -- a file another program
+still holds, a renderer killed before its cleanup -- and because scratch is present *during* the render whether or not it is
 removed cleanly afterwards.  Both showed up on real deliveries:
 leftover scratch directories sitting among the products, with paths long
 enough to break a Windows directory listing, and a `tar` of a tree being
 rendered into dying with `File removed before we read it`.  Copy, tar,
 sync or scan a render directory at any moment and you get pictures.
 
-A render stage that exits nonzero is the one case where the renderer's
-own cleanup may never run at all -- a process that is killed does not
-reach it -- so the door that saw the stage fail sweeps the sibling itself
-and prints one `render: warning:` line saying how many working stores it
-removed and where they were.  They hold no product and nothing later
-reads them.  What the door sweeps is its OWN stage's stores and nothing
-else: it mints a token before it starts the stage, hands it down so every
-store that stage opens is named `rwstore-<token>-xxxxxxxx`, and matches on
-that token afterwards.  A concurrent render into the same case is working
-in a store that cannot carry this door's token, whenever it opened it, so
-it is never swept.  The partial delivery is left alone: it is the evidence
-of what failed.
+The engine files each hour 147 characters below its store
+(`wrf/local_<init>_<64 hex>_<profile>_science_v1/f000.rws`), and the
+store sits 43 to 45 characters below the run folder, so once the run
+folder's own path is about 70 characters an hour file's path passes the
+260-character limit Windows keeps unless long paths are switched on for
+the whole machine.  The removal walks the store in the extended-length
+spelling, so it reaches those files at any length.
+
+When a render stage ends, passed or failed, the door that ran it looks
+for its own stage's stores once every render it spawned has exited, and
+removes any that are still there: a killed renderer never reaches its own
+cleanup, and a renderer that did can still find a file held.  It prints
+one `render: warning:` line saying how many working stores there were,
+how big, and where, and writes the same as a `warning` event with code
+`render_scratch_left` in the run's `events.jsonl`.  They hold no product
+and nothing later reads them.  A store another program still holds after
+that is marked (`rwstore-<token>-xxxxxxxx.abandoned` beside it), and the
+next run in the same folder removes it before it draws (code
+`render_scratch_swept`).
+
+What the door sweeps is its OWN stage's stores and nothing else: it mints
+a token before it starts the stage, hands it down so every store that
+stage opens is named `rwstore-<token>-xxxxxxxx`, and matches on that
+token afterwards.  A concurrent render into the same case is working in a
+store that cannot carry this door's token, whenever it opened it, so it
+is never swept, and a later run removes only a store a finished run
+marked.  A failed stage's partial delivery is left alone: it is the
+evidence of what failed.
 
 ## Which products a render actually asks for
 
@@ -294,7 +309,7 @@ What is dropped, and why:
 | `renderable` | `2m_temperature` | asked for |
 | `missing-fields` | `10m_wind_gusts`, no `wind_gust_10m_agl` stored | dropped, the missing selectors named |
 | `blocked` | `qpf_6h` on a two-hour run | dropped, "6-h QPF requires forecast hour >= 6" |
-| `excluded` | `qpf_1h` on a sub-hourly history | dropped, "exact-time ordinal axis; fixed-hour windows are undefined on it" |
+| `excluded` | `qpf_1h` on a single frame | dropped, "windowed accumulations need more than one stored whole-hour frame" |
 | no row, `var:` family | `var:SNOWH` | dropped: the generic catalog enumerates the store's 2-D variables, so a missing row is proof -- but only when the listing carried generic rows at all; one that carried none enumerated nothing, and the term is forwarded for the renderer to answer |
 | no row, group keyword | `all`, `heavy` | asked for: the engine expands a group itself and leaves out what it cannot draw |
 | `mesh:`, `meshdiff:` | `mesh:cell_area` | dropped at both doors: drawn from a mesh file's cell boundaries, and no door here passes `--mesh-grid` |
@@ -308,19 +323,28 @@ or `blocked` product is SKIPPED by the renderer and does not change
 the exit code -- `10m_wind_gusts`, `precipitation_type` and
 `cloud_cover` forwarded onto a downscaled child, and `qpf_6h` onto a
 two-hour store, all exit 0.  A forwarded `var:` term the store has no
-variable for, a `mesh:` or `xsec:` term, and a fixed-hour windowed
-product on an exact-time ordinal axis (the `windowed-ordinal-axis` and
-`windowed-needs-whole-hour-frames` codes) FAIL it: a thirteen-frame
-sub-hourly series with `qpf_1h` forwarded into it answers
-`rendered=13 skipped=0 failed=13` and exits 1, while the same call
-without that one slug exits 0.  The door cannot tell in advance which
-store will do which, so it asks the catalog and drops whatever the
-catalog refused.
+variable for, a `mesh:` or `xsec:` term FAIL it, and so did a fixed-hour
+windowed product on an exact-time ordinal axis before 2.8.0 (the
+`windowed-ordinal-axis` code): a thirteen-frame sub-hourly series with
+`qpf_1h` forwarded into it answered `rendered=13 skipped=0 failed=13`
+and exited 1, while the same call without that one slug exited 0.  The
+door cannot tell in advance which store will do which, so it asks the
+catalog and drops whatever the catalog refused.
 
 A group keyword on its own (`--products all`) is never checked and costs
 no availability pass: the engine expands it and leaves out what it
 cannot draw.  A slug spelled out BESIDE a group still is, because a
 named slug is a promise.
+
+What the engine expands a keyword to is read off the imported store.
+`all` is every NAMED product the frames can draw: the stored 2-D
+variables are left out, and they are the `variables` keyword, each
+filed under the variable's own name (`var_wrf_t2`).  `all` and
+`windowed` keep only the windows the run's last stored frame closes, so
+an 18 h run is not asked for `qpf_24h` or any 24-48 h window; named
+explicitly, such a window is refused on every frame with the run's
+length (`this run's stored frames end at F018`).  Each per-frame skip
+names the input file of its own frame.
 
 The three STORELESS families -- `mesh:`, `meshdiff:` and `xsec:` --
 are decided before the listing is even asked, because a store listing
@@ -354,12 +378,52 @@ these frames cannot draw still reaches the renderer.
 Fixed-hour windowed products -- `qpf_1h`, `qpf_6h`, `qpf_24h`,
 `uh_2to5km_1h_max`, `10m_wind_1h_max`, the `2m_temp_0_24h_*` family --
 are defined in whole forecast hours.  A history cadence that does not
-land on whole hours puts the store on an exact-time ordinal axis, where
-those windows are undefined, and the catalog excludes them by name.  A
-ten-minute child is the ordinary case: it draws every instantaneous
-product for every frame and its `total_qpf` (a stored run-total, not a
-window), and its render summary names the windowed ones it skipped.
-Ask for whole-hour history if the windows are the point.
+land on whole hours puts the store on an exact-time axis, where each
+frame carries its own lead, and the windows are served from those
+leads:
+
+- a window ends only on a frame whose lead is a whole hour, and needs
+  the frames at both of its whole-hour ends; a frame between hours ends
+  no window, and a series render plans none there;
+- `qpf_1h` and the other rainfall windows difference the run totals at
+  those two frames, and `total_qpf` reads the run total at the frame;
+- `uh_2to5km_1h_max`, `10m_wind_1h_max` and the other maxima fold every
+  frame inside the window.  The history writer resets `UP_HELI_MAX` at
+  each write, so on a 15-minute history the frame on the hour holds only
+  its last quarter hour, and the window's maximum is the maximum of all
+  four.  The 10 m wind maximum of a wrfout is read from `U10` and
+  `V10`, instants, so it is the largest of the stored instants,
+  labelled a lower bound.  Either way the frames must be evenly spaced
+  from the window's start, and the frame at the start must be stored
+  unless the window starts with the run, or the window is refused by
+  name: a frame that was never stored cannot be folded, and the fold
+  without it reads low.  The wind also needs a frame on each whole hour
+  of the window, as on the whole-hour axis.  The fold cannot tell a
+  thinned series from a whole one, so rendering every other file of a
+  15-minute history draws each maximum over half of its frames, and the
+  UH note says the maximum is exact only when every history frame was
+  rendered;
+- the 2 m snapshot windows read the frames on the whole hours.
+
+So a ten-minute child draws every instantaneous product for every frame
+and its windows on each whole hour.  Rendering only the whole-hour files
+of a sub-hourly run puts the store back on the whole-hour axis, where
+each maximum holds only the last interval before the hour; the strategy
+note on those windows says so.
+
+`gpuwm go` draws a grid with sub-hourly history, which is every nest
+the domain wizard sets up (900 s), the same way.  Each whole-hour frame
+is drawn as it lands beside every frame of the hour it closes, so its
+`qpf_1h` and 1 h maxima arrive with it.  That render holds one hour,
+so the engine refuses the longer windows and the run maxima there by
+name, and they are drawn at the end of the run over every frame of the
+grid; a frame the live pass did not finish is drawn at the end beside
+the grid's whole series.  A request made only of windows (`windowed`,
+or named slugs the renderer lists as windowed) has nothing to draw on a
+grid's first frame or between its whole hours, so those frames are not
+drawn, live or at the end; they are still read by every window they
+fall inside.  The render stage ends with a note naming each product one
+grid has and another does not.
 
 ### When a child's render fails anyway
 

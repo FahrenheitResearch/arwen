@@ -83,7 +83,8 @@ jobs:
             tests/test_precut_gate_completion.py tests/test_gpu_pin_set.py \
             tests/test_bridge_bundle_adopt.py \
             tests/test_verify_source_bridge_pins.py \
-            tests/test_verify_release_artifacts.py
+            tests/test_verify_release_artifacts.py \
+            tests/test_native_build_inputs.py
       - id: controller
         name: capture the tested controller hash
         shell: bash
@@ -203,6 +204,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.release_authority.outputs.commit }}
+          # The smoke's stamp verifier proves a reused native binary by the
+          # ancestry of the commit it was built at; a shallow checkout lacks
+          # that commit and refuses every reused binary after the tag is public.
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:

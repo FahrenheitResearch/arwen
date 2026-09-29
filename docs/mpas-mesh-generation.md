@@ -204,7 +204,7 @@ fetch backbone there is no fallback: an unresolvable binary is a refusal
 by name, not a quiet degradation. The binaries travel in the bundle
 `gpuwm fetch-bridges` stages, or build from a checkout with
 
-    cargo build --release --locked --offline --manifest-path tools/rustwx/Cargo.toml
+    (cd tools/rustwx && cargo build --release --locked --offline)
 
 ## Reading a generated mesh's numbers
 

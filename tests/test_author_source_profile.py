@@ -1,6 +1,6 @@
 """The offline profile-authoring tool is generic; the models are DATA.
 
-Drew's ruling (2026-08-17): model names live in data, never in code or in
+The project ruling (2026-08-17): model names live in data, never in code or in
 tool filenames, and that reaches the OFFLINE generators too.  Two
 one-shot scripts used to carry a model in their filename and the model's
 whole authority content in Python -- so a new model meant a new script,
@@ -127,3 +127,44 @@ def test_an_unknown_schema_refuses_by_name(tmp_path: Path) -> None:
         cwd=ROOT, capture_output=True, text=True)
     assert completed.returncode != 0
     assert "something-else-v9" in completed.stderr, completed.stderr
+
+
+def test_append_variants_ranks_a_second_form_after_every_element(
+        tmp_path: Path) -> None:
+    """One step states a second form of every selector once: each list
+    gains a copy of each element with the overlay laid over it, after the
+    originals, so the first form keeps the higher rank; a field without
+    selectors is left alone rather than given some."""
+    spec = tmp_path / "variants.profile-spec.json"
+    spec.write_text(json.dumps({
+        "schema": "gpuwm-source-profile-authoring-spec-v1",
+        "constants": {"SECOND": {"pdt": 0, "master_table_version": 4}},
+        "documents": [{
+            "output": "out.json",
+            "base": {"kind": "empty"},
+            "steps": [
+                {"op": "set", "path": ["fields"], "value": {
+                    "a": {"selectors": [{"parameter": 1, "pdt": 1},
+                                        {"parameter": 2, "pdt": 1}]},
+                    "b": {"provider": "elsewhere"},
+                    "c": {"selectors": []},
+                }},
+                {"op": "append_variants",
+                 "path": ["fields", "*", "?selectors"],
+                 "overlay": {"$const": "SECOND"}},
+            ],
+        }],
+    }), encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(TOOL), str(spec), "--out-root", str(tmp_path)],
+        cwd=ROOT, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    fields = json.loads((tmp_path / "out.json").read_text())["fields"]
+    assert fields["a"]["selectors"] == [
+        {"parameter": 1, "pdt": 1},
+        {"parameter": 2, "pdt": 1},
+        {"parameter": 1, "pdt": 0, "master_table_version": 4},
+        {"parameter": 2, "pdt": 0, "master_table_version": 4},
+    ]
+    assert fields["b"] == {"provider": "elsewhere"}
+    assert fields["c"]["selectors"] == []

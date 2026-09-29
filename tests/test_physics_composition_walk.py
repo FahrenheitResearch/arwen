@@ -555,10 +555,14 @@ def test_the_shipped_mynn_presets_are_inside_the_measured_space() -> None:
             f"{profile} resolves to a combination the walk refuses: "
             f"{outcome.message}")
 
-    by_land_surface: dict[int, dict[bool, list[str]]] = {}
+    # Keyed by (microphysics, land surface): the MYNN + RUC pair ships with
+    # WSM6 and with Thompson, and each microphysics owes its own
+    # radiation-bearing partner, so one land surface can carry two pairs.
+    by_land_surface: dict[tuple[int, int], dict[bool, list[str]]] = {}
     for profile in mynn:
         switches = single_domain_runtime_switches(profile)
-        land_surface = int(switches["sf_surface_physics"])
+        land_surface = (int(switches["mp_physics"]),
+                        int(switches["sf_surface_physics"]))
         bucket = by_land_surface.setdefault(land_surface, {True: [], False: []})
         bucket[_radiation_bearing(switches)].append(profile)
 
@@ -577,9 +581,11 @@ def test_the_shipped_mynn_presets_are_inside_the_measured_space() -> None:
         "every land surface with a shortwave-only MYNN preset must also "
         "ship a radiation-bearing MYNN preset, or a user choosing MYNN "
         "from a menu has no nocturnally valid row to move to; "
-        f"sf_surface_physics={unpaired} has none. Shipped MYNN rows: "
+        f"(mp_physics, sf_surface_physics)={unpaired} has none. Shipped "
+        "MYNN rows: "
         + "; ".join(
-            f"lsm{land_surface}: lw+sw={rows[True]} sw-only={rows[False]}"
+            f"mp{land_surface[0]} lsm{land_surface[1]}: "
+            f"lw+sw={rows[True]} sw-only={rows[False]}"
             for land_surface, rows in sorted(by_land_surface.items())))
 
     # And the radiation-bearing rows are in the measured space WITH
@@ -587,8 +593,9 @@ def test_the_shipped_mynn_presets_are_inside_the_measured_space() -> None:
     radiating = [profile for rows in by_land_surface.values()
                  for profile in rows[True]]
     assert len(radiating) == len(dark), (
-        f"expected one radiation-bearing MYNN row per land surface that "
-        f"has a shortwave-only row; got {radiating} against {sorted(dark)}")
+        f"expected one radiation-bearing MYNN row per microphysics and "
+        f"land surface that has a shortwave-only row; got {radiating} "
+        f"against {sorted(dark)}")
     for profile in radiating:
         switches = single_domain_runtime_switches(profile)
         combination = {

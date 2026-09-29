@@ -16,6 +16,27 @@
     "  itself, both a deterministic file (PDT 0, no ensemble identity)",
     "  and an ensemble statistic (PDT 2/12, which would decode cleanly",
     "  as plausible fields with nothing downstream able to tell).",
+    "  Every selector then gains ONE lower-ranked second form for the",
+    "  AWS mirror's archive rewrite without ensemble octets (cycles",
+    "  2026-01-11 00Z to 2026-04-08 06Z, byte-measured 2026-09-28): the",
+    "  same record under PDT 0 with master table 4 and local table 0.",
+    "  No NCEP deterministic product carries that pair (GFS, GDAS and",
+    "  AIGFS stamp master 2, local 1), so a deterministic file claimed",
+    "  as a member still matches nothing and an ensemble statistic",
+    "  (PDT 2/12) matches neither form; the member grammar declares the",
+    "  same rewrite, and member identity for those bytes is the mem<NNN>",
+    "  path component it verifies.  The mirror's later rewrite keeps",
+    "  PDT 1 and needs no second form here.",
+    "  Surface pressure is derived at every valid time from the member's",
+    "  own mean-sea-level pressure, reduced through its isobaric heights",
+    "  to the terrain height the analysis supplies (WRF real's sfcprs3",
+    "  relation).  Two reasons, both measured: the operational NOMADS sfc",
+    "  product carries MSLP and no surface pressure (the AWS mirror's copy",
+    "  appends one), and the appended record sits on the AI model's own",
+    "  orography, not the analysis terrain the composition pairs it with:",
+    "  on the 2026-09-26 00Z cycle it differs from the analysis surface",
+    "  pressure by 5.0 hPa RMS over CONUS (7 hPa over terrain above",
+    "  1000 m, up to 59 hPa) where the reduction differs by 0.3 hPa.",
     "* the donor mapping starts from the checked-in analysis mapping and",
     "  swaps its DERIVED 2 m specific humidity for the direct record the",
     "  analysis product publishes (0.1.0 at level 103/2, byte-measured in",
@@ -48,6 +69,53 @@
       "staggering": "none",
       "missing": {"kind": "reject"}
     },
+    "SEA_LEVEL_PRESSURE": {
+      "selectors": [
+        {
+          "format": "grib2",
+          "discipline": 0,
+          "category": 3,
+          "parameter": 1,
+          "level_type": 101,
+          "pdt": 1
+        }
+      ],
+      "units": {"source": "Pa", "target": "Pa"},
+      "source_axes": ["y", "x"],
+      "target_axes": ["y", "x"],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {"kind": "reject"}
+    },
+    "MIRROR_REWRITE_WITHOUT_ENSEMBLE_OCTETS": {
+      "pdt": 0,
+      "master_table_version": 4,
+      "local_table_version": 0
+    },
+    "SURFACE_PRESSURE_DERIVED": {
+      "selectors": [],
+      "units": {"source": "Pa", "target": "Pa"},
+      "source_axes": ["y", "x"],
+      "target_axes": ["y", "x"],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {"kind": "reject"},
+      "derivation": "surface-pressure-from-sea-level"
+    },
+    "DERIVATIONS": [
+      {
+        "name": "pressure-from-coordinate",
+        "operation": "pressure_from_vertical_coordinate"
+      },
+      {
+        "name": "surface-pressure-from-sea-level",
+        "operation": "surface_pressure_from_sea_level",
+        "sea_level_pressure": "air_pressure_at_mean_sea_level",
+        "level_height": "geopotential_height",
+        "pressure": "air_pressure",
+        "surface_height": "terrain_height"
+      }
+    ],
     "SURFACE_GAP_Q": {
       "provider": "composition_bound",
       "units": {"source": "kg kg-1", "target": "kg kg-1"},
@@ -74,7 +142,11 @@
         {"op": "set", "path": ["fields", "skin_temperature"], "value": {"$const": "SURFACE_GAP_K"}},
         {"op": "delete", "path": ["fields", "dewpoint_temperature_2m"]},
         {"op": "set", "path": ["fields", "specific_humidity_2m"], "value": {"$const": "SURFACE_GAP_Q"}},
-        {"op": "keep_where", "path": ["derivations"], "key": "name", "equals": "pressure-from-coordinate"}
+        {"op": "require", "path": ["fields", "surface_pressure", "selectors"]},
+        {"op": "set", "path": ["fields", "surface_pressure"], "value": {"$const": "SURFACE_PRESSURE_DERIVED"}},
+        {"op": "set", "path": ["fields", "air_pressure_at_mean_sea_level"], "value": {"$const": "SEA_LEVEL_PRESSURE"}},
+        {"op": "set", "path": ["derivations"], "value": {"$const": "DERIVATIONS"}},
+        {"op": "append_variants", "path": ["fields", "*", "?selectors"], "overlay": {"$const": "MIRROR_REWRITE_WITHOUT_ENSEMBLE_OCTETS"}}
       ]
     },
     {
@@ -154,8 +226,9 @@
             "field": "terrain_height",
             "binding": "physical_analysis_surface",
             "borrowed_fields": {"$const": "BORROWED_FIELDS"},
-            "units_policy": "terrain enters as the analysis product's surface geopotential height record in metres; no scale is applied",
+            "units_policy": "terrain enters as the analysis product's surface geopotential height record in metres and mean-sea-level pressure as the member's own record in pascals; no scale is applied",
             "time_policy": "the AI ensemble member supplies the evolving atmosphere at every forecast step; the borrowed land-surface state is the one analysis record of the SAME cycle, verified by the composition's source_cycle_analysis_broadcast alignment and carried unchanged to every primary valid time, with the carried times named in the receipt",
+            "surface_pressure_policy": "surface pressure is derived at every valid time from that valid time's own member bytes: the member's mean-sea-level pressure, reduced to the analysis terrain height through the member's own isobaric heights by WRF real's sfcprs3 relation (surface_pressure_from_sea_level), so the column mass follows each member and each lead and sits on the terrain the composition pairs it with. Both doors serve mean-sea-level pressure; a surface-pressure record the AWS mirror appends is not read, because it sits on the AI model's own orography rather than the analysis terrain",
             "member_policy": "member identity belongs to the PRIMARY files and is verified by the packaged rw-wps.members.v1 grammar at member preparation; the contributing analysis is deterministic and a member-bearing donor refuses by name",
             "absence_policy": "the member product publishes no soil temperature, no soil moisture, no land mask, no orography, no skin temperature and no 2 m humidity (byte-measured, 2026-08-17 00Z cycle); every one of those gaps is declared composition_bound in the primary mapping and bound to the analysis donor -- nothing is synthesized",
             "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"

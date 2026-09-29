@@ -22,6 +22,7 @@ from gpuwm.ingest.lateral_bc import (
 )
 from gpuwm.native_domain_artifacts import (
     _atomic_staging_sibling,
+    deepest_published_hierarchy_path,
     write_native_domain_artifacts,
     write_native_hierarchy_artifacts,
 )
@@ -369,3 +370,153 @@ def test_hierarchy_writer_rejects_reordered_child_result_identity(tmp_path):
             source_identity={"source": "fixture"},
             valid_time=datetime(2026, 7, 20))
     assert not output.exists()
+
+
+def test_deepest_published_hierarchy_path_is_the_deepest_file_published(
+        tmp_path):
+    """The measure a door checks against the path limit is the real tree's.
+
+    A door refuses a deep output root on this path alone, so it must be
+    the longest one the writer publishes, not an estimate of it.
+    """
+    root_initial, root_met, root_soil, root_static, boundaries, grid = _inputs()
+    child_initial, child_met, child_soil, child_static, _, child_grid = _inputs()
+    root_initial.state.lateral_boundaries = boundaries
+    child_initial.state.lateral_boundaries = None
+    exp = SimpleNamespace(domains=(_domain(1, 0), _domain(2, 1)))
+    child_result = SimpleNamespace(
+        domain=exp.domains[1],
+        real=child_initial, grid=child_grid, horizontal=child_met,
+        soil=child_soil, static_fields=child_static,
+        preprocess_receipt={}, input_preparation_seconds=0.0)
+    output = tmp_path / "hierarchy"
+
+    write_native_hierarchy_artifacts(
+        output, exp=exp, root_grid=grid,
+        root_initial_result=root_initial, root_met=root_met,
+        root_soil=root_soil, root_static_fields=root_static,
+        root_boundaries=boundaries, child_results=(child_result,),
+        bridge_manifest_sha256="a" * 64,
+        source_manifest_sha256="b" * 64,
+        namelist_sha256="c" * 64, forcing_hours=(0, 1),
+        source_identity={"source": "fixture"},
+        valid_time=datetime(2026, 7, 20))
+
+    published = list(output.rglob("*"))
+    longest = max(len(str(path)) for path in published)
+    deepest = deepest_published_hierarchy_path(output, (1, 2))
+    assert deepest in published
+    assert deepest.is_file()
+    assert len(str(deepest)) == longest
+    assert len(str(deepest_published_hierarchy_path(output))) == longest
+
+
+def _write_two_domain_tree(output):
+    root_initial, root_met, root_soil, root_static, boundaries, grid = _inputs()
+    child_initial, child_met, child_soil, child_static, _, child_grid = _inputs()
+    root_initial.state.lateral_boundaries = boundaries
+    child_initial.state.lateral_boundaries = None
+    exp = SimpleNamespace(domains=(_domain(1, 0), _domain(2, 1)))
+    child_result = SimpleNamespace(
+        domain=exp.domains[1],
+        real=child_initial, grid=child_grid, horizontal=child_met,
+        soil=child_soil, static_fields=child_static,
+        preprocess_receipt={}, input_preparation_seconds=0.0)
+    return write_native_hierarchy_artifacts(
+        output, exp=exp, root_grid=grid,
+        root_initial_result=root_initial, root_met=root_met,
+        root_soil=root_soil, root_static_fields=root_static,
+        root_boundaries=boundaries, child_results=(child_result,),
+        bridge_manifest_sha256="a" * 64,
+        source_manifest_sha256="b" * 64,
+        namelist_sha256="c" * 64, forcing_hours=(0, 1),
+        source_identity={"source": "fixture"},
+        valid_time=datetime(2026, 7, 20))
+
+
+def test_the_staging_measure_is_the_deepest_path_the_tree_writer_touches(
+        tmp_path, monkeypatch):
+    """A door refuses a deep root on the staged paths too, so they are real.
+
+    The tree is written inside a door's staging sibling, as every door
+    writes it, with each staging nonce and the process id at their widest:
+    the longest path any mkdir, open or rename touches is then exactly the
+    longest staged path the refusal measures without the WRF export.
+    """
+    import io
+    import os
+    import uuid
+
+    from gpuwm.fetch_guard import WINDOWS_WIDEST_PID
+    from gpuwm.native_domain_artifacts import hierarchy_bundle_write_paths
+
+    output_root = tmp_path / "out"
+    door_staging = _atomic_staging_sibling(output_root, nonce="f" * 10)
+    door_staging.mkdir()
+    touched = []
+    real_open, real_replace, real_mkdir = io.open, os.replace, os.mkdir
+
+    def record(path):
+        if isinstance(path, (str, os.PathLike)):
+            touched.append(os.fspath(path))
+
+    def spy_open(file, *args, **kwargs):
+        record(file)
+        return real_open(file, *args, **kwargs)
+
+    def spy_replace(source, target, *args, **kwargs):
+        record(source)
+        record(target)
+        return real_replace(source, target, *args, **kwargs)
+
+    def spy_mkdir(path, *args, **kwargs):
+        record(path)
+        return real_mkdir(path, *args, **kwargs)
+
+    with monkeypatch.context() as spying:
+        spying.setattr(uuid, "uuid4", lambda: uuid.UUID(int=2 ** 128 - 1))
+        spying.setattr(os, "getpid", lambda: WINDOWS_WIDEST_PID)
+        spying.setattr(io, "open", spy_open)
+        spying.setattr(os, "replace", spy_replace)
+        spying.setattr(os, "mkdir", spy_mkdir)
+        _write_two_domain_tree(door_staging / "hierarchy-artifacts")
+
+    measured = hierarchy_bundle_write_paths(output_root, wrf_export=False)
+    deepest_touched = max(touched, key=len)
+    assert any(".p-ffffffffff" in path for path in touched)
+    assert any("domain-artifacts.json.tmp-4294967295-" in path
+               for path in touched)
+    assert len(deepest_touched) == max(len(str(path)) for path in measured)
+    assert deepest_touched in {str(path) for path in measured}
+
+
+def test_the_refusal_measures_the_staged_export_a_short_name_writes(
+        tmp_path, monkeypatch):
+    """A short output name publishes shallow and stages deep.
+
+    Its tree fits at 237 characters, but the unchanged-WRF export stages
+    ``wrf-native-input.tmp-<pid>/.root-export.tmp-<pid>/manifest.json``
+    inside the door's sibling at 264, and the sibling replaces the name,
+    so only a shorter folder helps.  Without that export the deepest
+    staged path is a prepared cache's header written aside, which fits.
+    """
+    from gpuwm import fetch_guard
+    from gpuwm.native_domain_artifacts import published_path_refusal
+
+    if len(str(tmp_path)) >= 170:
+        pytest.skip("temporary root already exceeds the 176-character folder")
+    folder = tmp_path / ("p" * (176 - len(str(tmp_path)) - 1))
+    output = folder / "o"
+    assert len(str(deepest_published_hierarchy_path(
+        output / "hierarchy-artifacts"))) == 237
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    refusal = published_path_refusal(output)
+
+    assert refusal is not None
+    assert "264 characters" in refusal
+    assert "in a folder at least 5 characters shorter" in refusal
+    assert refusal.endswith(
+        "wrf-native-input.tmp-4294967295/.root-export.tmp-4294967295/"
+        "manifest.json")
+    assert published_path_refusal(output, wrf_export=False) is None

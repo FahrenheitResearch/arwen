@@ -39,8 +39,8 @@ a top-level ``measured_on`` member.  A golden is a measurement of a
 platform and not only of a decode: measured field by field on node-1
 2026-08-18, the directly decoded fields hash identical across Windows
 and Linux while the DERIVED ones -- the grid-relative wind rotation and
-the relative-humidity derivation -- and the frame header hashes that
-carry them do not, because the platform's libm produced them.  The
+the relative-humidity derivation -- do not, because the platform's libm
+produced them; the portable frame header digest is platform independent.  The
 battery compares against a golden byte for byte on the platform named
 there and runs the live dual-engine comparison at the same strictness
 anywhere else, so a golden with no stamp cannot be scoped and is refused

@@ -79,3 +79,6 @@ tools/zarr_bridge/vendor/** -text -whitespace
 licenses/THIRD-PARTY-LICENSES-zarr-binary.txt -whitespace
 tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES-zarr-binary.txt -whitespace
 tools/rustwx/patches/rdps-f000-components.patch -whitespace
+# 4 Hz nvidia-smi samples end in an empty procs field (a trailing tab) when no
+# process held the card; B4-SPEED-ANCHORS.json pins their sha256, so the bytes stay.
+docs/public/receipts/obsbattery/*.tsv -whitespace

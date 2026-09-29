@@ -152,6 +152,20 @@ def test_mapped_target_contract_fails_closed(
         )
 
 
+def test_mapped_target_contract_takes_whole_multiples_only_when_declared():
+    exp = _experiment(1)
+    with pytest.raises(ValueError, match="differs from target contract 3600"):
+        mapped_direct._validate_target_contract(
+            _target_mapping(), exp, 10_800, hierarchy=False)
+    multiples = _target_mapping(accept_boundary_interval_multiples=True)
+    receipt = mapped_direct._validate_target_contract(
+        multiples, exp, 10_800, hierarchy=False)
+    assert receipt["boundary_interval_seconds"] == 10_800
+    with pytest.raises(ValueError, match="not a whole multiple of the 3600"):
+        mapped_direct._validate_target_contract(
+            multiples, exp, 5400, hierarchy=False)
+
+
 def test_mapped_target_contract_returns_bound_receipt():
     receipt = mapped_direct._validate_target_contract(
         _target_mapping(), _experiment(2), 3600, hierarchy=True,
@@ -533,15 +547,23 @@ def _install_prepare_fakes(
     monkeypatch.setattr(mapped_direct, "initialize_real", initialize)
     # The mapped lane no longer hands every state to one builder: it
     # streams, adding each state's perimeter frames as that state is
-    # built so the state itself can be released.  Nor does it build them
-    # in forcing order any more -- the START time is built LAST so that
-    # nothing is held across the loop, and each state names its own
-    # POSITION.  This double records both, so the test still proves the
-    # builder saw every state, and now also proves which one was built
-    # last and that arrival order and position were kept distinct.
-    frame_calls = {"added": [], "arrival": [], "built": []}
+    # built so the state itself can be released, and each state names its
+    # own POSITION.  A single domain builds the START time FIRST, writes
+    # it into the prepared head and releases it, then writes each interval
+    # as soon as its two times exist; a domain tree still builds the start
+    # time LAST and keeps only that one.  This double records the adds,
+    # the intervals and the releases, so the tests prove the builder saw
+    # every state, in which order, and that arrival order and position
+    # were kept distinct.
+    frame_calls = {"added": [], "arrival": [], "built": [],
+                   "intervals": [], "released": []}
 
     class RecordingFrames:
+        inventory = ("u", "v", "theta", "phi", "mu")
+        # What one written interval holds in host RAM, which a chained
+        # head prices the forecast's boundary series from.
+        interval_host_bytes = 1 << 20
+
         def __init__(self, **kwargs):
             frame_calls["kwargs"] = kwargs
 
@@ -552,6 +574,17 @@ def _install_prepare_fakes(
         def build(self, actual_times):
             frame_calls["built"].append(tuple(actual_times))
             return boundaries
+
+        def interval(self, index, actual_times):
+            frame_calls["intervals"].append(index)
+            seconds = [(value - actual_times[0]).total_seconds()
+                       for value in actual_times]
+            return SimpleNamespace(
+                start_seconds=seconds[index],
+                end_seconds=seconds[index + 1], fields={})
+
+        def release(self, index):
+            frame_calls["released"].append(index)
 
     monkeypatch.setattr(mapped_direct, "StateBoundaryFrames", RecordingFrames)
     calls["frames"] = frame_calls
@@ -617,11 +650,38 @@ def _install_prepare_fakes(
         lambda **kwargs: {"identity": kwargs},
     )
 
-    def write_cache(path, **_kwargs):
-        path.mkdir()
-        return {"status": "PASS"}
+    import gpuwm.ingest.prepared_cache as prepared_cache_module
 
-    monkeypatch.setattr(mapped_direct, "write_prepared_cache", write_cache)
+    class RecordingCacheStream:
+        """The prepared-cache writer, recorded: head, segments, seal."""
+
+        def __init__(self, directory, **kwargs):
+            self.directory = Path(directory)
+            calls["cache_stream"] = {"kwargs": kwargs, "segments": []}
+
+        def move(self, directory):
+            self.directory = Path(directory)
+
+        def write_head(self, **kwargs):
+            self.directory.mkdir(parents=True)
+            calls["cache_stream"]["head"] = kwargs
+            return {"identity": {}, "metadata": {}, "arrays": {},
+                    "payload_bytes": 0, "lbc": kwargs["lbc"],
+                    "setup_core_fingerprint": "0" * 64}
+
+        def write_segment(self, index, interval):
+            calls["cache_stream"]["segments"].append(index)
+            return {"index": index,
+                    "start_seconds": float(interval.start_seconds),
+                    "end_seconds": float(interval.end_seconds),
+                    "fields": [], "arrays": {}, "payload_bytes": 0,
+                    "prefix": {}}
+
+        def seal(self):
+            return {"status": "PASS"}
+
+    monkeypatch.setattr(
+        prepared_cache_module, "PreparedCacheStream", RecordingCacheStream)
 
     def single_export(*args, **kwargs):
         calls["single_export"].append((args, kwargs))
@@ -730,28 +790,30 @@ def test_single_domain_preserves_configured_physics_in_direct_export(monkeypatch
     # from those frames.  The old builder took all the states at once,
     # which is what made preprocessing hold them all.
     frames = calls["frames"]
-    assert len(frames["added"]) == len(expected.snapshots)
-    assert len(frames["built"]) == 1
+    count = len(expected.snapshots)
+    assert len(frames["added"]) == count
     assert frames["kwargs"]["spec_bdy_width"] == (
         expected.exp.root.run.spec_bdy_width)
-    # ORDERING CONTRACT, which is the OOM fix: the start time is built
-    # LAST, so it is the one met/state the loop retains and no forcing
-    # time is ever held across another one's interpolate/initialize.  In
-    # forcing order the start time was built first and held for the whole
-    # loop, which at 800x800x49 mp=10 is 14.67 GiB of device residency
-    # against 7.66 and the difference between preparing that domain on a
-    # 16 GiB card and OOMing on it.
-    order = start_last_forcing_order(len(expected.snapshots))
-    assert frames["arrival"] == list(order)
-    assert frames["arrival"][-1] == 0
-    assert frames["added"] == [expected.results[k].state for k in order]
-    # The retained met/state are still the START time's, whatever order
-    # they were built in: those are what the prepared cache, the wrfinput
-    # export and the surface analysis are written from.  The boundaries
-    # land on the start time's state and on no other.
-    assert expected.results[0].state.lateral_boundaries is expected.boundaries
+    # ORDERING CONTRACT (chained preparation): the start time is built
+    # FIRST, written into the head and released, and each later time is
+    # built after it with one forcing time resident.  Each interval is
+    # written as soon as its two times exist and its older frame is then
+    # released, so no whole-set boundary build happens at all.
+    assert frames["arrival"] == list(range(count))
+    assert frames["added"] == [result.state for result in expected.results]
+    assert frames["built"] == []
+    assert frames["intervals"] == list(range(count - 1))
+    assert frames["released"] == list(range(count - 1))
+    stream = calls["cache_stream"]
+    assert stream["segments"] == list(range(count - 1))
+    assert stream["head"]["initial_result"] is expected.results[0]
+    assert len(stream["head"]["lbc"]["schedule"]) == count - 1
+    # The start state carries no boundaries: the cache's fingerprint is
+    # built from the segments, not from an attachment.
     assert all(result.state.lateral_boundaries is None
-               for result in expected.results[1:])
+               for result in expected.results)
+    assert proof["boundary_stream"]["head_sha256"]
+    assert (args["output_root"] / "boundary-stream" / "head.json").is_file()
 
 
 def test_prepare_threads_the_output_root_into_the_compose_scratch(
@@ -1958,6 +2020,39 @@ def test_mapped_preparation_exports_mynn_from_its_own_config(monkeypatch, tmp_pa
 
 
 def test_mapped_preparation_refuses_export_physics_drift(monkeypatch, tmp_path):
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
+    args, _calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    monkeypatch.setattr(mapped_direct, "export_prepared_wrf",
+                        lambda *a, **k: {"schema": "gpuwm-native-direct-wrf-export-v3",
+                                          "physics": {}})
+    with pytest.raises(RuntimeError, match="export physics differs"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    _assert_failed_unsealed(args["output_root"], "export physics differs")
+
+
+def _assert_failed_unsealed(root, reason):
+    """A failure after the head leaves an unsealed tree marked failed.
+
+    The head is published early so a forecast can start beside the
+    preparation; a later failure keeps it, with ``failed.json`` naming the
+    reason, so the waiting forecast ends with that reason and the next
+    preparation of the same output root rebuilds it.
+    """
+    from gpuwm.ingest.boundary_stream import (
+        prepared_tree_complete, unfinished_tree_reason,
+    )
+
+    assert not prepared_tree_complete(root)
+    failed = json.loads(
+        (root / "boundary-stream" / "failed.json").read_text(encoding="utf-8"))
+    assert reason in failed["reason"]
+    assert "producer failed" in unfinished_tree_reason(root)
+
+
+def test_an_unchained_failure_publishes_nothing(monkeypatch, tmp_path):
+    """GPUWM_CHAINED_PREP=0: the head waits for the seal, as before."""
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "0")
     args, _calls, _expected = _install_prepare_fakes(
         monkeypatch, tmp_path, domain_count=1, backend="cpu")
     monkeypatch.setattr(mapped_direct, "export_prepared_wrf",
@@ -2049,6 +2144,7 @@ def test_optional_export_refusal_keeps_prepared_artifacts(monkeypatch, tmp_path)
 
 @pytest.mark.parametrize("error", [OSError("write failed"), ValueError("corrupt cache")])
 def test_optional_export_does_not_hide_io_or_corruption(monkeypatch, tmp_path, error):
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
     args, _, _ = _install_prepare_fakes(
         monkeypatch, tmp_path, domain_count=1, backend="cpu")
     def failed(*args, **kwargs):
@@ -2056,7 +2152,7 @@ def test_optional_export_does_not_hide_io_or_corruption(monkeypatch, tmp_path, e
     monkeypatch.setattr(mapped_direct, "export_prepared_wrf", failed)
     with pytest.raises(type(error), match=str(error)):
         mapped_direct.prepare_mapped_wrf(**args)
-    assert not args["output_root"].exists()
+    _assert_failed_unsealed(args["output_root"], str(error))
     assert not list(tmp_path.glob("output.tmp-*"))
 
 
@@ -2169,3 +2265,72 @@ def test_a_hierarchy_proof_answers_for_the_parent_and_for_each_child(
     # The single-domain key is NOT on a tree document: same name, two
     # shapes is how a consumer starts throwing on half a bundle library.
     assert MOISTURE_FLOOR_KEY not in proof
+
+
+def test_only_the_start_time_builds_the_receipts_its_result_carries(
+        monkeypatch, tmp_path):
+    """Every later forcing time contributes its state to the boundaries only.
+
+    The route keeps the start time's result and drops the others', so each
+    later time is initialized with ``boundary_only`` and skips the receipts
+    nobody reads; the start time, built first for the prepared head
+    (gpuwm/ingest/boundary_stream.py), builds them.
+    """
+    args, calls, _ = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    mapped_direct.prepare_mapped_wrf(**args, stock_wrf_export="off")
+    assert calls["initialize"] == 2
+    assert [row["boundary_only"] for row in calls["initialize_operands"]] == [
+        False, True]
+
+
+def _deep_mapped_root(tmp_path):
+    """A 92-character output name in a 125-character folder: 277 deep."""
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = tmp_path / ("p" * (125 - len(str(tmp_path)) - 1))
+    return parent / ("mapped-tree-domain-z" + "x" * 72)
+
+
+def test_a_mapped_domain_tree_too_deep_for_windows_is_refused_before_decode(
+        monkeypatch, tmp_path):
+    """The mapped door publishes the same domain tree the HRRR stage does;
+    under a root that puts its header at 277 characters it is refused
+    before any source is decoded or any static field built."""
+    from gpuwm import fetch_guard
+
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu")
+    args["output_root"] = _deep_mapped_root(tmp_path)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("decoded under a root the forecast cannot read")
+
+    monkeypatch.setattr(mapped_direct, "decode_composed_source", forbidden)
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    with pytest.raises(ValueError) as caught:
+        mapped_direct.prepare_mapped_wrf(**args)
+
+    message = str(caught.value)
+    assert message.startswith("refusing output root ")
+    assert "277 characters" in message
+    assert calls["build_static"] == calls["initialize"] == 0
+    assert not calls["hierarchy"]
+    assert not args["output_root"].parent.exists()
+
+
+def test_a_single_mapped_domain_prepares_where_a_tree_is_refused(
+        monkeypatch, tmp_path):
+    """A single domain publishes no tree, so the same root prepares."""
+    from gpuwm import fetch_guard
+
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    args["output_root"] = _deep_mapped_root(tmp_path)
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+
+    mapped_direct.prepare_mapped_wrf(**args)
+
+    assert calls["build_static"] == 1
+    assert args["output_root"].is_dir()

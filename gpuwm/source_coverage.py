@@ -48,6 +48,11 @@ for, and neither is a per-model code path:
 
 A source with no window declared is GLOBAL -- it reaches every target, and
 the front doors apply no coverage bound at all.
+
+``config_source_coverage_refusal()`` asks the same question of a written
+config's root, for plan review and the ``gpuwm prep`` door.  It lives here,
+beside the windows it reads, because the RW-WPS preprocessing wheel ships
+this module and not the domain wizard.
 """
 
 from __future__ import annotations
@@ -280,3 +285,124 @@ def points_outside(window: CoverageWindow | None,
     if window is None:
         return np.zeros(latitude.shape, dtype=bool)
     return np.asarray(window.outside(latitude, longitude), dtype=bool)
+
+
+def _root_grid(projection: dict, nx: int, ny: int, root_dx_m: float):
+    """The WRF root grid a PROJECTION table and an NX x NY mass count describe.
+
+    ``projection`` carries the namelist's six projection entries by name
+    (``map_proj``, ``ref_lat``, ``ref_lon``, ``truelat1``, ``truelat2``,
+    ``stand_lon``); the grid is centred on ``ref_lat``/``ref_lon`` the way
+    WPS places a root.  The wizard's fit and every coverage refusal walk
+    this same grid, so they place the same footprint.
+
+    Deferred import, for the reason :meth:`LambertGridWindow.grid` gives.
+    """
+
+    from gpuwm.static.projection import projection_class
+
+    cls = projection_class(projection["map_proj"])
+    return cls(
+        ref_lat=projection["ref_lat"], ref_lon=projection["ref_lon"],
+        truelat1=projection["truelat1"], truelat2=projection["truelat2"],
+        stand_lon=projection["stand_lon"],
+        dx=float(root_dx_m), dy=float(root_dx_m),
+        e_we=nx + 1, e_sn=ny + 1)
+
+
+def _root_coverage_gap(projection: dict, nx: int, ny: int, *, source: str,
+                       root_dx_m: float) -> str | None:
+    """The first root cell corner SOURCE's declared window does not carry.
+
+    The corners bound every mass point, so a root whose corners the window
+    carries is carried whole.  ``None`` when the source is global or its
+    window carries every corner.  Otherwise the facts both coverage
+    refusals state: the point, where it lands in the source's own index
+    space, the window the source covers, how many corners fall outside,
+    and where the source's grid is centred.  Shared so the wizard's fit
+    and plan review of a written config refuse exactly the same domains
+    in the same words.
+    """
+
+    from gpuwm.source_adapters import source_coverage_window
+    from gpuwm.static.projection import _wrap180
+
+    window = source_coverage_window(source)
+    if window is None:
+        return None
+    latitude, longitude = _root_grid(
+        projection, nx, ny, root_dx_m).latlon_c()
+    outside = points_outside(window, latitude, longitude)
+    if not bool(outside.any()):
+        return None
+    index = int(np.argmax(outside))
+    bad_lat = float(np.asarray(latitude).reshape(-1)[index])
+    bad_lon = float(np.asarray(longitude).reshape(-1)[index])
+    centre_lat, centre_lon = window_centre(window)
+    return (
+        f"the {nx}x{ny} root's point at lat/lon ({bad_lat:.4f}, "
+        f"{_wrap180(bad_lon):.4f}) {window.locate(bad_lat, bad_lon)}; "
+        f"{int(outside.sum())} of the root's {outside.size} cell corners "
+        f"are outside it.  {source}'s grid is centred at "
+        f"({centre_lat:.2f}, {centre_lon:.2f})")
+
+
+def config_source_coverage_refusal(experiment, source,
+                                   *, source_option: str = "[fetch] source"
+                                   ) -> str | None:
+    """Why SOURCE cannot force a written config's root, or ``None``.
+
+    Plan review's form of
+    :func:`gpuwm.domain_wizard.source_coverage_refusal`, asked of a config
+    the wizard did not fit: one written by hand or by a batch driver, or
+    one whose source was changed after it was emitted.  The coverage is a
+    table fact (the source row's declared window) and the geometry is the
+    wizard's own (:func:`_root_grid`, which the wizard imports from here),
+    so every door that reviews a config before its download refuses
+    exactly what the fitted door refuses.
+
+    It lives here rather than in :mod:`gpuwm.domain_wizard` because
+    ``gpuwm prep --experiment-config`` asks it on every regional source,
+    and the RW-WPS preprocessing wheel does not ship the wizard: imported
+    from there, the question raised ModuleNotFoundError before the config
+    was read.
+
+    Breakage it prevents: a domain outside a regional source's grid was
+    refused only at the root forcing stage of its preparation, after the
+    whole cycle had been downloaded and decoded (three runs of a batch
+    sweep, each about 40 s of decode and statics after the download,
+    ending in "target points fall outside the source grid").
+
+    ``None`` for a global source (no declared window), a name the source
+    registry does not know (the source validators own that sentence), and
+    an idealized config (no projection, so no footprint to place).
+    ``source_option`` is how the door the reader typed names the source.
+    """
+
+    from gpuwm.source_adapters import source_coverage_window
+
+    projection = getattr(experiment, "projection", None)
+    if projection is None or not isinstance(source, str) or not source.strip():
+        return None
+    try:
+        window = source_coverage_window(source)
+    except ValueError:
+        return None
+    if window is None:
+        return None
+    root = experiment.root.run
+    gap = _root_coverage_gap(
+        {"map_proj": projection.map_proj, "ref_lat": projection.ref_lat,
+         "ref_lon": projection.ref_lon, "truelat1": projection.truelat1,
+         "truelat2": projection.truelat2,
+         "stand_lon": projection.stand_lon},
+        int(root.nx), int(root.ny), source=source, root_dx_m=float(root.dx))
+    if gap is None:
+        return None
+    return (
+        f"{source_option} {source} does not cover this domain: {gap}.  "
+        "Left to the preparation, it is refused only at the root forcing "
+        "stage, after the whole cycle is downloaded and decoded.  Next: "
+        "move [projection] ref_lat and ref_lon inside that grid, or set "
+        f"{source_option} to a source whose coverage includes this domain "
+        "(gpuwm sources lists them)")

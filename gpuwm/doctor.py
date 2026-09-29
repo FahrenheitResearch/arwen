@@ -190,8 +190,9 @@ _BRIDGE_CONSUMERS = {
                   "route line",
     "gdt101_remap": "every source whose native grid is a GDT-101 "
                     "unstructured mesh (gpuwm fetch/prep/go --source "
-                    "icon-global), whose input-normalization stage writes "
-                    "its regional intermediates with this binary and "
+                    "icon-global or icon-d2), whose input-normalization "
+                    "stage writes its regional intermediates with this "
+                    "binary and "
                     "refuses rather than falling back without it",
 }
 
@@ -200,13 +201,22 @@ _BRIDGE_CONSUMERS = {
 #: runtime)`` check and the ``[gpu-cu12]``/``[gpu-cu13]`` extras lines --
 #: and a reader who found them disagreeing would be right to distrust
 #: both.  Every entry was traced to a real refusal or a real import.
-_GPU_DOORS = ("gpuwm run", "gpuwm go", "gpuwm check", "gpuwm domain",
-              "gpuwm resume", "gpuwm verify", "gpuwm stream",
-              "gpuwm multi-run", "gpuwm downscale", "gpuwm ingest",
-              "gpuwm-prepared-forecast", "gpuwm-prepared-tree-forecast",
-              "the DA nowcast")
+#: `gpuwm domain` and `gpuwm check` are split, not listed whole: only
+#: their measure-this-card forms need the device, and the declared-
+#: capacity forms WITHOUT-A-GPU.md walks through run on a box with no
+#: CuPy at all -- a doctor that said otherwise sent that reader away
+#: from the one sizing route the page exists to show them.
+_GPU_DOORS = ("gpuwm run", "gpuwm go", "gpuwm resume", "gpuwm verify",
+              "gpuwm stream", "gpuwm multi-run", "gpuwm downscale",
+              "gpuwm ingest", "gpuwm-prepared-forecast",
+              "gpuwm-prepared-tree-forecast", "the DA nowcast",
+              "gpuwm domain and gpuwm check sized by measuring this "
+              "machine's card")
 _GPU_STILL_WORKS = ("the whole preprocessing half -- gpuwm fetch, "
-                    "import-namelist, adapt, render, report and rw-wps")
+                    "import-namelist, adapt, render, report and rw-wps -- "
+                    "and sizing for a declared card: gpuwm domain with "
+                    "--card or --vram-gib, gpuwm check with --free-gib or "
+                    "--budget-gib and --vram-gib")
 
 _PROBE_TIMEOUT_S = 30
 
@@ -552,10 +562,19 @@ def _installed_cupy_wheels() -> list[tuple[str, int | None]]:
     The major comes from the distribution NAME, because that is the
     thing pip resolved and the thing an uninstall must name; a
     source-built ``cupy`` has no major in its name and reports ``None``.
+
+    A ``~upy_cuda12x-*.dist-info`` folder is what pip leaves when an
+    uninstall hits a locked file.  Its METADATA still says cupy-cuda12x,
+    but pip ignores it ("Ignoring invalid distribution") and cannot
+    uninstall it by that name, so counting it read as two builds that
+    no remedy could ever bring down to one.
     """
 
     found = []
     for dist in importlib.metadata.distributions():
+        folder = getattr(dist, "_path", None)
+        if folder is not None and Path(str(folder)).name.startswith("~"):
+            continue
         name = (dist.metadata["Name"] or "").strip().lower()
         match = _CUPY_WHEEL_NAME.match(name)
         if match:
@@ -604,7 +623,43 @@ def _wrong_wheel_remedy(wheels: list[tuple[str, int | None]],
     return "\n".join(lines), install
 
 
+def _overlapping_cupy_check(wheels: list[tuple[str, int | None]]) -> Check:
+    """Two CuPy distributions in one environment: always broken.
+
+    ``cupy-cuda12x`` and ``cupy-cuda13x`` install the same ``cupy``
+    package files, and pip keeps both registered over them.  Whichever
+    wrote last answers ``import cupy``, reinstalling the other says
+    "already satisfied", and uninstalling either removes files the other
+    needs.  No import probe can judge that, so the pair itself is the
+    finding, and the remedy removes every one before installing the
+    build this box's driver serves.
+    """
+
+    names = [name for name, _ in wheels]
+    box_major = _driver_cuda_major()
+    lines = ["# more than one CuPy build is installed over the same files;",
+             "# remove every one, then install the build for this box"]
+    uninstall = "pip uninstall -y " + " ".join(names)
+    lines.append(uninstall)
+    extra = _GPU_EXTRA_BY_MAJOR.get(box_major) if box_major else None
+    if extra is not None:
+        lines.append(f"pip install 'gpuwm[{extra}]'")
+    else:
+        lines.append("# then one of these, for this box's CUDA major:")
+        lines.extend(f"pip install 'gpuwm[{name}]'" for name in _GPU_EXTRA_BY_MAJOR.values())
+    served = "" if box_major is None else f"; this box serves CUDA {box_major}"
+    return Check(
+        "cupy (GPU runtime)", "missing",
+        f"{len(names)} CuPy builds are installed at once ({', '.join(names)}); they share one set of "
+        f"files, so which one answers is whichever wrote last{served}",
+        "\n".join(lines), action=uninstall, brief=f"{len(names)} CuPy builds installed",
+        severity=SEVERITY_BROKEN)
+
+
 def _cupy_check() -> Check:
+    wheels = _installed_cupy_wheels()
+    if len(wheels) > 1:
+        return _overlapping_cupy_check(wheels)
     ok, evidence = _import_probe("cupy")
     if ok:
         wheels = _installed_cupy_wheels()
@@ -1850,9 +1905,39 @@ def _package_evidence(requirement: _Requirement,
 
 #: CUDA major -> the extra whose wheel serves it.  The inverse of
 #: :data:`_GPU_EXTRA_BY_MAJOR`, used to say which of a mutually
-#: exclusive pair matches THIS box.
+#: exclusive pair THIS box's driver can run.
 _MAJOR_BY_GPU_EXTRA = {extra: major
                        for major, extra in _GPU_EXTRA_BY_MAJOR.items()}
+
+
+def _driver_fit(major: int | None, box_major: int | None) -> str:
+    """Can the driver read off this box run an extra's CUDA major?
+
+    The number a driver reports is the NEWEST CUDA it serves, and a
+    driver runs every older major as well: a CUDA 13 driver runs the
+    cupy-cuda12x wheel, and cuBLAS loads and kernels compile on it.
+    Reading that number as the one major the box accepts called a
+    working ``[gpu-cu12]`` install the wrong extra on every CUDA 13
+    box, while the runtime checks on the same report said it worked.
+    Only an extra NEWER than the driver cannot run here.
+    """
+
+    if box_major is None:
+        return ("this box's driver CUDA version could not be read, so "
+                "neither of the pair is named as the one for this box")
+    if major is None:
+        return f"this box's driver serves CUDA {box_major} and older"
+    if major > box_major:
+        other = _GPU_EXTRA_BY_MAJOR.get(box_major, f"cuda-{box_major}")
+        return (f"this box's driver serves CUDA {box_major} at most, "
+                f"older than this extra's CUDA {major} wheel needs; the "
+                f"extra that can run here is [{other}]")
+    if major == box_major:
+        return (f"this box's driver serves CUDA {box_major}, so this "
+                f"extra's CUDA {major} wheel can run here")
+    return (f"this box's driver serves CUDA {box_major} and older, so this "
+            f"extra's CUDA {major} wheel can run here; a working install "
+            "needs no switch")
 
 
 def _mutually_exclusive_extra_check(name: str, extra: str, install: str,
@@ -1864,31 +1949,20 @@ def _mutually_exclusive_extra_check(name: str, extra: str, install: str,
     major, and a healthy CUDA-12 box has exactly one of them.  Reporting
     the other as a MISSING gap would fail every correctly installed
     machine, so these lines never carry a verdict: they say which wheel
-    this extra installs, whether pip resolved it here, which of the pair
-    matches the CUDA major read off this box's own driver, and the exact
-    install line.  The verdict, the remedy and the exit code stay on the
-    one deep check that judges the wheel against the box.
+    this extra installs, whether pip resolved it here, whether this
+    box's own driver can run its CUDA major, and the exact install
+    line.  The verdict, the remedy and the exit code stay on the one
+    deep check that judges the wheel against the box.
     """
 
     installed = [label for _i, state, label, _w in states if state == "ok"]
     absent = [label for _i, state, label, _w in states if state != "ok"]
-    major = _MAJOR_BY_GPU_EXTRA.get(extra)
-    box_major = _driver_cuda_major()
-    if box_major is None:
-        fit = ("this box's CUDA major could not be read, so neither of "
-               "the pair can be called the matching one here")
-    elif major == box_major:
-        fit = f"this box's driver serves CUDA {box_major}: THIS is the pair's matching extra"
-    else:
-        fit = (f"this box's driver serves CUDA {box_major}, so the "
-               f"matching extra is "
-               f"[{_GPU_EXTRA_BY_MAJOR.get(box_major, f'cuda-{box_major}')}], "
-               "not this one")
+    fit = _driver_fit(_MAJOR_BY_GPU_EXTRA.get(extra), _driver_cuda_major())
     held = (f"{', '.join(installed)} installed" if installed
             else f"{', '.join(absent)} not installed")
     return Check(
         name, "info",
-        f"{held}.  One extra per CUDA major, and a box needs exactly one: "
+        f"{held}.  The pair are alternatives, one CuPy per environment: "
         f"{fit}.  Install line: {install}.  Needed by: "
         + ", ".join(facts.doors)
         + f".  The verdict and the remedy are on the `{facts.deferred_to}` "
@@ -2821,6 +2895,14 @@ def _staged_estate_check() -> Check:
             staged_dir, bundle)
     except Exception:                            # noqa: BLE001 - optional
         held, stale_assets, absent_assets = [], [], []
+    if (stale_assets or absent_assets) and _map_assets_resolve_elsewhere(
+            staged_dir):
+        # The staged copy is what fetch-bridges writes, and the renderer
+        # reads it only when nothing earlier resolves.  A wheel install
+        # draws from the gpuwm-data companion, so an unstaged copy here
+        # costs no picture a coastline; demanding it anyway was the
+        # MISSING line every bare pip install printed.
+        stale_assets, absent_assets = [], []
     if bundle.assets and (stale_assets or absent_assets):
         assets_note = (
             f"; {len(stale_assets) + len(absent_assets)} of "
@@ -2887,6 +2969,21 @@ def _staged_estate_check() -> Check:
         + (f"; {len(held)} map asset file(s) verified" if held else ""),
         brief=f"{len(current)} of {len(bundle.binaries)} match the pins",
         group=_GROUP_BRIDGES)
+
+
+def _map_assets_resolve_elsewhere(staged_dir: Path) -> bool:
+    """Does the renderer draw its maps from somewhere other than
+    ``staged_dir``?  Never raises; ``False`` when it cannot tell."""
+
+    try:
+        from gpuwm import rustwx
+
+        with bridges.inspection_only():
+            renderer = rustwx.find_renderer()
+        resolved = rustwx.resolve_basemap_dir(renderer)
+    except Exception:                            # noqa: BLE001 - optional
+        return False
+    return resolved is not None and not _under(resolved, staged_dir)
 
 
 def _under(path: Path, directory: Path) -> bool:
@@ -3914,18 +4011,27 @@ def _rust_renderer_check() -> Check:
     # draws the coastlines the report says are missing.
     basemap = rustwx.resolve_basemap_dir(found)
     if basemap is None:
-        basemap_note = ("NO basemap assets found -- charts render "
-                        "without coast/state/county lines; set "
-                        "RUSTWX_BASEMAP_DIR to a checkout's "
-                        "tools/rustwx/assets/basemap")
-    elif os.environ.get("RUSTWX_BASEMAP_DIR") or os.environ.get(
+        # A gap with its fix, not a verified line with a footnote: a
+        # renderer with no map assets draws every picture with no
+        # coastlines, borders or state lines and exits 0, so this line
+        # is the one place before a run that says so.  Non-blocking:
+        # the fields still draw.
+        remedy = rustwx.basemap_remedy()
+        return Check(
+            name, "missing",
+            f"{found} -- {evidence}; NO basemap assets resolve, so every "
+            "picture is drawn with no coastlines, borders or state lines",
+            f"{remedy}\n  # the gpuwm-data package carries the map assets",
+            action=remedy, brief="built; no basemap assets",
+            group=_GROUP_ENGINES, blocking=False,
+            severity=SEVERITY_DEGRADED)
+    if os.environ.get("RUSTWX_BASEMAP_DIR") or os.environ.get(
             "RUSTWX_ASSETS_DIR"):
         basemap_note = f"basemaps {basemap} (RUSTWX_* environment override)"
     else:
         basemap_note = f"basemaps {basemap}"
     return Check(name, "verified", f"{found} -- {evidence}; {basemap_note}",
-                 brief=("built; no basemap assets" if basemap is None
-                        else "built, with basemap assets"),
+                 brief="built, with basemap assets",
                  group=_GROUP_ENGINES)
 
 
@@ -4001,16 +4107,22 @@ def _renderer_tree_check() -> Check:
     finds out before they run a render rather than after.
     """
 
+    from gpuwm.provenance import resolve
     from gpuwm.provenance_gate import bridge_tree_match
 
-    name = f"renderer tree match ({rustwx.RENDERER_NAME} vs this checkout)"
+    # A wheel install is not a checkout, and its row said "vs this
+    # checkout" beside a verdict about the installed wheel.
+    prov = resolve()
+    against = ("this wheel install" if prov.install_kind == "wheel"
+               else "this checkout")
+    name = f"renderer tree match ({rustwx.RENDERER_NAME} vs {against})"
     try:
         found = rustwx.find_renderer()
     except FileNotFoundError as error:
         # _rust_renderer_check already reports this one in full.
         return Check(name, "info", str(error), brief=_short(str(error)),
                      group=_GROUP_ENGINES)
-    match = bridge_tree_match(found, env_var=rustwx.RENDERER_ENV)
+    match = bridge_tree_match(found, env_var=rustwx.RENDERER_ENV, prov=prov)
     if match.verdict == "absent":
         return Check(name, "info",
                      "no renderer resolved, so there is nothing to match",
@@ -4057,7 +4169,9 @@ def _cpu_library_check() -> Check:
             "cpu preprocess library", "missing",
             "gpuwm_preprocess_cpu shared library not found "
             "(--preprocess-backend cpu needs it, and so does "
-            "--preprocess-backend auto wherever CUDA is unusable; the "
+            "--preprocess-backend auto wherever CUDA is unusable; every "
+            "preparation that maps soil, snow, skin temperature or sea ice "
+            "needs it under either backend; the "
             "radar dealiaser's coarse VAD search falls back to NumPy "
             f"without it): {error}", remedy,
             action=_build_action(), brief="not staged",
@@ -4073,7 +4187,34 @@ def _cpu_library_check() -> Check:
             group=_GROUP_BRIDGES)
     path, abi = backend.path, backend.abi_version
     indexed = backend.indexed_donor_interp
+    from gpuwm.ingest.cpu_backend import (
+        MASKED_NEAREST_ENTRY, MASKED_STENCIL_ENTRY, WPS_MASKED_CHAIN_ENTRY)
+
+    lacking = [name for name, present in (
+        (WPS_MASKED_CHAIN_ENTRY, backend.wps_masked_chain_entry),
+        (MASKED_STENCIL_ENTRY, backend.masked_stencil_entry),
+    ) if not present]
+    lacking.extend(getattr(backend, "water_blend_missing", ()))
+    if not getattr(backend, "masked_nearest_entry", False):
+        lacking.append(MASKED_NEAREST_ENTRY)
     backend.close()
+    if lacking:
+        # Not a note on the line: the masked surface fields have no other
+        # route under either backend, so a library without these entries
+        # cannot prepare any source with a land-sea mask.
+        return Check(
+            "cpu preprocess library", "missing",
+            f"{path} loaded via ctypes, ABI v{abi}, but without "
+            f"{' and '.join(lacking)}: the masked surface fields (soil "
+            "moisture and temperature, snow, skin temperature, sea ice) "
+            "map only through the library's masked chain and soil "
+            "stencil, and lake and sea water temperatures only through "
+            "its water blends, under both preprocessing backends, so no "
+            "source with a land-sea mask can be prepared",
+            "# it has to be rebuilt or re-fetched:\n" + remedy,
+            action=_build_action(),
+            brief="predates the masked surface chain",
+            group=_GROUP_BRIDGES)
     # The same library carries the dealiaser's coarse VAD search.  A
     # library built before that entry point existed still serves every
     # interpolation call, so this is a note on the line and not a second
@@ -4256,11 +4397,61 @@ def _thompson_tables_check() -> Check:
             + "\n  # if GPUWM_THOMPSON_TABLE_ROOT is set, point it at a"
             "\n  # byte-identical mirror of the packaged tables, or unset it",
             action="pip install -e .", brief=_short(str(error)))
+    # The mp=28 activation table is read out of the same root, and was
+    # never looked at here: an empty CCN_ACTIVATE.BIN reported "verified"
+    # and failed the first aerosol-aware forecast at load.  Located the
+    # way the mp=28 loader locates it, so its file override is honoured.
+    from gpuwm.core.thompson_aerosol_contract import (
+        AEROSOL_TABLE_ASSETS, AEROSOL_TABLE_PATH_ENV,
+        resolve_ccn_activation_path, validate_ccn_activation_asset)
+    try:
+        aerosol = (validate_ccn_activation_asset(
+            resolve_ccn_activation_path(None, root)),)
+    except FileNotFoundError:
+        names = ", ".join(a.filename for a in AEROSOL_TABLE_ASSETS)
+        if os.environ.get(AEROSOL_TABLE_PATH_ENV):
+            return Check(
+                "thompson tables", "missing",
+                f"{AEROSOL_TABLE_PATH_ENV} names "
+                f"{os.environ[AEROSOL_TABLE_PATH_ENV]}, which is not a file",
+                f"  # point {AEROSOL_TABLE_PATH_ENV} at a verified "
+                f"{names}, or unset it",
+                brief=f"{AEROSOL_TABLE_PATH_ENV} names no file",
+                blocking=False, severity="degraded")
+        return Check(
+            "thompson tables", "missing",
+            f"{len(assets)} classic assets at {root} byte-validated, but "
+            f"{names} (the aerosol-aware Thompson activation table, "
+            "mp_physics=28) is not in that root",
+            "gpuwm fetch-tables\n"
+            "  # copies the verified packaged table into the root",
+            action="gpuwm fetch-tables",
+            brief=f"{names} not staged (mp_physics=28 only)",
+            blocking=False, severity="degraded")
+    except (ValueError, OSError) as error:
+        # Degraded, not blocking, exactly like the file being absent:
+        # only mp_physics=28 reads it, and the classic tables every other
+        # Thompson run needs were verified above.  A damaged copy used to
+        # fail the whole check for mp_physics=8 users who never open it.
+        names = ", ".join(a.filename for a in AEROSOL_TABLE_ASSETS)
+        return Check(
+            "thompson tables", "missing",
+            f"{len(assets)} classic assets at {root} byte-validated, but "
+            f"{names} (the aerosol-aware Thompson activation table, "
+            f"mp_physics=28) is damaged: {error}",
+            "gpuwm fetch-tables\n"
+            "  # replaces a damaged copy in ~/.gpuwm with the verified\n"
+            "  # packaged table; in a root named by\n"
+            "  # GPUWM_THOMPSON_TABLE_ROOT, delete the file first",
+            action="gpuwm fetch-tables",
+            brief=f"{names} damaged (mp_physics=28 only)",
+            blocking=False, severity="degraded")
+    assets = (*assets, *aerosol)
     return Check(
         "thompson tables", "verified",
         f"{len(assets)} assets at {root} byte-validated (exact size + "
         f"SHA-256, {sum(asset.bytes for asset in assets):,} B), the same "
-        "validation every mp8 run performs at load",
+        "validation every mp8 and mp28 run performs at load",
         brief=f"{len(assets)} assets byte-validated")
 
 
@@ -4890,6 +5081,15 @@ def _install_identity_check() -> Check:
     elif source == "gpuwm-native-distribution-manifest":
         evidence = ("sealed runtime manifest "
                     f"{str(identity['git_commit'])[:12]}")
+    elif source == "installed-source-content":
+        content = identity["installed_source_content"] or {}
+        missing = content.get("missing_file_count") or 0
+        evidence = (f"source tree {content.get('source_version')} at {root} "
+                    f"with no .git, bound by the content of its "
+                    f"{content.get('source_file_count')} listed files "
+                    f"({str(content.get('content_sha256'))[:12]}"
+                    + (f"; {missing} listed file(s) missing" if missing else "")
+                    + ")")
     elif source == "installed-editable-source":
         editable = identity["installed_editable"] or {}
         git = editable.get("git") or {}
@@ -5110,7 +5310,7 @@ def _era5_fetch_path_check() -> Check:
         try:
             path = zarr_bridge.resolve_zarr_bin()
             arco, arco_evidence = bridges.bridge_abi_matches("rw_zarr", path)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, bridges.DecoderContractError) as error:
             arco, arco_evidence = False, type(error).__name__
     cds_ready = cds_imports and credentials
     detail = (

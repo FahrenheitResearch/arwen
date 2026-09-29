@@ -349,7 +349,6 @@
         }
       },
       "grid_fingerprint": "2b9c82182a6c3dc654dc195cd0e5070ff2e36e976ff3232ec5881d6f480f9df5",
-      "header_sha256": "d95ad038267b579ec1279c7b19c1870381253204be8fd90d652ce95e09e6a44a",
       "inputs": [
         {
           "name": "OPS-rrfs.t00z.2dfld.3km.f000.conus.grib2",
@@ -377,6 +376,7 @@
         "sha256": "37068653cbee282ba7499d6573283cff703ca0d4db03c176682406dba4643f2b"
       },
       "member": null,
+      "portable_header_sha256": "7b972430b17f5893d93303a61fe3cf47f4152ae1269a1135deb58c05f3fdfc5a",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T00:00:00",
       "vertical": {
@@ -691,7 +691,6 @@
         }
       },
       "grid_fingerprint": "2b9c82182a6c3dc654dc195cd0e5070ff2e36e976ff3232ec5881d6f480f9df5",
-      "header_sha256": "a42cddcca1f018b0d164eaede6d0cd77b16d1c402c585364bd8bda682e2310a3",
       "inputs": [
         {
           "name": "OPS-rrfs.t00z.2dfld.3km.f000.conus.grib2",
@@ -719,6 +718,7 @@
         "sha256": "37068653cbee282ba7499d6573283cff703ca0d4db03c176682406dba4643f2b"
       },
       "member": null,
+      "portable_header_sha256": "07011ef34fbecf01588a9b3a75c98cc0cf831e584d192c6ed97f9e2129b635e8",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T01:00:00",
       "vertical": {
@@ -729,6 +729,7 @@
       "vertical_units": "Pa"
     }
   ],
+  "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-rrfs-prslev-2dfld-grib2.mapping.json",
     "sha256": "3139a3b93f7fea54f600e36e42115fd1e986e67e1df6462b5ef866b11f8d6c1a"
@@ -737,7 +738,7 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
     "depth_units": "m",
     "missing": {

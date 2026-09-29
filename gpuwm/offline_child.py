@@ -45,7 +45,10 @@ from gpuwm.vertical_remap import (
     remap_receipt,
 )
 from gpuwm.ingest.lateral_bc import (
+    BoundaryInterval,
+    FieldBoundary,
     LateralBoundaries,
+    SideBoundary,
     build_lateral_interval_from_sides,
     extract_lateral_side,
 )
@@ -284,6 +287,37 @@ class OfflineChildContractError(ValueError):
     """The archived parent cannot safely force the requested child."""
 
 
+#: The owner file a downscale holds inside the output folder it claimed.
+#: It names the process writing the folder; a second downscale aimed at
+#: the same folder finds it and refuses instead of writing beside it.
+OUTPUT_OWNER_NAME = ".gpuwm-output.owner"
+
+
+def output_owner_path(path) -> Path:
+    """Where the owner file of output folder ``path`` lives."""
+
+    return Path(path) / OUTPUT_OWNER_NAME
+
+
+def _output_entries(path: Path) -> list[str]:
+    return sorted(child.name for child in path.iterdir()
+                  if child.name != OUTPUT_OWNER_NAME
+                  and not child.name.startswith(OUTPUT_OWNER_NAME + "."))
+
+
+def release_output_owner(path) -> bool:
+    """Give up this process's claim on output folder ``path``, if held.
+
+    Only the owner file goes; the run's output stays.  True when a claim
+    this process held was released.
+    """
+
+    from gpuwm import ownership
+
+    held = ownership.held_claim(output_owner_path(path))
+    return held.release() if held is not None else False
+
+
 def reserve_output_root(path, *, flag: str = "--out") -> Path:
     """Claim one child-run output directory, in words when it cannot.
 
@@ -303,12 +337,14 @@ def reserve_output_root(path, *, flag: str = "--out") -> Path:
     doors onto this route spell it ``--out`` and ``--outdir``.
     """
 
+    from gpuwm import ownership
+
     path = Path(path)
     try:
         path.mkdir(parents=True, exist_ok=False)
     except FileExistsError as error:
         try:
-            held = sorted(child.name for child in path.iterdir())
+            held = _output_entries(path)
         except OSError as probe_error:
             # Not the empty-directory case at all: the entry exists and
             # cannot be read as a directory (a plain file under that
@@ -330,6 +366,41 @@ def reserve_output_root(path, *, flag: str = "--out") -> Path:
                 f"publishes has to describe one run, and the frames beside "
                 f"it have to be that run's.  Pass a new {flag}, or remove "
                 f"{path} first.") from error
+    # ONE owner, whether this call created the folder or adopted an empty
+    # one.  Two downscales started together used to both pass the checks
+    # above (one created the folder, the other found it empty and adopted
+    # it), then wrote the same outputs, and one's cleanup deleted the
+    # other's child.toml.  The owner file is created exclusively, so
+    # exactly one of them holds it; the other is told who does.
+    try:
+        claim = ownership.claim(output_owner_path(path),
+                                purpose="downscale output")
+    except ownership.OwnershipError as error:
+        raise OfflineChildContractError(
+            f"{flag} {path} is in use by "
+            f"{ownership.describe_holder(error.holder)}, which is writing "
+            f"a child run into it.  Wait for that run to finish, or pass "
+            f"a new {flag}." + ownership.recovery_words(error)) from None
+    except OSError as error:
+        detail = getattr(error, "strerror", None) or str(error)
+        raise OfflineChildContractError(
+            f"{flag} {path} cannot be claimed for this run: {detail}.  "
+            f"Pass a {flag} in a folder you can write to.") from None
+    try:
+        held = _output_entries(path)
+    except OSError:
+        held = []
+    if held:
+        # Written between the check above and the claim (or left by a
+        # run whose owner has since died): still not ours to merge into.
+        claim.release()
+        raise OfflineChildContractError(
+            f"{flag} {path} already holds a child run's output "
+            f"({', '.join(held)[:120]}), and a downscale never writes "
+            f"into a directory it did not create -- the report.json it "
+            f"publishes has to describe one run, and the frames beside "
+            f"it have to be that run's.  Pass a new {flag}, or remove "
+            f"{path} first.")
     return path.resolve()
 
 
@@ -1126,6 +1197,87 @@ def _infer_mp_physics(
     return None
 
 
+def _unreadable_history(path: Path, error: BaseException) -> OfflineChildContractError:
+    """A parent history file that could not be opened or decoded, in words.
+
+    A truncated or corrupt wrfout used to end the command in the NetCDF
+    library's own traceback ("NetCDF: HDF error"), naming neither the
+    remedy nor, on some routes, the file.  Only the FILE's failures come
+    here (see :class:`_ParentHistory`), so the remedy is always the file's.
+    """
+
+    if isinstance(error, FileNotFoundError) and not path.exists():
+        return OfflineChildContractError(
+            f"{path} is not there any more: the parent history series "
+            "names it, but the file is gone.  Restore it from the parent "
+            "run, or run the parent again to regenerate it, then retry")
+    if isinstance(error, PermissionError):
+        return OfflineChildContractError(
+            f"{path} cannot be read by this account (permission denied).  "
+            "Give this account read access to the parent's history files, then retry")
+    # The reader's own words about the file, not the command that ran
+    # (which would name the file a second time).
+    text = str(getattr(error, "reason", None) or error).strip()
+    detail = text.splitlines()[0] if text else type(error).__name__
+    return OfflineChildContractError(
+        f"{path} cannot be read as a parent history file ({detail}). "
+        "It is incomplete or damaged: restore it from the parent run, or "
+        "run the parent again to regenerate it, then retry")
+
+
+class _ParentHistory:
+    """Open one parent history file; a failure OF THAT FILE becomes a refusal naming it.
+
+    ``opener`` ``None`` is the Rust reader.  It is resolved in
+    :meth:`__enter__` BEFORE the file is opened and outside the
+    translation: a missing, stale or incompatible ``rw_netcdf`` (or a
+    ``GPUWM_RW_NETCDF`` naming nothing) is the reader's failure, and it
+    keeps its own message and the reader's remedy.  Translating it too is
+    how a healthy parent was once called damaged, with advice to re-run a
+    forecast that can cost hours of GPU, while the build instructions that
+    would have fixed the reader were cut off.
+
+    What IS translated: the reader running and refusing this file
+    (:class:`netcdf_bridge.NetcdfFileError` naming this path), and this
+    path not being there.  With a library ``opener`` (``netCDF4.Dataset``)
+    there is no separate reader, and its ``OSError`` is the file's.
+    """
+
+    def __init__(self, path, opener=None):
+        self._path = Path(path)
+        self._opener = opener
+        self._dataset = None
+
+    def _this_files(self, error) -> bool:
+        if self._opener is not None:
+            return isinstance(error, OSError)
+        if isinstance(error, netcdf_bridge.NetcdfFileError):
+            return error.path == self._path
+        return isinstance(error, FileNotFoundError) and not self._path.is_file()
+
+    def __enter__(self):
+        if self._opener is None:
+            reader = netcdf_bridge.resolve_netcdf_bin()
+
+            def opener(path):
+                return netcdf_bridge.open_dataset(path, executable=reader)
+        else:
+            opener = self._opener
+        try:
+            self._dataset = opener(self._path)
+        except (OSError, netcdf_bridge.NetcdfDecodeError) as error:
+            if self._this_files(error):
+                raise _unreadable_history(self._path, error) from None
+            raise
+        return self._dataset.__enter__()
+
+    def __exit__(self, kind, error, trace):
+        self._dataset.__exit__(kind, error, trace)
+        if error is not None and self._this_files(error):
+            raise _unreadable_history(self._path, error) from None
+        return False
+
+
 @dataclass(frozen=True)
 class ParentHistoryFrame:
     """Metadata-only proof for one archived parent state."""
@@ -1161,13 +1313,104 @@ class ParentHistoryContract:
         return self.frames[-1].valid_time
 
 
+#: The first four bytes of a classic NetCDF file: CDF-1, CDF-2, CDF-5.
+_CLASSIC_SIGNATURES = frozenset({b"CDF\x01", b"CDF\x02", b"CDF\x05"})
+
+#: Classic history files already proven whole in this process, keyed by
+#: resolved path, size and modification time.  One command inspects a
+#: frame more than once (the cadence, the contract, then each read), and
+#: a file restored or rewritten since is a new key.
+_WHOLE_HISTORY: set[tuple[str, int, int]] = set()
+
+
+def _last_stored_variable(dataset) -> str | None:
+    """The variable whose bytes end a classic file, or None when none has any.
+
+    A classic file stores its fixed variables in the order they were
+    defined and then its records, each holding the record variables in
+    that same order, so the last record variable (else the last fixed
+    one) ends the file.
+    """
+
+    records = {name for name, dimension in dataset.dimensions.items()
+               if dimension.isunlimited() and len(dimension) > 0}
+    # A scalar holds one value; a variable with an empty axis holds none.
+    stored = [name for name, variable in dataset.variables.items()
+              if all(variable.shape)]
+    on_records = [name for name in stored
+                  if dataset.variables[name].dimensions[:1]
+                  and dataset.variables[name].dimensions[0] in records]
+    chosen = on_records or stored
+    return chosen[-1] if chosen else None
+
+
+def _require_whole_history(path: Path) -> None:
+    """Refuse a classic history file that ends before its data does.
+
+    gpuwm's own wrfout writer and stock WRF both write CDF-2.  Such a file
+    cut off partway through its data keeps its header: netCDF4 opens it and
+    reads every missing value as zero without an error, and the header's
+    GPUWM_WRITE_COMPLETE stamp still says it was finished.  A truncated
+    first frame then reached the NetCDF decoder as a traceback, and a
+    truncated later frame was refused as a parent whose geometry changed
+    between frames, which is not what is wrong with it.
+
+    The Rust reader's inventory proves every byte the header describes is
+    in the file.  A reader older than that proof is asked instead for the
+    variable stored last, whose decode checks the same final bytes.  A
+    NetCDF-4 file is its own library's to check, and it refuses a short
+    one at open.  Either refusal names the file and the way back.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            signature = handle.read(4)
+        stat = path.stat()
+    except OSError as error:
+        raise _unreadable_history(path, error) from None
+    if signature not in _CLASSIC_SIGNATURES:
+        return
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    if key in _WHOLE_HISTORY:
+        return
+    with _ParentHistory(path) as dataset:
+        if dataset.extent_checked is None:
+            last = _last_stored_variable(dataset)
+            if last is not None:
+                dataset.variables[last][:]
+    _WHOLE_HISTORY.add(key)
+
+
+def open_parent_history(path: str | Path, opener=None) -> _ParentHistory:
+    """One parent history file, proven whole and opened; failures are sentences.
+
+    For every reader of a parent frame outside this module.  ``opener``
+    ``None`` is the Rust reader; ``netCDF4.Dataset`` is for the readers
+    that take identity attributes and dimensions off the header.  A file
+    that is not there, cannot be opened or decoded, or is a classic file
+    cut off partway through its data is refused naming the file and the
+    way back, never a traceback, and a stale or missing reader keeps its
+    own message (see :class:`_ParentHistory`).
+    """
+
+    path = Path(path)
+    _require_whole_history(path)
+    return _ParentHistory(path, opener)
+
+
 def inspect_parent_history_frame(
         path: str | Path, *, source_mp_physics: int | None = None,
 ) -> ParentHistoryFrame:
-    """Inspect one gpuwm/WRF history file without loading 3-D trajectory data."""
+    """Inspect one gpuwm/WRF history file without loading 3-D trajectory data.
+
+    A classic-format file is first proven whole
+    (:func:`_require_whole_history`): netCDF4 reads a truncated one's
+    missing data as zeros, which every check below would take as data.
+    """
 
     path = Path(path)
-    with netCDF4.Dataset(path) as dataset:
+    _require_whole_history(path)
+    with _ParentHistory(path, netCDF4.Dataset) as dataset:
         feedback = (
             dataset.getncattr("GPUWM_FEEDBACK")
             if "GPUWM_FEEDBACK" in dataset.ncattrs() else None)
@@ -1262,6 +1505,16 @@ def validate_parent_history(
     ``max_boundary_interval_seconds`` is intentionally mandatory.  Cadence is
     a scientific choice tied to child resolution and expected advection; the
     tool will not silently bless hourly parent history for a 500-m child.
+
+    This proves the series' shape (times, cadence, geometry, scheme
+    identity) from metadata and does not read the 3-D fields.  Their
+    values are proven where they are read: every required field of every
+    frame goes through :func:`_read_record`, which refuses a missing or
+    non-finite value naming the file, the variable and the cell.  The
+    runner reads the initial frame and then every boundary frame
+    (:func:`build_offline_lateral_boundaries`) before it builds the
+    stepper, so a damaged later frame stops the run before one step is
+    integrated, without this check reading the whole archive twice.
     """
 
     if physics_binding is not None:
@@ -1345,7 +1598,7 @@ def read_parent_microphysics(
         label = f"mp_physics={source_mp} transported parent fields"
     # Decoded by the Rust bridge: transported moisture is meteorological
     # field data, whoever wrote the tape.
-    with netcdf_bridge.open_dataset(path) as dataset:
+    with _ParentHistory(path) as dataset:
         for wrf_name, state_name in wrf_mapping.items():
             if wrf_name not in dataset.variables:
                 continue
@@ -1778,13 +2031,16 @@ def read_child_surface_state(
             if name not in dataset.variables:
                 continue
             value = np.asarray(dataset.variables[name][:])
+            dimensions = list(dataset.variables[name].dimensions)
             if value.ndim and value.shape[0] == 1 and (
-                    dataset.variables[name].dimensions[:1] == ("Time",)):
+                    dimensions[:1] == ["Time"]):
                 value = value[0]
+                dimensions = dimensions[1:]
             value = np.ascontiguousarray(value, dtype=np.float32)
-            if not np.isfinite(value).all():
-                raise OfflineChildContractError(
-                    f"{path}/{name} contains NaN or infinity")
+            _require_finite(
+                path, name, value, dimensions,
+                remedy="this surface file is damaged or incomplete; make "
+                       "it again on the child grid before the child uses it")
             expected_shape = (
                 (int(num_soil_layers), int(child_ny), int(child_nx))
                 if name in _SURFACE_SOIL_FIELDS
@@ -1920,7 +2176,7 @@ def derive_child_surface_from_parent(
     child_ny = int(placement.child_ny)
     child_nx = int(placement.child_nx)
     ratio = int(placement.parent_grid_ratio)
-    with netcdf_bridge.open_dataset(path) as dataset:
+    with _ParentHistory(path) as dataset:
         for name, expected in (("south_north", int(placement.parent_ny)),
                                ("west_east", int(placement.parent_nx))):
             actual = len(dataset.dimensions[name]) \
@@ -1972,13 +2228,14 @@ def derive_child_surface_from_parent(
             if name not in dataset.variables:
                 continue
             value = np.asarray(dataset.variables[name][:])
+            dimensions = list(dataset.variables[name].dimensions)
             if value.ndim and value.shape[0] == 1 and (
-                    dataset.variables[name].dimensions[:1] == ("Time",)):
+                    dimensions[:1] == ["Time"]):
                 value = value[0]
+                dimensions = dimensions[1:]
             value = np.ascontiguousarray(value, dtype=np.float32)
-            if not np.isfinite(value).all():
-                raise OfflineChildContractError(
-                    f"{path}/{name} contains NaN or infinity")
+            _require_finite(path, name, value, dimensions,
+                            remedy=_DAMAGED_PARENT_HISTORY)
             parent_fields[name] = value
 
     ci, _ = mask_donor_index(child_nx, ratio, int(placement.i_parent_start))
@@ -2125,10 +2382,38 @@ def _read_record(dataset, name: str, *, required: bool = True):
         raise OfflineChildContractError(
             f"{Path(dataset.filepath())}/{name} is not numeric")
     value = np.ascontiguousarray(value, dtype=np.float32)
-    if not np.isfinite(value).all():
-        raise OfflineChildContractError(
-            f"{Path(dataset.filepath())}/{name} contains NaN or infinity")
+    _require_finite(Path(dataset.filepath()), name, value,
+                    [d for d in dataset.variables[name].dimensions
+                     if d != "Time"],
+                    remedy=_DAMAGED_PARENT_HISTORY)
     return value
+
+
+#: What a reader does about a parent history field with missing values.
+_DAMAGED_PARENT_HISTORY = (
+    "this parent history file is damaged and must be restored or "
+    "regenerated before a child can be made from it")
+
+
+def _require_finite(path, name: str, value, dimensions, *, remedy: str) -> None:
+    """Refuse a field with a missing or non-finite value, naming the cell.
+
+    A missing value (a declared fill, or the NetCDF default fill a writer
+    leaves where it set nothing) arrives from the reader as NaN.  The
+    refusal names the file, the variable, how many values and the first
+    cell, and ``remedy`` says what to do about the file.
+    """
+
+    finite = np.isfinite(value)
+    if finite.all():
+        return
+    bad = int(value.size - np.count_nonzero(finite))
+    first = tuple(int(k) for k in np.argwhere(~finite)[0])
+    where = ", ".join(f"{d}={k}" for d, k in zip(dimensions, first)) or "the value"
+    raise OfflineChildContractError(
+        f"{path}/{name} has {bad} missing or "
+        f"non-finite value{'s' if bad != 1 else ''} (first at {where}); "
+        f"{remedy}")
 
 
 def _backend_array(value, backend: str):
@@ -2526,7 +2811,7 @@ def interpolate_parent_initial_state(
         # _AEROSOL_SURFACE_EMISSION_WRF), so tolerating the absence would
         # produce a finite, bounded, aerosol-emission-free forecast.
         initial_fields = initial_fields + _AEROSOL_SURFACE_EMISSION_WRF
-    with netcdf_bridge.open_dataset(path) as dataset:
+    with _ParentHistory(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         for name in initial_fields:
             if name not in raw:
@@ -2905,7 +3190,9 @@ def parent_archive_p_top(parent_frame):
     if parent_frame is None:
         return None
     try:
-        with netcdf_bridge.open_dataset(parent_frame) as dataset:
+        # Through the history wrapper, so a frame the reader refuses is a
+        # sentence naming it rather than the decoder's traceback.
+        with _ParentHistory(parent_frame) as dataset:
             variable = dataset.variables.get("P_TOP")
             if variable is None:
                 return None
@@ -3107,7 +3394,7 @@ def interpolate_parent_boundary_snapshot(
     hypsometric_opt = int(getattr(child_cfg, "hypsometric_opt", 2))
     started = time.perf_counter()
     child_znw = resolve_child_ladder(child_eta_levels)
-    with netcdf_bridge.open_dataset(path) as dataset:
+    with _ParentHistory(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
         if child_znw is not None or transition is not None:
@@ -3209,6 +3496,36 @@ def interpolate_parent_boundary_snapshot(
     return InterpolatedBoundarySnapshot(info.valid_time, fields, receipt)
 
 
+def _single_precision_interval(interval: BoundaryInterval) -> BoundaryInterval:
+    """The same interval held at the precision the device reads it at.
+
+    The device mirror is FP32 and every upload rounds the host tables to
+    FP32 (``lateral_bc._reload_streaming_external_interval``), so rounding
+    them once here, after the tendency is formed in float64, hands the card
+    the same bits and halves what the archive holds on the host.  That
+    matters because a derived child's relaxation zone is sized in parent
+    cells (``gpuwm.downscale.child_lateral_zone``): 41 rows at ratio 20,
+    where WRF's zone is 5, and every row is held for every parent frame.
+    No offline side carries a time law, so nothing is evaluated on the
+    host from these tables.
+    """
+
+    fields = {}
+    for name, boundary in interval.fields.items():
+        sides = {}
+        for side_name in ("west", "east", "south", "north"):
+            side = getattr(boundary, side_name)
+            if side.time_law is not None:
+                sides[side_name] = side
+                continue
+            sides[side_name] = SideBoundary(
+                np.asarray(side.value, dtype=np.float32),
+                np.asarray(side.tendency, dtype=np.float32))
+        fields[name] = FieldBoundary(**sides)
+    return BoundaryInterval(interval.start_seconds, interval.end_seconds,
+                            fields)
+
+
 def build_offline_lateral_boundaries(
         contract: ParentHistoryContract, placement: OfflineChildPlacement, *,
         target_mp_physics: int | None = None,
@@ -3248,11 +3565,13 @@ def build_offline_lateral_boundaries(
         }
         if previous is not None:
             previous_time, previous_sides = previous
-            intervals.append(build_lateral_interval_from_sides(
-                previous_sides, sides,
-                start_seconds=(previous_time - origin).total_seconds(),
-                end_seconds=(snapshot.valid_time - origin).total_seconds(),
-            ))
+            intervals.append(_single_precision_interval(
+                build_lateral_interval_from_sides(
+                    previous_sides, sides,
+                    start_seconds=(previous_time - origin).total_seconds(),
+                    end_seconds=(
+                        snapshot.valid_time - origin).total_seconds(),
+                )))
         previous = (snapshot.valid_time, sides)
         receipts.append(snapshot.receipt)
     boundaries = LateralBoundaries(
@@ -3284,6 +3603,7 @@ __all__ = [
     "build_offline_child_domain_state", "build_offline_lateral_boundaries",
     "inspect_parent_history_frame", "interpolate_parent_boundary_snapshot",
     "interpolate_parent_initial_state", "offline_cross_scheme_refusal",
+    "open_parent_history",
     "read_parent_microphysics", "reserve_output_root",
     "validate_parent_history",
 ]

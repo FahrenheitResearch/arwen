@@ -1,0 +1,155 @@
+{
+ "schema": "gpuwm-source-real-byte-headers-v1",
+ "source_id": "icon-d2",
+ "cycle": "2026092712",
+ "publisher": "Deutscher Wetterdienst open data (opendata.dwd.de)",
+ "attribution": "Source: Deutscher Wetterdienst",
+ "licence": "CC BY 4.0",
+ "what": "GRIB2 Sections 0 through 5, verbatim, of real objects downloaded on 2026-09-27. Sections 6 (the 542,040-bit bitmap) and 7 (the packed values) are not included: these octets are the field IDENTITY the selectors address, and Section 5 carries the count of cells each field publishes.",
+ "objects": [
+  {
+   "object": "icon-d2_germany_icosahedral_pressure-level_2026092712_000_500_fi.grib2",
+   "object_sha256": "8256afeda138275e9fd4bd3eff2ec4ccbc2b4e250964c83fb80aa45e50431272",
+   "message_bytes": 585944,
+   "header_base64": "R1JJQv//AAIAAAAAAAjw2AAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCodAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAwQCAAsAAAAAAAAAAGQAAADDUP///////wAAABkFAAgDEAAqR1PZ+YAEAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_pressure-level_2026092712_000_500_relhum.grib2",
+   "object_sha256": "917de520f9e9b0dabcae96469926263b9635bfa2a3dd6735890e0908d627d52b",
+   "message_bytes": 790577,
+   "header_base64": "R1JJQv//AAIAAAAAAAwQMQAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCodAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAQECAAsAAAAAAAAAAGQAAADDUP///////wAAABkFAAgDEAAqP9CsP4AJAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_pressure-level_2026092712_000_500_t.grib2",
+   "object_sha256": "b908806ceb3625753988a7c752325136df4e03b2e85278dad7e9f43f9b2615b7",
+   "message_bytes": 733864,
+   "header_base64": "R1JJQv//AAIAAAAAAAsyqAAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCodAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAAACAAsAAAAAAAAAAGQAAADDUP///////wAAABkFAAgDEAAqQ39aqIANAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_pressure-level_2026092712_000_500_u.grib2",
+   "object_sha256": "d721cc4854505056818d0956164b6f5e8ef0ec2ffa62e22d8b58f8a8936de9d9",
+   "message_bytes": 721537,
+   "header_base64": "R1JJQv//AAIAAAAAAAsCgQAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCodAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAgICAAsAAAAAAAAAAGQAAADDUP///////wAAABkFAAgDEAAqwF+u0IALAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_pressure-level_2026092712_000_500_v.grib2",
+   "object_sha256": "910011702f54c823197cb4f98d42786cc77750380534a38ea1e176111769340f",
+   "message_bytes": 659883,
+   "header_base64": "R1JJQv//AAIAAAAAAAoRqwAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCoeAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAgMCAAsAAAAAAAAAAGQAAADDUP///////wAAABkFAAgDEAAqwTZ0aoAKAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_pressure-level_2026092712_001_200_t.grib2",
+   "object_sha256": "1d0c8a46136ccf12e61d8c55205318392b56618735afba8c09238d8f64011d97",
+   "message_bytes": 660064,
+   "header_base64": "R1JJQv//AAIAAAAAAAoSYAAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCo5AAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAAACAAsAAAAAAAAAPGQAAABOIP///////wAAABkFAAgDEAAqQ1LVfYAMAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_h_snow.grib2",
+   "object_sha256": "eec42d09ed23ba0a2487ba1127abe9dba9e633e9ea8b731d409cfdc64ee0ea11",
+   "message_bytes": 74940,
+   "header_base64": "R1JJQv//AAIAAAAAAAEkvAAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAQsCAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAgDEAAqAAAAAIAPAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_ps.grib2",
+   "object_sha256": "f40d9c69e604685e759ce50fd48f733ba445ffd5b8e8b9ea3da50af74a4c8336",
+   "message_bytes": 662030,
+   "header_base64": "R1JJQv//AAIAAAAAAAoaDgAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCobAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAwACAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAgDEAAqR3UNdQAAAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_relhum_2m.grib2",
+   "object_sha256": "3244866b37c72628c5146f74f9d490229679feaf425a3831ad779186626c907c",
+   "message_bytes": 833161,
+   "header_base64": "R1JJQv//AAIAAAAAAAy2iQAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCobAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAQECAAsAAAAAAAAAAGcAAAAAAv///////wAAABkFAAgDEAAqQRXbe4AJAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_t_2m.grib2",
+   "object_sha256": "e8cc2d06296002c73a74d9d741465a48e8ce11baaef366c490dab0ac7b9b9ce3",
+   "message_bytes": 795303,
+   "header_base64": "R1JJQv//AAIAAAAAAAwipwAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCobAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAAACAAsAAAAAAAAAAGcAAAAAAv///////wAAABkFAAgDEAAqQ4jrMIALAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_t_g.grib2",
+   "object_sha256": "527a1c437546b0c3b7eecdccb479e80364417baf10d5d34183a6be6b7137a48c",
+   "message_bytes": 813474,
+   "header_base64": "R1JJQv//AAIAAAAAAAxpogAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAAACAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAgDEAAqQ4ceLYAKAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_u_10m.grib2",
+   "object_sha256": "e21635df5c89d246713c1832fb337b4c32a40777b59479e75f3299da5d95fd97",
+   "message_bytes": 790561,
+   "header_base64": "R1JJQv//AAIAAAAAAAwQIQAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAgICAAsAAAAAAAAAAGcAAAAACv///////wAAABkFAAgDEAAqwUCTKYALAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_v_10m.grib2",
+   "object_sha256": "83c4a161c09563e33a9ff1c0ca7376e8891c6eb1c849d4e60c5bd708a18d6517",
+   "message_bytes": 796688,
+   "header_base64": "R1JJQv//AAIAAAAAAAwoEAAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAgMCAAsAAAAAAAAAAGcAAAAACv///////wAAABkFAAgDEAAqwJn/j4ALAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_000_2d_w_snow.grib2",
+   "object_sha256": "e2eb2f85ac0b9cf0c2bedccb88f7100b4b4b66371cd29a0b174febfdb18f465b",
+   "message_bytes": 74754,
+   "header_base64": "R1JJQv//AAIAAAAAAAEkAgAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAATwCAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAgDEAAqAAAAAIAGAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_single-level_2026092712_003_2d_t_2m.grib2",
+   "object_sha256": "bf50b3ad1496d7a72b6e21e7cd8e0b8213038401fd573e92445bad4ca8717314",
+   "message_bytes": 791911,
+   "header_base64": "R1JJQv//AAIAAAAAAAwVZwAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCsxAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAAACAAsAAAAAAAAAtGcAAAAAAv///////wAAABkFAAgDEAAqQ4kcoIALAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_soil-level_2026092712_000_1_w_so.grib2",
+   "object_sha256": "38cc187c23cd4dc2dedd8f522790deb7972703c8cd77f0ccd92629184bd52316",
+   "message_bytes": 686314,
+   "header_base64": "R1JJQv//AgIAAAAAAAp46gAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAxQCAAsAAAAAAAAAAGoCAAAAAWoCAAAAAwAAABkFAAgDEAAqAAAAAIAMAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_soil-level_2026092712_000_2_t_so.grib2",
+   "object_sha256": "8838a9047ee3d936b17ea3f9e428e150fa50ebd5a7a009fde9fa0c70e64b29f4",
+   "message_bytes": 810986,
+   "header_base64": "R1JJQv//AgIAAAAAAAxf6gAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAxICAAsAAAAAAAAAAGoCAAAAAv///////wAAABkFAAgDEAAqQ4S0fIAKAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_soil-level_2026092712_000_3_w_so.grib2",
+   "object_sha256": "1496ec574ba65c5e12338996f6991999f485b6e20f1a711b9914ea8d24d86504",
+   "message_bytes": 664849,
+   "header_base64": "R1JJQv//AgIAAAAAAAolEQAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAxQCAAsAAAAAAAAAAGoCAAAAA2oCAAAACQAAABkFAAgDEAAqAAAAAIAKAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_soil-level_2026092712_000_5_t_so.grib2",
+   "object_sha256": "393c92b3fa127c8e3360109a25a739be757f6634d64f0f1c5dcac80f9c04923d",
+   "message_bytes": 821046,
+   "header_base64": "R1JJQv//AgIAAAAAAAyHNgAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCocAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAxICAAsAAAAAAAAAAGoDAAAABf///////wAAABkFAAgDEAAqQ4S1O4AKAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_time-invariant_2026092712_000_0_clat.grib2",
+   "object_sha256": "b7bf3ebe63a0fca8e0e9bcd831a1ebf86bc1832e37d068a3248b4bb8b1d0b0be",
+   "message_bytes": 585941,
+   "header_base64": "R1JJQv//AAIAAAAAAAjw1QAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAvwECAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAhFWAAqQiwtG4AMAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_time-invariant_2026092712_000_0_clon.grib2",
+   "object_sha256": "b88205fc43e7ee533404932dbf195e538d2308ecd1d762147c8e47e1a4bcb3c1",
+   "message_bytes": 586465,
+   "header_base64": "R1JJQv//AAIAAAAAAAjy4QAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAvwICAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAhFWAAqwIUsIIALAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_time-invariant_2026092712_000_0_fr_ice.grib2",
+   "object_sha256": "d5fc3bc9a162254d0336e908db88575450f898953646ba57d73feb3dcdef3b36",
+   "message_bytes": 67928,
+   "header_base64": "R1JJQv//CgIAAAAAAAEJWAAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCoMAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAgACAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAgDEAAqAAAAAIAKAAAAAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_time-invariant_2026092712_000_0_fr_land.grib2",
+   "object_sha256": "215b177f71b5e671d81d57e52c2db1de00cd70876fd8fa330d3b308928a1bac6",
+   "message_bytes": 352612,
+   "header_base64": "R1JJQv//AgIAAAAAAAVhZAAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCoMAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAAACAAsAAAAAAAAAAAEAAAAAAP///////wAAABkFAAgDEAAqAAAAAIAPAAAQAA4gAIA="
+  },
+  {
+   "object": "icon-d2_germany_icosahedral_time-invariant_2026092712_000_0_hsurf.grib2",
+   "object_sha256": "80f6d70a18e90476e23572f7a88ac84c01702bbb8e2472c5e778c22d291d4a5d",
+   "message_bytes": 576737,
+   "header_base64": "R1JJQv//AAIAAAAAAAjM4QAAABUBAE4A/xMBAQfqCRsMAAAAAQAAABsC/gAH6gkbDCoMAAAAAAAAAAAAAAAAAQAAACMDAAAIRVgAAABlBgAALwHGsS2qka1kBFsmwbZFKiogAAAAIgQAAAAAAwYCAAsAAAAAAAAAAAEAAAAAAGUAAAAAAAAAABkFAAgDEAAqwk+6YIADAAAQAA4gAIA="
+  }
+ ]
+}

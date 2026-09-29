@@ -81,6 +81,16 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "from a predicate string at call time; it reads the arrays and sets "
         "flags, computes no forecast field and is not a translation unit the "
         "manifest freezes"),
+    "gpuwm/core/ruc_gpu.py": (
+        "a one-kernel finiteness check over the RUC land-surface inputs, built "
+        "per argument count at call time in the shape of the MYNN check above; "
+        "it reads the arrays and sets flags, computes no forecast field and is "
+        "not a translation unit the manifest freezes"),
+    "gpuwm/da/fixed_order_gemm.py": (
+        "the LETKF analysis's fixed-order batched products, one RawKernel per "
+        "float dtype compiled on first use; they run in the data-assimilation "
+        "analysis, not a forecast step, record nothing and are not a "
+        "translation unit the manifest freezes"),
 }
 
 #: ``compile_using_nvrtc`` sites among :data:`SITE_FILES`: rrtmg_sw only.

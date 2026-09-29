@@ -10,6 +10,108 @@ import pytest
 
 from gpuwm.case_data import PerDomainSourceOrography, SourceOrography
 import gpuwm.source_hierarchy as source_hierarchy
+from gpuwm.preprocess_policy import HOST_TILED_CPU_REASON
+
+
+@pytest.mark.parametrize("requested,backend,reason", [
+    ("auto", "cpu", "no CUDA device is visible here"),
+    ("cpu", "cpu", HOST_TILED_CPU_REASON),
+    ("auto", "cuda", "the CUDA preparation backend is certified"),
+])
+def test_each_child_preserves_root_backend_selection(
+        tmp_path, monkeypatch, requested, backend, reason):
+    from gpuwm.ingest import nest_init, preprocess_backend
+
+    root_selection = {
+        "requested": requested, "backend": backend, "reason": reason}
+    _, observed = _call(
+        tmp_path, monkeypatch, preprocess_backend=backend, workers=1,
+        input_provenance={"preprocessing": {
+            "backend": backend, "selection": root_selection}})
+    catalog = observed["initialize"]["catalog"]
+
+    class Backend:
+        name = backend
+
+        def __init__(self, **_kwargs):
+            self.selection = None
+
+        def receipt(self):
+            return {"backend": self.name, "selection": dict(self.selection)}
+
+    monkeypatch.setattr(preprocess_backend, "ParallelCpuPreprocessBackend", Backend)
+    monkeypatch.setattr(preprocess_backend, "CudaPreprocessBackend", Backend)
+    monkeypatch.setattr(preprocess_backend, "_gpu_runtime_installed", lambda: True)
+    monkeypatch.setattr(nest_init, "build_static_for_domain", lambda *_a: {
+        "LU_INDEX": np.ones((2, 2))})
+    monkeypatch.setattr(nest_init, "geog_selection_from_catalog", lambda *_a:
+                        SimpleNamespace(landuse_global_attrs=lambda: {"ISLAKE": 21}))
+    monkeypatch.setattr(nest_init, "interpolate_era5_to_lambert", lambda *_a, **_k:
+                        SimpleNamespace(fields={}))
+    monkeypatch.setattr(nest_init, "_child_soil_mesh", lambda *_a: None)
+    for grid_id in (2, 3):
+        child = SimpleNamespace(
+            grid_id=grid_id, start_time=catalog.valid_times[0],
+            run=SimpleNamespace(moist=True, terrain_opt=1))
+        prepared = nest_init._prepare_child_input_on_grid(
+            child, object(), catalog, preprocess_backend=backend)
+        assert prepared.preprocess_receipt["selection"] == root_selection
+
+
+@pytest.mark.parametrize("root_backend,child_backend", [
+    ("cuda", "cpu"),
+    ("cpu", "cuda"),
+])
+def test_a_child_on_another_backend_records_its_own_selection(
+        tmp_path, monkeypatch, root_backend, child_backend):
+    """The root's reason explains the root's backend.  A child that
+    prepares on the other one must not carry it: its receipt would say
+    the card was certified (or busy) about a preparation that ran on the
+    CPU (or the card)."""
+
+    from gpuwm.ingest import nest_init, preprocess_backend
+
+    root_selection = {
+        "requested": "auto", "backend": root_backend,
+        "reason": "the root's own measured reason",
+        "device_load": {"utilization_gpu_percent": 99}}
+    _, observed = _call(
+        tmp_path, monkeypatch, preprocess_backend=root_backend, workers=1,
+        input_provenance={"preprocessing": {
+            "backend": root_backend, "selection": root_selection}})
+    catalog = observed["initialize"]["catalog"]
+
+    def backend_named(name):
+        class Backend:
+            def __init__(self, **_kwargs):
+                self.name = name
+                self.selection = None
+
+            def receipt(self):
+                return {"backend": self.name,
+                        "selection": dict(self.selection)}
+        return Backend
+
+    monkeypatch.setattr(preprocess_backend, "ParallelCpuPreprocessBackend",
+                        backend_named("cpu"))
+    monkeypatch.setattr(preprocess_backend, "CudaPreprocessBackend",
+                        backend_named("cuda"))
+    monkeypatch.setattr(preprocess_backend, "_gpu_runtime_installed", lambda: True)
+    monkeypatch.setattr(nest_init, "build_static_for_domain", lambda *_a: {
+        "LU_INDEX": np.ones((2, 2))})
+    monkeypatch.setattr(nest_init, "geog_selection_from_catalog", lambda *_a:
+                        SimpleNamespace(landuse_global_attrs=lambda: {"ISLAKE": 21}))
+    monkeypatch.setattr(nest_init, "interpolate_era5_to_lambert", lambda *_a, **_k:
+                        SimpleNamespace(fields={}))
+    monkeypatch.setattr(nest_init, "_child_soil_mesh", lambda *_a: None)
+    child = SimpleNamespace(
+        grid_id=2, start_time=catalog.valid_times[0],
+        run=SimpleNamespace(moist=True, terrain_opt=1))
+    prepared = nest_init._prepare_child_input_on_grid(
+        child, object(), catalog, preprocess_backend=child_backend)
+    assert prepared.preprocess_receipt["selection"] == {
+        "requested": child_backend, "backend": child_backend,
+        "reason": preprocess_backend.NAMED_BY_CALLER}
 
 
 class _Snapshot:
@@ -395,7 +497,7 @@ def test_regular_source_hierarchy_emits_corridors_only_on_opt_in(
     calls = []
 
     def fake_build(*, child_dc, parent_run, reference_grid, static_catalog,
-                   frame_kwargs):
+                   frame_kwargs, window, reach):
         assert static_catalog.files == ("wps", "geog")
         # A tree with no mover anchors every corridor to the child's own
         # parent, which is what {} means -- so the geometry, the receipt
@@ -403,6 +505,11 @@ def test_regular_source_hierarchy_emits_corridors_only_on_opt_in(
         # existed.  This is the regression that catches a frame chosen
         # two ways.
         assert frame_kwargs == {}
+        # And nothing moves, so each child reaches exactly its own
+        # footprint: the window is the child's size at its placement.
+        assert tuple(window[2:]) == (int(child_dc.run.nx),
+                                     int(child_dc.run.ny))
+        assert reach["movers"] == [] and reach["whole_frame"] is False
         calls.append((int(child_dc.grid_id), int(parent_run.nx),
                       reference_grid.name))
         return SimpleNamespace(grid_id=int(child_dc.grid_id), fields={},

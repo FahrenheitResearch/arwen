@@ -1,0 +1,45 @@
+{
+ "run": "slc1999-16gb-full",
+ "exit": 0,
+ "how": "the page's 'Run the best simulation for this event' button (POST /api/wiki/simulate) on this row, on node-4's RTX 5070 Ti (16 GB) on 2026-09-25, engine at commit c9f655ea6, keeping one checkpoint; the values were entered by hand from the run's stage events and the disk samples before the run folder was deleted",
+ "engine_commit": "c9f655ea6",
+ "card": "RTX 5070 Ti (16 GB)",
+ "date": "2026-09-25",
+ "stages_s": {
+  "fetch": 80,
+  "prepare": 40,
+  "forecast": 2061,
+  "render": 502
+ },
+ "pictures": 12882,
+ "disk_gib": {
+  "history": 31.06,
+  "checkpoint": 2.71,
+  "pictures": 8.24,
+  "download": 0.08,
+  "total_at_end": 42.1,
+  "peak_sampled": 42.9,
+  "sampled_every_s": 50,
+  "row_projection": 45.4
+ },
+ "domains": {
+  "d01": {
+   "files": 13,
+   "last_time": "1999-08-12_00:00:00",
+   "nx": 170,
+   "ny": 170
+  },
+  "d02": {
+   "files": 25,
+   "last_time": "1999-08-12_00:00:00",
+   "nx": 336,
+   "ny": 336
+  },
+  "d03": {
+   "files": 25,
+   "last_time": "1999-08-12_00:00:00",
+   "nx": 408,
+   "ny": 402
+  }
+ }
+}

@@ -42,10 +42,11 @@ tool did not stage.
 What is NOT staged, and why: the renderer's basemap shapefiles.  They
 are 21.1 MB compressed, and there is no room for them.  They are also
 DATA (Natural Earth coastlines and county polygons), not a processing
-path: nothing about them is a Python reimplementation of something Rust
-does, so leaving them on the ``gpuwm fetch-bridges`` route costs the
-mandate nothing.  A render without them draws the fields and omits the
-cartographic overlay.
+path.  Since 2.8.0 they ship in the ``gpuwm-data`` companion, which
+every install pulls, and :func:`gpuwm.rustwx.renderer_env` hands that
+copy to this wheel's renderer; before that they reached a wheel install
+only through ``gpuwm fetch-bridges``, which no install text ran, and
+every picture came out with no coastlines, borders or state lines.
 
 Sizes, measured 2026-08-17 at the 2.5.0 integration tip, against
 PyPI's 100 MB per-file cap read strictly as 100,000,000 B::

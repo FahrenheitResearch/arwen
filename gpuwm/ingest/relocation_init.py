@@ -1,6 +1,6 @@
 """Real-data child rebuild at a new placement (statics-on-move, leg 3).
 
-The 2026-08-06 requirement (Drew, via the WRF moving-nest discussion): a
+The 2026-08-06 requirement (project ruling, via the WRF moving-nest discussion): a
 relocated nest's STATIC fields -- terrain, landuse, soil categories --
 must be REBUILT for the new footprint from the nest's own static source
 at nest resolution, never inherited parent-interpolated, because
@@ -455,11 +455,12 @@ def _build_footprint_statics(grid, catalog, child_dc):
         # Same case_date input as the t=0 build: statics are a
         # time-invariant property of the domain, and a drifting date here
         # would break the overlap equality against the t=0 footprint.
-        fields, _ = apply_highres_statics(
+        fields, overlay_receipt = apply_highres_statics(
             fields, grid, config=highres, domain_id=child_dc.grid_id,
             case_date=child_dc.start_time.date(),
             landuse_attrs=landuse_attrs)
-        highres_applied = True
+        # A block scoped by grid spacing leaves a coarser domain alone.
+        highres_applied = overlay_receipt is not None
     return fields, selection, landuse_attrs, highres_applied
 
 

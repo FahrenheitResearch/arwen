@@ -21,9 +21,10 @@ THE MEASUREMENTS
 RESIDENT, full physics (Thompson/Morrison + RTE-RRTMGP + YSU + Noah +
 Kain-Fritsch), per COLUMN per step at nz=49:
 
-* ``evidence/grounding-3km-conus-run-report.json`` -- 796x636x49 at
-  3 km, dt 15 s, 1440 steps in 1366.03 s on an RTX 5090 (Linux, sole
-  occupant confirmed) = 0.9486 s/step = **1.874e-6 s per column-step**.
+* ``docs/public/receipts/obsbattery/grounding-3km-conus-run-report.json``
+  -- 796x636x49 at 3 km, dt 15 s, 1440 steps in 1366.03 s on an RTX 5090
+  (Linux, sole occupant confirmed) = 0.9486 s/step = **1.874e-6 s per
+  column-step**.
   This is the best-loaded measured run in the fleet and it is the FAST
   end.
 * ``docs/public/HARDWARE.md`` -- 438x352x49 at 12 km, dt 60 s, 360 steps
@@ -44,6 +45,19 @@ STREAMED, full physics, per column per step:
   :func:`streamed_transfer_bytes_per_step` reproduces BOTH from the
   tiling alone -- 27.1 GB and 1.1952x -- which is what licenses using
   that byte model on tilings nobody has timed.
+
+A STREAMED STEP IS NOT ONLY ITS COLUMNS.  The rows above are whole steps
+of the tiling they were measured on (1.1952x, nine tiles), per domain
+column.  A tiling that does more halo work pays for it column for column,
+so the column term is scaled by the plan's redundancy; and every tile
+pays its own kernel sequence and sync whatever its size, which a column
+rate cannot see at all.  :data:`TILE_SECONDS_LOW`/:data:`TILE_SECONDS_HIGH`
+carry that per-tile cost, each end fitted from a streamed forecast of
+hundreds of tiles once the column term at the same end is taken out, and
+are charged for the tiles past the nine the rows already contain
+(:data:`STREAMED_REFERENCE_TILES`).  Without both terms a 1,190-tile
+sweep at 49.95x was quoted 0.45-1.2 s per step and ran at 237-547 s
+(measured 2026-09-26).
 
 THE THREE EFFECTS THAT MOVE A RATE, all of them measured here:
 
@@ -156,7 +170,7 @@ _RESIDENT_FULL_BASIS = (
     "MEASURED full-physics resident forecasts, per column-step at nz=49: "
     "the fast end is 1.874e-6 from the 3 km CONUS grounding run "
     "(796x636x49, dt 15 s, 1440 steps in 1366.0 s on an RTX 5090 under "
-    "Linux, sole occupant confirmed -- evidence/"
+    "Linux, sole occupant confirmed -- docs/public/receipts/obsbattery/"
     "grounding-3km-conus-run-report.json), and the slow end is 7.21e-6 "
     "from 438x352x49 at 12 km, dt 60 s, 360 steps in 400 s on an RTX "
     "4090 under Linux (docs/public/HARDWARE.md).  The bracket spans a "
@@ -225,6 +239,71 @@ MYNN_PREMIUM = 1.86
 #: been timed at the rung: 1.05x at the headline out-of-core size,
 #: 1.359x at the worst tile size of the 1024^2 sweep.
 STREAM_TAX_LOW, STREAM_TAX_HIGH = 1.05, 1.359
+
+#: The redundancy the measured streamed rows above were taken at: the HRRR
+#: receipt's 400x300 tiles with halo 16 over 1200x900 do 1.1952x the
+#: necessary work, reproduced from the tiling by
+#: :func:`streamed_transfer_bytes_per_step`'s arithmetic.  A streamed row is
+#: a per-DOMAIN-column rate at that redundancy, so a tiling doing R times
+#: the necessary work costs ``R / 1.1952`` of it per domain column: the
+#: halo cells are computed exactly like interior ones.
+STREAMED_REFERENCE_REDUNDANCY = 1.1952
+
+#: The tiles one step of the measured streamed rows swept: the HRRR
+#: receipt's 400x300 tiles over 1200x900 are a 3x3 tiling.  The rows are
+#: WHOLE steps, so those nine tiles' own cost is already inside them, and
+#: :func:`estimate_pace` charges the per-tile term only for the tiles past
+#: nine.  Charging all of them counted nine tiles twice, 0.16-1.5 s on the
+#: receipt's 6.5-22.6 s step.  The fast end's 3080 run did not record its
+#: tiling and is taken at the same nine.  A plan of nine tiles or fewer is
+#: charged no per-tile term and keeps the rows as measured.
+STREAMED_REFERENCE_TILES = 9
+
+#: What one TILE costs a streamed step apart from the columns it computes,
+#: in seconds per tile per model step: its whole kernel sequence launched
+#: on a window, and the sync that ends it.  A column rate cannot see this,
+#: and on a nearly full card it is most of the step.
+#:
+#: BOTH ENDS ARE FITTED NET OF THIS MODULE'S OWN COLUMN TERM: a measured
+#: step, less the redundancy-scaled column term at the same end of the
+#: bracket, over the tiles past the rows' nine.  A per-tile figure fitted
+#: beside some other column term cannot be added to this one, because
+#: part of every tile's work is then charged twice.
+#: ``tilestream/bench_tile_overhead.py`` fits 18.0 ms a tile beside its own
+#: 3.59e-6 s per window column; this module charges 5.03e-6 s per window
+#: column at its fast end, and the 18 ms added to that prices the LOW
+#: forecast below at 17 s a step against the 11.1 s it ran at.
+#:
+#: * LOW, 0.008 s -- a 208x204x49 3 km forecast (Morrison, YSU, Noah,
+#:   RTE+RRTMGP, no cumulus, dt 15 s, radiation every 12 min) streamed in
+#:   598 tiles of 8x9 with halo 18 (27.90x redundancy, one buffer, pinned
+#:   host store) on an idle RTX 5070 Ti under Linux settled at 11.12 s a
+#:   step: the median of 102 steps, 11.08 s the fastest and 11.44 s the
+#:   mean with its radiation steps.  The fast-end column term of that
+#:   tiling is 5.95 s, so 5.17 s over the 589 tiles past the rows' nine is
+#:   8.8 ms a tile.  The constant is that rounded down, so the fastest
+#:   settled step lies inside the bracket with room for a second idle run.
+#: * HIGH, 0.170 s -- a run measured 2026-09-26: a 206x204x49 domain
+#:   swept in 1,190 tiles of 6x6 with halo 18 (49.95x redundancy, one
+#:   buffer) on an RTX 3080 under Windows/WDDM that other programs were
+#:   drawing on, settled at 237.4 s per 15 s step (296.0 s the step
+#:   before).  The slow-end column term of that tiling is 36.7 s, so
+#:   200.7 s over the 1,181 tiles past the rows' nine is the per-tile
+#:   cost.  A profile of that run put 81% of its wall time in the scheme
+#:   status readbacks each tile's physics makes
+#:   (:func:`gpuwm.core.health_ledger.read_status` with no ledger
+#:   installed): each one waits for the card, and on a WDDM card another
+#:   program is drawing on that wait is long, so this end belongs to that
+#:   platform and not to a Linux card.
+#:
+#: HOW THE ENDS ARE CHECKED.  Each end is fitted from one run, so quoting
+#: that run back checks the arithmetic and not the model.  The checks that
+#: can fail are runs that took no part in either fit, pinned in
+#: ``tests/test_streamed_auto_tiling.py``: on the same domain at other
+#: tilings, cards and machines, each measured step has to lie inside the
+#: bracket.
+TILE_SECONDS_LOW = 0.008
+TILE_SECONDS_HIGH = 0.170
 
 _RESIDENT_FULL = (1.874e-6, 7.21e-6)
 _STREAMED_FULL = (6.01e-6, 2.09e-5)
@@ -410,14 +489,36 @@ def resident_column_limit(cfg, machine, *, footprint=None) -> int | None:
     if limit <= 0:
         return None
     # Settle the boundary against the pricing itself rather than trusting
-    # the float division: what matters is that K fits and K+1 does not,
-    # and one step either way is cheaper than a bound that is off by one
-    # in the direction that OOMs a forecast.
-    while limit > 0 and fp.resident_bytes(limit * nz) > budget:
-        limit -= 1
-    while fp.resident_bytes((limit + 1) * nz) <= budget:
-        limit += 1
-    return limit or None
+    # the float division: what matters is that K fits and K+1 does not.
+    # The price is monotone in cells, so the boundary is bracketed by
+    # doubling steps and then bisected.  The earlier one-column walk
+    # reached the same K but, on the radiation rungs, whose price carries
+    # a column-dependent transient the linear inversion above leaves out,
+    # it walked about 1,300 columns at a millisecond each: 1 s per card
+    # asked, 170 s for the physics catalog's 156 questions.
+    def fits(columns: int) -> bool:
+        return columns <= 0 or fp.resident_bytes(columns * nz) <= budget
+
+    step = 1
+    if fits(limit):
+        low = limit
+        while fits(low + step):
+            low += step
+            step *= 2
+        high = low + step
+    else:
+        high = limit
+        while not fits(high - step):
+            high -= step
+            step *= 2
+        low = max(0, high - step)
+    while high - low > 1:
+        middle = (low + high) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle
+    return low or None
 
 
 def streamed_transfer_bytes_per_step(envelope, cfg) -> int:
@@ -450,6 +551,74 @@ def streamed_transfer_bytes_per_step(envelope, cfg) -> int:
     gather = ntx * nty * window_cells
     scatter = nx * ny * nz
     return int((gather + scatter) * fp.store_bytes_per_cell)
+
+
+def streamed_tiling(envelope, cfg) -> tuple[int, float]:
+    """``(tiles per step, redundancy)`` of the tiling ``envelope`` carries.
+
+    Read off the envelope where it carries them
+    (:attr:`gpuwm.core.streaming.StreamedEnvelope.ntiles`), otherwise
+    derived from its tile and halo by the planner's own arithmetic, so an
+    envelope built by hand is priced the same way.
+    """
+    ntiles = int(getattr(envelope, "ntiles", 0) or 0)
+    redundancy = float(getattr(envelope, "redundancy", 0.0) or 0.0)
+    if ntiles > 0 and redundancy > 0.0:
+        return ntiles, redundancy
+    from gpuwm.core.streaming import tiling_shape
+
+    return tiling_shape(cfg, envelope.tile_nx, envelope.tile_ny,
+                        envelope.halo)
+
+
+def tile_overhead_seconds(ntiles: int) -> tuple[float, float]:
+    """What a tiling of ``ntiles`` tiles adds to one streamed step.
+
+    Charged for the tiles past :data:`STREAMED_REFERENCE_TILES` only: the
+    streamed rows are whole steps of a nine-tile tiling and already carry
+    those nine tiles' cost.
+    """
+    extra = max(0, int(ntiles) - STREAMED_REFERENCE_TILES)
+    return (extra * TILE_SECONDS_LOW, extra * TILE_SECONDS_HIGH)
+
+
+def tiling_step_seconds(cfg, *, tile_nx: int, tile_ny: int, halo: int
+                        ) -> tuple[float, float] | None:
+    """Seconds per step of streaming ``cfg`` at this tiling, as a bracket.
+
+    The column term at the measured streamed rate scaled by this tiling's
+    redundancy, plus the per-tile term: the same arithmetic
+    :func:`estimate_pace` quotes, without the bus floor.  ``None`` where
+    no streamed rate names the rung.  A refusal quotes it so the reader
+    sees what a declined tiling would have cost.
+    """
+    from tilestream import autoplan
+
+    from gpuwm.core.streaming import tiling_shape
+
+    rate = step_rate(autoplan.rung_of(cfg), "streamed")
+    if rate is None:
+        return None
+    ntiles, redundancy = tiling_shape(cfg, tile_nx, tile_ny, halo)
+    low, high = rate.seconds_per_step(int(cfg.nx) * int(cfg.ny), int(cfg.nz))
+    scale = redundancy / STREAMED_REFERENCE_REDUNDANCY
+    tile_low, tile_high = tile_overhead_seconds(ntiles)
+    return (low * scale + tile_low, high * scale + tile_high)
+
+
+def resident_step_seconds(cfg) -> tuple[float, float] | None:
+    """Seconds per step of ``cfg`` on the resident road, as a bracket."""
+    from tilestream import autoplan
+
+    rate = step_rate(autoplan.rung_of(cfg), "resident")
+    if rate is None:
+        return None
+    return rate.seconds_per_step(int(cfg.nx) * int(cfg.ny), int(cfg.nz))
+
+
+def format_span(low: float, high: float) -> str:
+    """``LOW-HIGH`` at the precision the bracket is known to."""
+    return f"{_number(low)}-{_number(high)}"
 
 
 def _domain_steps(domain, run_seconds: float) -> int:
@@ -534,6 +703,14 @@ class PaceEstimate:
     #: branches on it exactly as on ``measured``; the basis says which
     #: row stood in and for what.
     substituted: bool = False
+    #: The streamed road's tiles per step and their redundancy, and what
+    #: the tiles past the rates' own nine add to a step
+    #: (:func:`tile_overhead_seconds`).  ``None`` and zero on the resident
+    #: road.
+    tiles: int | None = None
+    redundancy: float | None = None
+    tile_seconds_per_step_low: float = 0.0
+    tile_seconds_per_step_high: float = 0.0
 
     @property
     def realtime_ratio_low(self) -> float:
@@ -558,7 +735,10 @@ class PaceEstimate:
         wait for; the column bound tells them what to change.  A sentence
         with only the first half is a complaint.
         """
-        head = (f"{self.road} road: expect roughly "
+        shape = ("" if not self.tiles else
+                 f" ({int(self.tiles):,} tiles at "
+                 f"{float(self.redundancy or 0.0):.2f}x redundancy)")
+        head = (f"{self.road} road{shape}: expect roughly "
                 f"{_number(self.seconds_per_step_low)}-"
                 f"{_number(self.seconds_per_step_high)} s per model step "
                 f"({_span(self.wall_seconds_low, self.wall_seconds_high)} "
@@ -605,6 +785,13 @@ class PaceEstimate:
             "transfer_seconds_per_step_high": round(
                 self.transfer_seconds_per_step_high, 6),
             "launch_bound_columns": LAUNCH_BOUND_COLUMNS,
+            "tiles": self.tiles,
+            "redundancy": (None if self.redundancy is None
+                           else round(self.redundancy, 4)),
+            "tile_overhead_seconds_per_step_low": round(
+                self.tile_seconds_per_step_low, 6),
+            "tile_overhead_seconds_per_step_high": round(
+                self.tile_seconds_per_step_high, 6),
             "measured": self.measured,
             "reference_card": self.reference_card,
             "basis": self.basis,
@@ -683,6 +870,40 @@ def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
     parts = [f"{rung} rung on the {road} road: {rate.basis}"]
     if substituted:
         parts.insert(0, substituted)
+
+    # ------------------------------------------------ the tiling's own cost
+    # THE TWO TERMS A COLUMN RATE CANNOT SEE (measured 2026-09-26).
+    # A tiling of 1,190 tiles at 49.95x was quoted 0.45-1.2 s per step off
+    # the column rate and the bus, and ran at 237-547 s: its halo work was
+    # fifty times the domain's and every one of its tiles paid a whole
+    # kernel sequence and a sync.  The column term is scaled by this
+    # tiling's redundancy against the redundancy the rate was measured at,
+    # and every tile past the nine inside the rate adds its measured
+    # per-step cost.
+    tiles = redundancy = None
+    tile_low = tile_high = 0.0
+    if streamed is not None:
+        tiles, redundancy = streamed_tiling(streamed, cfg)
+        scale = redundancy / STREAMED_REFERENCE_REDUNDANCY
+        tile_low, tile_high = tile_overhead_seconds(tiles)
+        step_low = step_low * scale + tile_low
+        step_high = step_high * scale + tile_high
+        parts.append(
+            f"this plan sweeps {tiles:,} tile(s) a step doing "
+            f"{redundancy:.2f}x the necessary work, so the column rate is "
+            f"scaled by {redundancy:.2f}/{STREAMED_REFERENCE_REDUNDANCY} (the "
+            f"redundancy it was measured at), and each tile past the "
+            f"{STREAMED_REFERENCE_TILES} the rate was measured with adds "
+            f"{TILE_SECONDS_LOW:.3g}-{TILE_SECONDS_HIGH:.3g} s per step for "
+            f"its own kernel sequence and sync, {_number(tile_low)}-"
+            f"{_number(tile_high)} s here: MEASURED, each end fitted from a "
+            f"streamed forecast less its column term, the low end 598 tiles "
+            f"of a 208x204x49 domain on an idle RTX 5070 Ti under Linux "
+            f"(11.1 s per step settled), the high end 1,190 tiles of a "
+            f"206x204x49 domain on an RTX 3080 under Windows/WDDM shared "
+            f"with other programs (237.4 s per step settled), where the "
+            f"scheme status readbacks each tile makes waited on the busy "
+            f"card")
 
     # ------------------------------------------------------ the bus floor
     transfer_bytes = transfer_low = transfer_high = 0.0
@@ -772,7 +993,10 @@ def estimate_pace(exp, *, streamed=UNPRICED, machine=None,
         substituted=bool(substituted),
         reference_card=rate.reference_card,
         basis="; ".join(part for part in parts if part),
-        run_seconds=run_seconds)
+        run_seconds=run_seconds,
+        tiles=tiles, redundancy=redundancy,
+        tile_seconds_per_step_low=tile_low,
+        tile_seconds_per_step_high=tile_high)
 
 
 def _store_is_device(exp) -> bool:
@@ -825,9 +1049,13 @@ def pace_advisory(exp, *, streamed=UNPRICED, machine=None) -> str | None:
 __all__ = [
     "CARD_SPREAD", "LAUNCH_BOUND_COLUMNS", "MYNN_PREMIUM",
     "PCIE_PINNED_BYTES_PER_SECOND_HIGH", "PCIE_PINNED_BYTES_PER_SECOND_LOW",
-    "PaceEstimate", "REFERENCE_NZ", "STEP_RATES", "StepRate", "estimate_pace",
-    "measured_pinned_bytes_per_second", "pace_advisory",
-    "resident_column_limit", "slowest_recorded_rate", "step_rate",
-    "streamed_transfer_bytes_per_step",
+    "PaceEstimate", "REFERENCE_NZ", "STEP_RATES", "STREAMED_REFERENCE_REDUNDANCY",
+    "STREAMED_REFERENCE_TILES",
+    "StepRate", "TILE_SECONDS_HIGH", "TILE_SECONDS_LOW", "estimate_pace",
+    "format_span", "measured_pinned_bytes_per_second", "pace_advisory",
+    "resident_column_limit", "resident_step_seconds",
+    "slowest_recorded_rate", "step_rate", "streamed_tiling",
+    "streamed_transfer_bytes_per_step", "tile_overhead_seconds",
+    "tiling_step_seconds",
     "UNPRICED",
 ]

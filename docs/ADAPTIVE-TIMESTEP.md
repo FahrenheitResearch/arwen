@@ -65,6 +65,18 @@ The three scope-1 keys are deliberately **absent** from
 a per-domain override would be inventing surface WRF does not have.  The
 other nine are per-domain.
 
+One more field sits beside them and is not a WRF key:
+`min_time_step_sound` (default 0, even, per domain).  The clock derives
+each domain's acoustic substep count from its live step, as upstream's
+`time_step_sound = 0` asks, and that count is 4 at every short step (under
+about 3.3 s at 1 km).  `min_time_step_sound` is a floor under it; 0 keeps
+upstream's count.  The steep-terrain rules (`gpuwm/acoustic_adaptation.py`,
+`gpuwm/terrain_clock.py`) set it on each adaptive domain whose count they
+raise to 6, because without it the clock put the count back to 4 and a
+1 km forecast under a strong crest-level jet stopped.  It is in
+`ADAPTIVE_TIMESTEP_RUN_FIELDS`, so a fixed-clock identity never sees it and
+a resume may change it like any other clamp.
+
 `−1` on the three step limits means *unset*, which is WRF's own
 encoding — it substitutes a grid-spacing-derived value in
 `start_em.F:939-953`:
@@ -112,7 +124,23 @@ adds it:
   **four times** in this package's history.
 - `experiment._DOMAIN_RUN_OVERRIDES` for the nine per-domain keys.
 - `namelist_import`, so a real WRF namelist round-trips.  The refusal
-  that used to reject `use_adaptive_time_step` on import is gone.
+  that used to reject `use_adaptive_time_step` on import is gone, and the
+  nine per-domain keys are read as columns: a domain that differs from
+  the root gets its own `[[domain]]` row.  The native HRRR route writes
+  all twelve into both of its namelists from the configuration.
+
+**From `gpuwm domain`.**  `--clock adaptive` writes
+`use_adaptive_time_step = true` into `[shared]` and nothing else: every
+bound stays at −1, so each domain gets WRF's fill-ins for its own
+spacing (the shared-clamp trap below cannot arise), and the first step
+is the `time_step` the wizard derived.  The terrain clock and the
+steep-ground substep rule still write their ceiling and substep floor at
+launch.  `--clock auto`, the door's default, is adaptive only when every
+domain's first step sits inside those fill-ins (so never on the tropical
+2.5 s per km clock, which starts under the 3 s per km floor) and every
+spacing lies within the terrain clock's measured 500 m to 12 km;
+`--clock adaptive` outside the fill-ins is refused naming the domain.
+New forecast in `gpuwm gui` offers the same choice.
 
 **Tolerance covers absence, not divergence.**  A cache prepared *before*
 these fields existed loads fine.  A cache prepared *with* adaptive on is

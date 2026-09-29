@@ -158,6 +158,16 @@ def catalog_document() -> dict:
     with bridges.inspection_only():
         catalog = render_catalog()
     capabilities = lane_capabilities()
+    local = catalog.get("local_run")
+    if isinstance(local, dict) and local.get("products"):
+        # The picker offers what a local run can draw.  The engine's whole
+        # vocabulary -- every model's products, ensemble and blend
+        # families included -- stays in the document as `vocabulary`, and
+        # the products a wrfout can never carry are named, with the
+        # engine's reason, in `local_run.unavailable`.
+        catalog = {**catalog, "vocabulary": catalog.get("products"),
+                   "products": [{"name": row["name"]}
+                                for row in local["products"]]}
     return {**catalog, "presets": presets(),
             "preset_availability": preset_availability(capabilities),
             "preset_availability_basis": PRESET_AVAILABILITY_BASIS,

@@ -428,6 +428,8 @@ def build_forcing(run_seconds=1800.0):
     grid = grids_from_wps_namelist(BUNDLE / "namelists" / "namelist.wps")[0]
     with netcdf_bridge.open_dataset(BUNDLE / "geo_em" / "geo_em.d01.nc") as ds:
         terrain = np.asarray(ds.variables["HGT_M"][0], dtype=np.float64)
+        # The target LANDMASK every production door passes as XLAND.
+        landmask = np.asarray(ds.variables["LANDMASK"][0], dtype=np.float32)
         map_fields = {
             name: np.asarray(ds.variables[name][0], dtype=np.float64)
             for name in ("MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E",
@@ -461,7 +463,7 @@ def build_forcing(run_seconds=1800.0):
             # PRODUCTION path (``prepare_phase3_case`` ->
             # ``gpuwm.runtime.prepare_real_case``) has always been wired;
             # this second, older builder was the gap.
-            horizontal, cfg, coord, terrain, grid=grid,
+            horizontal, cfg, coord, terrain, grid=grid, landmask=landmask,
             source_orography=source_orography, p_top=10000.0,
             sfcp_to_sfcp=True)
         result.state.set_map_coriolis(

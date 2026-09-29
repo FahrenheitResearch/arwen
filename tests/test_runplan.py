@@ -75,10 +75,50 @@ def test_a_plan_round_trips_through_the_loader_with_paths_made_absolute(
     # Every run option the route declares is resolved, present or not.
     assert set(plan.run_options) == {
         "device", "dry_run", "restart", "health_debug",
-        "geog_root", "render_products"}
+        "geog_root", "render_products", "render_section", "keep_checkpoints"}
     assert plan.run_options["geog_root"] is None
     assert plan.run_options["render_products"] is None
+    assert plan.run_options["render_section"] is None
     assert plan.run_options["dry_run"] is False
+
+
+def test_a_section_line_is_a_run_option_and_a_file_resolves_beside_the_plan(
+        tmp_path):
+    """``render_section`` is ``gpuwm render --section``'s own value.
+
+    A line is kept as written; a file is resolved against the plan's own
+    directory and read as the renderer reads it; an ``xsec:`` term with
+    no line is refused when the plan is built, before anything runs.
+    """
+
+    config = make_case_toml(tmp_path)
+    spec = "composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa"
+    line = "38.3,-99.0,38.3,-98.4"
+    plan = load_plan(_write_plan(tmp_path, config, tmp_path / "run",
+                                 run_options={"render_products": spec,
+                                              "render_section": line}))
+    assert plan.run_options["render_section"] == line
+    (tmp_path / "cut.json").write_text(json.dumps(
+        {"points": [[38.3, -99.0], [38.4, -98.7], [38.3, -98.4]],
+         "extend_km": 10}), encoding="utf-8")
+    plan = load_plan(_write_plan(tmp_path, config, tmp_path / "run",
+                                 run_options={"render_products": spec,
+                                              "render_section": "cut.json"}))
+    assert plan.run_options["render_section"] == str(tmp_path / "cut.json")
+    for options, expected in (
+            ({"render_products": spec}, "names no line"),
+            ({"render_products": "xsec:wa"}, "names no line"),
+            ({"render_products": spec, "render_section": "missing.json"},
+             "neither 'lat,lon,lat,lon' nor a readable JSON file")):
+        with pytest.raises(PlanError, match=expected):
+            load_plan(_write_plan(tmp_path, config, tmp_path / "run",
+                                  run_options=options))
+    # No section term, no line needed; `none` draws nothing.
+    for products in ("composite_reflectivity", "none"):
+        assert load_plan(_write_plan(
+            tmp_path, config, tmp_path / "run",
+            run_options={"render_products": products})
+        ).run_options["render_section"] is None
 
 
 def test_relative_paths_resolve_against_the_plans_own_directory(tmp_path):
@@ -377,6 +417,71 @@ def test_an_intent_key_the_wizard_has_no_flag_for_is_refused(tmp_path):
     assert "'nx'" in text
     # And it names the keys that DO exist, so a front end can correct.
     assert "point" in text and "ladder" in text
+
+
+def test_an_intent_sets_the_vertical_level_count_through_the_wizards_own_flag(tmp_path):
+    # A front end asking for more eta levels spells the wizard's --nz, and the resolved grid and the generated
+    # config both carry that count, resampled from the wizard's own ladder (a user asked for more levels, nz).
+    from gpuwm.runplan import intent_arguments
+
+    arguments = intent_arguments({**_INTENT, "nz": 80}, out=tmp_path / "c.toml")
+    assert arguments[arguments.index("--nz") + 1] == "80"
+    plan = load_plan(_intent_plan(tmp_path, tmp_path / "run", nz=80))
+    resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+    assert {domain.run.nz for domain in exp.domains} == {80}
+    assert "nz = 80" in resolution["generated_config"]
+
+
+def test_an_intent_carries_tiles_and_acknowledgements_into_the_config(
+        tmp_path):
+    """--tiles and --ack were settable only through an experiment document.
+
+    A front end building an intent could not ask for streaming or declare
+    a governed experiment: ``config.intent`` had no such keys and refused
+    them.  They are wizard flags delivered through the generated config,
+    and ``ack`` is an append flag, so a list is spelled one ``--ack`` per
+    id (``--ack A B`` is refused by the wizard's parser).
+    """
+
+    import tomllib
+
+    from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
+                                      THOMPSON_PROFILE_ID)
+    from gpuwm.runplan import intent_arguments
+
+    acks = [ASYMMETRIC_RADIATION_NOCTURNAL_ACK, "second-id"]
+    arguments = intent_arguments({**_INTENT, "ack": acks, "tiles": "auto"},
+                                 out=tmp_path / "c.toml")
+    assert [arguments[i + 1] for i, token in enumerate(arguments)
+            if token == "--ack"] == acks
+    assert arguments[arguments.index("--tiles") + 1] == "auto"
+
+    # 33.8 N in late April: an 18 h window from 12Z runs through local
+    # night, which a longwave-off suite may run only when declared.
+    plan = load_plan(_intent_plan(
+        tmp_path, tmp_path / "run", point="33.8,-87.29",
+        cycle="2011-04-26T12", hours=18, physics_profile=THOMPSON_PROFILE_ID,
+        tiles="auto", ack=[ASYMMETRIC_RADIATION_NOCTURNAL_ACK]))
+    resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+    generated = tomllib.loads(resolution["generated_config"])
+    assert generated["tiles"] == {"mode": "auto"}
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in (
+        generated["experiment"]["acknowledgements"])
+    assert ASYMMETRIC_RADIATION_NOCTURNAL_ACK in exp.acknowledgements
+    assert exp.tiles.mode == "auto"
+
+
+def test_an_intent_sizes_a_point_to_its_own_extent(tmp_path):
+    from gpuwm.runplan import intent_arguments
+
+    arguments = intent_arguments({**_INTENT, "point_extent_km": 900},
+                                 out=tmp_path / "c.toml")
+    assert arguments[arguments.index("--point-extent-km") + 1] == "900"
+    plan = load_plan(_intent_plan(tmp_path, tmp_path / "run",
+                                  point_extent_km=900))
+    _resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+    root = exp.domains[0].run
+    assert max(root.nx, root.ny) * root.dx / 1000.0 <= 900.0
 
 
 def test_an_intent_without_a_place_is_refused(tmp_path):
@@ -1056,7 +1161,8 @@ def test_a_staged_source_intent_estimates(tmp_path, capsys):
     assert document["disk"]["total_frames"] > 0
 
 
-def _executed_staged_chain(tmp_path, monkeypatch):
+def _executed_staged_chain(tmp_path, monkeypatch, *, prep=None,
+                           forecast=None, sim=None):
     """Drive the staged chain end to end with every stage observed.
 
     The stages themselves are the fetch route's, rw-wps's and the
@@ -1110,10 +1216,11 @@ def _executed_staged_chain(tmp_path, monkeypatch):
         staged.append(("forecast", list(argv), layout))
 
     monkeypatch.setattr(runplan_module, "_run_fetch", fake_fetch)
-    monkeypatch.setattr(runplan_module, "_run_prep", fake_prep)
-    monkeypatch.setattr(runplan_module, "_staged_forecast", fake_forecast)
+    monkeypatch.setattr(runplan_module, "_run_prep", prep or fake_prep)
+    monkeypatch.setattr(runplan_module, "_staged_forecast",
+                        forecast or fake_forecast)
     monkeypatch.setattr(stage_cli, "resolve_bundle", fake_resolve_bundle)
-    monkeypatch.setattr(stage_cli, "sim_command", fake_sim_command)
+    monkeypatch.setattr(stage_cli, "sim_command", sim or fake_sim_command)
     monkeypatch.setattr(
         go_cli, "_render_stage",
         lambda plan, **kw: staged.append(("render", dict(plan))))
@@ -1134,7 +1241,10 @@ def _executed_staged_chain(tmp_path, monkeypatch):
 def test_the_staged_chain_composes_prep_from_the_fetch_handoff(
         tmp_path, monkeypatch):
     """The preparation argv IS the fetch route's published binding, plus
-    exactly the four flags the handoff declares are the caller's."""
+    exactly the four flags the handoff declares are the caller's.  The
+    one token it replaces is the authored input manifest, which the chain
+    writes beside its own preparation so the fetch folder's manifest stays
+    the standalone prep command's."""
 
     staged, handoff_argv, _events, plan = _executed_staged_chain(
         tmp_path, monkeypatch)
@@ -1144,7 +1254,10 @@ def test_the_staged_chain_composes_prep_from_the_fetch_handoff(
     assert "--cycle" in fetch and "2026-08-18T06" in fetch
 
     prepare = next(cmd for label, *cmd in staged if label == "prepare")[0]
-    assert prepare[:len(handoff_argv)] == handoff_argv
+    expected = list(handoff_argv)
+    expected[expected.index("--author-input-manifest") + 1] = str(
+        plan.run_dir / "chain" / "inputs.json")
+    assert prepare[:len(handoff_argv)] == expected
     appended = prepare[len(handoff_argv):]
     assert appended[::2] == ["--wps-namelist", "--experiment-config",
                              "--geog-root", "--output-root"]
@@ -1178,6 +1291,87 @@ def test_the_staged_chain_binds_the_forecast_off_the_bundle(
     assert stages == ["fetch", "prepare", "forecast", "finalize"]
     render = next(entry for entry in staged if entry[0] == "render")
     assert Path(str(render[1]["render"])) == plan.run_dir / "chain" / "png"
+
+
+@requires_cupy
+def test_the_staged_chain_starts_the_forecast_at_the_prepared_head(
+        tmp_path, monkeypatch):
+    """Chained preparation on the staged route: the forecast is bound to the
+    prepared HEAD and starts while the preparation is still running; the
+    seal is reported after it."""
+
+    import threading
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
+
+    import gpuwm.runplan as runplan_module
+    import gpuwm.stage_cli as stage_cli
+    from gpuwm.ingest.boundary_stream import HEAD_SCHEMA, head_sha256
+
+    started = threading.Event()
+    bound = {}
+
+    def chained_prep(arguments):
+        prep_root = Path(arguments[arguments.index("--output-root") + 1])
+        bound["root"] = prep_root
+        stream = prep_root / "boundary-stream"
+        stream.mkdir(parents=True)
+        head = {"schema": HEAD_SCHEMA,
+                "basis": {"schema": HEAD_SCHEMA, "cache": {},
+                          "proof_head": {"schema": "probe"},
+                          "input_manifest_sha256": "0" * 64},
+                "decision": {"chained": True},
+                # A chain binds only a head written after it started.
+                "created_utc": datetime.now(timezone.utc).isoformat()}
+        head["head_sha256"] = head_sha256(head)
+        bound["head"] = head["head_sha256"]
+        (stream / "head.json").write_text(json.dumps(head), encoding="utf-8")
+        assert started.wait(10), "the forecast did not start at the head"
+        (prep_root / "proof.json").write_text("{}", encoding="utf-8")
+
+    def head_bundle(prepared_root, head):
+        return {"document": Path(prepared_root) / "proof.json",
+                "root": Path(prepared_root), "schema": "probe",
+                "source": "icon-eu", "layout": "single", "domains": 1,
+                "payload": {}, "head_sha256": head,
+                "source_manifest_sha256": "0" * 64}
+
+    def recording_sim(bundle, **kw):
+        bound["sim_head"] = bundle.get("head_sha256")
+        return ["python", "-m", "runner", "--outdir", str(kw["outdir"])]
+
+    def forecast(argv, *, layout, observer):
+        bound["sealed_at_start"] = (
+            Path(bound["root"]) / "proof.json").exists()
+        started.set()
+        # The forecast outlives the preparation, as it does on a real run:
+        # the seal is reported when it happens, not when the forecast ends.
+        import time
+        deadline = time.monotonic() + 10
+        while not (Path(bound["root"]) / "proof.json").exists():
+            assert time.monotonic() < deadline, "the preparation never sealed"
+            time.sleep(0.01)
+        time.sleep(0.5)
+
+    monkeypatch.setattr(stage_cli, "resolve_head_bundle", head_bundle)
+    _staged, _argv, events, _plan = _executed_staged_chain(
+        tmp_path, monkeypatch, prep=chained_prep, forecast=forecast,
+        sim=recording_sim)
+    assert bound["sim_head"] == bound["head"]
+    assert bound["sealed_at_start"] is False
+    names = [record["event"] for record in events]
+    assert names.index("prepare_head_ready") < names.index("prepare_sealed")
+    assert names.count("prepare_sealed") == 1
+    sealed_ms = next(record["emitted_unix_ms"] for record in events
+                     if record["event"] == "prepare_sealed")
+    forecast_end_ms = next(record["emitted_unix_ms"] for record in events
+                           if record["event"] == "stage_finished"
+                           and record["stage"] == "forecast")
+    assert forecast_end_ms - sealed_ms >= 300
+    stages = [record["stage"] for record in events
+              if record["event"] == "stage_started"]
+    assert stages == ["fetch", "prepare", "forecast", "finalize"]
 
 
 # NEEDS CUPY INSTALLED, and opens no device: this test asserts the staged
@@ -1506,7 +1700,7 @@ def test_a_box_with_no_renderer_answers_with_the_refusal(monkeypatch):
     This used to hand the picker the matplotlib engine's five products.
     They are not the products ``gpuwm render`` would draw on that box --
     ``--engine auto`` refuses there now, because weather fields come
-    from ``rw_wrfbatch`` (render law, CLAUDE.md Drew 2026-08-06; audit
+    from ``rw_wrfbatch`` (render law, 2026-08-06; audit
     F7) -- so offering them was offering a menu nothing serves.  The
     document says ``engine: null``, ``products: null`` and why.
     """
@@ -2845,6 +3039,10 @@ def test_resolve_prints_one_json_document_and_runs_nothing(
 
 def test_estimate_reports_measured_numbers_and_nulls_the_unmeasured_ones(
         tmp_path, capsys):
+    # The disk figure is measured now (history, checkpoints and pictures
+    # from bytes per cell; the download and preparation from the sizes in
+    # gpuwm/data/download-bytes.v1.json), so it is a number; the wall
+    # time is still unmeasured for an arbitrary configuration.
     # This is a pre-download estimate. Present inputs are now inventoried
     # for retained boundary counts, so placeholder bytes are not GRIB data.
     config = make_case_toml(tmp_path, files=False)
@@ -2858,12 +3056,18 @@ def test_estimate_reports_measured_numbers_and_nulls_the_unmeasured_ones(
     assert document["schema"] == "gpuwm.run-plan.estimate.v1"
     assert document["vram"]["estimate_bytes"] > 0
     assert document["disk"]["total_frames"] > 0
-    # The accurate nulls, each with its basis stated rather than a number
+    assert document["disk"]["bytes"] == (
+        document["disk"]["history_bytes"] + document["disk"]["checkpoint_bytes"]
+        + document["disk"]["picture_bytes"] + document["disk"]["download_bytes"]
+        + document["disk"]["preparation_bytes"])
+    # The accurate null, with its basis stated rather than a number
     # this package never measured.
-    assert document["disk"]["bytes"] is None
     assert document["wall_time"]["seconds"] is None
     assert document["wall_time"]["basis"]
-    assert document["download"]["bytes"] is None
+    # This config names no [fetch] table: nothing is downloaded, and the
+    # basis says so rather than leaving the reader a null.
+    assert document["download"]["bytes"] == 0
+    assert "downloads nothing" in document["download"]["basis"]
 
 
 def test_probe_answers_without_a_plan_and_without_touching_the_card(
@@ -2930,8 +3134,14 @@ def test_the_module_entry_and_the_subcommand_take_the_same_flags():
 # showed that.
 
 
-def _cli(*tokens, cwd):
-    """Run the real command in a fresh interpreter, pinned to this tree."""
+def _cli(*tokens, cwd, offline=False):
+    """Run the real command in a fresh interpreter, pinned to this tree.
+
+    ``offline`` points every HTTP client at a closed local port, for a
+    test whose premise is that the forcing cannot be fetched: ERA5 has a
+    keyless provider, so on a box with internet access the plan would
+    otherwise fetch it and run the whole forecast.
+    """
 
     import os
     import subprocess
@@ -2945,6 +3155,12 @@ def _cli(*tokens, cwd):
     environment["PYTHONPATH"] = repo + os.pathsep + environment.get(
         "PYTHONPATH", "")
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    if offline:
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                     "http_proxy", "https_proxy", "all_proxy"):
+            environment[name] = "http://127.0.0.1:9"
+        for name in ("NO_PROXY", "no_proxy"):
+            environment.pop(name, None)
     return subprocess.run(
         [_sys.executable, "-m", "gpuwm.runplan", *tokens],
         capture_output=True, text=True, cwd=str(cwd), env=environment,
@@ -2997,7 +3213,7 @@ def test_the_real_command_keeps_stdout_pure_through_a_talking_pipeline(
         "output_root": str(run_dir),
     }), encoding="utf-8")
 
-    result = _cli(str(plan_path), cwd=tmp_path)
+    result = _cli(str(plan_path), cwd=tmp_path, offline=True)
 
     # It fails -- the forcing was never fetched -- and that is fine:
     # what is under test is which channel each half went down.

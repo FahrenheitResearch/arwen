@@ -343,6 +343,45 @@ def restart_child_birth_seconds(path, *, grid_id: int, start_time) -> float:
 
 
 
+def _dispersion_ratio_argument(text: str):
+    """``none`` switches the dispersion gate (or its batch condition) off;
+    else a finite positive ratio."""
+
+    import argparse
+    import math
+
+    if text.strip().lower() == "none":
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        value = float("nan")
+    if not math.isfinite(value) or value <= 0.0:
+        raise argparse.ArgumentTypeError(
+            f"{text!r}: a positive ratio or 'none'")
+    return value
+
+
+def dispersion_gate_line(ratio, batch_ratio) -> str:
+    """The one line every run prints about the dispersion gate: its two
+    thresholds, and whether they are the defaults."""
+
+    from gpuwm.da.velocity_dispersion import (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+        DEFAULT_VELOCITY_DISPERSION_RATIO)
+
+    if ratio is None:
+        return ("velocity dispersion gate: off, so radial velocity updates "
+                "theta and vapour wherever it reaches, under-dispersed or "
+                "not (gpuwm.da.velocity_dispersion)")
+    default = (ratio == DEFAULT_VELOCITY_DISPERSION_RATIO
+               and batch_ratio == DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO)
+    batch = ("none, every batch gated on its columns alone"
+             if batch_ratio is None else f"{batch_ratio:g}")
+    return (f"velocity dispersion gate: column {ratio:g}, batch {batch} "
+            f"({'default' if default else 'set'})")
+
+
 def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
                             cwp: bool):
     """The analysis configuration this cycle will run, built once.
@@ -372,6 +411,9 @@ def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
 
     from gpuwm.da.letkf import Localization
     from gpuwm.da.radar_assimilation import RadarAssimilationConfig
+    from gpuwm.da.velocity_dispersion import (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+        DEFAULT_VELOCITY_DISPERSION_RATIO)
 
     cwp_localization = None
     if cwp:
@@ -403,7 +445,13 @@ def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
         positivity_policy=args.positivity_policy,
         mp_physics=int(mp_physics),
         solve_device=args.solve_device,
-        memory_budget_mib=args.memory_budget_mib)
+        memory_budget_mib=args.memory_budget_mib,
+        velocity_dispersion_ratio=getattr(
+            args, "velocity_dispersion_gate",
+            DEFAULT_VELOCITY_DISPERSION_RATIO),
+        velocity_dispersion_batch_ratio=getattr(
+            args, "velocity_dispersion_batch_gate",
+            DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO))
 
 
 def planned_analysis_fields(args, mp_physics) -> tuple:
@@ -1254,14 +1302,43 @@ def cycle(stages: list) -> int:
                         help="required once a non-negative field is "
                              "analysed; gpuwm.da.positivity documents "
                              "what each choice costs")
+    # -- the radial-velocity dispersion gate (default ON) ------------------
+    # gpuwm.da.velocity_dispersion names the breakage (an under-dispersed
+    # Vr ensemble writing vapour into theta and vapour) and the measurement
+    # behind both defaults; the analysis receipt records the ratios either
+    # way.
+    from gpuwm.da.velocity_dispersion import (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
+        DEFAULT_VELOCITY_DISPERSION_RATIO)
+    parser.add_argument(
+        "--velocity-dispersion-gate", type=_dispersion_ratio_argument,
+        default=DEFAULT_VELOCITY_DISPERSION_RATIO, metavar="RATIO|none",
+        help="withhold a radial-velocity batch from theta and vapour in the "
+             "columns where its innovation variance exceeds RATIO times its "
+             "ensemble plus observation error variance, inside a batch "
+             "gated by --velocity-dispersion-batch-gate. Default 2; 'none' "
+             "lets Vr update theta and vapour everywhere, which on a "
+             "storm-scale first analysis put 6.44 Mt of vapour where the "
+             "gate at 2 removes 0.79")
+    parser.add_argument(
+        "--velocity-dispersion-batch-gate", type=_dispersion_ratio_argument,
+        default=DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO, metavar="RATIO|none",
+        help="gate a radial-velocity batch only when its innovation "
+             "variance over all its gates exceeds RATIO times their "
+             "ensemble plus observation error variance. Default 3: the "
+             "first analysis's batches measured 4.68 and 3.72, every cycled "
+             "one at most 1.97. 'none' gates every batch on its columns "
+             "alone, which once cycled withheld Vr from theta and vapour in "
+             "a fifth to over half of a storm's columns")
     # -- surface observations (default OFF) -------------------------------
     # METAR/ASOS through the rw_asos seam (gpuwm-obs.asos-surface.v2, and
     # the v1 records written before it).  A quantity is enabled by stating
-    # its error standard deviation; the record is hourly-matched by
-    # decoder design, so most sub-hourly cycles legitimately see zero
-    # fresh surface reports and each report enters exactly one analysis,
-    # the one nearest the instant it was taken.  gpuwm/da/obs_surface.py
-    # documents what the seam can and cannot express.
+    # its error standard deviation; a METAR record is hourly-matched, so
+    # most sub-hourly cycles legitimately see zero fresh surface reports,
+    # and a record decoded with rw_asos --product asos1min carries a report
+    # every minute.  Each report enters exactly one analysis, the one
+    # nearest the instant it was taken.  gpuwm/da/obs_surface.py documents
+    # what the seam can and cannot express.
     parser.add_argument(
         "--surface-obs", type=Path, default=None,
         help="one gpuwm-obs.asos-surface record (v2, or v1) covering the "
@@ -1408,6 +1485,12 @@ def cycle(stages: list) -> int:
     report: dict = {"schema": REPORT_SCHEMA, "stability": "experimental",
                     "args": {key: str(value) for key, value
                              in vars(args).items()}, "legs": []}
+    report["velocity_dispersion_gate"] = args.velocity_dispersion_gate
+    report["velocity_dispersion_batch_gate"] = (
+        args.velocity_dispersion_batch_gate)
+    print(dispersion_gate_line(args.velocity_dispersion_gate,
+                               args.velocity_dispersion_batch_gate),
+          flush=True)
     t_total = time.time()
 
     # ---- imports (CuPy present; model env untouched) -----------------------
@@ -1415,9 +1498,12 @@ def cycle(stages: list) -> int:
 
     from gpuwm.core.clock import build_schedule, resolve_clock
     from gpuwm.core.health import StateHealthValidator
+    from gpuwm.core.preflight import (device_free_and_total_bytes,
+                                      local_memory_profile_from_device)
     from gpuwm.core.model import (DomainNode, ExperimentState,
                                   ModelRuntimeStatus, execute_experiment)
-    from gpuwm.da import moments, nested_forecast, obsop, perturb
+    from gpuwm.da import (cycle_admission, moments, nested_forecast, obsop,
+                          perturb)
     from gpuwm.da.hotstart import HotStartConfig, hotstart_increments
     from gpuwm.da.letkf import Localization
     from gpuwm.da.obs_radar import read_document
@@ -1963,9 +2049,13 @@ def cycle(stages: list) -> int:
                                initial_result=wired.restored.initial_result)})
         return model
 
-    def teardown(*objects) -> None:
-        for obj in objects:
-            del obj
+    def release_device_memory() -> None:
+        """Collect a finished trajectory and return its pool blocks.
+
+        Releases only what nothing references any more: a trajectory's
+        owners are unreachable here because they were locals of
+        ``run_trajectory``, which has returned.
+        """
         gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -2016,6 +2106,37 @@ def cycle(stages: list) -> int:
             "wspd_sigma_ms": args.sfc_wspd_sigma_ms,
             "analysis_times": [t.isoformat() for t in surface_schedule],
         }
+
+    # ---- the fit decision, before the first upload ----------------------
+    # One decision for the whole run, taken before the first observation
+    # upload and the first restore: every trajectory of every leg is the
+    # same forecast, a nesting one is the largest, and each is released
+    # before the next is wired, so the largest trajectory is what the
+    # card has to hold (gpuwm.da.cycle_admission says what it counts).
+    admission = cycle_admission.price_cycle(
+        (nested_forecast.nested_experiment(exp, nest_child_dc)
+         if nest_trajectories else exp),
+        forcing_intervals=max(1, len(inputs.forcing_hours) - 1),
+        observation_points=(int(cfg.nz) * int(cfg.ny) * int(cfg.nx)
+                            if args.obs and not args.no_hotstart else 0),
+        perturbation_bytes=(
+            perturb.device_working_bytes(
+                cfg_perturb, (int(cfg.nz), int(cfg.ny), int(cfg.nx)))
+            if resumed_from is None and int(args.members) > 0 else 0),
+        profile=local_memory_profile_from_device(cp))
+    free_bytes, _total_bytes = device_free_and_total_bytes()
+    try:
+        admission = cycle_admission.admit_cycle(admission,
+                                                free_bytes=free_bytes)
+    except cycle_admission.CycleMemoryRefused as error:
+        report["memory_admission"] = error.admission.receipt()
+        (out / "cycle-report.json").write_text(
+            json.dumps(report, indent=2, default=str), encoding="utf-8")
+        raise SystemExit(str(error)) from None
+    report["memory_admission"] = admission.receipt()
+    print(f"memory admission: {admission.required_bytes:,} bytes for the "
+          f"largest trajectory within {admission.budget_bytes:,} of "
+          f"{admission.free_bytes:,} free", flush=True)
 
     for leg in range(legs):
         t_start = leg_starts[leg]
@@ -2075,7 +2196,24 @@ def cycle(stages: list) -> int:
             z_mask_cp = cp.asarray(np.asarray(
                 document["variables"]["z_mask"]).astype(bool))
 
-        for name in trajectories:
+        def run_trajectory(name) -> None:
+            """One trajectory's leg, in a scope that ends with it.
+
+            Every device owner the leg builds -- the restored state, the
+            physics driver, the model, the child and its driver, the
+            leg-end diagnostics -- is a local of this call, so returning
+            drops the last reference to each of them.  What the leg hands
+            on leaves as host data only, through the run's own tables:
+            the restart set, the host mirror, the leg-end H(x), the hot
+            start increments and the leg record.  The trajectory loop body
+            used to run in :func:`cycle`'s own scope, where those names
+            stayed bound after the old ``teardown`` deleted only its loop
+            variable, so the previous trajectory's whole model was still
+            alive while the next one was restored beside it, and a domain
+            whose one trajectory fits the card ran out of memory building
+            its second.
+            """
+            nonlocal setup_arrays, thb_host
             t_leg = time.time()
             nested_leg = nests_this_leg(leg, name)
             # -- what this leg starts from ---------------------------------
@@ -2173,7 +2311,7 @@ def cycle(stages: list) -> int:
             restored_background: dict = {}
             if source is None:
                 if name != CONTROL:
-                    prov = perturb.apply_perturbations(
+                    perturb.apply_perturbations(
                         state, args.seed + int(name), cfg_perturb)
                     refresh_diagnostics(
                         state, hypsometric_opt=cfg.hypsometric_opt)
@@ -2313,8 +2451,7 @@ def cycle(stages: list) -> int:
 
             execute_experiment(model, history_handler=None,
                                progress_callback=None, validate_state=True,
-                               skip_feedback_path=True,
-                               pool_trim_per_period=True)
+                               skip_feedback_path=True)
             cp.cuda.Stream.null.synchronize()
 
             # -- the leg join: this trajectory's restart set --------------
@@ -2330,6 +2467,7 @@ def cycle(stages: list) -> int:
                     node.clock.ticks / node.clock.tick_den)))
             written_members = tree_restart_members(restarts[name])
             entry = leg_record["trajectories"].setdefault(str(name), {})
+            entry["pool_trim"] = model._pool_trim_policy
             entry["restart"] = {
                 "root_member": restarts[name].name,
                 "domain_ids": sorted(int(gid) for gid in written_members),
@@ -2481,11 +2619,15 @@ def cycle(stages: list) -> int:
             if thb_host is None and thb_snapshot is not None:
                 thb_host = thb_snapshot
             pending[name] = None
-
-            teardown(model, node, restored, driver, state, refl,
-                     wired, child_node, child_driver, refl_nest)
             print(f"leg {leg} {name}: {entry['wall_seconds']} s, "
                   f"elapsed {entry['elapsed_seconds']:.0f} s", flush=True)
+
+        for name in trajectories:
+            run_trajectory(name)
+            # The trajectory's owners died with its scope; the collection
+            # and the pool drain hand their blocks back before the next
+            # trajectory is wired, and before the analysis below.
+            release_device_memory()
 
         # -- analysis at t_end ------------------------------------------------
         if analysis_due or verification_only:

@@ -254,7 +254,11 @@ def doors() -> dict[str, argparse.ArgumentParser]:
 
     from gpuwm.cli import build_parser
 
-    out: dict[str, argparse.ArgumentParser] = {}
+    # The root parser is a door too: `gpuwm --help-all` is an option of
+    # `gpuwm` itself, and a walk that began at the root's children left
+    # the one page promising every option without it.
+    root = build_parser()
+    out: dict[str, argparse.ArgumentParser] = {"gpuwm": root}
 
     def walk(parser: argparse.ArgumentParser, prefix: str) -> None:
         """Every command under ``parser``, at every depth.
@@ -275,7 +279,7 @@ def doors() -> dict[str, argparse.ArgumentParser]:
                 out[f"{prefix} {name}"] = sub
                 walk(sub, f"{prefix} {name}")
 
-    walk(build_parser(), "gpuwm")
+    walk(root, "gpuwm")
 
     def built(module: str, attr: str = "build_parser"):
         loaded = importlib.import_module(module)

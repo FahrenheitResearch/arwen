@@ -43,7 +43,7 @@ evidence.
 | Vertical coordinate | Shared explicit eta, `hybrid_opt=2`; structural 35/49/80-level gates; source-top coverage required |
 | CUDA preprocessing | Implemented and numerically compared |
 | Rust/NumPy CPU preprocessing and setup/export | Implemented for ERA5/GFS/20CRv3/mapped; clean-machine real-data matrix incomplete |
-| `auto` backend | CUDA 12.x device when available, otherwise CPU |
+| `auto` backend | CUDA 12.x or 13.x device when available, otherwise CPU; also CPU at measured GPU utilization >=50%, when the preparation's priced device memory exceeds the card's free memory, or when CUDA cannot open the card, with measurements, the price and the reason in the receipt |
 | HRRR common CPU/CUDA selector | Not yet wired in the public named driver |
 | Sealed Linux archive | x86-64 CPU/CUDA assembly and clean CPU install gated |
 | Sealed Windows archive | x86-64 CPU-only builder/PowerShell installer implemented; HRRR shell lane and Windows real-source/stock-WRF gates pending |

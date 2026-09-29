@@ -124,7 +124,8 @@ BUNDLED_BRIDGES: tuple[BundledBridge, ...] = (
         "gdt101_remap", _DECODER_WORKSPACE, "--gdt101-remap",
         _SHARED_BRIDGE_ENV["gdt101_remap"], "usage: gdt101_remap",
         "every source whose native grid is a GDT-101 unstructured mesh "
-        "(rw-wps --source icon-global), whose input-normalization stage "
+        "(rw-wps --source icon-global or icon-d2), whose input-normalization "
+        "stage "
         "writes its regional intermediates with this binary and refuses "
         "rather than falling back without it"),
     BundledBridge(
@@ -324,6 +325,14 @@ def distribution_contract(
             "cuda": "cupy-fp32-v1",
             "cpu": "rust-scoped-threads-fp32-v1",
             "parity_contract": "gpuwm-preprocess-backend-parity-v1",
+            # Both backends map soil, snow, skin temperature and sea ice
+            # through these entries of the bundled CPU library: the WPS
+            # masked chain, the native HRRR route's soil stencil, and the
+            # lake skin search with the water-temperature blends, the
+            # water repairs and the per-body assembly.
+            "masked_surface_chain": "rust-wps-masked-chain-f64-v2",
+            "masked_bilinear_stencil": "rust-masked-bilinear-stencil-f64-v1",
+            "water_blend": "rust-water-blend-f64-v3",
         },
         "runtime_forbidden": ["WPS", "real.exe"],
         "external_case_inputs": [
@@ -583,6 +592,13 @@ def cpu_backend_identity(path: Path) -> dict[str, Any]:
         raise RuntimeError(
             "native CPU preprocessing backend format does not match host: "
             f"{binary_format} != {expected_format}: {path}")
+    marker = _BRIDGE_ABI_MARKERS["gpuwm_preprocess_cpu"]
+    if marker not in payload:
+        raise RuntimeError(
+            "native CPU preprocessing backend predates the masked surface "
+            "chain, soil stencil and water blends "
+            f"({marker.decode('ascii')}), which every preparation with a "
+            f"land-sea mask needs under both backends: {path}")
     backend = CpuPreprocessBackend(path)
     try:
         return {
@@ -594,6 +610,10 @@ def cpu_backend_identity(path: Path) -> dict[str, Any]:
             "backend": backend.name,
             "arithmetic": backend.arithmetic,
             "self_test": _cpu_backend_self_test(backend),
+            "masked_chain_self_test": _cpu_masked_chain_self_test(backend),
+            "masked_stencil_self_test": _cpu_masked_stencil_self_test(
+                backend),
+            "water_blend_self_test": _cpu_water_blend_self_test(backend),
         }
     finally:
         backend.close()
@@ -632,6 +652,250 @@ def _cpu_backend_self_test(backend: Any) -> dict[str, Any]:
         "worker_counts": [1, 3],
         "output_values": serial.tolist(),
         "output_sha256": hashlib.sha256(serial.tobytes()).hexdigest(),
+    }
+
+
+def _cpu_masked_chain_self_test(backend: Any) -> dict[str, Any]:
+    """Run the masked surface chain on the host, not just look it up.
+
+    Two cases, each at one and three workers: WPS's queue-limited search
+    (a target at (4.49, 4.49) takes 11, the donor dequeued first, not 22,
+    the globally nearer one), and a sea-ice sheet stored at 1.0003 that
+    the range repair puts on its bound and counts.  The outputs and
+    counts are bound by hash, so the cut proves the Windows library the
+    same way as the Linux one.
+    """
+
+    import numpy as np
+
+    field = np.zeros((1, 10, 10), dtype=np.float64)
+    donors = np.zeros((10, 10), dtype=bool)
+    field[0, 4, 0], donors[4, 0] = 11.0, True
+    field[0, 6, 7], donors[6, 7] = 22.0, True
+    ice = np.full((1, 6, 6), 1.0003, dtype=np.float64)
+    everywhere = np.ones((6, 6), dtype=bool)
+    cases = (
+        ("search_queue_limited", field, donors,
+         np.array([4.49]), np.array([4.49]), ("search",), None,
+         [11.0]),
+        ("range_roundoff_at_bound", ice, everywhere,
+         np.array([2.25, 3.0]), np.array([1.5, 4.0]),
+         ("four_pt", "average_4pt"), (0.0, 1.0), [1.0, 1.0]),
+    )
+    digest = hashlib.sha256()
+    for name, source, valid, ty, tx, chain, bounds, expected in cases:
+        results = []
+        for workers in (1, 3):
+            values, counts = backend.wps_masked_chain(
+                source, valid, None, ty, tx, np.ones(ty.shape, dtype=bool),
+                chain, mode="plain", fill_value=-1.0,
+                physical_range=bounds, workers=workers)
+            results.append((values.tobytes(), counts.tobytes()))
+        if results[0] != results[1]:
+            raise RuntimeError(
+                f"CPU masked-chain self-test {name} changed with worker count")
+        observed = np.frombuffer(results[0][0], dtype=np.float64).tolist()
+        if observed != expected:
+            raise RuntimeError(
+                f"CPU masked-chain self-test {name} produced {observed}, "
+                f"not {expected}")
+        digest.update(results[0][0] + results[0][1])
+    return {
+        "status": "PASS",
+        "operation": "wps_masked_chain_f64",
+        "cases": [case[0] for case in cases],
+        "worker_counts": [1, 3],
+        "output_sha256": digest.hexdigest(),
+    }
+
+
+def _cpu_masked_stencil_self_test(backend: Any) -> dict[str, Any]:
+    """Build and apply the native HRRR route's soil stencil on the host.
+
+    One window, at one and three workers: a target with land corners
+    (renormalised weights), a sea-covered target with two land cells at
+    the same distance inside the radius (the radius scan, whose first
+    nearest cell in scan order wins the tie) and a sea-covered target
+    whose nearest land lies past the radius in a window closed on every
+    edge (the nearest-cell search).  The indices,
+    weights, report counts and the applied soil values are bound by hash,
+    so the cut proves the Windows library the same way as the Linux one.
+    """
+
+    import numpy as np
+
+    valid = np.zeros((12, 12), dtype=bool)
+    valid[2, 2] = valid[2, 3] = True
+    valid[5, 9] = valid[9, 5] = True
+    x = np.array([2.25, 7.0, 10.4])
+    y = np.array([1.5, 7.0, 10.6])
+    apply = np.ones(3, dtype=bool)
+    field = np.arange(144, dtype=np.float32).reshape(1, 12, 12) / 7.0
+    digest = hashlib.sha256()
+    results = []
+    for workers in (1, 3):
+        code, raw = backend.masked_bilinear_stencil(
+            x, y, valid, apply, fallback_radius=3, closed_edges=15,
+            edges_unknown=False, distant_cells=8.0, listed=4,
+            workers=workers)
+        if code:
+            raise RuntimeError(
+                f"CPU masked-stencil self-test refused with code {code}")
+        applied = backend.masked_stencil_apply(
+            field, raw["indices_y"], raw["indices_x"], raw["weights"],
+            workers=workers)
+        results.append(b"".join((
+            raw["indices_y"].tobytes(), raw["indices_x"].tobytes(),
+            raw["weights"].tobytes(), raw["counts"].tobytes(),
+            applied.tobytes())))
+    if results[0] != results[1]:
+        raise RuntimeError(
+            "CPU masked-stencil self-test changed with worker count")
+    donors = (raw["indices_y"][0].tolist(), raw["indices_x"][0].tolist())
+    if donors != ([1, 5, 9], [2, 9, 5]):
+        raise RuntimeError(
+            f"CPU masked-stencil self-test chose donors {donors}, not "
+            "([1, 5, 9], [2, 9, 5])")
+    digest.update(results[0])
+    return {
+        "status": "PASS",
+        "operation": "masked_bilinear_stencil_f64",
+        "cases": ["renormalized_corners", "radius_scan_tie",
+                  "nearest_past_radius"],
+        "worker_counts": [1, 3],
+        "output_sha256": digest.hexdigest(),
+    }
+
+
+def _cpu_water_blend_self_test(backend: Any) -> dict[str, Any]:
+    """Run the lake skin search and the three water blends on the host.
+
+    One small source at one and three workers: a lake target whose nearest
+    water lies past the first search window, with two water cells tied in
+    distance (the first in row-major order wins); a blend with one donor
+    corner missing (renormalised weights); a component fill that closes a
+    hole from its neighbours; an overlay sample with one invalid
+    corner; a water repair where one body closes from its own water and
+    another takes the nearest water; and a per-body assembly with one body
+    on analysis and one on skin; the labelling of two cells that touch
+    only at a corner (one body, eight-connected) beside a separate one;
+    the source owner of a cell two bodies claim equally (the higher label
+    wins); and the surface-nearest search with two water cells tied in
+    distance (the first scanned wins).  Every output is bound by hash, so
+    the cut proves the Windows library the same way as the Linux one.
+    """
+
+    import numpy as np
+
+    skin = np.arange(400, dtype=np.float64).reshape(20, 20) / 3.0 + 270.0
+    water = np.zeros((20, 20), dtype=bool)
+    water[10, 0] = water[10, 19] = True
+    field = np.arange(16, dtype=np.float64).reshape(4, 4) + 280.0
+    donors = np.ones((4, 4), dtype=bool)
+    donors[1, 2] = False
+    rows0 = np.array([[1]])
+    cols0 = np.array([[1]])
+    corners = ((rows0, cols0, np.array([[0.25]])),
+               (rows0, cols0 + 1, np.array([[0.25]])),
+               (rows0 + 1, cols0, np.array([[0.25]])),
+               (rows0 + 1, cols0 + 1, np.array([[0.25]])))
+    holes = field.copy()
+    holes[1, 1] = holes[2, 2] = np.nan
+    component = np.ones((4, 4), dtype=bool)
+    component[3, 3] = False
+    valid = np.ones((4, 4), dtype=bool)
+    valid[0, 1] = False
+    # Two bodies on a 6x6 grid: the left one has a bad hole among good
+    # water, the right one is wholly bad and takes the nearest water.
+    repair_labels = np.zeros((6, 6), dtype=np.int32)
+    repair_labels[1:5, 0:2] = 1
+    repair_labels[1:3, 4:6] = 2
+    repair_water = repair_labels > 0
+    repair_values = np.where(
+        repair_water, 280.0 + np.arange(36).reshape(6, 6) / 7.0, 300.0)
+    repair_values[2, 1] = 0.0
+    repair_values[1:3, 4:6] = np.nan
+    repair_source = np.where(repair_water, 1, 0).astype(np.int8)
+    body_labels = repair_labels.copy()
+    body_owner = np.zeros((4, 4), dtype=np.int32)
+    body_owner[1:3, 0:2] = 1
+    body_rows, body_cols = np.meshgrid(
+        np.arange(6) // 2, np.arange(6) // 2, indexing="ij")
+    body_corners = ((body_rows, body_cols, np.full((6, 6), 0.5)),
+                    (np.minimum(body_rows + 1, 3), body_cols,
+                     np.full((6, 6), 0.5)))
+    label_mask = np.zeros((5, 5), dtype=bool)
+    label_mask[0, 0] = label_mask[1, 1] = label_mask[4, 4] = True
+    owner_labels = np.array([1, 2, 2, 1], dtype=np.int32)
+    owner_lat = np.array([0.0, 0.0, 1.0, 1.0])
+    owner_lon = np.array([0.0, 0.0, 1.0, 1.0])
+    digest = hashlib.sha256()
+    results = []
+    for workers in (1, 3):
+        nearest = backend.lake_water_nearest(
+            skin, water, np.array([10.0]), np.array([9.5]), workers=workers)
+        blend = backend.masked_bilinear_blend(
+            field, donors, corners, (1, 1), workers=workers)
+        filled = backend.component_fill(holes, component, workers=workers)
+        sampled, covered = backend.overlay_bilinear_sample(
+            field, valid, np.array([0]), np.array([0]), np.array([0.5]),
+            np.array([0.25]), np.array([True]), workers=workers)
+        repaired, repaired_source, tallies, repaired_mask = (
+            backend.water_repair(
+                repair_values, repair_source, repair_water, repair_labels,
+                minimum=170.0, maximum=400.0, nearest_water_code=5,
+                surrounding_skin_code=6, workers=workers))
+        body_values = np.full((6, 6), 290.0)
+        body_source = np.zeros((6, 6), dtype=np.int8)
+        stats, coverage, _ = backend.water_bodies(
+            labels=body_labels, lake_class=np.array([False, True, False]),
+            skin=np.full((6, 6), 290.0), values=body_values,
+            source=body_source, codes=(1, 2, 4), sst=field,
+            owner=body_owner, corners=body_corners, min_coverage=0.5,
+            minimum=170.0, maximum=400.0, max_listed=4, workers=workers)
+        labelled, bodies = backend.label_components(label_mask)
+        owned = backend.component_owner(
+            owner_labels, np.array([0.0, 1.0]), np.array([0.0, 1.0]),
+            owner_lat, owner_lon, (2, 2), workers=workers)
+        searched, unmatched = backend.masked_nearest(
+            field.astype(np.float32), ~donors, np.array([[1.0]]),
+            np.array([[2.0]]), np.array([[False]]), surface="water",
+            fill_value=-1.0, radius=1, workers=workers)
+        results.append(b"".join((
+            nearest.tobytes(), blend.tobytes(), filled.tobytes(),
+            sampled.tobytes(), covered.tobytes(), repaired.tobytes(),
+            repaired_source.tobytes(), repaired_mask.tobytes(),
+            repr(sorted(tallies.items())).encode("ascii"),
+            body_values.tobytes(), body_source.tobytes(), stats.tobytes(),
+            coverage.tobytes(), labelled.tobytes(), bytes([bodies]),
+            owned.tobytes(), searched.tobytes(), bytes([unmatched]))))
+    if results[0] != results[1]:
+        raise RuntimeError(
+            "CPU water-blend self-test changed with worker count")
+    if float(nearest[0]) != float(skin[10, 0]):
+        raise RuntimeError(
+            f"CPU water-blend self-test chose {float(nearest[0])!r}, not "
+            f"the skin at row 10, column 0 ({float(skin[10, 0])!r})")
+    if bodies != 2 or owned.tolist() != [[2, 0], [0, 2]]:
+        raise RuntimeError(
+            f"CPU water-blend self-test labelled {bodies} bodies and gave "
+            f"owners {owned.tolist()}, not 2 bodies and [[2, 0], [0, 2]]")
+    if float(searched[0, 0]) != float(field[0, 2]) or unmatched:
+        raise RuntimeError(
+            f"CPU water-blend self-test searched {float(searched[0, 0])!r}, "
+            f"not the water cell at row 0, column 2 ({float(field[0, 2])!r})")
+    digest.update(results[0])
+    return {
+        "status": "PASS",
+        "operation": "water_blend_f64",
+        "cases": ["lake_search_past_window", "renormalized_blend",
+                  "component_fill", "overlay_invalid_corner",
+                  "water_repair_own_body_and_nearest",
+                  "water_bodies_analysis_and_skin",
+                  "labelling_eight_connected", "owner_tie_higher_label",
+                  "surface_nearest_first_of_tie"],
+        "worker_counts": [1, 3],
+        "output_sha256": digest.hexdigest(),
     }
 
 

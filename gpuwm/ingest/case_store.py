@@ -19,7 +19,7 @@ class CaseStoreRequest:
     """An internal storage choice; the preprocessing engine stays explicit."""
 
     path: Path
-    backend: str = 'cuda'
+    backend: str = 'auto'
     resources: dict | None = None
     admissions: list = field(default_factory=list)
 
@@ -165,12 +165,15 @@ def initialization_resources(options):
 
 
 def admit_case_initialization(request, cfg, met, times):
-    """Check the remaining phase against its pre-allocation reading.
+    """Check the remaining phase's HOST floor, and record both estimates.
 
-    Horizontal interpolation has already completed. Its live output is in
-    the device estimate, compared with the earlier free-memory reading so
-    those arrays are not charged twice. Horizontal workspace is not claimed
-    by this check and an unknown price never becomes a feature refusal.
+    The device half of this check is retired: it ran after horizontal
+    interpolation had already allocated on the card, and could only
+    refuse.  ``runtime.prepare_real_case`` now prices the whole host-store
+    preparation before its first device allocation and runs the
+    transforms on the CPU when the card cannot hold them (A65).  The
+    device estimate is still recorded.  An unknown price never becomes a
+    feature refusal.
     """
     from gpuwm.core.preflight import (
         estimate_host_state_initialization, profile_from_device_probe,
@@ -198,12 +201,6 @@ def admit_case_initialization(request, cfg, met, times):
         'scope': 'remaining initialization after horizontal interpolation; host temporaries above the stated floor are unpriced',
     }
     request.admissions.append(record)
-    if device_budget is not None and estimate.device.peak_envelope_bytes > device_budget:
-        raise InitializationMemoryRefused(
-            f"CUDA initialization estimates {estimate.device.peak_envelope_bytes/2**30:.2f} GiB "
-            f"against {device_budget/2**30:.2f} GiB available. The streamed "
-            "forecast does not remove initialization workspace. Free GPU "
-            "memory or reduce the prepared grid.")
     if host_budget is not None and estimate.host_floor_bytes > host_budget:
         raise InitializationMemoryRefused(
             f"Host initialization requires at least {estimate.host_floor_bytes/2**30:.2f} GiB "

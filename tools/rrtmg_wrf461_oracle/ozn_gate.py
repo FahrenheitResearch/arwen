@@ -19,8 +19,7 @@ from lw_gate import assert_ulp0, ulp_report  # noqa: E402,F401
 #: Default fixture location (oracle scratch); override with env var.
 DEFAULT_FIXDIR = os.environ.get(
     "GPUWM_WRF_OZONE_FIXTURES",
-    os.path.expanduser(
-        "~/.claude/jobs/fea7a141/tmp/rrtmg_integration/ozone/fixtures"),
+    os.path.expanduser("~/.gpuwm/oracle/rrtmg_integration/ozone/fixtures"),
 )
 
 

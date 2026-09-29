@@ -1,6 +1,6 @@
 # Vendored: `region-global-dealias`
 
-This directory is a **verbatim copy** of Drew's crate, not a fork.
+This directory is a **verbatim copy** of the project's crate, not a fork.
 
 | | |
 |---|---|
@@ -47,7 +47,7 @@ now has exactly one hunk in it. Upstream will carry the same spelling
 whenever it is next touched, and this note retires when it does.
 
 Nothing else differs. The solver, the FFI layer and the tests are
-Drew's. Changes belong upstream and arrive here by re-vendoring at a
+the project's. Changes belong upstream and arrive here by re-vendoring at a
 newer commit and updating the sha above,
 `gpuwm.obs.dealias_region.UPSTREAM_COMMIT`, and the Py-ART parity
 receipt. `tests/test_obs_dealias_region.py` pins the ABI

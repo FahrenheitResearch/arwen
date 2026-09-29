@@ -28,6 +28,7 @@ use crate::shared_context::WeatherPanelField;
 use super::compute::DerivedComputedFields;
 use super::presentation::DerivedRenderOverrides;
 use super::recipes::DerivedRecipe;
+use super::store_units::{StoreUnitConversion, store_plane_conversion};
 use super::types::{DerivedBatchRequest, DerivedRenderedRecipe};
 use super::{
     build_derived_projected_map_with_projection, render_derived_heavy_recipe,
@@ -35,8 +36,10 @@ use super::{
 };
 
 /// One full-grid product plane read back from the store: the recipe slug
-/// (also the store variable name), the stored display units, and the
-/// row-major `ny * nx` values.
+/// (also the store variable name), the units its writer declared, and the
+/// row-major `ny * nx` values.  A plane stored in another unit than its
+/// product draws in is converted on the way into the product's slot
+/// ([`super::store_plane_conversion`]).
 #[derive(Debug, Clone)]
 pub struct StoreProductGrid {
     pub slug: String,
@@ -77,6 +80,7 @@ pub fn render_derived_recipes_from_store_grids(
         .map(|grid| (grid.slug.as_str(), grid))
         .collect();
     let cells = full_grid.shape.len();
+    let mut conversions = HashMap::with_capacity(recipes.len());
     for recipe in &recipes {
         let grid = by_slug.get(recipe.slug()).ok_or_else(|| {
             format!(
@@ -92,6 +96,9 @@ pub fn render_derived_recipes_from_store_grids(
             )
             .into());
         }
+        let conversion = store_plane_conversion(recipe.slug(), &grid.units)
+            .map_err(|reason| format!("store grid '{}': {reason}", recipe.slug()))?;
+        conversions.insert(recipe.slug(), conversion);
     }
 
     // Same projected map + crop the GRIB derived/heavy lanes derive from the
@@ -139,10 +146,19 @@ pub fn render_derived_recipes_from_store_grids(
         None => values.to_vec(),
     };
 
+    // Each plane enters its slot in the units the slot's colour bar is
+    // drawn in, whatever units its writer stored it in.
     let mut computed = DerivedComputedFields::default();
     for recipe in recipes.iter().filter(|recipe| !recipe.is_heavy()) {
         let grid = by_slug[recipe.slug()];
-        assign_store_values(&mut computed, *recipe, crop_plane(&grid.values))?;
+        let conversion = conversions[recipe.slug()];
+        let mut values = crop_plane(&grid.values);
+        if conversion != StoreUnitConversion::Same {
+            for value in &mut values {
+                *value = conversion.apply(*value);
+            }
+        }
+        assign_store_values(&mut computed, *recipe, values)?;
     }
     if recipes
         .iter()

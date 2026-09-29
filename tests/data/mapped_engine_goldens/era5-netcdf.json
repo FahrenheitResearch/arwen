@@ -8,7 +8,7 @@
       "message": "mapped field(s) ['terrain_height'] have no matching variable in any of the 1 supplied NetCDF file(s): era5_19740403_12.nc",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "era5-netcdf",
     "verdict": "REFUSED"
   },
@@ -17,7 +17,7 @@
       "message": "mapped field(s) ['terrain_height'] have no matching variable in any of the 1 supplied NetCDF file(s): era5_19740403_12.nc",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "era5-netcdf",
     "verdict": "REFUSED"
   },
@@ -25,6 +25,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "era5-netcdf"
 }

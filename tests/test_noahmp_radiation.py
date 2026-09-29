@@ -509,7 +509,7 @@ def test_logf_has_not_forked_between_the_two_libm_modules():
     transcription with a calling convention, not a second transcription --
     a fork by hand would carry constants and arithmetic, and any body other
     than that one delegated ``return`` still fails here (see the predicate
-    counterexample tests below for the shapes the codex step-1 audit showed
+    counterexample tests below for the shapes the step-1 audit showed
     the earlier walk-and-search predicate accepted).
     """
     import ast
@@ -540,7 +540,7 @@ def _fork_offenders_of(source: str) -> list[str]:
 
 
 def test_no_fork_predicate_rejects_arithmetic_around_the_owner_call():
-    """Codex step-1 audit counterexample (i): a local correction added to
+    """Step-1 audit counterexample (i): a local correction added to
     the delegated call is a modified implementation, not a delegation."""
     source = (
         "from gpuwm.core import noahmp_libm as owner\n"
@@ -553,7 +553,7 @@ def test_no_fork_predicate_rejects_arithmetic_around_the_owner_call():
 
 
 def test_no_fork_predicate_rejects_a_non_owner_base_module():
-    """Codex step-1 audit counterexample (ii): an owner import elsewhere in
+    """Step-1 audit counterexample (ii): an owner import elsewhere in
     the file must not vouch for a call on some OTHER module."""
     source = (
         "from gpuwm.core import noahmp_libm as owner\n"

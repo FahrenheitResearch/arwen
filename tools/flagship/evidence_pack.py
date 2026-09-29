@@ -21,6 +21,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from gpuwm.verify import nest_gates  # noqa: E402 (read-only authority import)
+from tools.release_exclusions import matches, read_exclusions  # noqa: E402
 
 
 _AMENDMENT_RE = re.compile(r"\bF\d+[a-z]?\b", re.IGNORECASE)
@@ -322,6 +323,40 @@ def _source_commit(path: Path) -> str:
     return commit
 
 
+def _require_ledger_documents(root: Path | None = None) -> None:
+    """Refuse up front when this tree does not carry the ledger's documents.
+
+    Every pack, close-out or diagnostic, binds the nesting ledger's two
+    documents (``nest_gates.ARCHITECTURE_DOC`` and ``PLAN_DOC``) by hash
+    and revision.  They live under ``docs/superpowers/``, which the public
+    export drops, so on a public tree no pack can be written.  Found only
+    when the ledger was bound, after every rung artifact had been hashed,
+    the absence read as "manifest artifact does not exist", sending a
+    public user to look for a rung file that was never theirs to supply.
+    """
+    root = REPOSITORY_ROOT if root is None else Path(root)
+    absent = [name for name in (nest_gates.ARCHITECTURE_DOC, nest_gates.PLAN_DOC)
+              if not (root / name).is_file()]
+    if not absent:
+        return
+    try:
+        rules = read_exclusions(root)
+    except OSError:
+        rules = []
+    dropped = {name: matches(name, rules) for name in absent}
+    if all(dropped.values()):
+        named = "; ".join(f"{name} (RELEASE-EXCLUDE.txt: {rule})"
+                          for name, rule in dropped.items())
+        raise EvidencePackError(
+            "a close-out evidence pack binds the nesting ledger's documents, "
+            f"and this tree does not carry {named}: they are development "
+            "records that a public install does not include, so the pack "
+            "can only be built from a development checkout of the repository")
+    raise EvidencePackError(
+        "the nesting ledger's documents named by gpuwm.verify.nest_gates "
+        f"are missing from {root}: {', '.join(absent)}")
+
+
 def _ledger_sources() -> list[dict[str, object]]:
     specs = (
         ("gate_ledger", REPOSITORY_ROOT / "gpuwm/verify/nest_gates.py"),
@@ -435,6 +470,7 @@ def _markdown(pack: Mapping[str, object]) -> str:
 def build_evidence_pack(rungs_root: str | Path, outdir: str | Path, *,
                         diagnostic_incomplete: bool = False) -> dict[str, object]:
     """Validate manifest-declared bytes and publish only an unambiguous pack."""
+    _require_ledger_documents()
     root = Path(rungs_root)
     if not root.is_dir():
         raise FileNotFoundError(f"rungs root does not exist: {root}")

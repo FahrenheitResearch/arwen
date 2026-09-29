@@ -81,7 +81,24 @@ pub fn write_rain_frame(dir: &Path, lead_seconds: i64, rain_total: f32) -> PathB
     )
 }
 
+/// The fixture plus extra surface planes, each `(name, units, value)`
+/// written as one constant over the grid. An empty `units` writes the
+/// attribute empty, the way a file that states no unit carries it.
+#[allow(dead_code)]
+pub fn write_with_surface_planes(dir: &Path, extras: &[(&str, &str, f32)]) -> PathBuf {
+    write_frame_with(dir, "2026-08-19_00:00:00", None, extras)
+}
+
 fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf {
+    write_frame_with(dir, valid_time, rain_total, &[])
+}
+
+fn write_frame_with(
+    dir: &Path,
+    valid_time: &str,
+    rain_total: Option<f32>,
+    extras: &[(&str, &str, f32)],
+) -> PathBuf {
     let path = dir.join(format!("wrfout_d01_{}", valid_time.replace(':', "_")));
     let cells = NX * NY;
     let volume = cells * NZ;
@@ -161,6 +178,10 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
     let mub = surface(&mut schema, "MUB", "Pa");
     let tsk = surface(&mut schema, "TSK", "K");
     let user = surface(&mut schema, USER_PLANE, USER_PLANE_UNITS);
+    let extra_planes: Vec<_> = extras
+        .iter()
+        .map(|(name, units, value)| (surface(&mut schema, name, units), *value))
+        .collect();
     let rain = rain_total.map(|total| {
         (
             surface(&mut schema, "RAINC", "mm"),
@@ -287,6 +308,11 @@ fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf
     let v_values = vec![-3.0f32; NX * (NY + 1) * NZ];
 
     let mut writer = NcWriter::create(&path, schema).unwrap();
+    for (id, value) in extra_planes {
+        writer
+            .write_record(0, id, VarData::F32(&vec![value; cells]))
+            .unwrap();
+    }
     writer
         .write_record(0, times, VarData::Char(valid_time.as_bytes()))
         .unwrap();

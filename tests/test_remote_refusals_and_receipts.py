@@ -201,6 +201,32 @@ def test_status_reports_a_watcher_that_could_not_start(recorded):
         assert job[key]["at"] == "2026-09-07T18:00:05+00:00"
 
 
+def test_a_gallery_drawn_with_no_map_files_reaches_the_job_status(recorded, monkeypatch):
+    """The gallery watcher's note that its renderer had no map files is the
+    job's render_warning, the field the terminal workspace shows as Pictures."""
+    monkeypatch.setattr(ra, "plan_binding", lambda *_: {"plan": "bound"})
+    monkeypatch.setattr(ra, "native_progress", lambda *_: {})
+    gallery = recorded.tmp_path / ".arwen-processed-v2" / recorded.record["id"] / "native-plots"
+    gallery.mkdir(parents=True)
+    warning = ("no map assets resolve for the renderer, so pictures are drawn with no coastlines, "
+               "borders or state lines; they ship in the gpuwm-data package, so reinstall it: "
+               "pip install --force-reinstall gpuwm-data==2.8.0")
+    rw._write(gallery / "status.json", {"schema": "arwen.native-plot-progress.v1",
+                                        "job_id": recorded.record["id"], "state": "rendering",
+                                        "render_warning": warning})
+    job = rw._status(recorded.directory)
+    assert job["native_plots"]["render_warning"] == warning
+    assert job["render_warning"] == warning
+    # The run's own warning, read from its events, is kept when both exist.
+    monkeypatch.setattr(ra, "native_progress", lambda *_: {"render_warning": "the run's own"})
+    assert rw._status(recorded.directory)["render_warning"] == "the run's own"
+    # A gallery that drew its maps adds nothing.
+    rw._write(gallery / "status.json", {"schema": "arwen.native-plot-progress.v1",
+                                        "job_id": recorded.record["id"], "state": "rendering"})
+    monkeypatch.setattr(ra, "native_progress", lambda *_: {})
+    assert "render_warning" not in rw._status(recorded.directory)
+
+
 def test_a_watcher_start_receipt_from_another_job_is_refused(recorded):
     """The refusal names the breakage, the receipt it read and the way out."""
     receipt = recorded.directory / "preparation-start-error.json"

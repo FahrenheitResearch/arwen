@@ -26,6 +26,7 @@ import tempfile
 from typing import Mapping, Sequence
 import uuid
 
+from gpuwm.filesystem_paths import publish_new, replace_file_with_retry
 from gpuwm.mapped_composition import (
     INPUT_MANIFEST_SCHEMA,
     _decoder_inventory,
@@ -186,11 +187,12 @@ def _strict_json(data: bytes, label: str) -> object:
 
 
 def _write_new(path: Path, contents: bytes) -> None:
-    """Publish bytes create-only through a same-directory hard link.
+    """Publish bytes create-only from a same-directory temporary.
 
     The temporary file is fully written and fsynced before publication.
-    ``os.link`` is an atomic no-clobber operation on the supported Windows and
-    Linux filesystems, unlike a check followed by ``os.replace``.
+    ``publish_new`` is an atomic no-clobber operation (a hard link, or a
+    no-replace rename on a drive with no hard links), unlike a check
+    followed by ``os.replace``.
     """
 
     path = Path(path).resolve()
@@ -204,7 +206,7 @@ def _write_new(path: Path, contents: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(temporary, path)
+            publish_new(temporary, path)
         except FileExistsError as error:
             raise FileExistsError(f"refusing to overwrite {path}") from error
     finally:
@@ -1013,15 +1015,211 @@ def _verified_decoder_snapshot(path: Path, role: str) -> _FileSnapshot:
     return snapshot
 
 
-def _resolve_existing_manifest(output_path: Path, manifest_digest: str
-                               ) -> bool:
+def _normalization_facts(payload: dict, parent: Path):
+    """Read raw input and target facts only from sealed provenance bytes."""
+
+    from gpuwm.source_normalization import NORMALIZATION_RECEIPT_KEY
+
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, dict):
+        return None
+    found = []
+    for row in provenance.values():
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            continue
+        try:
+            snapshot = _stable_file_snapshot(parent / row["path"])
+            if (type(row.get("bytes")) is not int or snapshot.size != row["bytes"]
+                    or snapshot.sha256 != row.get("sha256")):
+                continue
+            document = _strict_json(snapshot.data, "normalization provenance")
+        except (OSError, ValueError):
+            continue
+        if not isinstance(document, dict) or NORMALIZATION_RECEIPT_KEY not in document:
+            continue
+        receipt = document[NORMALIZATION_RECEIPT_KEY]
+        request = receipt.get("request") if isinstance(receipt, dict) else None
+        if not isinstance(request, dict):
+            raise ValueError("normalization receipt cannot identify its raw inputs")
+        inputs, target = request.get("inputs"), request.get("target")
+        if (not isinstance(inputs, list) or not inputs
+                or not isinstance(target, dict) or not target):
+            raise ValueError("normalization receipt cannot identify its raw inputs and target")
+        for item in inputs:
+            if (not isinstance(item, dict)
+                    or not isinstance(item.get("path"), str) or not item["path"]
+                    or type(item.get("bytes")) is not int or item["bytes"] <= 0
+                    or not isinstance(item.get("sha256"), str)
+                    or len(item["sha256"]) != 64
+                    or any(c not in "0123456789abcdef" for c in item["sha256"])):
+                raise ValueError("normalization receipt has an invalid raw input identity")
+        found.append(({"inputs": inputs, "target": target}, snapshot))
+    # Multiple normalization requests cannot identify one set of derived data.
+    if len(found) > 1:
+        raise ValueError("multiple normalization receipts cannot identify one set of inputs")
+    return found[0] if found else None
+
+
+def _is_sha256_hex(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value))
+
+
+def _upgrade_sibling_path(output_path: Path, manifest_digest: str) -> Path:
+    return output_path.with_name(
+        f"{output_path.stem}.{manifest_digest}{output_path.suffix}"
+    )
+
+
+def _seals_same_fetched_facts(previous: dict, payload: dict, parent: Path, *,
+                              receipts: list[_FileSnapshot] | None = None
+                              ) -> bool:
+    """Whether ``payload`` differs from ``previous`` only in release-owned rows.
+
+    Release-owned authorities can change together, including the default
+    Rust decoder and packaged provenance paths. Data, schema, member bindings
+    and unknown keys must still match. Normalized files may move to a new cache
+    key when their sealed raw inputs and target match; the two normalization
+    receipts read for that are appended to ``receipts``.
+    """
+
+    if not _is_sha256_hex(previous.get("mapping_sha256")):
+        return False
+    release_owned = {"mapping_sha256", "composition_sha256", "decoders", "provenance"}
+    try:
+        previous_normalization = _normalization_facts(previous, parent)
+        current_normalization = _normalization_facts(payload, parent)
+    except ValueError:
+        return False
+    if previous_normalization is not None and current_normalization is not None:
+        if receipts is not None:
+            receipts.extend((previous_normalization[1], current_normalization[1]))
+        if (_canonical_json(previous_normalization[0])
+                != _canonical_json(current_normalization[0])):
+            return False
+        release_owned.update(("primary_files", "supplements"))
+    previous_facts = {key: value for key, value in previous.items()
+                      if key not in release_owned}
+    current_facts = {key: value for key, value in payload.items()
+                     if key not in release_owned}
+    return _canonical_json(previous_facts) == _canonical_json(current_facts)
+
+
+def _manifest_destination(output_path: Path, payload: dict,
+                          manifest_digest: str, *,
+                          normalization_snapshots: list[_FileSnapshot] | None = None
+                          ) -> Path:
+    """Preserve an older release's binding when the fetched facts match.
+
+    Re-preparing a folder prepared by an older release refused at inputs.json
+    because the release rebuilt its mapping, decoder or normalization cache key.
+    When :func:`_seals_same_fetched_facts` holds, reseal the release-owned rows
+    beside the original manifest without moving any existing binding. The
+    content-derived name makes repeated preparation a no-op.
+    """
+
+    if not output_path.is_file():
+        return output_path
+    try:
+        previous_snapshot = _stable_file_snapshot(output_path)
+        previous = _strict_json(previous_snapshot.data, "existing manifest")
+    except (OSError, ValueError):
+        # The existing-file resolver below reports unreadable or invalid files.
+        return output_path
+    if not isinstance(previous, dict):
+        return output_path
+    if not _is_sha256_hex(previous.get("mapping_sha256")):
+        return output_path
+    if _canonical_json(previous) == _canonical_json(payload):
+        return output_path
+    receipts: list[_FileSnapshot] = []
+    upgrade = _seals_same_fetched_facts(previous, payload, output_path.parent,
+                                        receipts=receipts)
+    if receipts and normalization_snapshots is not None:
+        normalization_snapshots.extend((previous_snapshot, *receipts))
+    if not upgrade:
+        return output_path
+    return _upgrade_sibling_path(output_path, manifest_digest)
+
+
+def _upgrades_of_replaced_manifest(output_path: Path) -> list[_FileSnapshot]:
+    """The siblings a release upgrade wrote for the manifest at ``output_path``.
+
+    Named breakage: after a version-only rerun wrote ``inputs.<digest>.json``,
+    a managed rerun with changed fetched bytes replaced ``inputs.json`` and
+    left that sibling in the folder, describing data the folder no longer
+    held. A file counts only when its name is ``<stem>.<sha256>`` of its own
+    bytes and it seals the same fetched facts as the manifest being replaced,
+    which is exactly when :func:`_manifest_destination` would have chosen it.
+    """
+
+    try:
+        previous = _strict_json(_stable_file_snapshot(output_path).data,
+                                "existing manifest")
+    except (OSError, ValueError):
+        return []
+    if not isinstance(previous, dict):
+        return []
+    prefix, suffix = f"{output_path.stem}.", output_path.suffix
+    upgrades = []
+    for candidate in sorted(output_path.parent.iterdir()):
+        name = candidate.name
+        if not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        digest = name[len(prefix):len(name) - len(suffix)]
+        if (not _is_sha256_hex(digest) or candidate == output_path
+                or candidate.is_symlink()):
+            continue
+        try:
+            snapshot = _stable_file_snapshot(candidate)
+            sibling = _strict_json(snapshot.data, "upgraded manifest")
+        except (OSError, ValueError):
+            continue
+        if (snapshot.sha256 == digest and isinstance(sibling, dict)
+                and _seals_same_fetched_facts(previous, sibling,
+                                              output_path.parent)):
+            upgrades.append(snapshot)
+    return upgrades
+
+
+def _remove_upgrades(upgrades: list[_FileSnapshot]) -> dict[str, list]:
+    """Remove each upgrade still holding the bytes it was selected on.
+
+    Runs only after the replacement is published, so a failed replacement
+    keeps the upgrade that still describes the folder. A file that cannot
+    be removed does not fail the preparation that already bound the new
+    manifest; it is reported instead, so the replacement line can name it.
+    """
+
+    removed, unremoved = [], []
+    for snapshot in upgrades:
+        row = {"path": str(snapshot.path), "sha256": snapshot.sha256}
+        try:
+            if _sha256(snapshot.path) != snapshot.sha256:
+                continue
+            snapshot.path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            unremoved.append({**row, "error": str(error)})
+            continue
+        removed.append(row)
+    return {key: rows for key, rows in (("removed_manifests", removed),
+                                        ("unremoved_manifests", unremoved))
+            if rows}
+
+
+def _resolve_existing_manifest(output_path: Path, manifest_digest: str,
+                               *, replace_different: bool = False) -> bool:
     """Write, skip, or refuse -- decided on the bytes, not on existence.
 
     Returns ``True`` when nothing is at ``output_path`` and this call
     should publish, ``False`` when the file already holds exactly the
     manifest this call composed (so there is nothing to write and
     nothing to complain about), and raises when it holds something
-    else.
+    else -- unless ``replace_different``, where a different regular file
+    is replaced (``True``).  That is only for a path the caller chose
+    itself rather than one a user named: see :func:`author_input_manifest`.
 
     The refusal keeps every property it had -- a manifest already on
     disk binds a run to bytes THIS authoring did not seal, and silently
@@ -1036,6 +1234,8 @@ def _resolve_existing_manifest(output_path: Path, manifest_digest: str
             return True
         if output_path.is_file() and _sha256(output_path) == manifest_digest:
             return False
+        if replace_different and output_path.is_file():
+            return True
     except OSError as error:                          # pragma: no cover
         raise FileExistsError(
             f"cannot read the manifest already at {output_path}: {error}\n"
@@ -1099,8 +1299,23 @@ def author_input_manifest(
     expected_format: str | None = None,
     member: str | None = None,
     member_identity: str | None = None,
+    replace_different: bool = False,
 ) -> dict[str, object]:
     """Create and round-trip an exact composition input manifest.
+
+    ``replace_different`` replaces a different manifest already at
+    ``output_path`` instead of refusing.  It is for a path the CALLER
+    chose, never one a user named: ``gpuwm prep --source-root DIR`` writes
+    its own ``DIR/inputs.json``, and a preparation made from an earlier
+    one keeps its own copy (``source-evidence/input-manifest.json``) and
+    checks that copy, never this path.  Without it the documented line
+    exited 78 after any change to the folder's files or to the installed
+    decoders the manifest seals. Release-only changes still preserve the
+    original and select a create-only sibling before this replacement policy.
+    A replacement then removes each sibling an upgrade wrote for the
+    manifest it replaced, and the receipt lists them under
+    ``removed_manifests`` (``unremoved_manifests`` for any that could not be
+    removed); both keys are absent when there were none.
 
     ``member``/``member_identity`` declare an EXPLICIT ensemble member
     binding for archives whose product octets carry none: the caller's
@@ -1141,7 +1356,8 @@ def author_input_manifest(
     # does after fixing an unrelated flag -- met exit 78 and no remedy
     # (UX finding N13).  Re-authoring is decided on CONTENT, below,
     # once the manifest this call would write is known: identical bytes
-    # are a no-op, and different bytes still refuse, now by name.
+    # are a no-op and release upgrades use a sibling. Fetched-data changes
+    # refuse unless the caller owns the path and requests replacement.
     mapping_path = Path(mapping_path).resolve()
     composition_path = Path(composition_path).resolve()
     (
@@ -1341,8 +1557,25 @@ def author_input_manifest(
     }
     manifest_bytes = _canonical_json(payload)
     manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
-    reauthored = _resolve_existing_manifest(output_path, manifest_digest)
+    requested_path = output_path
+    normalization_snapshots: list[_FileSnapshot] = []
+    output_path = _manifest_destination(
+        output_path, payload, manifest_digest,
+        normalization_snapshots=normalization_snapshots,
+    )
+    # Replacement is only for the caller-managed path, never a conflicting
+    # file already occupying the sibling chosen for an unchanged input set.
+    replace_different = replace_different and output_path == requested_path
+    replacing = (replace_different and output_path.is_file()
+                 and _sha256(output_path) != manifest_digest)
+    # Chosen from the manifest being replaced, before it is gone.
+    replaced_upgrades = (_upgrades_of_replaced_manifest(output_path)
+                         if replacing else [])
+    reauthored = _resolve_existing_manifest(
+        output_path, manifest_digest, replace_different=replace_different)
     if not reauthored:
+        for snapshot in normalization_snapshots:
+            _require_snapshot(snapshot)
         return _authoring_receipt(output_path, mapping, manifest_bytes,
                                   manifest_digest, primary, supplements,
                                   provenance, decoders, reauthored=False)
@@ -1373,10 +1606,16 @@ def author_input_manifest(
                 _require_snapshot(snapshot)
             else:
                 _require_authority_snapshot(snapshot)
-        try:
-            os.link(candidate, output_path)
-        except FileExistsError as error:
-            raise FileExistsError(f"refusing to overwrite {output_path}") from error
+        for snapshot in normalization_snapshots:
+            _require_snapshot(snapshot)
+        if replacing:
+            replace_file_with_retry(candidate, output_path)
+        else:
+            try:
+                publish_new(candidate, output_path)
+            except FileExistsError as error:
+                raise FileExistsError(
+                    f"refusing to overwrite {output_path}") from error
         published = True
         if _sha256(output_path) != manifest_digest:
             raise RuntimeError("published manifest bytes differ from candidate")
@@ -1390,9 +1629,12 @@ def author_input_manifest(
         raise
     finally:
         candidate.unlink(missing_ok=True)
-    return _authoring_receipt(output_path, mapping, manifest_bytes,
-                              manifest_digest, primary, supplements,
-                              provenance, decoders, reauthored=True)
+    return {
+        **_authoring_receipt(output_path, mapping, manifest_bytes,
+                             manifest_digest, primary, supplements,
+                             provenance, decoders, reauthored=True),
+        **_remove_upgrades(replaced_upgrades),
+    }
 
 
 __all__ = [

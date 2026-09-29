@@ -53,6 +53,7 @@ from gpuwm.core import constants as c
 # without paying for this module's body.  Re-exported here so every
 # existing `from gpuwm.core.physics import ...` keeps resolving.
 from gpuwm.core.physics_inventory import (
+    MYJ_PBL_STATE_3D, MYJ_SFCLAY_FIELDS_2D,
     PBL_RQI_MICROPHYSICS,
     PBL_SHARED_FORCING, pbl_raw_rate_names,
     _HMIX_K_DIAG_NAMES,
@@ -188,6 +189,13 @@ _MICROPHYSICS_DIAGNOSTIC_LABELS = {
 _MICROPHYSICS_VALIDATION_NAMES = tuple(_MICROPHYSICS_DIAGNOSTIC_LABELS)
 
 
+def _wsm6_minor_loop_count(dt: float) -> int:
+    """WSM6's minor-loop count for a model step (WRF ``loops``)."""
+    delt = np.float32(dt)
+    return max(int(np.floor(np.float32(
+        delt / _WSM6_MINOR_DT_SECONDS + np.float32(0.5)))), 1)
+
+
 def _wsm6_sr_roundoff_limit(
         dt: float, step_scalings: int = 0) -> tuple[np.float32, int, int]:
     """Return WRF WSM6's proven positive-sum SR roundoff envelope.
@@ -223,9 +231,7 @@ def _wsm6_sr_roundoff_limit(
     ``+1e-12`` denominator is monotone and keeps any quotient near one in the
     normal range.
     """
-    delt = np.float32(dt)
-    loops = max(int(np.floor(np.float32(
-        delt / _WSM6_MINOR_DT_SECONDS + np.float32(0.5)))), 1)
+    loops = _wsm6_minor_loop_count(dt)
     accumulation_adds = loops - 1
     scale = _FP32_SIGNIFICAND_SCALE
     if 2 * accumulation_adds >= scale:
@@ -936,8 +942,10 @@ def couple_sase_w_tendency(state: DomainState, cfg: RunConfig,
     on the w stagger.  The half-level rate averages to interior full
     levels; the surface and model-top rows stay zero (the kinematic
     surface BC ``set_w_surface`` owns w[0], and no PBL-slot scheme
-    forces either boundary row).  Specified domains zero the physical-
-    boundary cells exactly like the mass-point mask.
+    forces either boundary row).  Specified and nested domains zero the
+    physical-boundary cells exactly like the mass-point mask, which
+    fires for both (WRF's add_a2a bounds); this row was specified-only
+    while SASE could not run on a nest.
     """
     nz, ny, nx = state.p.shape
     full = cp.zeros((nz + 1, ny, nx), dtype=DTYPE)
@@ -945,7 +953,7 @@ def couple_sase_w_tendency(state: DomainState, cfg: RunConfig,
     chf = (state.c1f[:, None, None] * state.total_mu()[None]
            + state.c2f[:, None, None])
     rw = chf * full
-    if cfg.specified:
+    if cfg.specified or cfg.nested:
         _specified_mass_mask(rw)
     if state.has_msf:
         rw = rw / state.msft[None]
@@ -2182,10 +2190,25 @@ class PhysicsDriver:
         else:
             self.nssl2_binding = None
 
-    def accept_microphysics(self, result: MicrophysicsDiagnostics) -> None:
-        """Capture one post-RK microphysics result for the next surface call."""
+    def accept_microphysics(self, result: MicrophysicsDiagnostics, *,
+                            dt: float | None = None) -> None:
+        """Capture one post-RK microphysics result for the next surface call.
+
+        ``dt`` is the step the scheme just ran on.  The WSM6-family SR
+        envelope is a function of that step's minor-loop count, and the
+        constructor derived it from the step the domain started on; an
+        adaptive clock that moves dt across a loop boundary would validate
+        the scheme's SR against the wrong loop count.  Given ``dt``, the
+        envelope follows it.  ``None`` keeps the constructor's envelope.
+        """
         if not isinstance(result, MicrophysicsDiagnostics):
             raise TypeError("microphysics must return MicrophysicsDiagnostics")
+        if (dt is not None
+                and self.mp_physics in _SR_EXPRESSION_FAMILY_STEP_SCALINGS
+                and _wsm6_minor_loop_count(dt) != self._wsm6_minor_loops):
+            (self._sr_roundoff_upper, self._sr_roundoff_max_ulps,
+             self._wsm6_minor_loops) = _sr_roundoff_envelope(
+                self.mp_physics, dt)
         shape = self.state.mup.shape
 
         slots = dict(microphysics_scratch_slots(self.mp_physics))
@@ -3912,7 +3935,13 @@ class PhysicsDriver:
         operators never reaches the interior through e); the same width
         is excluded from the domain-level solve reductions
         (``exclude_boundary_width``); the coupled tendencies were
-        already boundary-masked by the coupling helpers.
+        already boundary-masked by the coupling helpers.  A nested child
+        takes the same policy: its lateral edges are no more periodic
+        than a specified domain's, and with a zero width its test
+        filters would wrap the far edge's air into the near edge's
+        subgrid energy and the solve would average those wrapped cells.
+        The coupling helpers already mask ``specified or nested`` alike
+        (WRF's add_a2a bounds), so the e floor now matches them.
         """
         state = self.state
         f = self.fields
@@ -4005,7 +4034,8 @@ class PhysicsDriver:
         heat = cp.empty((nz, ny, nx), dtype=DTYPE)
         delta = math.sqrt(cfg.dx * cfg.dy)
         dz_rep = float(dzf.mean(dtype=cp.float64))
-        boundary_width = int(cfg.spec_bdy_width) if cfg.specified else 0
+        boundary_width = (int(cfg.spec_bdy_width)
+                          if cfg.specified or cfg.nested else 0)
         # S3-6e damping-layer taper: engaged exactly when the model
         # runs the damp_opt=3 KDH damper whose weight law it reuses.
         zdamp = (float(cfg.zdamp)
@@ -5091,7 +5121,8 @@ def initialize_physics(
                 "its stability from the saturated Brunt-Vaisala frequency, "
                 "which a dry state cannot supply. Set moist=true (this is "
                 "validate_run_config's own rule, re-checked here), or "
-                "select bl_pbl_physics=1, 2, 5 or 11, which run dry.")
+                "select bl_pbl_physics=1, 2, 5 or 11 (YSU, MYJ, MYNN or "
+                "Shin-Hong), which run dry.")
         if cfg.km_opt != 0:
             raise ValueError(
                 "SASE supplies the mixing the km_opt operator would "
@@ -5236,20 +5267,24 @@ def initialize_physics(
         # own selector for the reason the MYNN block above gives: carrying
         # these in an MM5 run would change that run's restart inventory and
         # its VRAM accounting for nothing.  Every one is a WRF Registry
-        # field cold-started at zero except the three noted.
-        for name in (*MYJ_SFCLAY_INOUT, *MYJ_SFCLAY_OUTPUTS,
-                     "ustm", "wspd", "ch", "mixht"):
-            if name not in f:
+        # field cold-started at zero except the three noted.  The names
+        # are MYJ_SFCLAY_FIELDS_2D, the tuple the VRAM estimate prices.
+        for name in MYJ_SFCLAY_FIELDS_2D:
+            if name in f:
+                continue
+            if name == "z0base":
+                # Z0BASE is the BACKGROUND roughness the Zilitinkevich
+                # thermal-roughness fix reads (module_sf_myjsfc.F:733).
+                # WRF fills it from the land-use table at initialization
+                # and never lets the surface layer touch it; the working
+                # ZNT, which the sea branch overwrites every iteration from
+                # u*, is a different field.  Seeding it from the cold-start
+                # ZNT is the closest gpuwm gets without a Z0BASE ingest,
+                # and it is exactly what WRF's own MYJSFCINIT leaves behind
+                # on a restart (:1128-1161 only refills Z0 under NMM).
+                f[name] = cp.ascontiguousarray(f["znt"].copy())
+            else:
                 f[name] = cp.zeros(shape, dtype=DTYPE)
-        # Z0BASE is the BACKGROUND roughness the Zilitinkevich thermal-
-        # roughness fix reads (module_sf_myjsfc.F:733).  WRF fills it from
-        # the land-use table at initialization and never lets the surface
-        # layer touch it; the working ZNT, which the sea branch overwrites
-        # every iteration from u*, is a different field.  Seeding it from
-        # the cold-start ZNT is the closest gpuwm gets without a Z0BASE
-        # ingest, and it is exactly what WRF's own MYJSFCINIT leaves behind
-        # on a restart (:1128-1161 only refills Z0 under NMM).
-        f["z0base"] = cp.ascontiguousarray(f["znt"].copy())
         # module_sf_myjsfc.F:186-203 seeds USTAR=0.1 on step one; the
         # kernel applies it per column, so the allocation just has to be a
         # real number rather than the 1e-4 cold start the MM5 layers use.
@@ -5327,9 +5362,14 @@ def initialize_physics(
         # rewritten from `EL_MYJ(its:ite,:,jts:jte) = 0.` at the top of
         # every call (:341), so its cold-start value is unobservable; zero
         # is both WRF's Registry default and what the first call writes.
-        f["tke_myj"] = cp.full((cfg.nz, *shape), MYJ_TKE_COLD_START,
-                               dtype=DTYPE)
-        f["el_myj"] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)
+        #
+        # The names are MYJ_PBL_STATE_3D, the tuple the VRAM estimate
+        # prices; a name added there without a cold start here is a
+        # KeyError at initialization rather than an unpriced array.
+        cold_start = {"tke_myj": MYJ_TKE_COLD_START, "el_myj": 0.0}
+        for name in MYJ_PBL_STATE_3D:
+            f[name] = cp.full((cfg.nz, *shape), cold_start[name],
+                              dtype=DTYPE)
     if int(cfg.bl_pbl_physics) == 5:
         for name in MYNN_PBL_STATE_3D:
             f[name] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)

@@ -10,7 +10,7 @@ calling ``gpuwm.cli`` process.
 
 Each run gets independent output, temporary, CuPy-cache, and driver-JIT-cache
 directories.  A versioned JSON summary is published from a fully written
-sibling through an atomic create-only hard link after every child has finished
+sibling through atomic create-only publication after every child has finished
 (or after the parent is interrupted).  Interrupts do not terminate children:
 a supervised ``gpuwm run`` may itself own a fresh CUDA worker, so killing only
 the visible supervisor could orphan work.  The interrupted summary records
@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from gpuwm.filesystem_paths import publish_new
 from gpuwm.supervisor import (GPUFileLock, GPUIdentity, GPU_LOCK_ROOT_ENV,
                               SHARED_INPUT_AUTHORITY_ROOT_ENV,
                               preflight_exclusive_gpu,
@@ -1329,7 +1330,7 @@ def _prepare_summary_destination(
             stream.write("gpuwm multi-run create-only publication probe\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(source, destination)
+        publish_new(source, destination)
         destination_created = True
         if state is not None:
             state.summary_capable = True
@@ -1342,7 +1343,8 @@ def _prepare_summary_destination(
         if destination_created:
             destination.unlink()
         if source_created:
-            source.unlink()
+            # publish_new renames the source where the volume has no hard links.
+            source.unlink(missing_ok=True)
     if path.exists():
         raise ValueError(
             f"multi-run summary appeared during destination preparation: "
@@ -1350,7 +1352,7 @@ def _prepare_summary_destination(
 
 
 def _write_summary(path: Path, payload: Mapping[str, object]) -> Path:
-    """Durably publish JSON with an atomic create-only hard link."""
+    """Durably publish JSON create-only (``publish_new``)."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
@@ -1364,10 +1366,11 @@ def _write_summary(path: Path, payload: Mapping[str, object]) -> Path:
             os.fsync(stream.fileno())
         try:
             # The temporary is a fully written sibling on the same volume.
-            # Linking it is atomic and create-only on supported filesystems:
-            # unlike replace/rename, a summary created by a racing invocation
-            # is never overwritten.
-            os.link(temporary, path)
+            # Publishing it is atomic and create-only (a hard link, or a
+            # no-replace rename where the volume has no links): unlike
+            # os.replace, a summary created by a racing invocation is never
+            # overwritten.
+            publish_new(temporary, path)
         except FileExistsError as error:
             raise ValueError(
                 f"multi-run summary appeared before publication: {path}; "

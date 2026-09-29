@@ -128,7 +128,11 @@ def test_a_measured_card_still_prices_its_own_workspace(tmp_path):
         exp, vram_gib=DECLARED_GIB,
         profile=card_local_memory_profile(DECLARED_GIB))
 
-    assert on_card.workspace_bytes < reference.workspace_bytes
+    # The per-column scheme workspaces are what a card's SM count prices.
+    # The radiation workspace is not: on RTE+RRTMGP, every route's
+    # default, it is the fixed chunk workspace, so the total may tie.
+    assert on_card.column_workspace_bytes < reference.column_workspace_bytes
+    assert on_card.workspace_bytes <= reference.workspace_bytes
     assert on_card.local_memory_profile is measured
 
 

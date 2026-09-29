@@ -59,6 +59,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
+from gpuwm.config_keys import KeyRow, key_rows
 from gpuwm.experiment import (ExperimentConfig, build_experiment,
                               did_you_mean, review_root_footprint)
 from gpuwm.explain import layered, warn
@@ -149,6 +150,20 @@ _OPTIONAL_KEYS = (
     "water_temperature_policy",
 )
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
+
+#: Rows for the [case_data] keys no typed field declares
+#: (:mod:`gpuwm.config_keys`): the overlay lands as a Path and the
+#: orography variable inside a source-orography declaration.
+CASE_DATA_KEY_ROWS = key_rows(
+    KeyRow("water_temperature_overlay", "string", None,
+           "path to a high-resolution water-temperature analysis that "
+           "replaces the forcing's SST and SKINTEMP over water; absent "
+           "keeps the forcing's"),
+    KeyRow("source_orography_variable", "string", None,
+           "the variable holding terrain height inside source_orography; "
+           "declared together with it"),
+)
+
 _DOMAIN_SOURCE_KEY = re.compile(r"d([0-9]{2})")
 
 #: The registry ``runner`` id of the decode family the config-driven
@@ -794,7 +809,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
     orog_by_domain = None
     orog_var = None
     if has_orog_path:
-        orog_var = raw["source_orography_variable"]
+        orog_var = CASE_DATA_KEY_ROWS["source_orography_variable"].get(
+            raw, where=f"[case_data] of {source}")
         if not isinstance(orog_var, str) or not orog_var:
             raise ValueError(
                 f"source_orography_variable in [case_data] of {source} must "
@@ -835,11 +851,11 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
                 f"{source} must be a policy name")
         water_policy = validate_water_temperature_policy(raw_policy)
 
-    overlay_path = None
-    if "water_temperature_overlay" in raw:
+    overlay_path = CASE_DATA_KEY_ROWS["water_temperature_overlay"].get(
+        raw, where=f"[case_data] of {source}")
+    if overlay_path is not None:
         overlay_path = _resolve_path(
-            base_dir, raw["water_temperature_overlay"],
-            "water_temperature_overlay", source)
+            base_dir, overlay_path, "water_temperature_overlay", source)
 
     # `forcing` and `vtable` are the MET inputs.  A caller that only
     # builds static geography (`gpuwm static`) never reads either one --
@@ -1019,9 +1035,12 @@ def load_case_data(path: str | Path) -> CaseDataConfig:
         raise ValueError(
             _missing_case_data_table_refusal(str(path), raw))
     data = build_case_data(table, source=str(path), base_dir=path.parent)
-    from gpuwm.static.highres_production import parse_static_table
-    highres = parse_static_table(
-        raw.get("static"), source=str(path), base_dir=path.parent)
+    # A declared [static] table is taken as written; without one, the
+    # domains the grid-spacing table names take its high-resolution
+    # terrain (gpuwm.static.highres_production.HIGHRES_DEFAULT_BY_DX).
+    from gpuwm.static.highres_production import resolve_static_highres
+    highres = resolve_static_highres(
+        raw, source=str(path), base_dir=path.parent)
     if highres is not None:
         data = replace(data, static_highres=highres)
     return data
@@ -1076,12 +1095,12 @@ def load_experiment_case_bytes(
     data = build_case_data(table, source=source, base_dir=base,
                            require_inputs=require_inputs,
                            require_met_inputs=require_met_inputs)
-    if static_table is not None:
-        from gpuwm.static.highres_production import parse_static_table
-        highres = parse_static_table(
-            static_table, source=source, base_dir=base)
-        if highres is not None:
-            data = replace(data, static_highres=highres)
+    from gpuwm.static.highres_production import resolve_static_highres
+    highres = resolve_static_highres(
+        {"static": static_table}, source=source, base_dir=base,
+        spacings_m=[float(dc.run.dx) for dc in experiment.domains])
+    if highres is not None:
+        data = replace(data, static_highres=highres)
     if ingest_policy is not None and (
             ingest_policy.get("soil_texture_downscale") is not None):
         data = replace(

@@ -164,11 +164,19 @@ WORST_CHILD_COUNT = 632
 EARLY_WARNING_COUNT = 768
 
 #: ``health.py``'s ceiling comment cites "a four-domain NSSL-2 step currently
-#: reaches 527 descriptors".  This is the combination that produces exactly
+#: reaches 528 descriptors".  This is the combination that produces exactly
 #: that, which is what makes the census checkable against something written
 #: before it existed rather than only against itself.
+#:
+#: 527 -> 528 when the surface layer began publishing ``USTM`` (the WRF
+#: sf_sfclay_physics = 1 output) as ``surface.ustm``: measured with
+#: ``domain_descriptor_names`` on every domain of real74_4dom.toml at this
+#: selection, the two trees on either side of that change differ by that
+#: one name and nothing else (155/527 on the parent and each child before,
+#: 156/528 after), and the peak rows are untouched because MYNN's surface
+#: layer (sfclay5) does not carry it.
 CALIBRATION_SELECTION = "mp18-lsm2-pbl0-sfclay1-cu0-km1"
-CALIBRATION_CHILD_COUNT = 527
+CALIBRATION_CHILD_COUNT = 528
 
 #: What ``MAX_HEALTH_FIELDS`` costs: seven fixed ``integration_health_*``
 #: device slots per DomainState.  48 KiB per domain at 1024.
@@ -831,12 +839,12 @@ def test_grid_dimensions_do_not_change_the_descriptor_count(
 
 
 @pytest.mark.slow
-def test_the_census_reproduces_the_recorded_527_descriptor_step(
+def test_the_census_reproduces_the_recorded_528_descriptor_step(
         four_domain_census):
     """Calibration against the only figure written down before this existed.
 
     ``health.py``'s ceiling justification says a four-domain NSSL-2 step
-    reaches 527.  It does -- exactly -- at ``mp18-lsm2-pbl0-sfclay1-cu0``.
+    reaches 528.  It does -- exactly -- at ``mp18-lsm2-pbl0-sfclay1-cu0``.
     Reproducing a number recorded independently of this tool is the strongest
     check available that it is counting the same thing the ceiling was set
     against, and it settles what the older "~707 of 1024" projection was: a
@@ -844,7 +852,7 @@ def test_the_census_reproduces_the_recorded_527_descriptor_step(
     """
     rows = _child_rows(four_domain_census)
     assert CALIBRATION_SELECTION in rows, (
-        f"{CALIBRATION_SELECTION} is no longer selectable, so the 527 "
+        f"{CALIBRATION_SELECTION} is no longer selectable, so the 528 "
         "calibration cannot be checked; find the combination that now "
         "reproduces health.py's cited figure, or amend that comment")
     assert rows[CALIBRATION_SELECTION][4] == CALIBRATION_CHILD_COUNT

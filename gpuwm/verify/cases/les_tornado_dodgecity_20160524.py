@@ -1,7 +1,7 @@
 """Dodge City, KS, 2016-05-24 — a PARKED tornado-scale LES case.
 
 PARKED 2026-08-06, not withdrawn and not adjudicated. This was attempt
-#1's case until Drew moved it to Mayfield, KY 2021-12-10
+#1's case until it moved to Mayfield, KY 2021-12-10
 (``les_tornado_mayfield_20211210``) specifically so that the HRRRv1
 cloud-ice identity question would not need a ruling in order for the
 attempt to proceed. The question is still open, the evidence for it is

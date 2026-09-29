@@ -13,6 +13,7 @@ from gpuwm.ingest.hrrr_target import (
     HrrrTargetDomain,
     required_hrrr_source_window,
 )
+from gpuwm.native_wrf_contract import require_land_terrain
 from gpuwm.static.build import GeogSelection
 from gpuwm.static.geog import GeogDataset
 
@@ -213,8 +214,8 @@ def verify_hrrr_native_static(
         raise ValueError("root static receipt target differs from domain spec")
     if receipt.get("target_domain_sha256") != target.identity_sha256():
         raise ValueError("root static receipt target identity mismatch")
-    if receipt.get("hrrr_source_coverage") != \
-            required_hrrr_source_window(target).to_dict():
+    if not required_hrrr_source_window(target).matches_record(
+            receipt.get("hrrr_source_coverage")):
         raise ValueError("root static receipt source-coverage mismatch")
 
     cache = receipt.get("cache")
@@ -260,10 +261,8 @@ def verify_hrrr_native_static(
         raise ValueError("root static MAPFAC_V shape mismatch")
     if not np.isin(fields["LANDMASK"], (0.0, 1.0)).all():
         raise ValueError("root static LANDMASK is not binary")
-    land = fields["LANDMASK"] > 0.5
-    if np.any(land) and not np.any(fields["HGT_M"][land] != 0.0):
-        raise ValueError(
-            "root static HGT_M is identically zero over every land cell")
+    require_land_terrain(fields["HGT_M"], fields["LANDMASK"],
+                         subject="root static HGT_M")
     if not (fields["LU_INDEX"].min() >= 1.0
             and fields["LU_INDEX"].max() <= 21.0):
         raise ValueError("root static LU_INDEX is outside MODIS categories")

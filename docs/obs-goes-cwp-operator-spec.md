@@ -50,7 +50,7 @@ The thin/thick row is not in tension with the upstream DQF gate: bits 256
 and 512 are outside the condemn mask, so those pixels arrive as
 observations and the operator inflates them. What the gate condemns —
 missing/fill DQF, snow/sea-ice (8), twilight (16), glint (64), ~8% of
-retrievals — never reaches this table at all, by Drew's 2026-08-05
+retrievals — never reaches this table at all, by the 2026-08-05
 ruling ("no point contam it with the 8% that might hurt it"). Moving any
 of those causes from gating to inflation is a future A/B, not the v1
 behaviour.

@@ -42,9 +42,10 @@ def source_absent_microphysics(cfg):
     if mp == 28:
         # Aerosol-aware Thompson (Registry.EM_COMMON:3036).  The three
         # number species a cold start owns are nc, nr and ni, and every
-        # one of them starts at exact zero -- the value gpuwm/core/state.py
-        # allocates and the value real.exe leaves when the analyzed input
-        # carries no number moment.
+        # one of them is allocated at exact zero -- the value
+        # gpuwm/core/state.py allocates and the value real.exe keeps where
+        # the paired analysed mass is zero.  Where that mass is above zero
+        # real.exe seeds the number (cold_start_seeded_numbers below).
         #
         # nwfa/nifa (and the two 2-D emission fields) are deliberately NOT
         # here.  Their initial condition is not "absent from the analysed
@@ -72,6 +73,33 @@ def source_absent_microphysics(cfg):
         return (("QNCLOUD", "QNRAIN", "QNICE"),
                 dict.fromkeys(("nc", "nr", "ni"), 0.0))
     raise ValueError(f"no native prognostic-species initialization for mp_physics={mp}")
+
+
+def cold_start_seeded_numbers(cfg):
+    """Number moments a Thompson cold start seeds from their analysed mass.
+
+    Returns ``{state number field: (paired state mass field, seed receipt
+    key)}``.  :func:`source_absent_microphysics` gives the ALLOCATION value
+    of every source-absent field; for the fields named here that value is
+    exact only where the paired mass is zero.  WRF v4.7.1
+    dyn_em/module_initialize_real.F:4829-4852 fills each of them where the
+    mass is above zero and the number is at or below zero, with
+    make_DropletNumber (QNCLOUD, mp=28 only: mp=8's cloud number is the
+    constant Nt_c), make_RainNumber and make_IceNumber, and
+    gpuwm.ingest.real's cold-start closure does the same and records each
+    fill under the seed receipt key of its ``cold_start_moment_closure``.
+    Every other microphysics option returns an empty map: its source-absent
+    numbers stay at the allocation value everywhere.
+    """
+    cfg = SimpleNamespace(**cfg) if isinstance(cfg, dict) else cfg
+    mp = int(cfg.mp_physics)
+    seeded = {}
+    if mp == 28:
+        seeded["nc"] = ("qc", "droplet_number_seed")
+    if mp in (8, 28):
+        seeded["nr"] = ("qr", "rain_number_seed")
+        seeded["ni"] = ("qi", "ice_number_seed")
+    return seeded
 
 
 def cold_start_contract(selection):

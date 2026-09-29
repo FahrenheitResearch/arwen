@@ -49,6 +49,7 @@ from dataclasses import dataclass
 import gc
 import hashlib
 import os
+import sys
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -69,8 +70,32 @@ _PROBE_NZ, _PROBE_NY, _PROBE_NX = 9, 5, 3
 
 #: Refuse to allocate if it would leave the box with less than this much
 #: available RAM.  Pinned pages are UNSWAPPABLE: over-allocating here does not
-#: degrade gracefully, it destabilises the machine.
+#: degrade gracefully, it destabilises the machine.  This is the reserve's
+#: ceiling; :func:`host_reserve_bytes` scales it down on smaller machines.
 DEFAULT_RESERVE_BYTES = 8 << 30
+
+#: The reserve as a fraction of the memory this process may use
+#: (:func:`host_memory`'s ``total``: MemTotal, or the memory cgroup limit
+#: when one binds).  The reserve is the smaller of this share and
+#: :data:`DEFAULT_RESERVE_BYTES`.
+#:
+#: THE BREAKAGE a fixed 8 GiB reserve caused: it comes out of the room under
+#: a memory limit, so a container under about 8.5 GiB refused every store,
+#: and one under about 20 GiB could refuse a store the planner had sized to
+#: :data:`DEFAULT_MAX_TOTAL_FRACTION` of that same limit; a bare machine of
+#: the same size refused the same way.  An eighth reaches the full 8 GiB at
+#: 64 GiB, so every machine that size or larger keeps today's reserve, and
+#: below it an eighth of the machine stays free beside the store while the
+#: 0.47 total-fraction gate still caps the store itself.
+RESERVE_TOTAL_FRACTION = 0.125
+
+
+def host_reserve_bytes(total_bytes: int | None = None) -> int:
+    """The RAM a pinned store leaves free: the smaller of
+    :data:`DEFAULT_RESERVE_BYTES` and :data:`RESERVE_TOTAL_FRACTION` of
+    ``total_bytes`` (default :func:`host_memory`'s ``total``)."""
+    total = host_memory()["total"] if total_bytes is None else int(total_bytes)
+    return min(DEFAULT_RESERVE_BYTES, int(RESERVE_TOTAL_FRACTION * total))
 
 #: The system-wide page-locked ceiling, as a fraction of ``MemTotal``.
 #:
@@ -608,7 +633,10 @@ def _parse_meminfo(lines) -> dict[str, int]:
 
 
 def _meminfo() -> dict[str, int]:
-    with open("/proc/meminfo", "r", encoding="ascii") as handle:
+    # The planner's path, so one stand-in serves every host-memory reader.
+    from tilestream import autoplan
+
+    with open(autoplan._PROC_MEMINFO, "r", encoding="ascii") as handle:
         return _parse_meminfo(handle)
 
 
@@ -649,8 +677,7 @@ def _host_memory_windows() -> dict[str, int]:
 
 
 def host_memory() -> dict[str, int]:
-    """``{'total', 'available', 'free'}`` bytes, from whichever source this
-    OS has.
+    """``{'total', 'available', 'free'}`` bytes this process may use.
 
     ``available`` is the number that matters -- the kernel's own estimate of
     what can be handed out without swapping, which is exactly the question a
@@ -662,8 +689,64 @@ def host_memory() -> dict[str, int]:
     with neither source, psutil answers if it is installed; otherwise this
     raises naming the platform rather than guessing, because every guard in
     this module divides by these numbers.
+
+    Those figures are then capped by the memory cgroup limits this process
+    runs under, read through the planner's walk
+    (``tilestream.autoplan._cgroup_memory_limits``): ``total`` by the
+    smallest limit, ``available`` and ``free`` by the least room left under
+    any of them.  The same answers the renderer's, the MPAS builder's and
+    the planner's readers give, held to one table
+    (``rw-host-memory/src/host_memory_cgroup_cases.json``).
+
+    THE BREAKAGE: the OS figures alone describe the whole host.  Inside a
+    systemd scope with ``MemoryMax=2G`` on a 30 GiB worker this read
+    30.55 GiB total and 25.97 GiB available, so ``check_allocatable`` with
+    no ``budget_bytes`` admitted a 3 GiB pinned store and
+    :func:`pinned_ceiling_bytes` put the wall at 15.27 GiB.  Page-locked
+    pages cannot be reclaimed, so a store past the scope's limit is one the
+    kernel cannot hold.
     """
-    if os.name == "nt":
+    mem = _host_memory_uncapped()
+    from tilestream import autoplan
+
+    levels = autoplan._cgroup_memory_limits()
+    if not levels:
+        return mem
+    limit = min(level for level, _room in levels)
+    room = min(room for _level, room in levels)
+    return {"total": min(mem["total"], limit),
+            "available": min(mem["available"], room),
+            "free": min(mem["free"], room)}
+
+
+def _cgroup_limit_phrase(mem: dict[str, int] | None = None,
+                         key: str | None = None) -> str:
+    """Names the memory cgroup limit a refusal's figures were read under,
+    or nothing when none binds, so the refusal says whose memory it read.
+
+    Given :func:`host_memory`'s reading and the ``key`` a refusal quotes,
+    the limit is named only when it (``total``) or the room under it
+    (``available``) is below the host's own figure, because naming a limit
+    beside a figure the whole host set tells the reader the wrong cause.
+    """
+    from tilestream import autoplan
+
+    if mem is not None and key is not None:
+        if mem[key] >= _host_memory_uncapped()[key]:
+            return ""
+    limit = autoplan._cgroup_memory_limit()
+    return ("" if limit is None else
+            f" under this process's {limit / GIB:.2f} GiB memory cgroup limit")
+
+
+def _host_memory_uncapped() -> dict[str, int]:
+    """The OS's own figures with no cgroup cap: the whole host's.
+
+    Only a report of how far the host's figure is from this process's
+    limit reads this (``tilestream.da_stream.container_memory_limit``);
+    every guard reads :func:`host_memory`.
+    """
+    if sys.platform == "win32":
         return _host_memory_windows()
     try:
         info = _meminfo()
@@ -671,7 +754,6 @@ def host_memory() -> dict[str, int]:
         try:
             import psutil
         except ImportError:
-            import sys
             raise HostStoreError(
                 f"no host-memory source on this platform ({sys.platform}): "
                 "no /proc/meminfo, not Windows, and psutil is not installed."
@@ -722,7 +804,9 @@ def pinned_ceiling_bytes() -> int:
        CONSERVATIVE fallback: it is the only fraction that has been seen to
        be an actual wall, so predicting it on an unmeasured box errs toward
        refusing work rather than toward pinning memory the kernel cannot
-       reclaim.
+       reclaim.  ``MemTotal`` here is :func:`host_memory`'s total, so under
+       a memory cgroup limit it is the smallest limit, the fraction the
+       planner's ``Machine.host_budget_bytes`` takes of the same figure.
 
     Deliberately still a prediction and not a probe: probing allocates tens
     of GiB and frees them, which is not something a store build should do on
@@ -850,7 +934,7 @@ def probe_pinned_ceiling(block_bytes: int, *, limit_bytes: int = 60 * GIB,
 
 
 def check_allocatable(nbytes: int, *, budget_bytes: int | None = None,
-                      reserve_bytes: int = DEFAULT_RESERVE_BYTES,
+                      reserve_bytes: int | None = None,
                       max_total_fraction: float = DEFAULT_MAX_TOTAL_FRACTION,
                       ) -> None:
     """Raise unless ``nbytes`` of pinned RAM can be taken safely.
@@ -860,6 +944,13 @@ def check_allocatable(nbytes: int, *, budget_bytes: int | None = None,
     * the caller's explicit ``budget_bytes`` cap,
     * ``MemAvailable - reserve_bytes`` (do not drive the box into swap),
     * ``max_total_fraction * MemTotal`` (never pin most of the machine).
+
+    Both machine figures are :func:`host_memory`'s, so under a memory cgroup
+    limit they are the limit's room and the limit, not the whole host's.
+    ``reserve_bytes`` None is :func:`host_reserve_bytes` of that total, so
+    the reserve shrinks with a small machine or limit instead of taking a
+    fixed 8 GiB out of it.  A refusal names the cgroup limit only when the
+    limit, or the room under it, is what set the figure it quotes.
 
     The third gate is the one that matters most and the one that is easiest
     to get wrong.  ``MemAvailable`` is NOT an upper bound on pinnable memory:
@@ -881,11 +972,14 @@ def check_allocatable(nbytes: int, *, budget_bytes: int | None = None,
             f"store needs {nbytes / GIB:.2f} GiB but budget_bytes is "
             f"{int(budget_bytes) / GIB:.2f} GiB")
     mem = host_memory()
+    if reserve_bytes is None:
+        reserve_bytes = host_reserve_bytes(mem["total"])
     headroom = mem["available"] - int(reserve_bytes)
     if nbytes > headroom:
         raise HostMemoryExhausted(
             f"store needs {nbytes / GIB:.2f} GiB; only "
-            f"{mem['available'] / GIB:.2f} GiB is available and "
+            f"{mem['available'] / GIB:.2f} GiB is available"
+            f"{_cgroup_limit_phrase(mem, 'available')} and "
             f"{int(reserve_bytes) / GIB:.2f} GiB is reserved "
             f"(usable {headroom / GIB:.2f} GiB).  Pinned pages cannot be "
             f"swapped; refusing rather than destabilising the machine.")
@@ -894,7 +988,8 @@ def check_allocatable(nbytes: int, *, budget_bytes: int | None = None,
         raise HostMemoryExhausted(
             f"store needs {nbytes / GIB:.2f} GiB, more than "
             f"{max_total_fraction:.0%} of the machine's "
-            f"{mem['total'] / GIB:.2f} GiB (cap {cap / GIB:.2f} GiB).  "
+            f"{mem['total'] / GIB:.2f} GiB{_cgroup_limit_phrase(mem, 'total')} "
+            f"(cap {cap / GIB:.2f} GiB).  "
             f"Page-locking walls at {PINNED_CEILING_FRACTION:.0%} of MemTotal "
             f"= {pinned_ceiling_bytes() / GIB:.2f} GiB on this box -- MEASURED, "
             f"and invisible to /proc/meminfo.  Refusing.")
@@ -934,7 +1029,7 @@ class HostDomainStore:
 
     def __init__(self, cfg_like, *, attrs: Sequence[str] =
                  STATE_SERIALIZED_ATTRS, budget_bytes: int | None = None,
-                 reserve_bytes: int = DEFAULT_RESERVE_BYTES,
+                 reserve_bytes: int | None = None,
                  max_total_fraction: float = DEFAULT_MAX_TOTAL_FRACTION,
                  manifest: Sequence[FieldSpec] | None = None,
                  allocate: bool = True, inventory_fn=None):
@@ -959,6 +1054,8 @@ class HostDomainStore:
         if not allocate:
             return
 
+        if reserve_bytes is None:
+            reserve_bytes = host_reserve_bytes()
         # Gate the WHOLE request before taking a single page, so a refusal
         # leaves no partial allocation behind.
         check_allocatable(self._planned_bytes, budget_bytes=budget_bytes,
@@ -1373,6 +1470,7 @@ def _asymptotic_bytes_per_cell(manifest: Iterable[FieldSpec],
 __all__ = [
     "BudgetExceeded", "CUDA_MEMORY_TYPE_HOST", "DEFAULT_MAX_TOTAL_FRACTION",
     "DEFAULT_RESERVE_BYTES", "FieldSpec", "HostDomainStore",
+    "RESERVE_TOTAL_FRACTION", "host_reserve_bytes",
     "HostMemoryExhausted", "HostStoreError", "InventoryMismatch",
     "MIN_ACCURATE_BANDWIDTH_BYTES", "PINNED_CEILING_FRACTION", "PinnedBlock",
     "alloc_pinned_array", "build_manifest", "bytes_per_cell",

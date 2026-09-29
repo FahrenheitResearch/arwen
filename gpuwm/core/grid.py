@@ -165,7 +165,8 @@ def _max_hybrid_slope(znw: np.ndarray, hybrid_opt: int, etac: float,
 
 
 def hybrid_surface_pressure_floor(znw: np.ndarray, hybrid_opt: int,
-                                  etac: float, p_top: float) -> float:
+                                  etac: float, p_top: float, *,
+                                  min_layer_fraction: float = 0.0) -> float:
     """Lowest surface pressure (Pa) this hybrid coordinate can order.
 
     Writing ``pd[k] = c3[k]*(ps - p_top) + c4[k] + p_top`` and
@@ -174,12 +175,55 @@ def hybrid_surface_pressure_floor(znw: np.ndarray, hybrid_opt: int,
     cubic therefore sets a hard floor under the surface pressure -- and
     so a ceiling over the terrain -- for a given ``etac``/``p_top`` pair.
     ``hybrid_opt`` 0/1 have ``B = eta`` exactly, hence no floor.
+
+    ``min_layer_fraction`` asks for more than order.  A segment's depth
+    over a column at ``ps``, as a fraction of its depth over a flat
+    column (``ps = P0``), is exactly ``1 - s*(P0 - ps)/(P0 - p_top)``
+    (:func:`hybrid_layer_depth_fractions`), so the floor under which the
+    thinnest layer keeps at least that fraction is
+    ``P0 - (1 - fraction)*(P0 - p_top)/s``.  Zero is the ordering floor
+    itself.  The squeeze only exists where ``dB/deta`` rises above 1:
+    with ``B = eta`` a layer thins exactly as the column's own mass does,
+    which no coordinate choice changes.
     """
 
+    fraction = float(min_layer_fraction)
+    if not 0.0 <= fraction < 1.0:
+        raise ValueError(
+            f"min_layer_fraction must lie in [0, 1), got {fraction:g}: it is "
+            "the share of its flat-column depth a layer keeps")
     slope = _max_hybrid_slope(znw, hybrid_opt, etac, float(p_top))
     if slope <= 1.0:
         return 0.0
-    return c.P0 - (c.P0 - float(p_top)) / slope
+    return c.P0 - (1.0 - fraction) * (c.P0 - float(p_top)) / slope
+
+
+def hybrid_layer_depth_fractions(znw: np.ndarray, hybrid_opt: int,
+                                 etac: float, p_top: float,
+                                 surface_pressure: float) -> np.ndarray:
+    """Each layer's dry-pressure depth over one column, over its flat depth.
+
+    Entry ``k`` is layer ``k`` (between full levels ``k`` and ``k+1``,
+    the index a mass-point field carries) over a column whose base
+    surface pressure is ``surface_pressure``, divided by the same layer
+    over a flat column at ``P0``: ``1 - s_k*(P0 - ps)/(P0 - p_top)`` with
+    ``s_k`` that layer's discrete ``dB/deta``.  One means untouched, zero
+    means the column is no longer ordered there.  The spacing between
+    half levels is folded in, so the minimum is the same quantity
+    :func:`hybrid_surface_pressure_floor` bounds: layer ``k`` reports the
+    thinner of its own depth and the spacing between its mass point and
+    the one below it.
+    """
+
+    znw = np.asarray(znw, dtype=np.float64)
+    hy = compute_hybrid_coeffs(znw, hybrid_opt, etac, c.P0, float(p_top))
+    znu = 0.5 * (znw[:-1] + znw[1:])
+    squeeze = (c.P0 - float(surface_pressure)) / (c.P0 - float(p_top))
+    full = 1.0 - squeeze * np.diff(hy["c3f"]) / np.diff(znw)
+    half = 1.0 - squeeze * np.diff(hy["c3h"]) / np.diff(znu)
+    fractions = full.copy()
+    fractions[1:] = np.minimum(fractions[1:], half)
+    return fractions
 
 
 def analytic_base_terrain_height(surface_pressure: float,
@@ -270,21 +314,32 @@ def base_layer_depths(znw: np.ndarray, hybrid_opt: int, etac: float,
     return np.diff(z_full)
 
 
+#: The smallest ``etac`` :func:`largest_supported_etac` considers.  Below
+#: it the Klemp cubic no longer changes at the printed precision.
+SMALLEST_SEARCHED_ETAC = 1.0e-3
+
+
 def largest_supported_etac(znw: np.ndarray, p_top: float,
-                           surface_pressure: float) -> float | None:
+                           surface_pressure: float, *,
+                           min_layer_fraction: float = 0.0) -> float | None:
     """Largest ``etac`` whose reference column stays ordered at ``ps``.
 
     ``dB/deta`` grows with ``etac``, so the constraint is monotone and a
     bisection is exact to the printed precision.  ``None`` means no
     positive ``etac`` suffices -- the cubic's own minimum slope of 4/3
     already inverts the column, and only a lower ``p_top`` can help.
+
+    With ``min_layer_fraction`` the column must also keep every layer at
+    least that share of its flat-column depth
+    (:func:`hybrid_surface_pressure_floor`); ``None`` then means no
+    ``etac`` on this ladder leaves the thinnest layer that deep.
     """
 
     def ordered(candidate: float) -> bool:
         return float(surface_pressure) > hybrid_surface_pressure_floor(
-            znw, 2, candidate, p_top)
+            znw, 2, candidate, p_top, min_layer_fraction=min_layer_fraction)
 
-    low = 1.0e-3
+    low = SMALLEST_SEARCHED_ETAC
     if not ordered(low):
         return None
     high = 0.5

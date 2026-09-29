@@ -613,6 +613,181 @@
       "missing": {
         "kind": "preserve_mask"
       }
+    },
+    "sea_surface_temperature": {
+      "selectors": [
+        {
+          "format": "grib1",
+          "parameter": 34,
+          "table_version": 128,
+          "center": 98,
+          "level_type": 1,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "sea_ice_fraction": {
+      "selectors": [
+        {
+          "format": "grib1",
+          "parameter": 31,
+          "table_version": 128,
+          "center": 98,
+          "level_type": 1,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "1",
+        "target": "1"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "lake_water_temperature": {
+      "selectors": [
+        {
+          "format": "grib1",
+          "parameter": 8,
+          "table_version": 228,
+          "center": 98,
+          "level_type": 1,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "lake_ice_temperature": {
+      "selectors": [
+        {
+          "format": "grib1",
+          "parameter": 13,
+          "table_version": 228,
+          "center": 98,
+          "level_type": 1,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "K",
+        "target": "K"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "lake_ice_depth": {
+      "selectors": [
+        {
+          "format": "grib1",
+          "parameter": 14,
+          "table_version": 228,
+          "center": 98,
+          "level_type": 1,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "m",
+        "target": "m"
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "preserve_mask"
+      }
+    },
+    "snow_water_equivalent": {
+      "selectors": [
+        {
+          "format": "grib1",
+          "parameter": 141,
+          "table_version": 128,
+          "center": 98,
+          "level_type": 1,
+          "level_value": 0
+        }
+      ],
+      "units": {
+        "source": "m",
+        "target": "kg m-2",
+        "scale": 1000.0
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      }
     }
   },
   "derivations": [
@@ -816,9 +991,9 @@
       "snow_mixing_ratio": "explicit_zero_with_adapter_validation",
       "graupel_or_hail_mixing_ratio": "explicit_zero_with_adapter_validation",
       "vertical_velocity": "explicit_zero_with_adapter_validation",
-      "snow_water_equivalent": "source_available_but_not_yet_semantically_bound",
+      "snow_water_equivalent": "bound_as_snow_depth_water_equivalent_at_water_density",
       "snow_depth": "source_available_but_not_yet_semantically_bound",
-      "sea_ice_fraction": "source_available_but_not_yet_semantically_bound"
+      "sea_ice_fraction": "bound_as_sea_ice_area_fraction"
     }
   }
 }

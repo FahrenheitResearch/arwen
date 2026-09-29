@@ -57,6 +57,18 @@ What this module guarantees
   cells use the component skin field and are counted in the receipt. This
   represents the source model's local lake state even where its grid does
   not resolve that lake, without searching for another basin's water.
+* A water cell its provider still leaves without an admissible
+  temperature is filled, never refused: from its own body's water, else
+  from the nearest source water on the domain, else from the skin
+  temperature around it.  That is the one place a body can take another
+  basin's water, and only for a body the route hands no admissible
+  temperature of its own.  Every such cell is counted and named in the
+  receipt's ``water_fill`` and in the advisory.  The masked skin chain
+  no longer hands a lake 0 K where the source holds no water (it takes
+  the source's land skin there, see
+  ``gpuwm.ingest.horiz._skin_temperature_on_both_surfaces``), so this
+  is what keeps a route that maps its skin some other way from refusing
+  a lake over its source's coverage.
 
 Where the guarantee is enforced
 -------------------------------
@@ -105,12 +117,16 @@ SOURCE_ANALYSIS = 1        #: ERA5 SST, same-component donors
 SOURCE_COMPONENT_SKIN = 2  #: coherent SKINTEMP for a whole component
 SOURCE_PER_CELL = 3        #: the historical per-cell fuse (wrf_compat)
 SOURCE_LAKE_WATER = 4      #: explicit ice-free source lake-model state
+SOURCE_NEAREST_WATER = 5   #: filled from the nearest source water temperature
+SOURCE_SURROUNDING_SKIN = 6  #: filled from the skin temperature around it
 SOURCE_NAMES = {
     SOURCE_LAND: "land",
     SOURCE_ANALYSIS: "era5_sst_component",
     SOURCE_COMPONENT_SKIN: "era5_skintemp_component",
     SOURCE_PER_CELL: "per_cell_legacy",
     SOURCE_LAKE_WATER: LAKE_WATER_PROVIDER,
+    SOURCE_NEAREST_WATER: "nearest_source_water",
+    SOURCE_SURROUNDING_SKIN: "surrounding_skin",
 }
 
 #: A component takes the analysis when its own donors cover at least this
@@ -157,60 +173,13 @@ def _label_components(mask):
     grid is one lake, not two.  Merging distinct BODIES is prevented by the
     caller, which labels each surface class separately.
 
-    Two-pass union-find, so cost is near-linear rather than proportional to
-    the longest lake in the domain.
+    Runs in the Rust preprocessing library (``gpuwm_label_components_8``),
+    whose labels equal the per-cell union-find kept as its test oracle
+    (``gpuwm/verify/water_blend_oracle.py``).
     """
-    mask = np.asarray(mask, dtype=bool)
-    ny, nx = mask.shape
-    labels = np.zeros((ny, nx), dtype=np.int32)
-    parent = [0]
+    from gpuwm.ingest.cpu_backend import water_blend_backend
 
-    def find(a):
-        root = a
-        while parent[root] != root:
-            root = parent[root]
-        while parent[a] != root:
-            parent[a], a = root, parent[a]
-        return root
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
-
-    for j in range(ny):
-        for i in range(nx):
-            if not mask[j, i]:
-                continue
-            neighbours = []
-            if j > 0:
-                if labels[j - 1, i]:
-                    neighbours.append(labels[j - 1, i])
-                if i > 0 and labels[j - 1, i - 1]:
-                    neighbours.append(labels[j - 1, i - 1])
-                if i + 1 < nx and labels[j - 1, i + 1]:
-                    neighbours.append(labels[j - 1, i + 1])
-            if i > 0 and labels[j, i - 1]:
-                neighbours.append(labels[j, i - 1])
-            if not neighbours:
-                parent.append(len(parent))
-                labels[j, i] = len(parent) - 1
-            else:
-                smallest = min(neighbours)
-                labels[j, i] = smallest
-                for other in neighbours:
-                    union(smallest, other)
-
-    remap = {}
-    out = np.zeros((ny, nx), dtype=np.int32)
-    for j in range(ny):
-        for i in range(nx):
-            if labels[j, i]:
-                root = find(labels[j, i])
-                if root not in remap:
-                    remap[root] = len(remap) + 1
-                out[j, i] = remap[root]
-    return out, len(remap)
+    return water_blend_backend().label_components(mask)
 
 
 #: Component labels are a pure function of two invariant statics, but the
@@ -312,91 +281,108 @@ def _bilinear_corners(source_lat, source_lon, target_lat, target_lon):
 
 
 def normalized_masked_bilinear(field, donors, corners, shape,
-                               denominator_floor=1e-6):
+                               denominator_floor=1e-6, *, workers=None):
     """Bilinear interpolation renormalized over the donors that exist.
 
     Interpolates ``field * donors`` and ``donors`` separately and divides.
     A target whose stencil holds one usable donor still gets that donor's
     value at full weight instead of being abandoned, and a target with no
     donor weight at all returns NaN rather than a fill that later reads as
-    a temperature.
+    a temperature.  Runs in the Rust preprocessing library
+    (``gpuwm_masked_bilinear_blend_f64``), byte-identical to the NumPy
+    code kept as its test oracle (``gpuwm/verify/water_blend_oracle.py``).
     """
-    field = np.asarray(field, dtype=np.float64)
-    donors = np.asarray(donors, dtype=bool)
-    numerator = np.zeros(shape, dtype=np.float64)
-    denominator = np.zeros(shape, dtype=np.float64)
-    safe = np.where(donors, field, 0.0)
-    for jj, ii, weight in corners:
-        present = donors[jj, ii].astype(np.float64)
-        numerator += weight * present * safe[jj, ii]
-        denominator += weight * present
-    out = np.full(shape, np.nan, dtype=np.float64)
-    usable = denominator > denominator_floor
-    out[usable] = numerator[usable] / denominator[usable]
-    return out
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    return water_blend_backend().masked_bilinear_blend(
+        field, donors, corners, shape, denominator_floor=denominator_floor,
+        workers=workers)
 
 
-def _fill_within_component(values, component, max_sweeps=1000):
-    """Close residual holes from the component's OWN cells, never elsewhere."""
-    out = np.array(values, dtype=np.float64, copy=True)
-    out[~component] = np.nan
-    for _ in range(max_sweeps):
-        holes = component & np.isnan(out)
-        if not np.any(holes):
-            break
-        have = component & np.isfinite(out)
-        if not np.any(have):
-            break
-        accumulated = np.zeros(out.shape, dtype=np.float64)
-        count = np.zeros(out.shape, dtype=np.float64)
-        contribution = np.where(have, out, 0.0)
-        for destination, source in ((np.s_[1:, :], np.s_[:-1, :]),
-                                    (np.s_[:-1, :], np.s_[1:, :]),
-                                    (np.s_[:, 1:], np.s_[:, :-1]),
-                                    (np.s_[:, :-1], np.s_[:, 1:])):
-            accumulated[destination] += contribution[source]
-            count[destination] += have[source]
-        ready = holes & (count > 0)
-        if not np.any(ready):
-            break
-        out[ready] = accumulated[ready] / count[ready]
-    return out
+def _fill_within_component(values, component, max_sweeps=1000, *,
+                           workers=None):
+    """Close residual holes from the component's OWN cells, never elsewhere.
+
+    Runs in the Rust preprocessing library (``gpuwm_component_fill_f64``),
+    byte-identical to the NumPy sweep kept as its test oracle
+    (``gpuwm/verify/water_blend_oracle.py``).
+    """
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    return water_blend_backend().component_fill(
+        values, component, max_sweeps=max_sweeps, workers=workers)
+
+
+def _admissible(values):
+    """Finite and inside the physical window the soil reconciler applies."""
+    return (np.isfinite(values)
+            & (values >= MIN_WATER_TEMPERATURE_K)
+            & (values <= MAX_WATER_TEMPERATURE_K))
+
+
+def _fill_missing_water_temperature(values, source, water, labels, *,
+                                    workers=None):
+    """Give a temperature to every water cell its provider left without one.
+
+    A cell reaches here when the provider its body chose left it no
+    admissible temperature.  On a regional crop of a coarse source that is
+    the ordinary case for a lake: the source resolves no water anywhere
+    near it, the masked skin interpolation had no water donor to read, and
+    the chain left its fill value, zero.  Refusing the preparation for it
+    refused a domain over the extent of the source crop, so each such cell
+    is filled, in this order, and every fill is counted:
+
+    1. from its own body's admissible water, ring by ring from the cells
+       that have it;
+    2. a body with none takes, as one value, the nearest admissible water
+       on the domain: source water one of the providers above carried in.
+       "Near" has the reach the masked source-water search already has,
+       the whole of the data the preparation holds;
+    3. with no admissible water on the domain, the body takes the skin
+       temperature around it, ring by ring from its shore, and a body
+       whose shore has none takes the nearest admissible skin.
+
+    Returns ``(values, source, counts, filled)``.  A cell none of the three
+    can reach stays inadmissible for the caller's refusal: nothing on the
+    domain carries an admissible surface temperature, which is a defect of
+    the source rather than of its crop.
+
+    Runs in the Rust preprocessing library (``gpuwm_water_repair_f64``),
+    byte-identical to the NumPy box repairs kept as its test oracle
+    (``gpuwm/verify/water_blend_oracle.py``).
+    """
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    return water_blend_backend().water_repair(
+        values, source, water, labels, minimum=MIN_WATER_TEMPERATURE_K,
+        maximum=MAX_WATER_TEMPERATURE_K,
+        nearest_water_code=SOURCE_NEAREST_WATER,
+        surrounding_skin_code=SOURCE_SURROUNDING_SKIN, workers=workers)
 
 
 def _component_owner_of_source(labels, source_lat, source_lon,
-                               target_lat, target_lon, source_shape):
+                               target_lat, target_lon, source_shape, *,
+                               workers=None):
     """Which target component each source cell belongs to (0 = none).
 
     A source cell is claimed by the component holding most of the target
-    cells that fall nearest to it.  That is what confines a component's
+    cells that fall nearest to it, and among components holding equally
+    many by the highest label.  That is what confines a component's
     donor set to its own body: donors are selected by identity, not by
     distance, so no radius can leak another basin in.
+
+    Runs in the Rust preprocessing library (``gpuwm_component_owner_f64``),
+    byte-identical to the NumPy code kept as its test oracle
+    (``gpuwm/verify/water_blend_oracle.py``).  That code sorted the counts
+    with NumPy's default unstable ``argsort``, so which of two equally
+    large claims won depended on the machine's sort kernel; the oracle
+    now sorts stably, which is the rule stated above.
     """
-    ny, nx = source_shape
-    lat = np.asarray(source_lat, dtype=np.float64)
-    lon = np.asarray(source_lon, dtype=np.float64)
-    y = np.rint((np.asarray(target_lat, dtype=np.float64) - lat[0])
-                / (lat[1] - lat[0])).astype(np.intp)
-    x = np.rint((_target_longitude_in_source_frame(lon, target_lon) - lon[0])
-                / (lon[1] - lon[0])).astype(np.intp)
-    inside = (y >= 0) & (y < ny) & (x >= 0) & (x < nx) & (labels > 0)
-    flat = (y[inside] * nx + x[inside]).astype(np.int64)
-    lab = labels[inside].astype(np.int64)
-    if flat.size == 0:
-        return np.zeros(source_shape, dtype=np.int32)
-    n_labels = int(labels.max()) + 1
-    key = flat * n_labels + lab
-    unique, counts = np.unique(key, return_counts=True)
-    cell = unique // n_labels
-    which = unique % n_labels
-    owner_flat = np.zeros(ny * nx, dtype=np.int32)
-    best = np.zeros(ny * nx, dtype=np.int64)
-    order = np.argsort(counts)
-    for c, w, n in zip(cell[order], which[order], counts[order]):
-        if n >= best[c]:
-            best[c] = n
-            owner_flat[c] = w
-    return owner_flat.reshape(source_shape)
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    return water_blend_backend().component_owner(
+        labels, source_lat, source_lon, target_lat, target_lon,
+        source_shape, workers=workers)
 
 
 # ---------------------------------------------------------------------------
@@ -405,12 +391,19 @@ def _component_owner_of_source(labels, source_lat, source_lon,
 def _water_temperature_refusal(*, bad, values, skin, mapped_sst, source,
                                labels, component_rows, diagnostic_context,
                                diagnostic_latlon):
-    """Bounded evidence for a refusal, without changing any provider choice."""
+    """Bounded evidence for a refusal, without changing any provider choice.
+
+    Reached only when no cell of the domain, water or land, carries an
+    admissible temperature to fill a water cell from, so the source's
+    surface temperature itself is missing here.
+    """
     bad_count = int(bad.sum())
     cells = np.argwhere(bad)[:8]
     lines = [
         f"{bad_count} water cells have no admissible water temperature "
-        "after class-coherent assembly",
+        "after class-coherent assembly, and no cell of this domain carries "
+        "an admissible water or skin temperature to fill them from: the "
+        "source's surface temperature is missing here",
         f"Context: {diagnostic_context or 'direct water-temperature assembly'}; "
         f"mass grid {values.shape[0]}x{values.shape[1]}",
         f"Bad cells (zero-based row/column; showing {len(cells)} of "
@@ -458,17 +451,23 @@ def assemble_water_temperature(
         target_lat=None, target_lon=None,
         policy=DEFAULT_WATER_TEMPERATURE_POLICY,
         diagnostic_context=None, diagnostic_latlon=None,
-        mapped_lake_water=None):
+        mapped_lake_water=None, workers=None):
     """Return ``(water_temperature, water_temperature_source, receipt)``.
 
     ``water_temperature`` is finished: every water cell carries a physical
     temperature attributed to its provider. Analysis is chosen for a whole
     connected body; optional lake-model water falls back to component skin
     at declined cells. Land cells carry mapped skin so the array is total,
-    and the soil reconciler still decides what land does with it.
+    and the soil reconciler still decides what land does with it.  A water
+    cell its provider left without an admissible temperature is filled by
+    :func:`_fill_missing_water_temperature` and counted in the receipt's
+    ``water_fill``.
 
     The optional diagnostic context and geographic latitude/longitude pair
     are used only to explain a refusal; they never enter interpolation.
+    ``workers`` is the preparation's host-step thread count
+    (:func:`gpuwm.ingest.cpu_backend.host_step_workers`); ``None`` takes
+    the automatic count.  No value depends on it.
     """
     policy = validate_water_temperature_policy(policy)
     skin = np.asarray(mapped_skin, dtype=np.float64)
@@ -534,98 +533,60 @@ def assemble_water_temperature(
                                     target_lat, target_lon)
         owner = _component_owner_of_source(
             labels, source_lat, source_lon, target_lat, target_lon,
-            source_sst.shape)
+            source_sst.shape, workers=workers)
     else:
         corners = None
         owner = None
 
-    for label in sorted(classes):
-        selection = labels == label
-        cells = int(selection.sum())
+    # Every body's cells, donors, blend, fill and provider in one pass of
+    # the Rust preprocessing library (gpuwm_water_bodies_f64), rather than
+    # masks over the whole domain once per body; the NumPy loop is its
+    # test oracle (gpuwm/verify/water_blend_oracle.py).
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    ordered = sorted(classes)
+    if ordered != list(range(1, len(ordered) + 1)):
+        raise ValueError(
+            "water bodies must be labelled 1..N for the per-body assembly")
+    lake_class = np.zeros(len(ordered) + 1, dtype=bool)
+    for label in ordered:
+        lake_class[label] = classes[label] == "lake"
+    stats, coverages, listed = water_blend_backend().water_bodies(
+        labels=labels, lake_class=lake_class, skin=skin, values=values,
+        source=source, lake_water=lake_water,
+        codes=(SOURCE_ANALYSIS, SOURCE_COMPONENT_SKIN, SOURCE_LAKE_WATER),
+        sst=source_sst if have_source else None,
+        owner=owner, corners=corners,
+        min_coverage=MIN_COMPONENT_COVERAGE,
+        minimum=MIN_WATER_TEMPERATURE_K, maximum=MAX_WATER_TEMPERATURE_K,
+        max_listed=MAX_LISTED_DECLINED_CELLS, workers=workers)
+    provider_names = {1: SOURCE_NAMES[SOURCE_ANALYSIS],
+                      2: SOURCE_NAMES[SOURCE_COMPONENT_SKIN],
+                      3: SOURCE_NAMES[SOURCE_LAKE_WATER]}
+    for label in ordered:
+        (cells, donor_count, provider, analysis_cells, skin_cells,
+         lake_cells, declined) = (int(value) for value in stats[label])
         if cells == 0:
             continue
-        chosen = None
-        coverage = 0.0
-        donor_count = 0
-        if have_source:
-            donors = (owner == label) & np.isfinite(source_sst)
-            donors &= ((source_sst >= MIN_WATER_TEMPERATURE_K)
-                       & (source_sst <= MAX_WATER_TEMPERATURE_K))
-            donor_count = int(donors.sum())
-            if donor_count:
-                estimate = normalized_masked_bilinear(
-                    source_sst, donors, corners, shape)
-                covered = selection & np.isfinite(estimate)
-                coverage = covered.sum() / cells
-                if coverage >= MIN_COMPONENT_COVERAGE:
-                    filled = _fill_within_component(estimate, selection)
-                    chosen = filled
-        provided = (selection & np.isfinite(lake_water)
-                    if classes[label] == "lake" and lake_water is not None
-                    else None)
-        if chosen is None and provided is not None and np.any(provided):
-            # The provider is an explicitly decoded lake-model water state.
-            # Tiny inland lakes can have no majority-water source cell at
-            # all, so it is chosen for the component wherever it answers.
-            # Where it DECLINED a cell (a frozen or unknown-depth donor, an
-            # inadmissible temperature -- see lake_temperature) that cell
-            # falls back to the source this component had before the
-            # provider existed, its coherent skin temperature, and is
-            # counted and named in the receipt: refusing the preparation
-            # for it was a default-on blocker on a route that ran in 2.6.5
-            # (ENG-008).  Nothing here invents a temperature.
-            values[provided] = lake_water[provided]
-            source[provided] = SOURCE_LAKE_WATER
-            per_provider[SOURCE_NAMES[SOURCE_LAKE_WATER]] += int(provided.sum())
-            declined = selection & ~provided
-            if np.any(declined):
-                values[declined] = skin[declined]
-                source[declined] = SOURCE_COMPONENT_SKIN
-                per_provider[SOURCE_NAMES[SOURCE_COMPONENT_SKIN]] += int(
-                    declined.sum())
-            on_lake_water += 1
-            provider_name = SOURCE_NAMES[SOURCE_LAKE_WATER]
-        elif chosen is None:
-            # The whole body takes the coherent skin field, not a per-cell
-            # mixture with whatever SST happened to reach part of it.
-            values[selection] = skin[selection]
-            source[selection] = SOURCE_COMPONENT_SKIN
-            per_provider[SOURCE_NAMES[SOURCE_COMPONENT_SKIN]] += cells
-            on_skin += 1
-            provider_name = SOURCE_NAMES[SOURCE_COMPONENT_SKIN]
-        else:
-            usable = selection & np.isfinite(chosen)
-            values[usable] = chosen[usable]
-            source[usable] = SOURCE_ANALYSIS
-            leftover = selection & ~usable
-            if np.any(leftover):
-                values[leftover] = skin[leftover]
-                source[leftover] = SOURCE_COMPONENT_SKIN
-                per_provider[SOURCE_NAMES[SOURCE_COMPONENT_SKIN]] += int(
-                    leftover.sum())
-            per_provider[SOURCE_NAMES[SOURCE_ANALYSIS]] += int(usable.sum())
+        per_provider[SOURCE_NAMES[SOURCE_ANALYSIS]] += analysis_cells
+        per_provider[SOURCE_NAMES[SOURCE_COMPONENT_SKIN]] += skin_cells
+        per_provider[SOURCE_NAMES[SOURCE_LAKE_WATER]] += lake_cells
+        if provider == 1:
             on_analysis += 1
-            provider_name = SOURCE_NAMES[SOURCE_ANALYSIS]
-        if chosen is None and provided is not None:
-            # Count partial and wholly declined components alike. A frozen
-            # lake commonly takes the all-skin branch above; it must still
-            # be named by the preparation advisory. Limit the cell list for
-            # the whole domain, rather than separately for every lake.
-            declined = selection & ~provided
-            lake_fallback += int(declined.sum())
-            remaining = MAX_LISTED_DECLINED_CELLS - len(lake_fallback_cells)
-            if remaining > 0:
-                lake_fallback_cells.extend(
-                    [int(j), int(i)]
-                    for j, i in np.argwhere(declined)[:remaining])
+        elif provider == 3:
+            on_lake_water += 1
+        else:
+            on_skin += 1
+        lake_fallback += declined
         component_rows.append({
             "label": int(label), "class": classes[label], "cells": cells,
-            "donors": donor_count, "coverage": float(coverage),
-            "provider": provider_name})
+            "donors": donor_count, "coverage": float(coverages[label]),
+            "provider": provider_names[provider]})
+    lake_fallback_cells.extend([int(j), int(i)] for j, i in listed)
 
-    bad = water & ~(np.isfinite(values)
-                    & (values >= MIN_WATER_TEMPERATURE_K)
-                    & (values <= MAX_WATER_TEMPERATURE_K))
+    values, source, fill_counts, filled = _fill_missing_water_temperature(
+        values, source, water, labels, workers=workers)
+    bad = water & ~_admissible(values)
     if np.any(bad):
         raise _water_temperature_refusal(
             bad=bad, values=values, skin=skin, mapped_sst=mapped_sst,
@@ -634,6 +595,12 @@ def assemble_water_temperature(
             diagnostic_latlon=diagnostic_latlon)
     if np.any(water & (source == SOURCE_LAND)):
         raise ValueError("a water cell was left without a declared provider")
+    if np.any(filled):
+        # A filled cell changed provider, so the tally is read back off
+        # the provider field rather than kept beside it.
+        per_provider = {
+            name: int(np.count_nonzero(water & (source == key)))
+            for key, name in SOURCE_NAMES.items()}
 
     receipt = {
         "policy": policy,
@@ -650,6 +617,14 @@ def assemble_water_temperature(
         receipt["components_on_lake_water"] = on_lake_water
         receipt["lake_fallback_cells"] = lake_fallback
         receipt["lake_fallback_cell_indices"] = lake_fallback_cells
+    if np.any(filled):
+        receipt["water_fill"] = {
+            "cells": int(filled.sum()),
+            **fill_counts,
+            "cell_indices": [
+                [int(j), int(i)]
+                for j, i in np.argwhere(filled)[:MAX_LISTED_DECLINED_CELLS]],
+        }
     return values, source, receipt
 
 
@@ -744,7 +719,8 @@ class WaterTemperatureAssembly:
     statics: WaterTemperatureStatics
 
 
-def assemble_horizontal_water_temperature(horizontal, statics):
+def assemble_horizontal_water_temperature(horizontal, statics, *,
+                                          workers=None):
     """Attach the common finished water surface to a mapped snapshot.
 
     Adapter-specific interpolation has already happened. This step depends
@@ -760,7 +736,8 @@ def assemble_horizontal_water_temperature(horizontal, statics):
         statics, mapped_skin=host(fields["SKINTEMP"]),
         mapped_sst=(None if "SST" not in fields else host(fields["SST"])),
         diagnostic_context=(
-            f"valid_time={horizontal.valid_time.isoformat()} UTC"))
+            f"valid_time={horizontal.valid_time.isoformat()} UTC"),
+        workers=workers)
     return replace(horizontal, water_temperature=assembly.values,
                    water_temperature_source=assembly.provider,
                    water_temperature_receipt=assembly.receipt)
@@ -770,7 +747,7 @@ def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
                        source_lat=None, source_lon=None,
                        target_lat=None, target_lon=None,
                        diagnostic_context=None, diagnostic_latlon=None,
-                       mapped_lake_water=None):
+                       mapped_lake_water=None, workers=None):
     """THE assembly entry point.  Every forcing route reaches it here.
 
     Closing this route by route is what produced the quilt in the first
@@ -789,7 +766,7 @@ def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
         diagnostic_context=(statics.route if diagnostic_context is None
                             else f"{statics.route}; {diagnostic_context}"),
         diagnostic_latlon=diagnostic_latlon,
-        mapped_lake_water=mapped_lake_water)
+        mapped_lake_water=mapped_lake_water, workers=workers)
     receipt = dict(receipt)
     receipt["route"] = statics.route
     receipt["lake_class"] = (
@@ -870,6 +847,22 @@ def water_temperature_advisory(receipt):
             "see lake_water_mapping in the receipt) and kept the component "
             f"skin temperature the pre-lake-model route used: cells (j, i) "
             f"{cells}{more}.")
+    # NAMED, never silent: every water cell no provider could give an
+    # admissible temperature, and what it was filled from.
+    fill = receipt.get("water_fill") or {}
+    if fill.get("cells"):
+        listed = fill.get("cell_indices") or []
+        cells = ", ".join(f"({j}, {i})" for j, i in listed)
+        more = ("" if len(listed) >= fill["cells"]
+                else f" and {fill['cells'] - len(listed)} more")
+        caveat += (
+            f" {fill['cells']} water cell(s) had no water temperature in "
+            f"the source and were filled: {fill.get('own_body', 0)} from "
+            f"their own body's water, {fill.get('nearest_water', 0)} from "
+            "the nearest source water, "
+            f"{fill.get('surrounding_skin', 0)} from the skin temperature "
+            f"around them (see water_fill in the receipt): cells (j, i) "
+            f"{cells}{more}.")
     return (
         f"water temperature: policy era5_class_coherent{where} over "
         f"{receipt['water_cells']} water cells in {receipt['components']} "
@@ -903,7 +896,8 @@ __all__ = [
     "WATER_TEMPERATURE_POLICIES",
     "DEFAULT_WATER_TEMPERATURE_POLICY",
     "SOURCE_LAND", "SOURCE_ANALYSIS", "SOURCE_COMPONENT_SKIN",
-    "SOURCE_PER_CELL", "SOURCE_LAKE_WATER", "SOURCE_NAMES",
+    "SOURCE_PER_CELL", "SOURCE_LAKE_WATER", "SOURCE_NEAREST_WATER",
+    "SOURCE_SURROUNDING_SKIN", "SOURCE_NAMES",
     "WaterTemperatureAssembly",
     "WaterTemperatureStatics",
     "validate_water_temperature_policy",

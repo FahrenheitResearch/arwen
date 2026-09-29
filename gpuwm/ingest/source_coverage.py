@@ -90,10 +90,18 @@ class PreparationRefusal(ValueError):
         "remedy: `gpuwm prep --show-source NAME` names what this route "
         "requires of the inputs you staged.")
 
-    def __init__(self, message: str, *, remedy: str | None = None) -> None:
+    #: Folders the message and remedy name as the place to act (a
+    #: scratch folder to make room in).  A page that hides machine paths
+    #: still shows these: without them the remedy names nowhere.
+    folders: tuple[str, ...] = ()
+
+    def __init__(self, message: str, *, remedy: str | None = None,
+                 folders=()) -> None:
         super().__init__(message)
         if remedy is not None:
             self.remedy = remedy
+        if folders:
+            self.folders = tuple(str(folder) for folder in folders)
 
 
 class SourceCoverageRefusal(PreparationRefusal):
@@ -175,6 +183,37 @@ class RunInputRefusal(PreparationRefusal):
     )
 
 
+def existing_output_root_refusal(output_root) -> PreparationRefusal | None:
+    """The mapped preparer's refusal for an ``--output-root`` that exists.
+
+    One check with two callers: the preparer, before it builds anything,
+    and ``gpuwm prep --source-root``, before it writes the folder's input
+    manifest, so a run that is going to be refused here changes nothing
+    on disk first.  ``None`` when nothing is at the path.
+    """
+
+    import os
+
+    if not os.path.lexists(output_root):
+        return None
+    from gpuwm.ingest.boundary_stream import unfinished_tree_reason
+
+    if unfinished_tree_reason(output_root) is not None:
+        # A chained head whose producer failed, was stopped or went silent
+        # is the preparer's own unfinished product, which it removes and
+        # builds again (boundary_stream.remove_unfinished_tree); refusing
+        # it here would stop the rebuild the preparer exists to do.
+        return None
+    return PreparationRefusal(
+        f"refusing to overwrite mapped output {output_root}: a "
+        "prepared tree is published atomically, and a folder that "
+        "already exists may be a finished run something else reads",
+        remedy=(
+            "remedy: pass a fresh --output-root, or move or remove "
+            "the old folder yourself first; prep never deletes an "
+            "output tree."))
+
+
 class VerticalLadderRefusal(PreparationRefusal):
     """The experiment's vertical ladder cannot drive the mapped target.
 
@@ -210,6 +249,116 @@ class ForcingSeriesRefusal(PreparationRefusal):
     """
 
     remedy = FORCING_SERIES_REMEDY
+
+
+#: The variable that places the decode engine's scratch; see
+#: :func:`gpuwm.mapped_composition._compose_scratch_base`.
+COMPOSE_SCRATCH_ENV = "GPUWM_COMPOSE_SCRATCH"
+
+
+def compose_scratch_folder(destination):
+    """The folder a preparation writing ``destination`` stages its frame stream in.
+
+    The placement :func:`gpuwm.mapped_composition._compose_scratch_base`
+    makes, asked without creating or refusing anything, so a plan can
+    measure that folder's disk before the download:
+    ``GPUWM_COMPOSE_SCRATCH`` when it is set, else the destination's
+    parent, else None (the system temp, for a caller with no output).
+    """
+
+    import os
+    from pathlib import Path
+
+    override = os.environ.get(COMPOSE_SCRATCH_ENV)
+    if override:
+        return Path(override)
+    if destination is None:
+        return None
+    return Path(destination).resolve().parent
+
+
+def compose_scratch_override_refusal():
+    """The refusal for a ``GPUWM_COMPOSE_SCRATCH`` that names no existing folder, or None.
+
+    The preparation refuses such a variable by name rather than fall back
+    to the system temp it was set to steer away from
+    (:func:`gpuwm.mapped_composition._compose_scratch_base`), but only
+    when it starts composing, which is after the whole download.  A plan
+    asks this first, so the same mistake is refused while nothing has
+    been spent.  None when the variable is unset or names a folder.
+    """
+
+    import os
+    from pathlib import Path
+
+    override = os.environ.get(COMPOSE_SCRATCH_ENV)
+    if not override or Path(override).is_dir():
+        return None
+    return (f"{COMPOSE_SCRATCH_ENV}={override} does not name an existing folder, and this "
+            "run's preparation stages its decoded frame stream there, so it would stop as it "
+            "starts composing rather than put the stream on the system temp this variable "
+            f"steers away from.  Create {override}, or set "
+            f"{COMPOSE_SCRATCH_ENV} to an existing folder on a disk with room for the stream, "
+            "or unset it to stage the stream beside the run's preparation")
+
+
+#: What to DO when the scratch disk cannot hold the frame stream.
+SCRATCH_DISK_REMEDY = (
+    f"remedy: set {COMPOSE_SCRATCH_ENV} to an existing directory on a disk "
+    "with room for the bytes named above, and the preparation stages its "
+    "frame stream there instead; or free that much space on the disk "
+    "that holds the folder named above.")
+
+
+class ScratchDiskRefusal(PreparationRefusal):
+    """The disk that holds the decode scratch cannot hold the frame stream.
+
+    The engine stages every decoded valid time on disk before the
+    preparation reads it back, tens of GB for a global source over two
+    days, so the scratch disk is a resource the request has to fit, like
+    the card.  The message names the folder, the bytes the stream needs
+    when they are known and the space the disk has.  Its own class
+    because its remedy is space: raised as ``FileNotFoundError``, a full
+    disk told the user to supply a file the preparation already had.
+    """
+
+    remedy = SCRATCH_DISK_REMEDY
+
+
+def scratch_disk_folder(base) -> str:
+    """The folder a preparation's scratch is made in: ``base``, or the system temp."""
+
+    import tempfile
+
+    return tempfile.gettempdir() if base is None else str(base)
+
+
+def scratch_disk_refusal(refusal, base) -> ScratchDiskRefusal:
+    """The engine's scratch refusal, re-said for the folder the next attempt stages in.
+
+    The engine names its own temporary folder, deleted as the
+    preparation fails; the remedy and the folder a page shows are where
+    the NEXT attempt would stage again (:func:`scratch_disk_remedy`).
+    """
+
+    return ScratchDiskRefusal(str(refusal), remedy=scratch_disk_remedy(base),
+                              folders=(scratch_disk_folder(base),))
+
+
+def scratch_disk_remedy(base) -> str:
+    """The remedy naming the folder a preparation's scratch is made in.
+
+    The refusal's own path is the engine's temporary folder, deleted as
+    the preparation fails, so the remedy names where the NEXT attempt
+    would stage again: ``base``, or the system temp when it is None.
+    """
+
+    where = scratch_disk_folder(base)
+    return (
+        f"remedy: the preparation stages its frame stream in {where}.  Set "
+        f"{COMPOSE_SCRATCH_ENV} to an existing directory on a disk with room "
+        "for the bytes named above and it stages there instead, or free that "
+        "much space on this disk.")
 
 
 def outside_source_grid_message(latitude, longitude, target_lat, target_lon,
@@ -263,6 +412,96 @@ def outside_source_grid_message(latitude, longitude, target_lat, target_lon,
         f"y=0..{latitude.size - 1} {span[1]}")
 
 
+#: The file a caller that launched a preparation asks its door to record
+#: the refusal in, as well as printing it.  Read back by
+#: :func:`recorded_preparation_refusal`; inherited by every child the
+#: preparation launches, so a refusal met in the adapter process reaches
+#: the caller whole instead of as an exit status.
+PREPARATION_REFUSAL_RECORD_ENV = "GPUWM_PREPARATION_REFUSAL_RECORD"
+PREPARATION_REFUSAL_RECORD_SCHEMA = "gpuwm-preparation-refusal-v1"
+
+
+def _record_preparation_refusal(refusal: PreparationRefusal, remedy: str) -> None:
+    import json
+    import os
+
+    path = os.environ.get(PREPARATION_REFUSAL_RECORD_ENV)
+    if not path:
+        return
+    document = {"schema": PREPARATION_REFUSAL_RECORD_SCHEMA,
+                "class": type(refusal).__name__, "message": str(refusal),
+                "remedy": remedy, "folders": list(getattr(refusal, "folders", ()) or ())}
+    try:
+        with open(path, "w", encoding="utf-8") as output:
+            json.dump(document, output)
+    except OSError:
+        # The printed refusal is still the refusal; the record is a copy.
+        pass
+
+
+def _refusal_class(name: str) -> type[PreparationRefusal]:
+    pending = [PreparationRefusal]
+    while pending:
+        cls = pending.pop()
+        if cls.__name__ == name:
+            return cls
+        pending.extend(cls.__subclasses__())
+    return PreparationRefusal
+
+
+class recorded_preparation_refusal:
+    """Collect the refusal a preparation door reports, in this process or a child.
+
+    Used as ``with recorded_preparation_refusal() as refused: ...`` around a
+    preparation; afterwards ``refused()`` is the refusal the door printed,
+    rebuilt as its own class with its message, remedy and folders and the
+    door's exit status on ``exit_code``, or None when it printed none.
+    Named breakage: a chain that ran the preparation saw only the status,
+    so a scratch disk too small for the frame stream reached a run's
+    failure notice as "prepare failed (exit 78)."
+    """
+
+    def __enter__(self):
+        import os
+        import tempfile
+
+        handle, self._path = tempfile.mkstemp(prefix="gpuwm-prep-refusal-", suffix=".json")
+        os.close(handle)
+        os.unlink(self._path)
+        self._previous = os.environ.get(PREPARATION_REFUSAL_RECORD_ENV)
+        os.environ[PREPARATION_REFUSAL_RECORD_ENV] = self._path
+        self._refusal = None
+        return lambda: self._refusal
+
+    def __exit__(self, *exc) -> bool:
+        import json
+        import os
+
+        if self._previous is None:
+            os.environ.pop(PREPARATION_REFUSAL_RECORD_ENV, None)
+        else:
+            os.environ[PREPARATION_REFUSAL_RECORD_ENV] = self._previous
+        try:
+            with open(self._path, encoding="utf-8") as record:
+                document = json.load(record)
+        except (OSError, ValueError):
+            document = None
+        finally:
+            try:
+                os.unlink(self._path)
+            except OSError:
+                pass
+        if (isinstance(document, dict)
+                and document.get("schema") == PREPARATION_REFUSAL_RECORD_SCHEMA):
+            refusal = _refusal_class(str(document.get("class")))(
+                str(document.get("message", "")),
+                remedy=str(document.get("remedy") or "") or None,
+                folders=tuple(document.get("folders") or ()))
+            refusal.exit_code = PREPARATION_REFUSAL_EXIT_CODE
+            self._refusal = refusal
+        return False
+
+
 def report_preparation_refusal(refusal: PreparationRefusal, *,
                                stream=None) -> int:
     """Print the refusal and ITS remedy, and return the door's status.
@@ -270,12 +509,16 @@ def report_preparation_refusal(refusal: PreparationRefusal, *,
     Two lines on stderr and nothing on stdout: a caller piping the
     adapter's JSON proof gets an empty pipe and a non-zero status rather
     than a parse error.  The remedy comes off the refusal because two
-    refusals delivered the same way can still have opposite fixes.
+    refusals delivered the same way can still have opposite fixes.  A
+    caller that asked for a record (:func:`recorded_preparation_refusal`)
+    gets the same refusal as data.
     """
 
     stream = sys.stderr if stream is None else stream
+    remedy = getattr(refusal, "remedy", PreparationRefusal.remedy)
     print(f"prep: REFUSED: {refusal}", file=stream)
-    print(getattr(refusal, "remedy", PreparationRefusal.remedy), file=stream)
+    print(remedy, file=stream)
+    _record_preparation_refusal(refusal, remedy)
     return PREPARATION_REFUSAL_EXIT_CODE
 
 
@@ -314,17 +557,28 @@ def owns_source_coverage_refusal(main):
 __all__ = [
     "FORCING_SERIES_REMEDY",
     "PREPARATION_REFUSAL_EXIT_CODE",
+    "PREPARATION_REFUSAL_RECORD_ENV",
+    "PREPARATION_REFUSAL_RECORD_SCHEMA",
     "SOURCE_COVERAGE_EXIT_CODE",
     "SOURCE_COVERAGE_REMEDY",
     "DecoderInventoryRefusal",
     "ForcingSeriesRefusal",
     "PreparationRefusal",
     "RunInputRefusal",
+    "SCRATCH_DISK_REMEDY",
+    "ScratchDiskRefusal",
     "SourceCoverageRefusal",
     "SourceProjectionRefusal",
     "VerticalLadderRefusal",
+    "compose_scratch_folder",
+    "compose_scratch_override_refusal",
+    "existing_output_root_refusal",
     "outside_source_grid_message",
     "owns_source_coverage_refusal",
+    "recorded_preparation_refusal",
     "report_preparation_refusal",
     "report_source_coverage_refusal",
+    "scratch_disk_folder",
+    "scratch_disk_refusal",
+    "scratch_disk_remedy",
 ]

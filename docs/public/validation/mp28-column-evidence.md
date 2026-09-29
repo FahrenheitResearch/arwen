@@ -43,9 +43,11 @@ If you only read one section, read
 
 ## 1. Measurement environment
 
-Every number on this page was produced on one machine, on one day. A
-different GPU or compiler will move the last digits; it should not move any
-of the conclusions.
+Every number on this page was produced on one card, the RTX 5090: §5 and
+§6.1 on 2026-09-28, everything else on 2026-08-01. A different GPU or
+compiler can move the last digits; it should not move any of the
+conclusions. (The 2026-09-28 forecasts came out bitwise identical on NVRTC
+13.0.48 and 13.4.92, and on an RTX 5070 Ti with NVRTC 13.0.88.)
 
 | item | value |
 | --- | --- |
@@ -54,7 +56,8 @@ of the conclusions.
 | GPU | NVIDIA GeForce RTX 5090 (cc 12.0), CUDA runtime 13.0, cupy 14.1.1, nvrtc defaults (`--fmad=true`) |
 | host | Ubuntu 24.04.4 LTS on WSL2, Python 3.12.3, NumPy 2.5.1 |
 | aerosol table | `CCN_ACTIVATE.BIN`, 35,288 bytes, sha256 `f2b8d391…c82a3dbd`, **redistributed with ArWen** since 2026-08-01 (deviation D9i in `PROVENANCE.md`; it stays outside the classic mp=8 table set, §7) |
-| date of measurement | 2026-08-01 (every number on this page re-measured on this date) |
+| date of measurement | 2026-08-01 (every number on this page re-measured on this date), except §5 and §6.1 below |
+| §5 and §6.1 | re-measured 2026-09-28 on the same RTX 5090, now on Linux (Ubuntu, Python 3.12, cupy 14.2.0, NumPy 2.5.3), once on NVRTC 13.0.48 and once on 13.4.92: every value bitwise identical between the two |
 
 Arithmetic is float32 on the GPU and REAL(4) in the Fortran reference, which
 is the comparison that matters; the ArWen kernels raise selected
@@ -127,6 +130,9 @@ Nothing moved the other way, and the fixture-level verdicts below are
 otherwise unchanged: the same four fixtures miss, at the same numbers.
 `_END_TO_END_BOUNDS` is now an empty dict — see §3.2.
 
+The last row of that table stopped separating the two schemes on
+2026-09-23: mp=8 now reaches the same bits at those levels (§3.2).
+
 The table below gives, for every spec'd fixture, the worst field and its
 measured relative difference. `PASS`/`MISS` is against the uniform 2.0e-6
 gate with no allowance applied. `aero-reduces-to-classic` now reads `PASS`
@@ -159,6 +165,24 @@ The three columns outside the spec'd nineteen, measured the same way:
 (`nr_per_kg` 4.006e-07 on the card; it missed at 2.724e-06 until 2026-09-23),
 `wp08-nusweep` MISS (`qr` 4.642e-06, 2.3x the gate).
 
+**The numbers are per card class.** The table above is sm_120's: an RTX
+5090 and an RTX 5070 Ti read it alike. The same kernels compiled for an RTX
+4090 (sm_89) round four rows differently, every one inside the gate and
+none changing a verdict or a count:
+
+| card class | fixture | verdict | worst field | worst relative difference |
+| --- | --- | --- | --- | --- |
+| sm_89 | `aero-nc-auto` | PASS | nr_per_kg | 1.998e-07 |
+| sm_89 | `aero-nc-effrad` | PASS | nr_per_kg | 1.242e-07 |
+| sm_89 | `aero-nc-sed` | PASS | nr_per_kg | 2.872e-07 |
+| sm_89 | `aero-scav-rain` | PASS | nr_per_kg | 3.285e-07 |
+
+In ULPs, sm_89 reads `aero-cold-overlap` `nr_per_kg` 17 at level 1 (16 on
+sm_120) and the worst over all 23 quantities of `aero-nc-effrad` 2 (3),
+`aero-nc-sed` 4 (3) and `aero-reduces-to-classic` 3 (4). The tests hold each
+card class to its own row, keyed by compute capability; a card class with
+no row is held to the gate's verdicts only, and the test output says so.
+
 ### 3.1 Every field that misses, with its number
 
 | fixture | fields above 2.0e-6 |
@@ -176,9 +200,10 @@ qr = 8.526513e-13 and gave the level the fall speed from above. The mp=28
 rain evaporation now writes a zero reference density where `:3236`
 failed (and a negative one where `:3568` floored the pair), and the adapter launches the fallout's `_with_presence` entry
 points, which read `L_qr` from it. Level 0 is 5 ULP from WRF (4.006e-07)
-on a card, bit for bit alike on an RTX 4090 and an RTX 5090, and that same
-5 ULP is the fixture's worst over all 23 quantities. The host build of the
-kernels reads 1 ULP (8.012e-08) and 3 ULP; it is not the device.
+on a card, bit for bit alike on an RTX 4090, an RTX 5090 and an RTX 5070 Ti,
+and that same 5 ULP is the fixture's worst over all 23 quantities and the
+number its pin carries. The host build of the kernels reads 1 ULP
+(8.012e-08) and 3 ULP; it is not the device.
 
 **No surface accumulation misses any more, on any fixture in the deck.**
 All seven are compared separately: `RAINNC`, `RAINNCV` and `SR` are now
@@ -301,9 +326,7 @@ and strictly nearer at seven of eight. So the surviving `nr` 5.700e-06 is
 fraction of the rain number without emptying it (49.75%: 3.000000e+05 →
 1.507546e+05 per kg) — and it is 27.5 ULP of the entry value, where every
 other unexcluded level of the column is 0, 1, 2 or 3 ULP.
-`test_the_reduces_to_classic_residual_is_the_classic_paths` now asserts
-that port-vs-port ordering rather than the bitwise identity it used to
-assert.
+**It changed again on 2026-09-23.** mp=28 and the frozen mp=8 pipeline are now bitwise identical in `qr` and `nr` at levels 0-5 of this column, because since 2026-09-23 the classic rain evaporation writes the `L_qr` hand-off too and the mp=8 adapter launches the same fallout forms; both are bit-exact against WRF at `qr` levels 1, 2, 4 and 5. They differ only at level 6, the near-cancellation level, and there both are under one ULP of the entry value from WRF (`qr` 0.585 and 0.335 ULP, `nr` 0.159 and 0.091), read alike on an RTX 5070 Ti and an RTX 4090. A relative comparison of the two schemes at that level (1.238e-04 against 7.101e-05) is the metric the level-6 allowance replaces, so `test_the_reduces_to_classic_residual_is_the_classic_paths` compares it in ULPs and asserts the bitwise identity everywhere else.
 
 ### 3.3 What moved since the previous revision — in both directions
 
@@ -555,9 +578,16 @@ is what makes §6.1's counterfactual a clean single-variable comparison.
 * no NaN or Inf in any prognostic, any effective radius, `thp`, `php`,
   `mup`, `u`, `v`, `w` or `h_diabatic`;
 * in the microphysics-updated interior, every bound WRF's terminal apply
-  establishes: `nwfa` ∈ [1.11e7, 9.999e9], `nifa` ∈ [5.0e3, 9.999e9],
-  `nc·ρ` ≤ 1.999e9, `effc` ∈ [2.49, 50] µm, `effi` ∈ [4.99, 125] µm,
-  `effs` ∈ [9.99, 999] µm;
+  establishes, on the columns each call updates: `nwfa` ∈ [1.11e7, 9.999e9],
+  `nifa` ∈ [5.0e3, 9.999e9], `nc·ρ` ≤ 1.999e9, `effc` ∈ [2.49, 50] µm,
+  `effi` ∈ [4.99, 125] µm, `effs` ∈ [9.99, 999] µm;
+* every column WRF returns from at `:2020` (entry cloud, ice, rain, snow and
+  graupel all at or below R1, nowhere supersaturated over ice) leaves the
+  call with `nwfa` and `nifa` above k = 0 **bitwise** as they entered and
+  `nc` zero, which is all WRF does to it: that exit comes before the
+  terminal apply, and the surface emission afterwards lands on k = 0 only.
+  The call's own per-column flag is read back for the check, and in this
+  run 232 to 364 of the 364 interior columns take the exit on each step;
 * the specified-zone ring is **bit-restored** by every microphysics call —
   checked around the call itself, not across the step, because the
   lateral-boundary path also writes that ring during RK3;
@@ -579,12 +609,15 @@ turns the corresponding gate red.
 
 **A 2-hour run holds too.** The same configuration integrated for 600 steps
 (7200 s, 2.6 domain ventilation times) gives 0 non-finite values, 0 bound
-violations and 0 ring violations across all 600 microphysics calls, peak
-|w| 56.10 m/s, 1.9055 mm of total `RAINNC`, and ends with the
-domain-interior mean `nwfa` at 1.3395e7 kg⁻¹ against a floor of 1.110e7 and
-`nifa` at 5.9041e3 against a floor of 5.000e3 — i.e. entirely inflow air,
-exactly as §5.1's law predicts. This is the longest mp=28 integration that
-exists.
+violations, 0 changed cells in a column WRF returned from and 0 ring
+violations across all 600 microphysics calls, peak |w| 56.20 m/s,
+2.0655 mm of total `RAINNC`, and ends with the domain-interior mean `nwfa`
+at 3.1338e5 kg⁻¹ and `nifa` at 2.1e-11 kg⁻¹, both far below WRF's floors
+of 1.110e7 and 5.000e3: entirely inflow air, which carries no aerosol, as
+§5.1's law predicts. On the last step no interior column holds condensate,
+so every one of them takes WRF's `:2020` exit and keeps what transport
+delivered; what is left is the surface emission at k = 0. This is the
+longest mp=28 integration that exists.
 
 **What this does not show.** Nothing here compares ArWen to WRF. A scheme
 with a systematically wrong activation rate would satisfy every bullet
@@ -602,40 +635,48 @@ this: its Registry declares `qnwfa`/`qnifa` with the boundary dimension and
 stream ArWen has no ingest for. This is registered as deviation **D9c** in
 `PROVENANCE.md`.
 
-It cannot NaN and cannot go negative, because WRF's own floors catch it. It
-therefore trips nothing. Until now there was no number for how fast it
-happens. There is one now, measured on a deliberately **cloud-free** run
+It cannot NaN and cannot go negative. Where the scheme runs, WRF's
+terminal floors hold the air at `nwfa = 1.11e7`, `nifa = 5.0e3`; a column
+with no condensate that is nowhere supersaturated over ice leaves
+`mp_thompson` at `:2020`, before the terminal apply, so clear inflow air
+keeps its zero aerosol, exactly as WRF would leave it. It therefore trips
+nothing. Until now there was no number for how fast it happens. There is
+one now, measured on a deliberately **cloud-free** run
 (`qc = qr = qi = qs = qg ≡ 0` on every step is asserted, so the aerosol has
 no microphysical source or sink and every kilogram lost is the boundary
 policy):
 
 | metric | value |
 | --- | --- |
-| `front_speed_ms` | 19.8638 |
-| `front_speed_ratio` | 0.99319 |
-| `nwfa_retained` | 0.45660 |
-| `nifa_retained` | 0.33627 |
+| `front_speed_ms` | 20.0909 |
+| `front_speed_ratio` | 1.00454 |
+| `nwfa_retained` | 0.33139 |
+| `nifa_retained` | 0.32719 |
 | `ventilation_time_s` | 2800.0 |
 | `swept_fraction` | 0.6428571428571429 |
 | `surface_emission_per_kg_s` | 5540.14 |
 
 Read that as: with a 20.0 m/s inflow the depletion front advanced at
-**19.86 m/s**, i.e. at the wind speed. Over 1800 s the domain-interior mean
-`nwfa` fell to **0.457** of its initial value and `nifa` to **0.336**.
+**20.09 m/s**, i.e. at the wind speed. Over 1800 s the domain-interior mean
+`nwfa` fell to **0.331** of its initial value and `nifa` to **0.327**.
+Every column of this run takes WRF's `:2020` exit on every step (no
+condensate, nowhere supersaturated over ice), so no floor applies anywhere
+in it: the inflow air arrives with zero aerosol and keeps it.
 
-The same experiment at 10 m/s gives a front speed of **9.81 m/s** and a
-retained fraction of **0.736**, so the behaviour is a law and not one
+The same experiment at 10 m/s gives a front speed of **9.96 m/s** and a
+retained fraction of **0.679**, so the behaviour is a law and not one
 number:
 
-> **The upstream `U·t` of your domain is at WRF's aerosol floor after
+> **The upstream `U·t` of your domain has lost its initial aerosol after
 > time `t`, and the whole domain after `L/U`.**
 
 For a 1000 km operational domain in a 20 m/s flow that is **13.9 hours** to
-sweep the domain, and 72 km of the upstream edge is already at the floor
-after the first hour. For a 100 km nest in the same flow it is
-**83 minutes**. The floor is `nwfa = 1.11e7 kg⁻¹` — about 1/4.5 of the
-5.0e7 kg⁻¹ that WRF's own synthetic profile installs in the free
-troposphere, and about 1/17 of the 1.909e8 kg⁻¹ it installs at the surface.
+sweep the domain, and 72 km of the upstream edge has already lost it after
+the first hour. For a 100 km nest in the same flow it is **83 minutes**.
+Clear inflow air carries no aerosol at all; where the scheme runs it holds
+the air at the floor, `nwfa = 1.11e7 kg⁻¹`, about 1/4.5 of the 5.0e7 kg⁻¹
+that WRF's own synthetic profile installs in the free troposphere and about
+1/17 of the 1.909e8 kg⁻¹ it installs at the surface.
 
 The only aerosol *source* in the scheme is the fixed surface emission
 `nwfa2d` at k = 0, measured here at **5540 kg⁻¹ s⁻¹**, which replaces
@@ -643,20 +684,23 @@ The only aerosol *source* in the scheme is the fixed surface emission
 1.909e8 kg⁻¹ — about 5%. It cannot keep up, and it acts on the lowest model
 level only.
 
-`nifa` depletes faster than `nwfa` (0.336 vs 0.457 retained) because its
-floor, 5.0e3 kg⁻¹, is roughly two orders of magnitude below its initial
-value (5.00e5–1.44e6 kg⁻¹ from the synthetic profile), whereas `nwfa`'s floor
-is only a factor of ~4.5 below the profile's free-tropospheric 5.0e7 kg⁻¹
-and a factor of ~17 below its 1.909e8 kg⁻¹ boundary-layer value.
+`nifa` and `nwfa` deplete almost alike (0.327 vs 0.331 retained): with no
+floor applied anywhere in this run, advection alone sets both, and `nwfa`
+has the surface emission besides. Until the port took WRF's `:2020` exit
+the clamp ran in every column and held both at their floors, which is why
+earlier revisions of this page published 0.457 and 0.336.
 
 ### 5.2 The specified-zone ring itself ends at exactly zero aerosol
 
 Sharper, and separate from §5.1, which is about the interior. WRF's clipped
 microphysics tiles never touch the `spec_zone` ring, and ArWen reproduces
-that bit for bit (§5) — so the terminal clamp that guarantees
-`nwfa >= 1.11e7 kg⁻¹` everywhere else **does not run there**. The ring
-carries whatever `flow_dep_bdy` left, and with no aerosol in the boundary
-file that is exactly `0.0`: a value WRF itself can never produce.
+that bit for bit (§5), so the terminal clamp that holds
+`nwfa >= 1.11e7 kg⁻¹` in the columns microphysics updates **does not run
+there**. The ring carries whatever `flow_dep_bdy` left, and with no aerosol
+in the boundary file that is exactly `0.0`. The same zero then reaches every
+clear interior column, which WRF's `:2020` exit leaves alone (§5.1). WRF
+itself forces `qnwfa`/`qnifa` at the boundary from the monthly dataset, so
+in WRF that inflow air carries aerosol and neither zero arises.
 
 Measured on the same purely zonal 20 m/s run, as the fraction of each face
 that ends at exactly zero:
@@ -684,7 +728,7 @@ not inferred. §6.7 lists what left this section since the previous
 revision, so a reader can see the direction of travel without taking it on
 trust.
 
-### 6.1 Removing the aerosol initial condition moves this case's surface rain by 74%
+### 6.1 Removing the aerosol initial condition moves this case's surface rain by 64%
 
 This is a **sensitivity**, not a defect — but it is the first thing to
 understand about mp=28, because it is the largest single number the port
@@ -708,10 +752,10 @@ removed:
 | quantity | with the profile (what a run does today) | with it removed | change |
 | --- | --- | --- | --- |
 | initial mean `nwfa` | 6.653e+07 kg⁻¹ | 0 | — |
-| final interior `nwfa` | 3.006e+07 kg⁻¹ | 1.262e+07 kg⁻¹ | at the floor |
-| peak `nc` over the run | 1.598e+08 kg⁻¹ | 2.844e+07 kg⁻¹ | **5.6× fewer droplets** |
-| domain-total `RAINNC` | 1.791 mm | 3.119 mm | **+74.1%** |
-| peak `RAINNC` | 0.678 mm | 0.930 mm | +37.1% |
+| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.288e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
+| peak `nc` over the run | 1.598e+08 kg⁻¹ | 2.945e+07 kg⁻¹ | **5.4× fewer droplets** |
+| domain-total `RAINNC` | 1.957 mm | 3.207 mm | **+63.8%** |
+| peak `RAINNC` | 0.794 mm | 1.029 mm | +29.6% |
 
 Both runs are re-executed and this table rebuilt by
 `tests/test_physics_md_aerosol_claims.py::test_the_published_aerosol_sensitivity_is_a_live_measurement`,
@@ -721,24 +765,25 @@ measurement machine and every value was bit-identical across repeats; if
 that stops holding, the right response is to publish the spread.
 
 Read that precisely: removing the CCN loading raises domain-total surface
-precipitation by 74.1% over half an hour and cuts the peak droplet count by
-a factor of 5.6. (Both `RAINNC` figures moved by one part in two thousand
-at the 1.4.1 merge -- 1.792 to 1.791 mm and 3.118 to 3.119 mm -- and the
-excess with them, 74.0% to 74.1%. That is the inherited mp=8 rain
-sedimentation reconciliation reaching a FORECAST rather than a column: it
-is the only place in this document where a merged-in change to a shared
-kernel is visible in a multi-step trajectory, and it is republished rather
-than rounded back.) That is not a rounding difference; it is a different
-forecast. Note also that §6.2 drives the domain to exactly the right-hand
-column given enough time.
+precipitation by 63.8% over half an hour and cuts the peak droplet count by
+a factor of 5.4. (Both forecasts were re-run for the 2.8 line. Measured
+commit by commit, most of the move from the earlier 74% rise came from the
+2026-09-24 mp=28 Thompson repairs; WRF's `:2020` column exit, which stopped
+the port clamping aerosol in the columns WRF leaves alone, and the later
+Thompson repairs moved it the rest of the way. The base-state geopotential
+leaving the FP32 equation of state moved only the third decimal. Merged-in
+changes reaching a multi-step trajectory are republished, never rounded
+back.) That is not a rounding
+difference; it is a different forecast. Note also that §6.2 drives the
+domain to exactly the right-hand column given enough time.
 
 **This was the port's largest measured error until 2026-08-01.** The fill
 was implemented, proven against WRF and called by nothing, so every mp=28
 run integrated from `nwfa = nifa = 0` and the terminal apply clamped both
 to WRF's floors (`:3979-3982`) for the whole run — with no NaN, no bound
 violation, no warning, and no column gate able to see it, because every
-fixture supplies its own aerosol. The numbers above are unchanged; they
-were the cost of that gap and they are now the value of the profile. Two
+fixture supplies its own aerosol. The same two forecasts measured the cost
+of that gap and now measure the value of the profile. Two
 gates keep it closed: one scans for the call site and asserts there is
 **exactly one** (once-per-domain silently becoming per-step would overwrite
 an advected, activated and scavenged aerosol field with the synthetic one),
@@ -749,11 +794,12 @@ the real `initialize_physics`.
 
 §5.1 and §5.2, quantified. A 6-hour specified-BC run in a 20 m/s flow on a
 200 km domain has been ventilated three times over: nothing of the initial
-aerosol field remains anywhere, and the whole domain is running at the CCN
-floor. The scheme keeps working and nothing warns. Separately, the
-`spec_zone` ring itself ends at *exactly zero* aerosol on three of its four
-faces (§5.2) — below WRF's own floor, because the clipped tile means the
-clamp never runs there — which is what a nest or a `wrfout` reader sees.
+aerosol field remains anywhere; clear air holds none and the columns the
+scheme runs in sit at the CCN floor. The scheme keeps working and nothing
+warns. Separately, the `spec_zone` ring itself ends at *exactly zero*
+aerosol on three of its four faces (§5.2), because the clipped tile means
+the clamp never runs there, and that is what a nest or a `wrfout` reader
+sees.
 
 **The forecast impact of this deviation is NOT directly measured, and here
 is why.** The obvious experiment — re-impose the driving aerosol on the
@@ -765,8 +811,9 @@ attempt rather than as a null result. A real number needs the LBC ingest
 that does not exist.
 
 What *is* known is the endpoint, and §6.1 now measures it directly: after
-`L/U` the whole domain is at the CCN floor, which is the right-hand column
-of §6.1's table — 5.6× fewer droplets and +74% domain-total surface rain.
+`L/U` the whole domain holds inflow air, aerosol-free where it is clear and
+at the CCN floor where the scheme runs, which is the right-hand column of
+§6.1's table: 5.4× fewer droplets and +64% domain-total surface rain.
 That is an endpoint magnitude inferred from a different experiment, not a
 measured trajectory difference, and it should be read as an order of
 magnitude for how much this matters, not as a number to quote. It is the

@@ -7,6 +7,7 @@ import dataclasses
 import pytest
 
 from gpuwm import cli, fetch, fetch_routes, runplan
+from gpuwm.filesystem_paths import canonical_path
 
 CYCLE = datetime(2026, 7, 29, 0)
 
@@ -71,9 +72,10 @@ def test_c008_member_handoff_is_executable_not_just_text(tmp_path):
     assert step["member"] == "mem007"
     assert step["set"] == plan.member_set
     assert step["steps"] == list(plan.leads)
-    assert step["inputs"] == str(tmp_path / "upstream")
-    assert step["output"] == str(tmp_path / "members")
-    assert step["input_list_after"] != str(tmp_path / fetch_routes.INPUT_LIST_NAME)
+    assert canonical_path(step["inputs"]) == canonical_path(tmp_path / "upstream")
+    assert canonical_path(step["output"]) == canonical_path(tmp_path / "members")
+    assert canonical_path(step["input_list_after"]) != canonical_path(
+        tmp_path / fetch_routes.INPUT_LIST_NAME)
 
 
 def test_c008_intent_member_is_not_dropped():
@@ -181,7 +183,8 @@ def test_c008_consumer_stages_real_files_and_rechecks_receipt_on_reuse(tmp_path,
     assert preparation_arguments(handoff) == arguments
     assert receipt.read_bytes() == before
     assert len(calls) == 8
-    assert all(path.is_relative_to(tmp_path / "members") for path in calls[4:])
+    assert all(canonical_path(path).is_relative_to(canonical_path(tmp_path / "members"))
+               for path in calls[4:])
 
 
 @pytest.mark.parametrize("change", ["source", "staged", "extra", "grammar"])
@@ -316,8 +319,12 @@ def test_c015_staged_chain_consumes_local_manifest_without_network(tmp_path, mon
         seen.extend(arguments)
         raise Prepared()
     monkeypatch.setattr(runplan, "_run_prep", prep)
+    # A stationary experiment: the chain reads its relocation contract
+    # before it composes the preparation.
+    from gpuwm.experiment import RelocationConfig
+    exp = SimpleNamespace(relocation=RelocationConfig(), domains=())
     with pytest.raises(Prepared):
-        runplan._staged_chain(plan, exp=None, config_path=config,
+        runplan._staged_chain(plan, exp=exp, config_path=config,
                               run_dir=tmp_path / "run", observer=observer)
     assert seen[seen.index("--source") + 1] == "20crv3"
     assert "--source-manifest-sha256" in seen
@@ -462,7 +469,7 @@ def test_a_gdas_cadence_that_does_not_divide_the_window_is_refused():
     was bounded by a shorter series than the one asked for.
     """
 
-    assert fetch.gdas_forecast_hours(6) == (0, 3, 6)
+    assert fetch.gdas_forecast_hours(6, 3) == (0, 3, 6)
     assert fetch.gdas_forecast_hours(9, 3) == (0, 3, 6, 9)
     assert fetch.gdas_forecast_hours(8, 2) == (0, 2, 4, 6, 8)
     assert fetch.gdas_forecast_hours(0, 1) == (0,)
@@ -1069,6 +1076,9 @@ def _no_transport(monkeypatch):
     monkeypatch.setattr(socket, "socket", contact)
     monkeypatch.setattr(fetch, "require_published_cycle", contact)
     monkeypatch.setattr(fetch, "resolve_latest_cycle", contact)
+    from gpuwm import era5_acquisition, era5_arco
+    monkeypatch.setattr(era5_acquisition, "_client", contact)
+    monkeypatch.setattr(era5_arco, "retrieve_era5_arco", contact)
 
 
 def _emit_domain(tmp_path, source):
@@ -1224,24 +1234,31 @@ def test_r_the_local_input_verdict_has_one_reader(monkeypatch):
     two further facts of the row.  Moving the verdict moves this door.
     """
 
-    from gpuwm.source_adapters import wizard_planable_source_ids
+    from gpuwm import source_drivability
+    from gpuwm.source_adapters import (source_forcing_interval_seconds,
+                                       wizard_planable_source_ids)
 
     local = [source for source in wizard_planable_source_ids()
              if runplan.drivability_for(source).get("requires_source_root")]
     assert local, "no local-input source; the admission has no subject"
     source = local[0]
-    table = {"source": source, "cycle": "2026-07-29T00", "hours": 6,
-             "cadence": 3}
+    # The row's own spacing: the subject here is the admission, and a
+    # cadence the source's preparation does not take is refused first.
+    cadence = int(source_forcing_interval_seconds(source) // 3600)
+    table = {"source": source, "cycle": "2026-07-29T00", "hours": 6 * cadence,
+             "cadence": cadence}
     fetch.validate_fetch_hints(dict(table), source="unit")
 
-    verdicts = runplan.drivability_for
+    verdicts = source_drivability.drivability_for
 
     def without_the_admission(name):
         verdict = dict(verdicts(name))
         verdict.pop("requires_source_root", None)
         return verdict
 
-    monkeypatch.setattr(runplan, "drivability_for", without_the_admission)
+    monkeypatch.setattr(source_drivability, "drivability_for", without_the_admission)
+    # Review reads the same verdict, so both doors move together.
+    assert not runplan.drivability_for(source).get("requires_source_root")
     with pytest.raises(ValueError) as refusal:
         fetch.validate_fetch_hints(dict(table), source="unit")
     assert str(table["source"]) in str(refusal.value)

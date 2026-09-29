@@ -58,7 +58,8 @@ class CycleSupervisor:
                  plan_children=None,
                  advance_children=None,
                  max_forecast_only_cycles: int = 3,
-                 allow_placement_clamp: bool = False) -> None:
+                 allow_placement_clamp: bool = False,
+                 on_cycle_completed=None) -> None:
         self.clock = clock
         self.ledger = ledger
         self.root = Path(root)
@@ -69,6 +70,13 @@ class CycleSupervisor:
         self.advance_children = advance_children
         self.max_forecast_only_cycles = int(max_forecast_only_cycles)
         self.allow_placement_clamp = bool(allow_placement_clamp)
+        #: ``on_cycle_completed(cycle_index, parent_record, receipt)``,
+        #: called once a boundary's receipt and its ``cycle-completed``
+        #: record are on disk.  The door hands it the pictures
+        #: (:class:`gpuwm.cycle.pictures.BoundaryPictures`), so a boundary
+        #: is drawn only once the cycle has kept it, and while the next
+        #: leg runs.
+        self.on_cycle_completed = on_cycle_completed
 
     # -- the run ---------------------------------------------------------
 
@@ -128,6 +136,8 @@ class CycleSupervisor:
                                 1 for child in children
                                 if child["state"] == "LIVE"),
                             "refusals": len(refusals)})
+        if self.on_cycle_completed is not None:
+            self.on_cycle_completed(cycle_index, parent_record, receipt)
         return receipt
 
     # -- parent ----------------------------------------------------------

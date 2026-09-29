@@ -7,7 +7,8 @@
   "anchors": {
     "arwen_3km_conus": {
       "status": "committed-run-receipt",
-      "evidence": "evidence/grounding-3km-conus-run-report.json",
+      "evidence": "docs/public/receipts/obsbattery/grounding-3km-conus-run-report.json",
+      "evidence_sha256": "93d980e69492dce1b3118633c5beeb475328fcba3ba09966a0d5ec96a9a2257e",
       "engine": "gpuwm 1.4.1",
       "device": "RTX 5090",
       "source": "gfs",
@@ -25,7 +26,7 @@
     "wrf_v461_nodes_24rank": {
       "status": "unreceipted-controller-measurement",
       "measured": "2026-08-03, controller-side",
-      "evidence": "stated in docs/superpowers/specs/2026-08-03-obs-verification-battery.md sections 0.1 and 8.1; NO run receipt for it exists at this commit",
+      "evidence": "stated in the observation battery design spec, docs/superpowers/specs/2026-08-03-obs-verification-battery.md sections 0.1 and 8.1, which is in development checkouts only: the public export drops docs/superpowers/**. NO run receipt for it exists at this commit",
       "engine": "WRF v4.6.1, pinned campaign build",
       "host": "nodes 1/2",
       "ranks": 24,
@@ -36,7 +37,7 @@
     "arwen_5090_same_domain": {
       "status": "unreceipted-controller-measurement",
       "measured": "2026-08-03, controller-side",
-      "evidence": "stated in docs/superpowers/specs/2026-08-03-obs-verification-battery.md sections 0.1 and 8.1; NO run receipt for it exists at this commit",
+      "evidence": "stated in the observation battery design spec, docs/superpowers/specs/2026-08-03-obs-verification-battery.md sections 0.1 and 8.1, which is in development checkouts only: the public export drops docs/superpowers/**. NO run receipt for it exists at this commit",
       "engine": "gpuwm",
       "device": "RTX 5090",
       "cells": 15000000,
@@ -46,7 +47,11 @@
   },
   "device_memory_fit": {
     "status": "committed-measurement-fit",
-    "evidence": "evidence/grounding-3km-conus-sizing.md sections 2-3",
+    "evidence": "docs/public/receipts/obsbattery/grounding-3km-conus-sizing.md",
+    "evidence_sha256": "4fda9786141052ac3dffbdc528338ea49f84fe0cc3a64f4936b4f988b82764c2",
+    "samples": "docs/public/receipts/obsbattery/grounding-3km-conus-vram-4hz.tsv",
+    "samples_sha256": "6d7a67cd1d0f50043df37614e6d94239b08289cf7121df2e15e418366bd50251",
+    "anchor_point": {"cells": 24806544, "forecast_process_peak_mib": 22364, "device_peak_mib": 22880},
     "slope_kib_per_cell": {"low": 0.75, "best": 0.8, "high": 0.84},
     "intercept_gib": {"low": 2.9, "high": 3.4},
     "note": "Nine points across two cards and a 22x span of grid size. The 5090 point is a single measurement, so the slope is reported as a range and the intercept as a range; the product's own gpuwm.core.preflight.estimate_experiment remains the authority for any specific configuration and this fit is the independent cross-check."

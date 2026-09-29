@@ -7,7 +7,7 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
-# The smallest honest ERA5 NATIVE MODEL-LEVEL demo: one 12 km Lambert domain
+# The smallest ERA5 NATIVE MODEL-LEVEL demo: one 12 km Lambert domain
 # at the minimum layout the sizer will fit, two forecast hours on hourly
 # analyses, both radiation streams on.  The atmosphere comes down the
 # `era5-l137` route -- all 137 hybrid sigma-pressure model levels, whose A/B
@@ -26,18 +26,28 @@ restart_interval_s = 0.0
 # `gpuwm fetch` has no download route for this source: model-level ERA5 is a
 # queued Copernicus MARS request under your own CDS account, so its bytes are
 # staged by hand (docs/public/SOURCES.md, 'Sources with no fetch door').  Two
-# files, same hours, same 0.25 degree grid:
+# files, same hours, same 0.25 degree grid, in ONE folder (data/era5-l137):
 #   1. dataset reanalysis-era5-complete, class=ea expver=1 stream=oper type=an
 #      levtype=ml levelist=1/to/137 param=130/131/132/133
 #      date=2026-05-05 time=12:00:00/13:00:00/14:00:00/15:00:00
 #      area=52/-112/31.25/-78 grid=0.25/0.25 format=grib
+#      saved into data/era5-l137 under any name (it is bound by its GRIB2 bytes)
 #   2. the same-hour surface donor, which IS a front-door fetch:
 #      gpuwm fetch --source era5 --cycle 2026-05-05T12 --hours 3 --cadence 1 \
-#          --area 31.25,-112,52,-78 --out data/era5-l137
+#          --area 31.25,-112,52,-78 --retrieve --out data/era5-l137
 # then
 #   gpuwm prep --source era5-l137 --source-root data/era5-l137 \
 #       --experiment-config configs/era5_l137_demo.toml \
 #       --wps-namelist configs/era5_l137_demo.namelist.wps
+# which binds the two files by the source's row, authors
+# data/era5-l137/inputs.json, prepares into configs/era5_l137_demo-prepared
+# and prints the `gpuwm sim` line that runs the forecast and draws every
+# product from each output as it lands.  Run again, it prepares into the
+# next free configs/era5_l137_demo-prepared-N and keeps inputs.json
+# while the folder's files are unchanged; after they or this ArWen's
+# decoders change it writes a new inputs.json and names the one it
+# replaced.  Each preparation keeps its own copy of the manifest it was
+# made from.
 # One MARS request for this dataset at a time: the datastore rejects extra
 # queued requests for reanalysis-era5-complete rather than queueing them.
 

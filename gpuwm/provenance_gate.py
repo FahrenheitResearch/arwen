@@ -388,11 +388,12 @@ def require_version_identity(source: str,
 # Refusal (b): a renderer bridge from a tree that is not this one
 # ---------------------------------------------------------------------------
 
-#: Verdicts :func:`bridge_tree_match` can return.  Four of the five are
-#: passes; only ``foreign`` refuses.
+#: Verdicts :func:`bridge_tree_match` can return.  Every one is a pass
+#: except ``foreign``, the only verdict that refuses.
 BRIDGE_VERDICTS = (
     "absent",        # nothing resolved; the caller's own error path owns it
     "in-tree",       # the binary lives inside the executing source root
+    "in-package",    # the binary lives inside the installed wheel's package
     "declared",      # the caller named it through the environment override
     "stamp-matches",  # built from the exact commit this tree is on
     "unanswerable",  # no tree to match against (a wheel, or no git)
@@ -448,7 +449,12 @@ def bridge_tree_match(bridge, *, env_var: str,
        one-liner in it.
     2. The binary is inside the executing source root.  That is what
        ``tools/rustwx/target/release`` and ``<root>/libexec/bridges``
-       both are, and no bytes need reading to establish it.
+       both are, and no bytes need reading to establish it.  An
+       installed wheel has no source root: the directory it imports
+       from is ``site-packages``, which every other installed package
+       shares.  Its own package directory is where the wheel ships the
+       renderer (``gpuwm/libexec/bridges``), so a binary there is
+       ``in-package`` and is said to be inside the installed wheel.
     3. ``env_var`` names this exact file.  Explicit configuration is a
        declaration; the project already treats this variable that way
        (``rustwx.find_renderer`` makes an override naming a MISSING file
@@ -478,13 +484,28 @@ def bridge_tree_match(bridge, *, env_var: str,
     engine_commit = (prov.git or {}).get("commit_full")
 
     try:
-        source_root = Path(prov.source_root)
-        if bridge_path == source_root or bridge_path.is_relative_to(
-                source_root):
-            return BridgeMatch(
-                str(bridge_path), "in-tree", True, engine_commit, None,
-                f"the renderer is inside the executing source root "
-                f"{source_root}")
+        if prov.install_kind == "wheel":
+            # A wheel's "source root" is the site-packages directory it
+            # was installed into, not a tree.  The in-tree wording read
+            # "inside the executing source root .../site-packages" on
+            # every pip install, which names a checkout that does not
+            # exist.  The wheel's own package directory is what actually
+            # holds the binary, so that is the directory named.
+            package_root = Path(prov.package_path)
+            if bridge_path.is_relative_to(package_root):
+                return BridgeMatch(
+                    str(bridge_path), "in-package", True, engine_commit,
+                    None,
+                    f"the renderer is inside the installed gpuwm wheel's "
+                    f"package directory {package_root}")
+        else:
+            source_root = Path(prov.source_root)
+            if bridge_path == source_root or bridge_path.is_relative_to(
+                    source_root):
+                return BridgeMatch(
+                    str(bridge_path), "in-tree", True, engine_commit, None,
+                    f"the renderer is inside the executing source root "
+                    f"{source_root}")
     except (OSError, ValueError):
         pass
 

@@ -369,3 +369,85 @@ def test_the_authority_stage_never_goes_to_the_tree_runner(tmp_path):
 
     assert "--materialize-authorities" in inspect.getsource(single.main)
     assert "--materialize-authorities" not in inspect.getsource(tree.main)
+
+
+# ---------------------------------------------------------------------------
+# Nested turbulence closures reach the door as answers, not tracebacks
+# ---------------------------------------------------------------------------
+
+#: The two physics blocks whose trees stopped `gpuwm run-plan` with an
+#: uncaught NotImplementedError (exit 1, a traceback) while every other
+#: refusal exits 2: a 1.5-order TKE LES closure on both domains, and SASE
+#: on both domains.
+_NESTED_CLOSURES = {
+    "tke-on-both-domains": (
+        "bl_pbl_physics = 0\nkm_opt = 2\nc_k = 0.1\n"
+        "sf_sfclay_physics = 91\ntke_drag_coefficient = 0.0013\n"
+        "tke_heat_flux = 0.0\ntke_upper_bound = 1000.0\n"),
+    "sase-on-both-domains": (
+        "bl_pbl_physics = 900\nkm_opt = 0\nsf_sfclay_physics = 1\n"),
+}
+
+
+def _nested_closure_plan(tmp_path, physics: str, acknowledged: bool):
+    acks = ('acknowledgements = ["asymmetric-radiation-nocturnal-window-v1", '
+            '"constant-downward-longwave-v1"]\n' if acknowledged else "")
+    toml = (
+        "[experiment]\n" + acks +
+        'name = "tree"\nfeedback = 1\nsmooth_option = 0\nblend_width = 5\n'
+        "spec_bdy_width = 5\nrestart_interval_s = 0.0\n"
+        "start_time = 2026-09-20T01:00:00\nrun_seconds = 129600.0\n"
+        '[projection]\nmap_proj = "lambert"\nref_lat = 37.9\n'
+        "ref_lon = -122.6\ntruelat1 = 30.0\ntruelat2 = 60.0\n"
+        "stand_lon = -122.6\n"
+        "[shared]\nnz = 49\nztop = 20000.0\np_top = 10000.0\n"
+        "hybrid_opt = 2\netac = 0.2\nbase_temp = 290.0\n"
+        "time_step_sound = 4\nemdiv = 0.01\nhypsometric_opt = 2\n"
+        "h_sca_adv_order = 5\nsmdiv = 0.1\nmoist_adv_opt = 1\n"
+        "w_damping = 1\ndamp_opt = 3\nzdamp = 5000.0\ndampcoef = 0.2\n"
+        "khdif = 0.0\nkvdif = 0.0\nspec_zone = 1\nrelax_zone = 4\n"
+        "bldt = 0.0\nnwp_diagnostics = 1\ncu_physics = 0\n"
+        "cudt_minutes = 0.0\ndiff_6th_factor = 0.08\ndiff_6th_opt = 2\n"
+        "diff_6th_slopeopt = 1\nepssm = 0.5\nmoist = true\n"
+        "moist_cq = false\nmorr_rimed_ice = 1\nmp_physics = 6\n"
+        "num_soil_layers = 4\nra_lw_physics = 0\nra_physics = 0\n"
+        "ra_sw_physics = 1\nradt = 1.0\nsf_surface_physics = 2\n"
+        "terrain_opt = 1\ntop_lid = true\n"
+        'wrf_rrtmg_compatibility = "none"\nwsm6_hail_opt = 0\n'
+        "map_proj = 1\n" + physics +
+        "[[domain]]\ngrid_id = 1\nparent_id = 0\ni_parent_start = 1\n"
+        "j_parent_start = 1\nparent_grid_ratio = 1\n"
+        "parent_time_step_ratio = 1\nnx = 288\nny = 288\ntime_step = 10\n"
+        "dx = 2250.0\nspecified = true\nnested = false\n"
+        "history_interval_s = 3600.0\nradt = 10.0\n"
+        "diff_6th_factor = 0.12\n"
+        "[[domain]]\ngrid_id = 2\nparent_id = 1\ni_parent_start = 122\n"
+        "j_parent_start = 98\nparent_grid_ratio = 3\n"
+        "parent_time_step_ratio = 4\nnx = 216\nny = 216\n"
+        "specified = false\nnested = true\nhistory_interval_s = 3600.0\n"
+        "radt = 3.0\ndiff_6th_factor = 0.12\n"
+        '[fetch]\nsource = "hrrr"\ncycle = "2026-09-20T00"\n'
+        "forecast_start_hour = 1\nhours = 36\n")
+    path = tmp_path / "plan.json"
+    path.write_text(json.dumps({
+        "schema": PLAN_SCHEMA, "name": "tree", "route": "prepared",
+        "config": {"inline": toml},
+        "output_root": str(tmp_path / "run")}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("physics", sorted(_NESTED_CLOSURES))
+def test_a_nested_turbulence_closure_resolves(tmp_path, capsys, physics):
+    """Both trees resolve through the ``gpuwm`` front door: exit 0 once
+    the radiation experiment is declared, and without it a named refusal
+    (exit 2, the night under shortwave-only radiation), never the
+    uncaught exception that exited 1."""
+    from gpuwm.cli import main
+
+    plan = _nested_closure_plan(tmp_path, _NESTED_CLOSURES[physics], True)
+    assert main(["run-plan", "--resolve", str(plan)]) == 0
+    resolved = json.loads(capsys.readouterr().out)
+    assert len(resolved["configuration"]["experiment"]["domains"]) == 2
+
+    plan = _nested_closure_plan(tmp_path, _NESTED_CLOSURES[physics], False)
+    assert main(["run-plan", "--resolve", str(plan)]) in (0, 2)

@@ -21,7 +21,7 @@ non-pool residency, within -0.20..+0.95 GiB; the one positive-residual
 lane is legacy-RRTMG pool retention, proportional to the estimate
 (worst +0.30x).  Receipts:
 ``docs/public/receipts/wddm/rtx3080-wddm-calibration-20260819.json``
-and the walk capture in ``Downloads/ux-walks-replay/gpu-walk-3080.md``.
+and the walk capture in the RTX 3080 walk capture.
 
 What ships, and what this file holds:
 

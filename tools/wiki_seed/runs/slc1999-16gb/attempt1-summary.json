@@ -1,0 +1,14 @@
+{
+ "run": "slc1999-16gb",
+ "exit": 1,
+ "stages_s": {
+  "fetch": 128.332598,
+  "prepare": 10.692487
+ },
+ "failed": {
+  "stage": "prepare",
+  "error_class": "RuntimeError",
+  "message": "Failed to find CUDA headers. Please install CUDA toolkit headers (e.g., pip install cupy-cuda12x[ctk]) or specify CUDA_PATH environment variable."
+ },
+ "domains": {}
+}

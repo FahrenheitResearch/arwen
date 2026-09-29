@@ -83,14 +83,13 @@ to the adjudication.
 
 ## What Shin-Hong on d02 hands the child, and what stays on d02
 
-- **A `km_opt=2` LES child runs under a Shin-Hong parent.** The
-  km_opt=2-on-a-nest refusal keys on a `km_opt=2` PARENT ([LES.md](LES.md) §4): under such
-  a parent there is a prognostic-TKE field the parent holds and WRF
-  declines to hand down, and no such tree has been run. A Shin-Hong
-  parent is `km_opt = 4` — its e_sgs is a published diagnostic, not the
-  closure's prognostic carrier — so it passes that predicate, and a
-  `km_opt=2` child under a Shin-Hong parent is admitted on the same
-  terms as under any `km_opt=4` parent.
+- **A `km_opt=2` LES child runs under a Shin-Hong parent.** A
+  `km_opt=2` child cold-starts its own TKE under any parent
+  ([LES.md](LES.md) §4); only a `km_opt=2` parent adds a
+  not-yet-verified warning. A Shin-Hong parent is `km_opt = 4`: its
+  e_sgs is a published diagnostic, not the closure's prognostic
+  carrier, so a `km_opt=2` child under it runs on the same terms as
+  under any `km_opt=4` parent.
 - **The scheme's subgrid TKE stays on d02.** Shin-Hong computes its
   own SGS TKE every step and publishes it as `state.e_sgs`
   (written to its wrfout as `TKE_SHINHONG`). Like WRF — where `tke` has

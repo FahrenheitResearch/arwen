@@ -1,8 +1,8 @@
 """Gates for the international (terrain-only) high-resolution lane.
 
 Covers the per-source coverage model, the near-global tile enumerators,
-the absent-tile-means-water cross-check, the terrain-only science and the
-config surface -- all without touching the network or any real raster.
+the absent-tile contract, the terrain-only science and the config surface
+-- all without touching the network or any real raster.
 The end-to-end agreement against 3DEP on a real US footprint is a
 separate, network-bound validation recorded in the evidence gallery.
 """
@@ -151,7 +151,7 @@ def test_a_continued_longitude_range_enumerates_across_the_line():
 
 
 # ---------------------------------------------------------------------------
-# Absent tiles: water, unless the baseline says land
+# Absent tiles: outside the source's coverage, handed back by id
 # ---------------------------------------------------------------------------
 
 class _FakeResponse(io.BytesIO):
@@ -177,16 +177,21 @@ def test_absent_copernicus_tile_is_returned_not_swallowed(tmp_path):
     assert absent == ("N48_00_E016_00",)
 
 
-def test_all_tiles_absent_refuses_as_open_water(tmp_path):
+def test_all_tiles_absent_is_handed_back_not_refused(tmp_path):
+    """RETIRES test_all_tiles_absent_refuses_as_open_water.
+
+    A footprint no published tile reaches is outside the source's
+    coverage everywhere; the production shell takes the baseline terrain
+    on every cell (test_static_highres_coverage.py), so the fetch layer
+    reports the absence instead of deciding it is fatal.
+    """
     def urlopen(url, offset):
         raise SourceAbsent(f"{url} -> HTTP 404")
 
-    with pytest.raises(CoverageError) as failure:
-        fetch_copernicus_dem_tiles(
-            FootprintBBox(29.2, 29.8, -40.8, -40.2), tmp_path,
-            urlopen=urlopen)
-    assert "open water" in str(failure.value)
-    assert "N29_00_W041_00" in str(failure.value)
+    tiles, absent = fetch_copernicus_dem_tiles(
+        FootprintBBox(29.2, 29.8, -40.8, -40.2), tmp_path, urlopen=urlopen)
+    assert tiles == ()
+    assert absent == ("N29_00_W041_00",)
 
 
 def test_srtm_fetch_uses_the_anonymous_mirror(tmp_path):
@@ -202,37 +207,6 @@ def test_srtm_fetch_uses_the_anonymous_mirror(tmp_path):
     assert "opentopography" in seen[0]
     # No credential, token or signature is ever appended.
     assert "?" not in seen[0] and "X-Amz" not in seen[0]
-
-
-def test_absent_tile_over_baseline_land_refuses_by_name(tmp_path):
-    """An absent tile means water -- unless our own mask says otherwise."""
-    grid = _european_grid()
-    baseline = _baseline(grid.e_sn - 1, grid.e_we - 1, land=True)
-
-    def urlopen(url, offset):
-        raise SourceAbsent(f"{url} -> HTTP 404")
-
-    config = HighresStaticConfig(enabled=True, cache_root=tmp_path,
-                                 fields="terrain")
-    with pytest.raises(HighresRefusal) as failure:
-        apply_highres_statics(baseline, grid, config=config, domain_id=1,
-                              case_date=__import__("datetime").date(
-                                  2021, 5, 4),
-                              landuse_attrs=MODIS21_ATTRS, urlopen=urlopen)
-    # Every tile absent trips the open-water refusal first, which is the
-    # correct precedence: there is nothing to cross-check against.
-    assert "open water" in failure.value.detail
-
-
-def test_absent_tile_cross_check_counts_land_cells(tmp_path):
-    from gpuwm.static.highres_production import _absent_tiles_over_land
-    grid = _european_grid()
-    baseline = _baseline(grid.e_sn - 1, grid.e_we - 1, land=True)
-    hits = _absent_tiles_over_land(("N48_00_E016_00",), grid, baseline)
-    assert hits["N48_00_E016_00"] > 0
-    baseline_water = _baseline(grid.e_sn - 1, grid.e_we - 1, land=False)
-    assert _absent_tiles_over_land(("N48_00_E016_00",), grid,
-                                   baseline_water) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -290,17 +264,29 @@ def test_auto_picks_us_stack_inside_the_us(tmp_path):
     assert (mode, coverage.source_id) == ("all", "usgs-3dep-13as")
 
 
-def test_auto_picks_terrain_only_copernicus_abroad(tmp_path):
+def test_auto_runs_the_full_overlay_abroad_on_copernicus(tmp_path):
+    """RETIRES test_auto_picks_terrain_only_copernicus_abroad: the default
+    land cover is global, so abroad takes land use and soil too."""
     mode, coverage = _plan(
         HighresStaticConfig(enabled=True, cache_root=tmp_path),
+        _european_grid())
+    assert (mode, coverage.source_id) == ("all", "copernicus-dem-glo30")
+
+
+def test_auto_with_nlcd_pinned_abroad_is_terrain_only(tmp_path):
+    mode, coverage = _plan(
+        HighresStaticConfig(enabled=True, cache_root=tmp_path,
+                            landcover_source="annual-nlcd"),
         _european_grid())
     assert (mode, coverage.source_id) == ("terrain", "copernicus-dem-glo30")
 
 
-def test_fields_all_abroad_refuses_naming_the_landcover_source(tmp_path):
+def test_fields_all_abroad_with_nlcd_refuses_naming_the_source(tmp_path):
     with pytest.raises(HighresRefusal) as failure:
         _plan(HighresStaticConfig(enabled=True, cache_root=tmp_path,
-                                  fields="all"), _european_grid())
+                                  fields="all",
+                                  landcover_source="annual-nlcd"),
+              _european_grid())
     assert failure.value.reason == "landcover-source-missing"
     assert "annual-nlcd" in failure.value.detail
     assert "fields = \"terrain\"" in failure.value.detail

@@ -17,10 +17,15 @@ with the same resolution ladder as :mod:`gpuwm.bridges`:
 The renderer draws coastlines/state/county basemaps from the vendored
 Natural Earth + US Census assets in ``tools/rustwx/assets/basemap``.
 When the binary runs from a checkout it finds them by walking its own
-ancestors; for a relocated binary :func:`renderer_env` pins
-``RUSTWX_BASEMAP_DIR`` to the checkout assets when they exist, and an
-explicit ``RUSTWX_BASEMAP_DIR``/``RUSTWX_ASSETS_DIR`` in the caller's
-environment always wins.
+ancestors.  An installed binary has nothing above it to find: the
+platform wheel stages the renderer into ``gpuwm/libexec/bridges`` and
+has no room for the shapefiles, so they ship in the ``gpuwm-data``
+companion every install already pulls
+(:func:`gpuwm.data_assets.companion_basemap_dir`) and
+:func:`renderer_env` pins ``RUSTWX_BASEMAP_DIR`` to the first of the
+checkout assets, the companion's, and the ones ``gpuwm fetch-bridges``
+staged.  An explicit ``RUSTWX_BASEMAP_DIR``/``RUSTWX_ASSETS_DIR`` in the
+caller's environment always wins.
 
 Nothing here runs cargo.  Resolution has one side effect and one
 only: an artifact found in ``~/.gpuwm/bridges`` that is not the one this
@@ -34,11 +39,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           cargo_build_one_liner, default_bridge_dir,
+                           default_bridge_dir, lazy_build_hints,
+                           rustwx_build_hint,
                            executable_name, packaged_bridge_dir)
 
 #: Environment variable naming a prebuilt renderer executable.
@@ -47,10 +54,33 @@ RENDERER_ENV = "GPUWM_RW_WRFBATCH"
 #: Executable base name of the vendored batch renderer.
 RENDERER_NAME = "rw_wrfbatch"
 
-#: The one-liner that builds the renderer, from a checkout root.
-#: Shell-correct for this platform: Windows PowerShell 5.1 cannot
-#: parse ``&&``.
-CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+#: How a native renderer line opens when it tells the reader something
+#: about the pictures themselves -- a subtitle it had to cut, a record it
+#: had to start over -- rather than reporting progress.
+NATIVE_WARNING_PREFIXES = ("warning:", "WARNING ")
+
+
+def relay_native_warnings(stderr: str | None) -> list[str]:
+    """Print the native renderer's warning lines on this process's stderr.
+
+    A bridge reads the renderer's stderr instead of passing it through,
+    because most of it is progress and machine rows.  Reading only the
+    ``FAILED`` rows dropped every warning with them: a subtitle the engine
+    cut, and said it had cut, reached nobody who rendered through
+    ``gpuwm render``.  Returns the lines relayed, in the engine's order.
+    """
+
+    lines = [line for line in (stderr or "").splitlines()
+             if line.startswith(NATIVE_WARNING_PREFIXES)]
+    for line in lines:
+        print(line, file=sys.stderr)
+    return lines
+
+#: ``CARGO_BUILD_HINT``: the one-liner that builds the renderer, from a
+#: checkout root, spelled for the shell rule when it is read (Windows
+#: PowerShell 5.1 cannot parse ``&&``).
+__getattr__ = lazy_build_hints(
+    __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
 #: The exact ``rw_wrfbatch --abi`` line this wrapper was written against.
 #:
@@ -80,11 +110,14 @@ RENDERER_ABI_MARKER = (
     "code\tCATALOG\t"
     "gpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\t"
     "store_field\t"
-    "gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t"
+    "gpuwm-rw-wrfbatch-wrfout-lane-v1\tWRFOUT\tslug\tkind\tverdict\t"
+    "minimum_hour\tdetail\t"
+    "gpuwm-rw-wrfbatch-events-v2\tRENDERED\tSKIPPED\tFAILED\t"
+    "frame-attributed\t"
     "gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\t"
     "rule\t"
-    "gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\t"
-    "meshdiff:\tselectable_slugs")
+    "gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\t"
+    "mesh:\tmeshdiff:\tselectable_slugs")
 
 #: The generic product families, read OUT of the pinned marker rather
 #: than listed again beside it.  The marker is the contract a built
@@ -128,16 +161,26 @@ GENERIC_VAR_PREFIX = "var:"
 #: NAMED slug is a promise, and a door that forwards one the catalog
 #: has just refused gets the renderer's whole-invocation failure.
 GROUP_KEYWORDS = frozenset(
-    {"all", "direct", "derived", "heavy", "windowed"})
+    {"all", "direct", "derived", "heavy", "windowed", "variables"})
+
+#: The keyword that draws every stored 2-D variable no named product
+#: draws.  ``all`` is the NAMED products the frames can draw and nothing
+#: else: an 18 h run drawn with ``all`` used to publish 137 of its 204
+#: product folders as raw variables, most of them grids a named product
+#: beside them already drew.
+VARIABLES_KEYWORD = "variables"
 
 #: The spelling this module used before the set was public.
 _GROUP_KEYWORDS = GROUP_KEYWORDS
 
-#: The two codes a windowed row carries when the store's TIME AXIS is
-#: what excluded it: a history that is not on whole hours, or one whose
-#: frames sit on an exact-time ordinal axis.  No door branches on them
-#: -- :func:`catalog_verdict` drops every non-renderable row alike --
-#: and they are here as the engine's own vocabulary, named in
+#: The codes a windowed row carries when the store's TIME AXIS is what
+#: excluded it: a store with a single frame, or (from renderers built
+#: before 2.8.0) one whose frames sit on an exact-time ordinal axis.  The
+#: current engine serves windows on that axis from each frame's lead and
+#: no longer emits ``windowed-ordinal-axis``; the code stays so a listing
+#: from an older bridge still reads.  No door branches on them --
+#: :func:`catalog_verdict` drops every non-renderable row alike -- and
+#: they are here as the engine's own vocabulary, named in
 #: ``docs/render-output-layout.md`` as the family a forwarded product
 #: FAILS a whole invocation on, and pinned by the catalog contract
 #: tests.  A reason may be reworded at any time; these may not.
@@ -169,17 +212,17 @@ def basemap_dir() -> Path:
 #: shapefiles.  Spelled out here, once, beside the resolver for the
 #: assets it reads, so every entry point says the same thing.
 #:
-#: Two halves, because a reader who installs only the package still
-#: cannot draw: ``pyshp`` reads the geometry and the vendored assets
-#: under :func:`basemap_dir` ARE the geometry, and those arrive in the
-#: bundle ``gpuwm fetch-bridges`` stages.  Naming only the pip line
-#: would send someone to a second failure one step later.
+#: One half now.  ``pyshp`` reads the geometry and the shapefiles ARE
+#: the geometry; those used to arrive only in the bundle ``gpuwm
+#: fetch-bridges`` stages, so this remedy named that command too.  They
+#: ship in the ``gpuwm-data`` companion every install pulls since 2.8.0,
+#: so the pip line is the whole fix and the sentence says where the
+#: geometry comes from instead of sending the reader to a second step.
 PYSHP_REMEDY = (
     "the map frame needs pyshp (it reads the Natural Earth and US Census "
-    "shapefiles the basemap is drawn from); install it with "
-    "`pip install pyshp>=2.3` or `pip install gpuwm[render]`, and run "
-    "`gpuwm fetch-bridges` if the vendored basemap assets are not staged "
-    "yet")
+    "shapefiles the basemap is drawn from, which arrive with the "
+    "gpuwm-data package every install pulls); install it with "
+    "`pip install pyshp>=2.3` or `pip install gpuwm[render]`")
 
 
 def pyshp_available() -> bool:
@@ -311,26 +354,86 @@ def cartopy_natural_earth_root() -> Path | None:
     return root if root.is_dir() else None
 
 
+def companion_basemap_dir() -> Path | None:
+    """The map assets the ``gpuwm-data`` companion carries, or None.
+
+    Named here, beside the resolver that uses it, so a test can take the
+    companion away without uninstalling it.
+    """
+
+    from gpuwm.data_assets import companion_basemap_dir as companion
+
+    return companion()
+
+
+def staged_basemap_dir() -> Path:
+    """Where ``gpuwm fetch-bridges`` stages the bundle's map assets."""
+
+    return default_bridge_dir() / "assets" / "basemap"
+
+
+def wrapper_basemap_candidates() -> tuple[Path, ...]:
+    """The map roots the Python half hands the renderer, best first.
+
+    Not the renderer's own search (:func:`basemap_candidates`): a wheel's
+    ``libexec`` renderer has no ``assets/basemap`` above it, so
+    :func:`renderer_env` pins one of these as ``RUSTWX_BASEMAP_DIR``.
+
+    1. the checkout's own assets (:func:`basemap_dir`);
+    2. the ``gpuwm-data`` companion's, which arrived with this very
+       ``gpuwm`` at its exact version, so a bare ``pip install`` draws
+       its maps with no further step;
+    3. the ones ``gpuwm fetch-bridges`` staged, which outlive an upgrade
+       and so come last.
+    """
+
+    candidates = [basemap_dir()]
+    companion = companion_basemap_dir()
+    if companion is not None:
+        candidates.append(companion)
+    candidates.append(staged_basemap_dir())
+    return tuple(candidates)
+
+
+def _basemap_overridden(env) -> bool:
+    return "RUSTWX_BASEMAP_DIR" in env or "RUSTWX_ASSETS_DIR" in env
+
+
 def resolve_basemap_dir(renderer: Path | None = None) -> Path | None:
     """The first candidate that exists, or None if the renderer has none.
 
     The renderer resolves each asset SUBDIRECTORY independently, so a
     root that exists is evidence rather than proof; a root that exists
     nowhere is proof, and that is the only case worth warning about.
+
+    After the renderer's own search come the roots :func:`renderer_env`
+    hands it (:func:`wrapper_basemap_candidates`): a platform wheel's
+    ``libexec`` renderer finds nothing above itself, and a report that
+    ignored what the wrapper passes would call a drawn map missing.
     """
 
     for candidate in basemap_candidates(renderer):
         if candidate.is_dir():
             return candidate
-    # A platform wheel resolves its bundled executable before the copy in
-    # ~/.gpuwm/bridges. Its ancestors therefore miss the map assets installed
-    # by fetch-bridges. renderer_env passes this staged root to that executable;
-    # diagnostics must report the same wrapper-level fallback.
-    if "RUSTWX_BASEMAP_DIR" not in os.environ and "RUSTWX_ASSETS_DIR" not in os.environ:
-        staged = default_bridge_dir() / "assets" / "basemap"
-        if staged.is_dir():
-            return staged
+    if not _basemap_overridden(os.environ):
+        for candidate in wrapper_basemap_candidates():
+            if candidate.is_dir():
+                return candidate
     return None
+
+
+def basemap_remedy() -> str:
+    """The one command that gives a renderer its map assets back.
+
+    The companion carries them and is a hard dependency, so a render
+    that finds none is running beside a ``gpuwm-data`` that was removed,
+    edited, or skewed from this ``gpuwm``; reinstalling it at this
+    version restores the files whichever it was.
+    """
+
+    from gpuwm.data_assets import companion_reinstall_command
+
+    return companion_reinstall_command()
 
 
 def renderer_candidates() -> tuple[Path, ...]:
@@ -375,7 +478,7 @@ def find_renderer() -> Path | None:
                 f"{RENDERER_ENV} names a missing file: {candidate}.  "
                 f"Point it at a built rw_wrfbatch binary, unset "
                 f"{RENDERER_ENV} to use the vendored resolution ladder "
-                f"(build it with: {CARGO_BUILD_HINT}), or pass "
+                f"(build it with: {rustwx_build_hint()}), or pass "
                 f"--engine matplotlib to draw with the fallback engine.")
     return None
 
@@ -392,25 +495,25 @@ def renderer_remedy() -> str:
         env_var=RENDERER_ENV, filename=executable_name(RENDERER_NAME),
         subject="the rust render engine",
         crate_relative=RUSTWX_CRATE_RELATIVE,
-        one_liner=CARGO_BUILD_HINT)
+        one_liner=rustwx_build_hint())
 
 
 def renderer_env() -> dict[str, str]:
     """Subprocess environment for the renderer.
 
     An explicit ``RUSTWX_BASEMAP_DIR``/``RUSTWX_ASSETS_DIR`` is the
-    user's to keep; otherwise the vendored checkout assets, or the assets
-    staged by fetch-bridges, are pinned so the platform wheel's preferred
-    ``libexec`` binary still draws its basemaps.
+    user's to keep; otherwise the first of the checkout assets, the
+    ``gpuwm-data`` companion's and the ones fetch-bridges staged
+    (:func:`wrapper_basemap_candidates`) is pinned, so the platform
+    wheel's ``libexec`` binary draws its basemaps on a bare install.
     """
 
     env = dict(os.environ)
-    if "RUSTWX_BASEMAP_DIR" not in env and "RUSTWX_ASSETS_DIR" not in env:
-        assets = basemap_dir()
-        if not assets.is_dir():
-            assets = default_bridge_dir() / "assets" / "basemap"
-        if assets.is_dir():
-            env["RUSTWX_BASEMAP_DIR"] = str(assets)
+    if not _basemap_overridden(env):
+        for assets in wrapper_basemap_candidates():
+            if assets.is_dir():
+                env["RUSTWX_BASEMAP_DIR"] = str(assets)
+                break
     return env
 
 
@@ -483,7 +586,7 @@ def probe_renderer(path: Path) -> tuple[bool, str]:
             f"gpuwm expects ({seen}) -- it is a build from another "
             "checkout, so its product catalog is not this tree's; REBUILD "
             f"it, do not re-point {RENDERER_ENV} at another copy: "
-            f"{CARGO_BUILD_HINT}")
+            f"{rustwx_build_hint()}")
     return True, ("probe --help exited 0 with its usage line; --abi matches "
                   "the render contract")
 
@@ -511,7 +614,7 @@ def list_products(renderer: Path, wrfout: Path, *, store_root: Path,
 
 
 def catalog_rows(renderer: Path, wrfouts, *, store_root: Path,
-                 heavy: bool = False
+                 heavy: bool = False, products: str | None = None
                  ) -> tuple[list[tuple[str, str, str, str, str]], str]:
     """The same listing, with each row's machine code: (rows, summary).
 
@@ -527,7 +630,73 @@ def catalog_rows(renderer: Path, wrfouts, *, store_root: Path,
     "fall back to the prose".
     """
 
-    return _catalog_listing(renderer, wrfouts, store_root=store_root, heavy=heavy)
+    return _catalog_listing(renderer, wrfouts, store_root=store_root,
+                            heavy=heavy, products=products)
+
+
+#: The longest command line a renderer is started with.  Windows starts
+#: no process whose command line passes 32,767 characters, and a series
+#: names every frame of one grid: 48 hours of a 15 minute nest under an
+#: ordinary Documents folder is about 29,000 of them, and a few more
+#: hours or a longer folder name passes the limit.  Kept a little under
+#: it on every platform, so the long-series launch is the same code
+#: wherever it is tested.
+COMMAND_LINE_BUDGET = 32_000
+
+#: Options whose value is a path the renderer opens.
+_PATH_OPTIONS = ("--store-root", "--out-dir", "--overlays", "--annotate")
+#: Environment names whose value is a path the renderer opens.
+_PATH_ENV = ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR", "RUSTWX_THEME")
+
+
+def _names_a_file(value: str) -> bool:
+    """A theme spelled as a file rather than one of the built-in names."""
+
+    return os.path.isfile(value) and (
+        "/" in value or os.sep in value or value.lower().endswith(".json"))
+
+
+def fit_series_command(command: list[str], inputs: int,
+                       env: dict[str, str]
+                       ) -> tuple[list[str], str | None, dict[str, str]]:
+    """``(command, cwd, env)`` for a renderer launch over a series.
+
+    The last ``inputs`` entries of ``command`` are the frames.  A command
+    that fits :data:`COMMAND_LINE_BUDGET` is returned exactly as given,
+    with no working folder.  One that does not is started in the folder
+    the frames share, each frame named relative to it (a bare file name
+    when they share one folder, about a fifth of the length); every other
+    path the renderer is given, on the command line or in its
+    environment, is made absolute first, so it still names the same file.
+    The renderer reads no other path relative to where it starts.
+    """
+
+    if len(subprocess.list2cmdline(command)) <= COMMAND_LINE_BUDGET:
+        return command, None, env
+    frames = [os.path.abspath(item) for item in command[len(command) - inputs:]]
+    try:
+        base = os.path.commonpath(frames)
+    except ValueError:
+        # Frames on two drives share no folder; the launch fails as a
+        # command line too long, and says so.
+        return command, None, env
+    if os.path.isfile(base):
+        base = os.path.dirname(base)
+    head = list(command[:len(command) - inputs])
+    head[0] = os.path.abspath(head[0])
+    for index in range(1, len(head) - 1):
+        option = head[index]
+        value = head[index + 1]
+        if option in _PATH_OPTIONS or (
+                option == "--theme" and _names_a_file(value)):
+            head[index + 1] = os.path.abspath(value)
+    moved = dict(env)
+    for name in _PATH_ENV:
+        value = moved.get(name)
+        if value and (os.path.isdir(value) or _names_a_file(value)):
+            moved[name] = os.path.abspath(value)
+    return ([*head, *(os.path.relpath(frame, base) for frame in frames)],
+            base, moved)
 
 
 def list_products_series(renderer: Path, wrfouts, *, store_root: Path,
@@ -540,7 +709,7 @@ def list_products_series(renderer: Path, wrfouts, *, store_root: Path,
 
 
 def _catalog_listing(renderer: Path, wrfouts, *, store_root: Path,
-                     heavy: bool = False
+                     heavy: bool = False, products: str | None = None
                      ) -> tuple[list[tuple[str, str, str, str, str]], str]:
     """One parse of the renderer's catalog mode, for both accessors."""
     inputs = [Path(path) for path in wrfouts]
@@ -556,11 +725,15 @@ def _catalog_listing(renderer: Path, wrfouts, *, store_root: Path,
     ]
     if heavy:
         command.append("--heavy")
+    if products is not None:
+        command.extend(["--products", products])
     command.extend(str(path) for path in inputs)
+    command, cwd, env = fit_series_command(command, len(inputs),
+                                           renderer_env())
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, errors="replace",
-            env=renderer_env())
+            env=env, cwd=cwd)
     except OSError as error:
         raise RuntimeError(
             f"{wrfout}: renderer failed to launch: {error}") from error
@@ -666,8 +839,7 @@ def catalog_verdict(rows, requested) -> tuple[str, list[tuple[str, str]]]:
     rather than to run an empty render.
     """
 
-    wanted = ([token.strip() for token in requested.split(",")]
-              if isinstance(requested, str)
+    wanted = (product_spec_terms(requested) if isinstance(requested, str)
               else [str(token).strip() for token in requested])
     wanted = [token for token in wanted if token]
     status = {row[0]: (row[2], row[3]) for row in rows}
@@ -700,12 +872,8 @@ def split_section_spec(products: str) -> tuple[str, list[str]]:
     """``(the store spec, the xsec: terms)`` of one --products spelling.
 
     The engine's own split, mirrored: ``rw-wrfbatch/src/section.rs``
-    ``split_product_spec``.  A level list inside a section term is
-    comma-separated too (``xsec:wa=1,2,5@5``), so a purely numeric token
-    following a section term whose last term opened a level list is that
-    list's continuation and not a product -- no product slug is only
-    digits, a sign, a point and an ``@``.  A group keyword names no
-    section at all.
+    ``split_product_spec``, over the terms :func:`product_spec_terms`
+    reads.  A group keyword names no section at all.
 
     It exists so a door can answer "does this request need a section
     line?" without a renderer and without a wrfout, which is what a plan
@@ -715,18 +883,42 @@ def split_section_spec(products: str) -> tuple[str, list[str]]:
     trimmed = (products or "").strip()
     if trimmed.lower() in _GROUP_KEYWORDS:
         return trimmed, []
-    tokens: list[str] = []
-    for token in (part.strip() for part in trimmed.split(",")):
-        if not token:
-            continue
-        if (tokens and tokens[-1].startswith(SECTION_PREFIX)
-                and _level_list_open(tokens[-1]) and _is_level_token(token)):
-            tokens[-1] = f"{tokens[-1]},{token}"
-            continue
-        tokens.append(token)
+    tokens = product_spec_terms(trimmed)
     store = [token for token in tokens if not token.startswith(SECTION_PREFIX)]
     sections = [token for token in tokens if token.startswith(SECTION_PREFIX)]
     return ",".join(store), sections
+
+
+def product_spec_terms(products: str) -> list[str]:
+    """The products of one --products spelling, each section term whole.
+
+    THE tokenizer for a product list, mirroring the engine's
+    (``rw-wrfbatch/src/section.rs`` ``split_product_spec``).  A level list
+    inside a section term is comma-separated too (``xsec:wa=1,2,5@5``),
+    so a token that follows a section term whose last term opened a
+    level list, and that starts with a level, is that list's
+    continuation and not a product.  The continuation may carry the term
+    that closes the list (``0.1/wa`` in ``xsec:QCLOUD=0.01,0.1/wa``).
+
+    Splitting on every comma instead is what broke three requests: a
+    level list's numbers read as products, so they were deduplicated
+    across two sections (the second section's colour range changed
+    without a word), and a closing ``0.1/wa`` became a store product the
+    renderer refused, taking every other product of the invocation with
+    it.
+    """
+
+    tokens: list[str] = []
+    for token in (part.strip() for part in (products or "").split(",")):
+        if not token:
+            continue
+        if (tokens and tokens[-1].startswith(SECTION_PREFIX)
+                and _level_list_open(tokens[-1])
+                and _continues_level_list(token)):
+            tokens[-1] = f"{tokens[-1]},{token}"
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def _level_list_open(token: str) -> bool:
@@ -736,13 +928,34 @@ def _level_list_open(token: str) -> bool:
     return "=" in last and "@" not in last.rsplit("=", 1)[-1]
 
 
-def _is_level_token(token: str) -> bool:
-    """True for a bare level (``5``, ``-2.5``, ``10@5``), never a slug."""
+def _continues_level_list(token: str) -> bool:
+    """A level (``-10``, ``0.5``, ``10@5``), or the list's last level
+    followed by the term that closes it (``0.1/wa``, ``10@5/tk=-20``)."""
 
-    body = token.split("@", 1)[0]
-    if not body:
+    level, separator, rest = token.partition("/")
+    if separator:
+        return _is_level_token(level) and bool(rest.strip())
+    return _is_level_token(token)
+
+
+def _is_level_token(token: str) -> bool:
+    """True for a level with an optional highlight (``5``, ``-2.5``,
+    ``1e-2``, ``10@5``), never a slug: what the engine parses as a number."""
+
+    level, separator, highlight = token.partition("@")
+    return _engine_number(level) and (not separator or _engine_number(highlight))
+
+
+def _engine_number(text: str) -> bool:
+    # The engine reads a level with Rust's ``str::parse::<f32>``, which
+    # takes no digit separators; Python's float() does.
+    if not text or "_" in text:
         return False
-    return all(char.isdigit() or char in "+-." for char in body)
+    try:
+        float(text.strip())
+    except ValueError:
+        return False
+    return True
 
 
 #: The height range ``rw_wrfbatch`` accepts for ``--section-top-km``
@@ -777,6 +990,163 @@ def section_top_problem(top_km) -> str | None:
             and low <= value <= high):
         return (f"--section-top-km '{top_km}' is not within "
                 f"{low:g}-{high:g} km")
+    return None
+
+
+#: The shortest line ``rw_wrfbatch`` cuts (``section.rs``
+#: ``SectionLine::from_endpoints``), measured on its sphere
+#: (``rustwx-cross-section/src/geo.rs``, 6371.0 km).
+SECTION_MIN_LENGTH_KM = 1.0
+_SECTION_EARTH_RADIUS_KM = 6371.0
+_SECTION_FILE_KEYS = frozenset({"start", "end", "points", "extend_km", "label"})
+
+
+def is_section_line(section) -> bool:
+    """True when ``section`` is spelled ``lat,lon,lat,lon`` rather than a file.
+
+    The engine's own test (``section.rs`` ``SectionLine::parse``): four
+    comma-separated numbers are a line, anything else names a JSON file.
+    """
+
+    parts = [part.strip() for part in str(section or "").strip().split(",")]
+    return len(parts) == 4 and all(_engine_number(part) for part in parts)
+
+
+def section_line_problem(section) -> str | None:
+    """The engine's refusal of a ``--section`` value, or ``None``.
+
+    Mirrors ``rw-wrfbatch/src/section.rs`` ``SectionLine::parse``:
+    ``lat,lon,lat,lon`` with each latitude within 90 degrees and the ends
+    at least 1 km apart, or a readable JSON file holding ``start`` and
+    ``end`` or a ``points`` polyline of at least two points (plus an
+    optional ``extend_km`` and ``label``, and nothing else).  ``None``
+    for no section at all.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law).  The renderer reads the line
+    as its arguments are validated, so a line it cannot read fails the
+    WHOLE invocation, every product of it, and on ``gpuwm go`` that
+    invocation runs only after the forecast has integrated.  Asked here,
+    a door says so before anything is fetched.
+    """
+
+    if section is None:
+        return None
+    spec = str(section).strip()
+    if not spec:
+        return ("--section is empty; give lat,lon,lat,lon or a JSON file "
+                "with {start, end} or a {points, extend_km} polyline")
+    if is_section_line(spec):
+        lat0, lon0, lat1, lon1 = (float(part) for part in spec.split(","))
+        return (_section_point_problem(lat0, lon0)
+                or _section_point_problem(lat1, lon1)
+                or _section_length_problem((lat0, lon0), (lat1, lon1)))
+    path = Path(spec)
+    if not path.is_file():
+        return (f"--section '{spec}' is neither 'lat,lon,lat,lon' nor a "
+                "readable JSON file")
+    import json
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        return f"section file {path}: {error}"
+    if not isinstance(document, dict):
+        return f"section file {path}: the file is not a JSON object"
+    unknown = sorted(set(document) - _SECTION_FILE_KEYS)
+    if unknown:
+        return (f"section file {path}: unknown field(s) "
+                + ", ".join(repr(key) for key in unknown)
+                + "; a section file names start, end, points, extend_km "
+                  "and label")
+
+    def pair(value):
+        if (isinstance(value, list) and len(value) == 2
+                and all(isinstance(item, (int, float))
+                        and not isinstance(item, bool) for item in value)):
+            return float(value[0]), float(value[1])
+        return None
+
+    start, end = document.get("start"), document.get("end")
+    points = document.get("points") or []
+    if not isinstance(points, list):
+        return f"section file {path}: points is not a list of [lat, lon]"
+    polyline = [pair(point) for point in points]
+    if any(point is None for point in polyline):
+        return f"section file {path}: points is not a list of [lat, lon]"
+    if start is not None and end is not None:
+        ends = (pair(start), pair(end))
+        if None in ends:
+            return f"section file {path}: start and end are each [lat, lon]"
+    elif start is None and end is None and len(polyline) >= 2:
+        ends = (polyline[0], polyline[-1])
+    else:
+        return (f"section file {path}: give both start and end, or a points "
+                "polyline with at least two points")
+    extend = document.get("extend_km")
+    if extend is not None and (isinstance(extend, bool)
+                               or not isinstance(extend, (int, float))):
+        return f"section file {path}: extend_km is a number of km"
+    label = document.get("label")
+    if label is not None and not isinstance(label, str):
+        return f"section file {path}: label is text"
+    problem = (_section_point_problem(*ends[0])
+               or _section_point_problem(*ends[1]))
+    if problem is not None:
+        return problem
+    if extend is not None and float(extend) > 0:
+        # Extended past both ends, the line is at least twice that long.
+        return None
+    return _section_length_problem(*ends)
+
+
+def _section_point_problem(lat: float, lon: float) -> str | None:
+    import math
+
+    if (not math.isfinite(lat) or not math.isfinite(lon)
+            or not -90.0 <= lat <= 90.0):
+        return (f"section point {lat:g},{lon:g}: invalid geographic "
+                "coordinate (latitude within 90 degrees, both finite)")
+    return None
+
+
+def _section_length_problem(start, end) -> str | None:
+    import math
+
+    lat0, lon0 = (math.radians(value) for value in start)
+    lat1, lon1 = (math.radians(value) for value in end)
+    hav = (math.sin((lat1 - lat0) / 2) ** 2
+           + math.cos(lat0) * math.cos(lat1)
+           * math.sin((lon1 - lon0) / 2) ** 2)
+    length = 2 * _SECTION_EARTH_RADIUS_KM * math.asin(min(1.0, math.sqrt(hav)))
+    if length < SECTION_MIN_LENGTH_KM:
+        return "--section endpoints are less than 1 km apart"
+    return None
+
+
+#: The shortest across-line frame ``rw_wrfbatch`` accepts for
+#: ``--section-across`` (``tools/rustwx/crates/rw-wrfbatch/src/main.rs``).
+SECTION_ACROSS_KM_MIN = 2.0
+
+
+def section_across_problem(across_km) -> str | None:
+    """The refusal for an across-line length under 2 km, or ``None``.
+
+    The engine's own sentence, fired at the door for the reason
+    :func:`section_top_problem` is: a NaN, an infinity or a negative
+    length used to be forwarded, and the engine refused it only after
+    the render had launched and opened its frames.
+    """
+
+    if across_km is None:
+        return None
+    try:
+        value = float(across_km)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if not (value == value and abs(value) != float("inf")
+            and value >= SECTION_ACROSS_KM_MIN):
+        return (f"--section-across '{across_km}' is not a length of at "
+                f"least {SECTION_ACROSS_KM_MIN:g} km")
     return None
 
 
@@ -897,6 +1267,83 @@ def parse_section_fill(line: str) -> dict | None:
             "rule": fields.get("rule", "")}
 
 
+def _frame_of(reason: str, inputs) -> tuple[str, str]:
+    """``(the input file this reason is about, the reason without it)``.
+
+    The engine opens a per-frame reason with the path of the input its
+    frame was read from, exactly as that path was put on its command line
+    (events v2, ``frame-attributed``).  A reason it did not attribute is
+    about the invocation, and is filed against the last input: the frame
+    whose valid time the panels carry.
+    """
+
+    for path in inputs:
+        prefix = f"{path}: "
+        if reason.startswith(prefix):
+            return str(path), reason[len(prefix):]
+    return str(inputs[-1]), reason
+
+
+def frame_attributed(reason: str, inputs) -> str:
+    """One skip reason, named against the input file of its own frame.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law): a 19-frame series render put
+    the LAST input in front of every skip line, so
+    ``wrfout_d01_2026-09-27_00_00_00: F000: 12-h QPF requires forecast
+    hour >= 12`` named the F018 file against an F000 reason.  The engine
+    names the frame's own file now; this keeps that name, and names the
+    last input only for a reason no frame owns.
+    """
+
+    path, detail = _frame_of(reason, inputs)
+    return f"{path}: {detail}"
+
+
+#: How the engine prints one import note on stderr (``rw-wrfbatch``
+#: ``import_note_line``).  Most notes are progress a render keeps quiet.
+IMPORT_NOTE_PREFIX = "IMPORT_NOTE\t"
+
+#: The opening of the import note the engine writes when it does not build a
+#: frame's isobaric volumes (``volume_omission_note`` in
+#: ``rw-wrfbatch/src/wrf_process.rs``), the clause of the ceiling cause and
+#: the one reason that note carries when the frame has nothing to build them
+#: from, and the family the lost products are reported under.  Every product
+#: drawn off a pressure level (the 200 to 850 hPa charts) then leaves an
+#: ``all`` request without a ``SKIPPED`` line, whatever stopped the volumes:
+#: the working set passing the memory the host has available (never less
+#: than 4 GiB; ``preflight_iso_volume_shape`` in ``wrf_volumes.rs``), or a
+#: panic ``build_iso_volumes`` raised, which the engine isolates into the
+#: same note.  A frame that stores no 3-D pressure has no such products to
+#: draw: its note says ``variable not found`` (wrf-core's ``VarNotFound``)
+#: and is not a skip.
+PRESSURE_VOLUME_OMITTED_NOTE = "WRF 3-D pressure-volume products omitted"
+PRESSURE_VOLUME_CEILING_CLAUSE = "host memory ceiling"
+PRESSURE_VOLUME_ABSENT_FIELD_CLAUSE = "variable not found"
+PRESSURE_LEVEL_FAMILY = "pressure-level products"
+
+
+def import_note_skip(note: str, inputs) -> tuple[str, str] | None:
+    """An import note that took products out of the render, as a skip row.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law): a frame whose volumes the
+    engine left out drew fewer pictures (43 where an 880x704x55 frame of
+    the same forecast shape drew 67, when the ceiling was a fixed 4 GiB),
+    and the render summary named no skipped or undrawn family, because the
+    engine said it had omitted the pressure-level volumes only in an import
+    note this bridge keeps quiet.  The row carries the engine's own note as
+    its reason, so the summary says which family and why.  Any omission
+    is a skip except one whose frame does not store the 3-D fields the
+    volumes are built from: matching the ceiling's words alone left a
+    panic in the volume builder as silent as the ceiling had been.
+    ``None`` for every other note.
+    """
+
+    if (not note.startswith(PRESSURE_VOLUME_OMITTED_NOTE)
+            or PRESSURE_VOLUME_ABSENT_FIELD_CLAUSE in note):
+        return None
+    return PRESSURE_LEVEL_FAMILY, frame_attributed(note, inputs)
+
+
 def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  out_dir: Path, products: str, frames: str,
                  width: int, height: int, heavy: bool = False,
@@ -984,8 +1431,15 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
     Event parsing and the failure contract are :func:`run_renderer`'s,
     unchanged: RENDERED/SKIPPED on stdout, FAILED on stderr, and a
     nonzero exit with no FAILED line reported as one failure carrying
-    the last stderr line.  Messages name the LAST file in the series --
-    the frame whose valid time the panels carry.
+    the last stderr line.
+
+    Each per-frame SKIPPED or FAILED line names the file of ITS frame:
+    the engine opens the reason with that input's path
+    (:func:`frame_attributed`).  This used to put the LAST input in front
+    of every line, so a 19-frame series filed its F000 skips against the
+    F018 file.  A line the engine did not attribute to a frame -- one
+    about the invocation as a whole -- keeps the last input, the frame
+    whose valid time the panels carry.
     """
 
     inputs = [Path(item) for item in wrfouts]
@@ -1056,12 +1510,18 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
     if section_top_km is not None:
         command.extend(("--section-top-km", repr(float(section_top_km))))
     command.extend(str(path) for path in inputs)
+    command, cwd, env = fit_series_command(command, len(inputs),
+                                           renderer_env())
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, errors="replace",
-            env=renderer_env())
+            env=env, cwd=cwd)
     except OSError as error:
         return [], [f"{subject}: renderer failed to launch: {error}"], []
+    # Started elsewhere, the renderer was handed an absolute output
+    # folder and names its pictures under it; a caller that gave a
+    # relative one gets its own spelling back.
+    respell = cwd is not None and not Path(out_dir).is_absolute()
     written: list[Path] = []
     failures: list[str] = []
     skipped: list[tuple[str, str]] = []
@@ -1070,18 +1530,30 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
             _, _, rest = line.partition(" ")
             _, _, path = rest.partition(" ")
             if path:
-                written.append(Path(path))
+                written.append(Path(os.path.relpath(path)) if respell
+                               else Path(path))
         elif line.startswith("SKIPPED "):
             slug, _, reason = line[len("SKIPPED "):].partition(" ")
-            skipped.append(
-                (slug, f"{subject}: {reason or 'no reason given'}"))
+            skipped.append((slug, frame_attributed(
+                reason or "no reason given", inputs)))
         elif fills is not None:
             row = parse_section_fill(line)
             if row is not None:
                 fills.append(row)
+    relay_native_warnings(result.stderr)
     for line in (result.stderr or "").splitlines():
         if line.startswith("FAILED "):
-            failures.append(f"{subject}: {line[len('FAILED '):]}")
+            slug, _, error = line[len("FAILED "):].partition(" ")
+            path, detail = _frame_of(error, inputs)
+            failures.append(f"{path}: {slug} {detail}")
+        elif line.startswith(IMPORT_NOTE_PREFIX):
+            # One row per distinct note.  The engine writes the note once
+            # per frame and names no frame in it, so a series of frames
+            # all over the volume ceiling filed the same row against the
+            # last input once for every frame.
+            skip = import_note_skip(line[len(IMPORT_NOTE_PREFIX):], inputs)
+            if skip is not None and skip not in skipped:
+                skipped.append(skip)
     if result.returncode != 0:
         tail = [line for line in (result.stderr or "").splitlines()
                 if line.strip()]
@@ -1092,17 +1564,25 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
 
 
 __all__ = [
-    "CARGO_BUILD_HINT", "RENDERER_ABI_MARKER", "RENDERER_ENV",
+    "CARGO_BUILD_HINT", "COMMAND_LINE_BUDGET", "RENDERER_ABI_MARKER",
+    "RENDERER_ENV", "fit_series_command",
+    "NATIVE_WARNING_PREFIXES", "relay_native_warnings",
     "RENDERER_NAME", "basemap_dir",
-    "basemap_candidates", "crate_dir", "find_renderer", "list_products",
+    "basemap_candidates", "basemap_remedy", "companion_basemap_dir",
+    "crate_dir", "find_renderer", "list_products",
     "probe_renderer", "renderer_candidates", "renderer_env",
     "renderer_remedy", "resolve_basemap_dir", "run_renderer",
     "run_renderer_series", "list_products_series",
     "GENERIC_FAMILIES", "GENERIC_VAR_PREFIX", "GROUP_KEYWORDS",
     "SECTION_PREFIX", "SECTION_TOP_KM_DEFAULT", "SECTION_TOP_KM_RANGE",
-    "WINDOW_AXIS_CODES",
+    "WINDOW_AXIS_CODES", "VARIABLES_KEYWORD", "frame_attributed",
+    "IMPORT_NOTE_PREFIX", "PRESSURE_VOLUME_OMITTED_NOTE",
+    "PRESSURE_VOLUME_ABSENT_FIELD_CLAUSE", "PRESSURE_VOLUME_CEILING_CLAUSE", "PRESSURE_LEVEL_FAMILY",
+    "import_note_skip",
     "catalog_code", "catalog_rows",
     "catalog_verdict", "drop_storeless_terms",
-    "MESH_PREFIXES", "split_section_spec", "section_top_problem",
+    "MESH_PREFIXES", "split_section_spec", "product_spec_terms",
+    "section_top_problem", "section_line_problem", "is_section_line",
+    "SECTION_MIN_LENGTH_KM",
     "SECTION_FILL_EVENT", "parse_section_fill",
 ]

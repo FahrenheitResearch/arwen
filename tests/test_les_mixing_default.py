@@ -18,7 +18,7 @@ value), so a user who followed the product's own printed recipe at 250 m
 landed on exactly the exposed configuration, at 0.702, and learned about
 it only if they later read stderr at config load.
 
-THE RULING PINNED HERE (REWRITTEN for Drew's 2026-08-16 auto-switch;
+THE RULING PINNED HERE (REWRITTEN for the 2026-08-16 auto-switch;
 the recipe-only ruling it replaces lives in this file's history).  The
 remedy is default-on: a domain whose config leaves ``mix_isotropic``
 UNSET (or writes ``"auto"``) and violates the criterion runs

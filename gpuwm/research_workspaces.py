@@ -21,6 +21,7 @@ import tomllib
 
 from gpuwm.configuration_recovery import MemoryAdmissionError, retain_final_candidate
 from gpuwm.explain import warn
+from gpuwm.filesystem_paths import publish_new
 
 
 CATALOG_PATH = Path(__file__).parent / "data" / "tui" / "research-workspaces.json"
@@ -393,7 +394,7 @@ def _budget_document(sizing, requested: str, *, hardware: dict | None = None) ->
 
 def hardware_document(*, hardware_class: str = "auto", vram_gib: float | None = None) -> dict:
     from gpuwm.domain_wizard import resolve_sizing_budget
-    sizing = resolve_sizing_budget(None, vram_gib)
+    sizing = resolve_sizing_budget(None, vram_gib, declare=("--vram-gib",))
     return {"schema": "arwen.research.hardware.v1", **_budget_document(sizing, hardware_class)}
 
 
@@ -589,7 +590,7 @@ def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path,
 def _publish_bundle(stage: Path, destination: Path, *, exp, source) -> list[Path]:
     """Create companions exclusively, then commit the TOML; roll back our files.
 
-    Hard links are atomic create-only publication on the same filesystem. An
+    `publish_new` is atomic create-only publication on the same filesystem. An
     existing companion, including a dangling symlink, is always a refusal.
 
     ``exp`` is the experiment the staged configuration resolves to and
@@ -627,7 +628,7 @@ def _publish_bundle(stage: Path, destination: Path, *, exp, source) -> list[Path
     created = []
     try:
         for staged, target in zip(files, targets):
-            os.link(staged, target)
+            publish_new(staged, target)
             stat = target.stat()
             created.append((target, (stat.st_dev, stat.st_ino)))
     except BaseException:
@@ -746,7 +747,7 @@ def create_workspace(args) -> dict:
                       destination.with_name(destination.name + ".arwen-research.json")):
         if os.path.lexists(companion):
             raise FileExistsError(f"Research creation preserves existing companion: {companion}")
-    sizing = wizard.resolve_sizing_budget(None, args.vram_gib)
+    sizing = wizard.resolve_sizing_budget(None, args.vram_gib, declare=("--vram-gib",))
     budget_document = _budget_document(sizing, args.hardware_class, hardware=hardware)
     profile = effective_profile(recipe, budget_document["selected_class"], hardware=hardware)
     if args.point is not None:
@@ -927,4 +928,4 @@ def register_cli(subparsers) -> None:
                              help="explicit capacity estimate; omit to measure actual total/free memory")
     from gpuwm.explain import add_explain_flag
     for command in (catalog, attributes, hardware, create):
-        add_explain_flag(command)
+        add_explain_flag(command, nested=True)

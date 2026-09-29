@@ -45,6 +45,18 @@ request an evicted frame through the normal viewer contract.
     # The run's own recorded render selection, read through the one function
     # the plot gallery reads it through, so one job prepares one product set.
     selection = viewer.job_selection(_record)
+    if not viewer.has_map_products(selection):
+        # A run that asked only for sections has no map to derive; the note
+        # says so where the job's map progress is read.
+        done = state["state"] in TERMINAL
+        value = {"schema": SCHEMA, "job_id": job, "profile": viewer.PROFILE,
+                 "selection_id": selection["selection_id"], "simulation_state": state["state"],
+                 **counts, "added": 0, "done": done, "state": "no_map_products",
+                 "note": selection["note"], "updated_unix_ms": int(time.time() * 1000)}
+        if bound is not None:
+            value["run_id"] = bound[2]["run_id"]
+        legacy._write(directory / "preparation.json", value)
+        return value
     with Lease(root / "schedule.lock", timeout=3) as schedule:
         if schedule.file is None:
             raise ValueError("The compact viewer queue is being updated")

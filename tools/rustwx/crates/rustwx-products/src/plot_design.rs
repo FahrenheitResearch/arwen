@@ -725,13 +725,18 @@ fn isotherm_height_scale() -> DiscreteColorScale {
     }
 }
 
-/// A supercooled liquid water path, g m-2.  Ten g m-2 is the floor an
-/// icing reader cares about and is masked below; the bands
-/// widen upward because a kilogram per square metre is a rare column.
+/// A supercooled liquid water path, g m-2, 0 to 1000 in 50 g m-2 bands.
+/// Ten g m-2 is the floor an icing reader cares about and is masked
+/// below.  The bands are even because the bar is drawn linear in value
+/// and the fill is sampled along it: bands that widened upward left the
+/// last one a quarter of the bar, drawn purple on the map and navy on the
+/// bar.
 fn supercooled_water_path_scale() -> DiscreteColorScale {
-    let levels = vec![10.0, 20.0, 50.0, 100.0, 150.0, 200.0, 300.0, 400.0, 500.0, 750.0, 1000.0];
-    let colors = weather_palette(WeatherPalette::SupercooledWater);
-    debug_assert_eq!(colors.len() + 1, levels.len());
+    let levels = range_step(0.0, 1000.0, 50.0);
+    let colors = resampled_palette(
+        &weather_palette(WeatherPalette::SupercooledWater),
+        levels.len().saturating_sub(1),
+    );
     DiscreteColorScale {
         levels,
         colors,
@@ -740,13 +745,16 @@ fn supercooled_water_path_scale() -> DiscreteColorScale {
     }
 }
 
-/// A hydrometeor mixing ratio, g kg-1, a hundredth of a gram to five
-/// grams, masked below the lowest band: the range a column maximum of
+/// A hydrometeor mixing ratio, g kg-1, 0 to 5 in quarter-gram bands,
+/// masked below a hundredth of a gram: the range a column maximum of
 /// cloud water, rain, ice, snow or graupel spans in a resolved storm.
+/// Even bands for the reason the water path has them.
 fn hydrometeor_mixing_ratio_scale() -> DiscreteColorScale {
-    let levels = vec![0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0];
-    let colors = weather_palette(WeatherPalette::Hydrometeor);
-    debug_assert_eq!(colors.len() + 1, levels.len());
+    let levels = range_step(0.0, 5.0, 0.25);
+    let colors = resampled_palette(
+        &weather_palette(WeatherPalette::Hydrometeor),
+        levels.len().saturating_sub(1),
+    );
     DiscreteColorScale {
         levels,
         colors,
@@ -1224,6 +1232,75 @@ mod tests {
             let south = operational_fill_scale_for_recipe_in(
                 recipe, selector, Hemisphere::Southern);
             assert_eq!(format!("{north:?}"), format!("{south:?}"), "{slug}");
+        }
+    }
+
+    /// Every value a column-plane map draws is drawn in the colour its bar
+    /// shows for that value, the over-range colour at the bar's top end
+    /// included.  The map lanes fill a scale densely and read it against a
+    /// smooth ramp through the colours sampled at each declared level, so a
+    /// sparse level set whose last band spans a quarter of the bar sampled
+    /// that band at its lower edge: the supercooled water path drew its
+    /// heaviest columns purple beside a bar whose top was navy, and the
+    /// hydrometeor maps drew 4 g kg-1 darker than any colour on theirs.
+    #[test]
+    fn column_plane_maps_are_drawn_in_the_colours_their_bar_shows() {
+        let mut request = sample_request();
+        StaticPlotDesign::new(
+            (-10.0, 10.0, 30.0, 45.0),
+            ProductVisualMode::FilledMeteorology,
+        )
+        .apply_to_request(&mut request);
+        let options = rustwx_render::ColormapBuildOptions {
+            render_density: request.render_density,
+            legend: request.legend,
+        };
+        let slugs = [
+            "isotherm_height_0c",
+            "isotherm_height_minus10c",
+            "isotherm_height_minus20c",
+            "supercooled_water_path",
+            "supercooled_water_path_0_3km",
+            "supercooled_water_path_3_6km",
+            "cloud_water_column_max",
+            "rain_water_column_max",
+            "cloud_ice_column_max",
+            "snow_column_max",
+            "graupel_column_max",
+        ];
+        for slug in slugs {
+            let recipe = rustwx_models::plot_recipe(slug)
+                .unwrap_or_else(|| panic!("recipe {slug} should exist"));
+            let selector = recipe
+                .filled
+                .selector
+                .unwrap_or_else(|| panic!("{slug} names its stored selector"));
+            let scale = operational_fill_scale_for_recipe(recipe, selector);
+            let cmap = rustwx_render::build_colormap(&scale, options);
+            let levels = cmap.legend_levels_for_display();
+            let (low, high) = (levels[0], levels[levels.len() - 1]);
+            let mut worst = (0u32, low);
+            for step in 0..=2200 {
+                let value = low + (high - low) * step as f64 / 2000.0;
+                let fill = cmap.map(value);
+                if fill.a == 0 {
+                    continue;
+                }
+                let rel = rustwx_render::legend_tick_rel(&cmap, value).unwrap();
+                let bar = rustwx_render::legend_color_at_rel(&cmap, request.legend.mode, rel);
+                let distance = u32::from(fill.r.abs_diff(bar.r))
+                    + u32::from(fill.g.abs_diff(bar.g))
+                    + u32::from(fill.b.abs_diff(bar.b));
+                if distance > worst.0 {
+                    worst = (distance, value);
+                }
+            }
+            assert!(
+                worst.0 <= 60,
+                "{slug}: the map draws {} in a colour {} RGB steps from the bar's colour for it",
+                worst.1,
+                worst.0
+            );
         }
     }
 }

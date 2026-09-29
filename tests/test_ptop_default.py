@@ -18,13 +18,16 @@ top its source's certified inventory cannot cover, or a bare `gpuwm
 domain --source X` config refuses at preparation with the vertical-
 coverage refusal after the user has already paid for the acquisition.
 That bound is table data on the source's own registry row
-(``certified_source_top_pa``), the same seam as forcing cadence.
+(``certified_source_top_pa``), the same seam as forcing cadence, and it
+lifts where the row says the fetch reaches further when asked
+(``extendable_source_top_pa``).
 """
 
 from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
 
 import pytest
 
@@ -43,9 +46,14 @@ def test_wizard_shared_default_is_5000_pa():
 def test_emitted_top_is_5000_for_deep_sources_and_bounded_for_shallow():
     # HRRR's native hybrid column reaches ~20 hPa, so the default stands.
     assert domain_wizard.emitted_model_top_pa("hrrr") == DEFAULT_PA
-    # The certified GFS pressure ladder stops at 100 hPa (extending the
-    # fetch is `--p-top-pa`, an explicit act), so its emission stays there.
-    assert domain_wizard.emitted_model_top_pa("gfs") == 10000.0
+    # The certified GFS pressure ladder stops at 100 hPa, but every door
+    # that downloads for a config asks the fetch for the config's own
+    # top (tests/test_gfs_fetch_follows_model_top.py), so the default
+    # stands for GFS too.
+    assert domain_wizard.emitted_model_top_pa("gfs") == DEFAULT_PA
+    # 20CRv3's PSL series stops at 100 hPa and its fetch takes no top:
+    # its emission stays inside the column it has.
+    assert domain_wizard.emitted_model_top_pa("20crv3-cf") == 10000.0
     # No source at all (library callers) gets the default.
     assert domain_wizard.emitted_model_top_pa(None) == DEFAULT_PA
 
@@ -57,10 +65,16 @@ def _mapping_top_pa(profile_id: str) -> float | None:
         packaged_authorities(profile_id)["mapping"].read_text(
             encoding="utf-8"))
     vertical = mapping.get("coordinates", {}).get("vertical", {})
+    if vertical.get("kind") == "model_level":
+        measured = json.loads((Path(__file__).parent / "fixtures" /
+            "model-level-source-tops.json").read_text(encoding="utf-8"))["profiles"]
+        assert profile_id in measured, f"{profile_id}: model-level pressure coverage needs a measured top"
+        row = measured[profile_id]
+        reference = row["warm_season_reference"]
+        assert reference["coverage_rule"] == "lower altitude bracket pressure"
+        return max(float(row["measured_maximum_pa"]), max(reference["pressure_pa"]))
     if str(vertical.get("kind", "")) != "pressure":
-        # Hybrid/model-level ladders (e.g. ERA5 L137) index levels rather
-        # than naming pressures; those columns reach the source model's
-        # own top, far above any p_top this default emits.
+        # Coefficient-based coordinates need their own pressure coverage evidence.
         return None
     levels = vertical.get("levels")
     if not levels:

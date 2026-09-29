@@ -130,13 +130,15 @@ nothing built by hand.
 From a source checkout, build both:
 
 ```sh
-cargo test --manifest-path tools/grib1_bridge/Cargo.toml \
-  --locked --offline --bin gdt101_remap
-cargo build --manifest-path tools/grib1_bridge/Cargo.toml \
-  --release --locked --offline --bin gdt101_remap
-cargo build --manifest-path tools/rw_wps/Cargo.toml \
-  --release --locked --offline --bin gpuwm_mapped_engine
+(cd tools/grib1_bridge && cargo test --locked --offline --bin gdt101_remap)
+(cd tools/grib1_bridge && cargo build --release --locked --offline --bin gdt101_remap)
+(cd tools/rw_wps && cargo build --release --locked --offline --bin gpuwm_mapped_engine)
 ```
+
+Run each build inside its workspace. Cargo reads the vendored-crate
+configuration from the directory it runs in, so the same build driven from
+the checkout root with `--manifest-path` looks for its crates online and
+fails offline.
 
 The resolver finds `tools/grib1_bridge/target/release/` and
 `tools/rw_wps/target/release/`. For a build elsewhere, set

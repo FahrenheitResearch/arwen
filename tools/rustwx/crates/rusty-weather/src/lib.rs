@@ -5,5 +5,7 @@
 //! instead of copying a renderer into an app shell.
 
 pub mod batch_render;
-mod host_memory;
+/// The host-memory reader, shared with the MPAS static builder
+/// (`rw-host-memory`).
+pub use rw_host_memory as host_memory;
 pub mod render_all;

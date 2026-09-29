@@ -33,6 +33,9 @@ gpuwm/libexec/
 # anywhere else.  The generator sits beside them (make_goldens.py); this
 # negation is what keeps the regenerated copies tracked.
 !tools/rustwx/crates/rw-store/tests/goldens/*.nc
+# rw-wrfbatch's wrfout time-axis fixtures are ncks cuts its import tests
+# open by path; make_fixtures.sh beside them regenerates them.
+!tools/rustwx/crates/rw-wrfbatch/tests/time_axis_fixtures/*.nc
 # Externalized table asset: published as a GitHub release asset and
 # staged by `gpuwm fetch-tables` (never in the public git history --
 # GitHub rejects blobs over 100 MiB).  The development tree force-tracks

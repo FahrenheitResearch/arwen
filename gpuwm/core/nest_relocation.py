@@ -101,7 +101,7 @@ RELOCATION_CONTRACT = "gpuwm-nest-relocation.v1"
 #:
 #: It used to say a restart across a move promised NOTHING -- "a pure
 #: efficiency experiment, never certified, never comparable to an
-#: unbroken run" (Drew, 2026-08-06) -- and the resume was gated behind
+#: unbroken run" (project ruling, 2026-08-06) -- and the resume was gated behind
 #: --allow-restart-across-move on the strength of it.  That was true of
 #: the machinery as it stood: three things a resume needs were not
 #: carried.  All three are now (the placement and the tracker's
@@ -1205,7 +1205,7 @@ def _prevalidate_placement(new_dc, parent_node) -> None:
 # ---------------------------------------------------------------------------
 
 #: The explicit statics fallback this module ships tonight, stated on
-#: every receipt that uses it.  The 2026-08-06 requirement (Drew, via the
+#: every receipt that uses it.  The 2026-08-06 requirement (project ruling, via the
 #: WRF moving-nest discussion): a relocated nest's STATIC fields --
 #: terrain, landuse, soil categories -- must be REBUILT for the new
 #: footprint from the nest's own static source at nest resolution

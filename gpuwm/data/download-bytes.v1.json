@@ -1,0 +1,235 @@
+{
+ "schema": "gpuwm-download-bytes-v1",
+ "note": "What a run downloads and what its preparation writes, as measured on real runs; read by gpuwm/download_budget.py. A download row prices each object a fetch requests for one source and byte transport: `objects` is bytes per object of each role, `objects_per_point` is bytes per object per grid point of the requested area for a transport that crops, and `transfer_per_object` is what crosses the network when that differs from what is left on disk. A row with `same_as` is priced as another transport of the same source and says why. `legacy_sources` names how the four transports that predate the route table count their objects, the transport each takes when no mode is named, as `archive_mode` the transport it switches to when no mode is named and only the archive still holds the cycle, and for a transport that selects records, how it counts them; a row whose crop size follows the records it selects says how many its measurement selected (`measured_records`) and is priced per record of the request; a table route's objects are the route's own resolved object list. A preparation row prices what one chain's preparation writes per grid cell: per cell and forcing time on the outer grid, per cell once on the outer grid, per boundary cell and forcing time, and per cell of a nest.",
+ "legacy_sources": {
+  "hrrr": {"leads": "hourly-window", "mode_key": "mode", "default_mode": "full-file"},
+  "gfs": {"leads": "container-ladder", "records": "container-subset", "mode_key": "mode", "default_mode": "grib-filter", "archive_mode": "full-file"},
+  "gdas": {"leads": "container-ladder", "records": "container-subset", "mode_key": "mode", "default_mode": "grib-filter", "archive_mode": "full-file"},
+  "era5": {"leads": "analysis-times", "mode_key": "era5_provider", "default_mode": "cds"}
+ },
+ "downloads": [
+  {"source": "hrrr", "mode": "full-file",
+   "objects": {"atmosphere": 738600000, "soil": 428000000},
+   "measured": "mean of 75 wrfnat and 75 wrfprs objects over six fetches on 2026-09-26: the 2021-12-10 18Z 15 h, 2023-06-21 18Z 12 h (twice) and 2026-09-26 00Z and 06Z windows; object means per fetch 723 to 752 MB (wrfnat) and 420 to 432 MB (wrfprs)"},
+  {"source": "hrrr", "mode": "idx-subset", "same_as": "full-file",
+   "why": "an .idx subset is a part of the same objects, so the whole objects are its upper bound"},
+  {"source": "hrrr", "mode": "auto", "same_as": "full-file",
+   "why": "auto takes whole objects or an .idx subset of them, so the whole objects are its upper bound"},
+  {"source": "gfs", "mode": "grib-filter",
+   "objects_per_point": {"crop": 178.0}, "grid_deg": 0.25, "area": "nomads", "measured_records": 124,
+   "measured": "the NOMADS grib-filter crops of 2026-09-25 00Z f000 to f006 at 3 h, fetched on 2026-09-26: 3,557,354 B per file over the 142 by 149 points of 17.61,-116.54,53.24,-79.36 (168.1 B per point) and 276,547 B per file over the 41 by 41 points of 30,-100,40,-90 (164.5 B); the 24 h 2026-09-26 06Z window over the first box took 9 files and about 34 MB, about 178 B per point, and the larger figure is kept. Each file held the 124 records of the certified 21-level ladder. The 2026-09-27 00Z f003 crop of the first box, fetched on 2026-09-27, was 3,752,290 B with those 124 records and 4,037,071 B with the 134 of a 50 hPa top (the 70 and 50 hPa levels added): 7.6 % larger for 8.1 % more records, so pricing per record errs 0.4 % high"},
+  {"source": "gfs", "mode": "full-file",
+   "objects": {"file": 513100000},
+   "measured": "Content-Length of the 2026-09-25 00Z pgrb2.0p25 f000, f003 and f006 objects on the AWS archive, read on 2026-09-26: 501.0, 516.8 and 521.4 MB"},
+  {"source": "gdas", "mode": "grib-filter",
+   "objects_per_point": {"crop": 337.0}, "grid_deg": 0.25, "area": "nomads", "measured_records": 224,
+   "measured": "the NOMADS grib-filter crops of 2026-09-25 00Z GDAS f000 to f006 at 3 h over the 142 by 149 points of 17.61,-116.54,53.24,-79.36, fetched on 2026-09-26: 7,130,489, 6,976,427 and 6,922,905 B, the largest kept (337.0 B per point). GDAS takes every published level by default: the 41 levels its 2026-09-25 00Z f003 index carries for all five fields, 224 records per file"},
+  {"source": "gdas", "mode": "full-file",
+   "objects": {"file": 483100000},
+   "measured": "Content-Length of the 2026-09-25 00Z GDAS pgrb2.0p25 f000, f003 and f006 objects on the AWS archive, read on 2026-09-26: 471.7, 489.3 and 488.4 MB"},
+  {"source": "era5", "mode": "arco",
+   "objects_per_point": {"analysis": 2550.0}, "grid_deg": 0.25, "area": "request",
+   "transfer_per_object": {"analysis": 551000000},
+   "measured": "ARCO windows fetched on 2026-09-26: one analysis time over the 39 by 44 points of 30.49,-103.18,40.07,-92.02 left 4,375,602 B on disk (2,550 B per point) and received 550,148,662 B, two times 8,725,052 B and 1,101,645,451 B, and five times over the 84 by 75 points of 5.27,-109.23,26.27,-89.97 left 77,125,316 B (2,448 B per point); the reader takes whole global chunks and crops them here, so what crosses the network is about 551 MB per time whatever the area"},
+  {"source": "era5", "mode": "cds", "same_as": "arco",
+   "why": "the Copernicus service delivers the same fields cropped and packed, so the ARCO figures, floating point on disk and whole chunks over the network, are its upper bound"},
+  {"source": "hrrr-prs", "mode": "full-file",
+   "objects": {"wrfprs": 428000000},
+   "measured": "the same wrfprs objects as the hrrr row's soil role, 75 measured"},
+  {"source": "rap", "mode": "full-file",
+   "objects": {"awip32": 19880000},
+   "measured": "mean of 14 awip32 objects, 2026-09-26 00Z f00 to f06, two fetches"},
+  {"source": "rrfs", "mode": "full-file",
+   "objects": {"prslev": 600100000, "2dfld": 347500000},
+   "measured": "mean of 14 prslev and 14 2dfld objects, 2026-09-26 00Z f00 to f06, two fetches"},
+  {"source": "gefs", "mode": "full-file",
+   "objects": {"pgrb2a": 14590000, "pgrb2b": 98220000},
+   "measured": "mean of 6 pgrb2a and 6 pgrb2b objects of member c00, 2026-09-26 00Z f00 to f06, two fetches"},
+  {"source": "ecmwf-open-data", "mode": "full-file",
+   "objects": {"oper-fc": 139800000},
+   "measured": "mean of 6 oper-fc objects, 2026-09-26 00Z f00 to f06, two fetches"},
+  {"source": "aifs", "mode": "full-file",
+   "objects": {"oper-fc": 87400000},
+   "measured": "mean of 4 oper-fc objects, 2026-09-26 00Z f00 and f06, two fetches"},
+  {"source": "icon-eu", "mode": "full-file",
+   "objects": {"state": 957400, "invariant": 543800},
+   "measured": "mean of 2625 state and 6 invariant objects, 2026-09-26 00Z f00 to f06 hourly, three fetches"},
+  {"source": "icon-global", "mode": "full-file",
+   "objects": {"state": 3101000, "invariant": 856300, "geometry": 1331000},
+   "measured": "Content-Length of all 348 state, 2 invariant and 2 geometry objects of the 2026-09-26 00Z f000 to f006 window at 3 h, read on 2026-09-26"},
+  {"source": "icon-d2", "mode": "full-file",
+   "objects": {"state": 628500, "invariant": 208600, "geometry": 415200},
+   "measured": "mean size of all 560 state, 3 invariant and 2 geometry objects of the 2026-09-27 12Z f000 to f006 window at 1 h, read from DWD's directory listing on 2026-09-27"},
+  {"source": "aigfs", "mode": "full-file",
+   "objects": {"pres": 85080000, "sfc": 4056000},
+   "measured": "Content-Length of the 2026-09-25 00Z f000 and f006 pres and sfc objects, read on 2026-09-26; its GDAS donor is priced by the gdas full-file row"},
+  {"source": "aigefs", "mode": "full-file",
+   "objects": {"pres": 77850000, "sfc": 3239000},
+   "measured": "Content-Length of the 2026-09-25 00Z f000 and f006 pres and sfc objects of the default member, read on 2026-09-26; its GDAS donor is priced by the gdas full-file row"},
+  {"source": "gem-gdps", "mode": "full-file",
+   "objects": {"state": 1058000, "analysis-invariant": 190600, "terrain": 723800},
+   "measured": "mean of 1044 state, 4 analysis-invariant and 2 terrain objects, 2026-09-26 00Z f00 to f06, two fetches"}
+ ],
+ "preparation": {
+  "prepared:hrrr": {
+   "root_per_cell_per_time": 84.4,
+   "nest_per_cell": 124.5,
+   "measured": "the preparation of a 386 by 374 point, 49 level HRRR grid over 16 forcing times wrote 9,552,000,842 B (its folder at the first forecast step, 2026-09-26), 84.4 B per cell and forcing time; a 352 by 342 point grid over 19 times wrote about 7.3 GB, 65 B, and the larger figure is kept. A nest's preparation writes its initial state and static fields, priced at the 124.5 B per cell the prepared:go chain wrote for those"
+  },
+  "prepared:go": {
+   "root_per_cell_per_time": 21.76,
+   "root_per_cell": 124.48,
+   "boundary_per_cell_per_time": 107.44,
+   "nest_per_cell": 124.48,
+   "measured": "the preparation of a 206 by 204 point, 49 level GFS grid over 9 forcing times (2026-09-26): a 403,331,544 B prepared cache, a 221,353,432 B wrfinput and a 34,972,426 B static cache, and a 194,273,956 B wrfbdy over its 2 x (206 + 204) x 5 x 49 boundary cells; a nest's preparation writes its initial state and static fields, priced at the same 124.5 B per cell"
+  },
+  "prepared:staged": {
+   "root_per_cell_per_time": 21.76,
+   "root_per_cell": 124.48,
+   "boundary_per_cell_per_time": 107.44,
+   "nest_per_cell": 124.48,
+   "measured": "priced as the prepared:go chain, whose rw-wps preparation writes the same prepared cache, initial state, static cache and boundary file; no staged preparation has been measured yet"
+  },
+  "experiment": {
+   "root_per_cell": 3.8,
+   "nest_per_cell": 3.8,
+   "measured": "the experiment route prepares in memory: a 2 hour 12, 3 and 1 km ERA5 run of 14,985,000 cells wrote 56,787,227 B besides its history, checkpoints and pictures (2026-09-25, tools/wiki_seed/runs/bytes-per-cell/sizes.json)"
+  }
+ },
+ "compose_scratch": {
+  "note": "The decoded frame stream a preparation that composes through the mapped engine stages in its scratch folder while it runs (gpuwm_mapped_engine frames.f64): per source, every field its mapping publishes on the source's own grid, each vertical field once per level of the mapping's ladder and each soil field once per layer the source publishes, as 8-byte values, for every valid time the preparation composes. `grid_points` is the source grid (a source remapped from an unstructured mesh names its `normalization` document instead, whose window around the target is the grid), `layers_per_valid_time` the fields times their levels, `soil_layers` how many of those are soil layers (the source's own soil column, which a mapping does not state), `windowed_layers` how many of those layers the atmospheric window crops to the target's footprint (none for a global source, whose representation stays whole), and `bytes_per_value` the stream's value size. It scales with the SOURCE grid, not the target, so it is priced here and not per target cell. `chains` names the chains whose preparation composes this way.",
+  "chains": ["prepared:staged"],
+  "sources": {
+   "gem-gdps": {
+    "mapping": "rw-wps-gem-gdps-grib2.mapping.json",
+    "grid": "2400 x 1201, 0.15 degree global",
+    "grid_points": 2882400,
+    "layers_per_valid_time": 210,
+    "soil_layers": 2,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 4,842,432,000 bytes per valid time, the figure the scratch-disk refusal measured on a 48 hour window"
+   },
+   "ecmwf-open-data": {
+    "mapping": "rw-wps-ecmwf-open-data-oper-grib2.mapping.json",
+    "grid": "1440 x 721, 0.25 degree global",
+    "grid_points": 1038240,
+    "layers_per_valid_time": 101,
+    "soil_layers": 8,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 838,897,920 bytes per valid time"
+   },
+   "aifs": {
+    "mapping": "rw-wps-aifs-single-grib2.mapping.json",
+    "grid": "1440 x 721, 0.25 degree global",
+    "grid_points": 1038240,
+    "layers_per_valid_time": 91,
+    "soil_layers": 4,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-26 18Z (leads 0 and 6 h), composed whole by gpuwm_mapped_engine on 2026-09-28: 755,838,720 bytes per valid time"
+   },
+   "aigfs": {
+    "mapping": "rw-wps-aigfs-gdas-hybrid-grib2.mapping.json",
+    "grid": "1440 x 721, 0.25 degree global",
+    "grid_points": 1038240,
+    "layers_per_valid_time": 95,
+    "soil_layers": 8,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 789,062,400 bytes per valid time, 17 fields with the mean sea level pressure the surface pressure derivation reads"
+   },
+   "aigefs": {
+    "mapping": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
+    "grid": "1440 x 721, 0.25 degree global",
+    "grid_points": 1038240,
+    "layers_per_valid_time": 95,
+    "soil_layers": 8,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of member mem001 of 2026-09-27 00Z, verified by gpuwm-member-prep and composed whole by gpuwm_mapped_engine on 2026-09-28: 789,062,400 bytes per valid time, 17 fields with the mean sea level pressure the surface pressure derivation reads"
+   },
+   "gefs": {
+    "mapping": "rw-wps-gefs-ensemble-grib2.mapping.json",
+    "grid": "720 x 361, 0.5 degree global",
+    "grid_points": 259920,
+    "layers_per_valid_time": 203,
+    "soil_layers": 8,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 422,110,080 bytes per valid time"
+   },
+   "gdas": {
+    "mapping": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
+    "grid": "1440 x 721, 0.25 degree global, or the area a cropping transport requests",
+    "grid_points": 1038240,
+    "layers_per_valid_time": 214,
+    "soil_layers": 8,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the 0.25 degree product grid; the layers are its mapping's fields and ladder and the soil column its product publishes, counted as the engine counts them (the count matched the engine on the ten routes measured)"
+   },
+   "hrrr-prs": {
+    "mapping": "rw-wps-hrrr-prs-grib2.mapping.json",
+    "grid": "1799 x 1059, 3 km CONUS Lambert",
+    "grid_points": 1905141,
+    "layers_per_valid_time": 458,
+    "soil_layers": 18,
+    "windowed_layers": 429,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 6,980,436,624 bytes per valid time"
+   },
+   "rrfs": {
+    "mapping": "rw-wps-rrfs-prslev-2dfld-grib2.mapping.json",
+    "grid": "1799 x 1059, 3 km CONUS Lambert",
+    "grid_points": 1905141,
+    "layers_per_valid_time": 299,
+    "soil_layers": 18,
+    "windowed_layers": 270,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 4,557,097,272 bytes per valid time"
+   },
+   "rap": {
+    "mapping": "rw-wps-rap-awip32-grib2.mapping.json",
+    "grid": "349 x 277, 32 km North America Lambert (AWIPS 221)",
+    "grid_points": 96673,
+    "layers_per_valid_time": 302,
+    "soil_layers": 18,
+    "windowed_layers": 234,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 233,561,968 bytes per valid time"
+   },
+   "icon-eu": {
+    "mapping": "rw-wps-icon-eu-regular-grib2.mapping.json",
+    "grid": "1377 x 657, 0.0625 degree regular lat-lon over Europe",
+    "grid_points": 904689,
+    "layers_per_valid_time": 205,
+    "soil_layers": 34,
+    "windowed_layers": 120,
+    "bytes_per_value": 8,
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 1,483,689,960 bytes per valid time; its soil column publishes 9 temperature and 8 water layers, and the two volumetric moistures derived from them 8 and 9"
+   },
+   "icon-d2": {
+    "mapping": "rw-wps-icon-d2-grib2.mapping.json",
+    "normalization": "rw-wps-icon-d2-grib2.normalization.json",
+    "grid": "the regular window its normalization sizes around the target: 0.02 degree steps and a 0.25 degree halo",
+    "layers_per_valid_time": 827,
+    "soil_layers": 34,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "Real DWD cycle 2026-09-28 09Z, leads 0 to 3 h, normalized around a 1 km Frankfurt domain and composed on 2026-09-28: frames.json records 827 layers per valid time (11 fields on 65 mass levels, 66 interface heights, 12 surface layers and 34 soil layers). The same bytes composed by the engine before dependency_only recorded 1,217, the other 390 the six raw mass fractions the mapping reads only to derive humidity and the mixing ratios. Each of the four 246 by 465 frames writes 756,804,240 bytes; the normalization document sizes the window around each target."
+   },
+   "icon-global": {
+    "mapping": "rw-wps-icon-global-grib2.mapping.json",
+    "normalization": "rw-wps-icon-global-grib2.normalization.json",
+    "grid": "the regular window its normalization sizes around the target: 0.125 degree steps and a 1 degree halo",
+    "layers_per_valid_time": 190,
+    "soil_layers": 34,
+    "windowed_layers": 0,
+    "bytes_per_value": 8,
+    "measured": "the window is the one its normalization document computes around the target (the same function the normalization runs); the layers are its mapping's fields and ladder and the ICON soil column, 9 temperature and 8 water layers and the two volumetric moistures derived from them, counted as the engine wrote them for ICON-EU, whose mapping has the same soil fields"
+   }
+  }
+ }
+}

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from conftest import requires_gpu
+from conftest import requires_gpu, requires_wps_masked_chain_bridge
 from gpuwm.ingest.grib import Era5Snapshot
 from gpuwm.ingest.preprocess_backend import _rotate_earth_to_grid_cpu
 from gpuwm.ingest.horiz import (
@@ -182,9 +182,36 @@ def test_lake_skin_search_expands_beyond_the_masked_field_radius():
         latitude=latitude, longitude=longitude,
         fields={"LANDSEA": np.ones_like(landsea),
                 "SKINTEMP": np.full_like(skin, 280.0)})
-    with pytest.raises(ValueError, match="finite source-water SKINTEMP"):
-        interpolate_lake_skin_temperature(
-            no_water, grid, np.ones((1, 1), dtype=bool))
+    # No water to search: every lake is NaN, for the caller to give the
+    # skin the source has there and count.
+    dry = interpolate_lake_skin_temperature(
+        no_water, grid, np.ones((1, 1), dtype=bool))
+    assert dry.shape == (1, 1) and np.isnan(dry).all()
+
+
+def test_lake_skin_search_on_a_whole_globe_source_crosses_its_cut():
+    """A whole-globe source is a ring: water just across its stored cut is
+    nearer than water farther along its own side, and is the one taken."""
+    grid = LambertGrid(
+        ref_lat=0.0, ref_lon=1.5, truelat1=30.0, truelat2=60.0,
+        stand_lon=1.5, dx=1000.0, dy=1000.0, e_we=2, e_sn=2)
+    latitude = np.linspace(-10.0, 10.0, 21, dtype=np.float64)
+    longitude = np.arange(360, dtype=np.float64)
+    landsea = np.ones((21, 360), dtype=np.float64)
+    skin = np.full((21, 360), 290.0, dtype=np.float64)
+    landsea[10, 358] = 0.0          # 3.5 columns west, across the cut
+    skin[10, 358] = 281.0
+    landsea[10, 10] = 0.0           # 8.5 columns east, same side
+    skin[10, 10] = 299.0
+    snapshot = Era5Snapshot(
+        valid_time=datetime(2026, 9, 27),
+        levels_hpa=np.array([1000.0], dtype=np.float64),
+        latitude=latitude, longitude=longitude,
+        fields={"LANDSEA": landsea, "SKINTEMP": skin})
+
+    actual = interpolate_lake_skin_temperature(
+        snapshot, grid, np.ones((1, 1), dtype=bool))
+    assert actual[0, 0] == 281.0
 
 
 @requires_d04_surface_bundle
@@ -423,6 +450,7 @@ def _coastal_sst_source():
     return lat, lon, landsea, sst
 
 
+@requires_wps_masked_chain_bridge
 def test_wps_sst_chain_is_metgrid_tbl_and_abandons_the_coast_to_the_fill():
     """The mapped SST field is WPS's, fill and all, and stays that way.
 
@@ -456,6 +484,7 @@ def test_wps_sst_chain_is_metgrid_tbl_and_abandons_the_coast_to_the_fill():
     assert np.any(mapped[:, 21:] > 0.0)
 
 
+@requires_wps_masked_chain_bridge
 def test_sst_chain_excludes_search_so_a_landlocked_lake_keeps_its_own_water():
     """``search`` is unbounded, and SST donors are a different basin.
 
@@ -484,6 +513,7 @@ def test_sst_chain_excludes_search_so_a_landlocked_lake_keeps_its_own_water():
     assert got[0, 0] == 0.0
 
 
+@requires_wps_masked_chain_bridge
 def test_wps_search_is_queue_limited_not_global_nearest():
     """WPS ``search_extrap`` FIFO semantics (interp_module.F:451-615).
 
@@ -1145,3 +1175,45 @@ def test_hydrometeor_mass_keeps_non_negativity_and_compact_support():
         # the cloud where the file put it.
         assert mapped.max() <= source.max() * (1.0 + 1.0e-6)
         assert int((mapped > 0.0).sum()) > 0
+
+
+def test_a_waiting_target_takes_the_value_it_takes_among_every_target():
+    """The masked chain's later operators evaluate only the targets still waiting.
+
+    Every value ``four_pt``, ``average_4pt`` and the two weighted averages
+    make belongs to one target, so evaluating the waiting targets alone
+    must give exactly what evaluating the whole grid gave them, and leave
+    every other target to fall through.
+    """
+    from gpuwm.verify.wps_masked_oracle import _wps_four_pt, _wps_wt_average
+
+    rng = np.random.default_rng(20260928)
+    ny, nx = 9, 11
+    field = rng.uniform(-3.0, 5.0, (ny, nx))
+    valid = rng.uniform(size=(ny, nx)) < 0.7
+    yy = rng.uniform(0.0, ny - 1.0, (6, 7))
+    xx = rng.uniform(0.0, nx - 1.0, (6, 7))
+    # Integer coordinates take the operators' degenerate branches.
+    yy[0, :3] = np.floor(yy[0, :3])
+    xx[1, :4] = np.floor(xx[1, :4])
+    yy[2, 2], xx[2, 2] = 4.0, 5.0
+    every = np.ones(yy.shape, dtype=bool)
+    waiting = rng.uniform(size=yy.shape) < 0.4
+    waiting[2, 2] = waiting[0, 1] = waiting[1, 3] = True
+    operators = {
+        "four_pt": lambda todo: _wps_four_pt(
+            field, valid, yy, xx, todo, average=False),
+        "average_4pt": lambda todo: _wps_four_pt(
+            field, valid, yy, xx, todo, average=True),
+        "wt_average_4pt": lambda todo: _wps_wt_average(
+            field, valid, yy, xx, todo, sixteen=False),
+        "wt_average_16pt": lambda todo: _wps_wt_average(
+            field, valid, yy, xx, todo, sixteen=True),
+    }
+    for name, operator in operators.items():
+        whole = operator(every)
+        part = operator(waiting)
+        assert np.isfinite(whole).any(), name
+        np.testing.assert_array_equal(part[waiting], whole[waiting], err_msg=name)
+        assert np.isnan(part[~waiting]).all(), name
+        assert np.isnan(operator(np.zeros(yy.shape, dtype=bool))).all(), name

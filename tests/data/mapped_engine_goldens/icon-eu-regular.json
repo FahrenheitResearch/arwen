@@ -2,13 +2,13 @@
   "decode": {
     "mapping": {
       "name": "rw-wps-icon-eu-regular-grib2.mapping.json",
-      "sha256": "141c635c9adc6690719fd52ff0fbcfe78d478a14e18cea8bb13df812359b3fc1"
+      "sha256": "ae8075c069206c4f3917830aa769a2c4ef8f39a03ae31b3d7ee8c31c63f23cea"
     },
     "refusal": {
       "message": "mapped frame at 2026-08-17 01:00:00 lacks required fields ['terrain_height']",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "icon-eu-regular",
     "verdict": "REFUSED"
   },
@@ -52,7 +52,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_T.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_T.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_T.grib2.bz2:0",
@@ -60,10 +61,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_T.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_T.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_T.grib2.bz2:0",
@@ -71,7 +70,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_T.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_T.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_T.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_T.grib2.bz2:0"
               ]
             },
             "air_temperature_2m": {
@@ -107,7 +107,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_U.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_U.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_U.grib2.bz2:0",
@@ -115,10 +116,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_U.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_U.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_U.grib2.bz2:0",
@@ -126,7 +125,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_U.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_U.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_U.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_U.grib2.bz2:0"
               ]
             },
             "eastward_wind_10m": {
@@ -162,7 +162,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_FI.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_FI.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_FI.grib2.bz2:0",
@@ -170,10 +171,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_FI.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_FI.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_FI.grib2.bz2:0",
@@ -181,7 +180,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_FI.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_FI.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_FI.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_FI.grib2.bz2:0"
               ]
             },
             "land_fraction": {
@@ -217,7 +217,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_V.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_V.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_V.grib2.bz2:0",
@@ -225,10 +226,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_V.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_V.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_V.grib2.bz2:0",
@@ -236,7 +235,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_V.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_V.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_V.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_V.grib2.bz2:0"
               ]
             },
             "northward_wind_10m": {
@@ -272,7 +272,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_RELHUM.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_RELHUM.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_100_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_150_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_200_RELHUM.grib2.bz2:0",
@@ -280,10 +281,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_300_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_400_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_500_RELHUM.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_50_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_600_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_700_RELHUM.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_70_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_775_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_800_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_825_RELHUM.grib2.bz2:0",
@@ -291,7 +290,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_875_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_900_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_925_RELHUM.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_RELHUM.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_950_RELHUM.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_RELHUM.grib2.bz2:0"
               ]
             },
             "relative_humidity_2m": {
@@ -491,7 +491,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_T.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_T.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_T.grib2.bz2:0",
@@ -499,10 +500,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_T.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_T.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_T.grib2.bz2:0",
@@ -510,7 +509,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_T.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_T.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_T.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_T.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_T.grib2.bz2:0"
               ]
             },
             "air_temperature_2m": {
@@ -546,7 +546,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_U.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_U.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_U.grib2.bz2:0",
@@ -554,10 +555,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_U.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_U.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_U.grib2.bz2:0",
@@ -565,7 +564,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_U.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_U.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_U.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_U.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_U.grib2.bz2:0"
               ]
             },
             "eastward_wind_10m": {
@@ -601,7 +601,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_FI.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_FI.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_FI.grib2.bz2:0",
@@ -609,10 +610,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_FI.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_FI.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_FI.grib2.bz2:0",
@@ -620,7 +619,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_FI.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_FI.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_FI.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_FI.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_FI.grib2.bz2:0"
               ]
             },
             "land_fraction": {
@@ -656,7 +656,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_V.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_V.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_V.grib2.bz2:0",
@@ -664,10 +665,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_V.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_V.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_V.grib2.bz2:0",
@@ -675,7 +674,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_V.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_V.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_V.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_V.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_V.grib2.bz2:0"
               ]
             },
             "northward_wind_10m": {
@@ -711,7 +711,8 @@
                 1377
               ],
               "source_references": [
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_RELHUM.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_RELHUM.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_100_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_150_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_200_RELHUM.grib2.bz2:0",
@@ -719,10 +720,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_300_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_400_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_500_RELHUM.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_50_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_600_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_700_RELHUM.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_70_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_775_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_800_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_825_RELHUM.grib2.bz2:0",
@@ -730,7 +729,8 @@
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_875_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_900_RELHUM.grib2.bz2:0",
                 "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_925_RELHUM.grib2.bz2:0",
-                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_RELHUM.grib2.bz2:0"
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_950_RELHUM.grib2.bz2:0",
+                "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_001_1000_RELHUM.grib2.bz2:0"
               ]
             },
             "relative_humidity_2m": {
@@ -2150,7 +2150,7 @@
       ],
       "mapping": {
         "name": "rw-wps-icon-eu-regular-grib2.mapping.json",
-        "sha256": "141c635c9adc6690719fd52ff0fbcfe78d478a14e18cea8bb13df812359b3fc1"
+        "sha256": "ae8075c069206c4f3917830aa769a2c4ef8f39a03ae31b3d7ee8c31c63f23cea"
       },
       "materialization": {
         "error": "mapped frame at 2026-08-17 01:00:00 lacks required fields ['terrain_height']",
@@ -2162,7 +2162,7 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "icon-eu-regular",
     "verdict": "INSPECTED"
   },
@@ -2170,6 +2170,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "icon-eu-regular"
 }

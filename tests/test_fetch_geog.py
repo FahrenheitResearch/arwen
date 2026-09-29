@@ -495,7 +495,8 @@ def test_fetch_stages_verifies_and_writes_manifest(tmp_path, monkeypatch):
     assert not (root / geog_assets.ARCHIVE_SUBDIR
                 / "alpha_ds.tar.bz2").exists()
     # no extraction droppings
-    assert not list(root.glob(f"{geog_assets.ARCHIVE_SUBDIR}-extract-*"))
+    assert not list(root.glob(f"{geog_assets.ARCHIVE_SUBDIR}-*"))
+    assert not list((root / geog_assets.ARCHIVE_SUBDIR).glob("*.tmp"))
 
 
 def test_fetch_prints_the_total_before_the_first_byte_moves(
@@ -856,6 +857,295 @@ def test_bundle_refuses_datasets_it_does_not_contain(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# A failure on this computer is not a download failure, and a resume is
+# promised only when a partial file can actually be resumed
+# ---------------------------------------------------------------------------
+
+_DEEP_WINDOWS_PATH = "C:\\" + "d" * 269          # 272 characters
+
+
+def _download(dest: Path, payload: bytes, transport) -> None:
+    geog_assets.download_archive(
+        geog_assets.archive_url(dest.name, "hf"), dest,
+        expected_bytes=len(payload), progress=lambda *_: None,
+        label="alpha_ds", urlopen_fn=transport)
+
+
+def test_a_resume_record_windows_refuses_is_reported_as_a_path_problem(
+        tmp_path, monkeypatch):
+    """The failure the deep install folder produced, with its real errno.
+
+    Windows answered ENOENT for the 272-character staging path of the
+    resume record.  That used to read "download failed from
+    https://huggingface.co/...; the partial file is kept and a re-run
+    resumes" -- no byte had been written, the mirror was fine, and a re-run
+    failed identically.
+    """
+
+    payload = _build_archive(("alpha_ds",))
+    dest = tmp_path / geog_assets.ARCHIVE_SUBDIR / "alpha_ds.tar.bz2"
+    dest.parent.mkdir()
+
+    def windows_refuses(path, text, *, tag="publish"):
+        raise FileNotFoundError(2, "No such file or directory",
+                                _DEEP_WINDOWS_PATH)
+
+    monkeypatch.setattr(geog_assets.fetch_guard, "atomic_write_text",
+                        windows_refuses)
+    monkeypatch.setattr(geog_assets.fetch_guard, "windows_path_limit",
+                        lambda: 259)
+
+    with pytest.raises(GeogFetchError) as caught:
+        _download(dest, payload, _fake_transport({dest.name: payload}))
+
+    message = str(caught.value)
+    assert "download failed" not in message
+    assert "resumes" not in message
+    assert "272 characters" in message
+    assert "259" in message
+    assert "13 characters shorter" in message
+    assert "not a download failure" in message
+    assert "nothing was downloaded" in message
+    assert message.index("272 characters") < message.index(_DEEP_WINDOWS_PATH)
+    assert not dest.exists()
+
+
+def test_a_local_failure_off_windows_names_the_path_without_blaming_length(
+        tmp_path, monkeypatch):
+    payload = _build_archive(("alpha_ds",))
+    dest = tmp_path / geog_assets.ARCHIVE_SUBDIR / "alpha_ds.tar.bz2"
+    dest.parent.mkdir()
+
+    def disk_full(path, text, *, tag="publish"):
+        raise OSError(28, "No space left on device", str(path))
+
+    monkeypatch.setattr(geog_assets.fetch_guard, "atomic_write_text",
+                        disk_full)
+    monkeypatch.setattr(geog_assets.fetch_guard, "windows_path_limit",
+                        lambda: None)
+
+    with pytest.raises(GeogFetchError) as caught:
+        _download(dest, payload, _fake_transport({dest.name: payload}))
+
+    message = str(caught.value)
+    sidecar = geog_assets._resume_sidecar(dest)
+    assert "download failed" not in message
+    assert "No space left on device" in message
+    assert f"{len(str(sidecar))} characters" in message
+    assert "Windows" not in message
+    assert "resumes" not in message
+
+
+def test_a_network_failure_before_any_byte_promises_no_resume(tmp_path):
+    payload = _build_archive(("alpha_ds",))
+    dest = tmp_path / geog_assets.ARCHIVE_SUBDIR / "alpha_ds.tar.bz2"
+    dest.parent.mkdir()
+
+    def unreachable(request):
+        raise geog_assets.URLError("connection refused")
+
+    with pytest.raises(GeogFetchError) as caught:
+        _download(dest, payload, unreachable)
+
+    message = str(caught.value)
+    assert "download failed from https://huggingface.co/" in message
+    assert "resumes" not in message
+    assert "nothing was downloaded" in message
+
+
+class _DroppedConnection(_FakeResponse):
+    """Sends the first ``keep`` bytes, then the connection resets."""
+
+    def __init__(self, payload: bytes, keep: int, **kwargs):
+        super().__init__(payload[:keep], **kwargs)
+        self._sent = False
+
+    def read(self, n: int = -1) -> bytes:
+        if self._sent:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        self._sent = True
+        return super().read(n)
+
+
+def test_a_dropped_connection_keeps_a_partial_that_a_rerun_resumes(tmp_path):
+    payload = _build_archive(("alpha_ds",))
+    dest = tmp_path / geog_assets.ARCHIVE_SUBDIR / "alpha_ds.tar.bz2"
+    dest.parent.mkdir()
+
+    def dropped(request):
+        return _DroppedConnection(payload, 100,
+                                  headers={"ETag": '"pinned-object-v1"'})
+
+    with pytest.raises(GeogFetchError) as caught:
+        _download(dest, payload, dropped)
+
+    message = str(caught.value)
+    assert "download failed from https://huggingface.co/" in message
+    assert "the partial file (100 B) is kept and a re-run resumes" in message
+    assert dest.stat().st_size == 100
+
+    transport = _fake_transport({dest.name: payload})
+    _download(dest, payload, transport)
+    (request,) = transport.calls
+    assert request.headers.get("Range") == "bytes=100-"
+    assert dest.read_bytes() == payload
+
+
+def test_the_resume_promise_follows_what_the_next_run_will_do(tmp_path):
+    """The note mirrors download_archive's own resume rule, case by case."""
+
+    dest = tmp_path / "alpha_ds.tar.bz2"
+    sidecar = geog_assets._resume_sidecar(dest)
+    note = geog_assets._partial_note
+
+    assert note(dest, sidecar, strict_size=True) == (
+        "nothing was downloaded, so a re-run starts from the beginning")
+    dest.write_bytes(b"")
+    assert "nothing was downloaded" in note(dest, sidecar, strict_size=True)
+    dest.write_bytes(b"A" * 100)
+    # Pinned: the exact size and SHA-256 pin catches any mixture, so an
+    # unrecorded partial is still resumed.
+    assert "(100 B) is kept and a re-run resumes" in note(
+        dest, sidecar, strict_size=True)
+    # No pin and no record: the next run sets it aside and restarts.
+    unpinned = note(dest, sidecar, strict_size=False)
+    assert "resumes" not in unpinned
+    assert "downloads it from the start" in unpinned
+    sidecar.write_text("{}", encoding="utf-8")
+    assert "(100 B) is kept and a re-run resumes" in note(
+        dest, sidecar, strict_size=False)
+
+
+def test_an_extraction_windows_refuses_is_a_path_problem_and_keeps_the_archive(
+        tmp_path, monkeypatch):
+    payload = _build_archive(("alpha_ds",))
+    monkeypatch.setattr(geog_assets, "GEOG_ARCHIVES",
+                        (_pin("alpha_ds", payload),))
+    monkeypatch.setattr(geog_assets.fetch_guard, "windows_path_limit",
+                        lambda: 259)
+    root = tmp_path / "WPS_GEOG"
+    real_open = Path.open
+
+    def refusing_open(self, mode="r", *args, **kwargs):
+        if "w" in mode and self.name == "00001-00004.00001-00004":
+            raise FileNotFoundError(2, "No such file or directory",
+                                    _DEEP_WINDOWS_PATH)
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refusing_open)
+    with pytest.raises(GeogFetchError) as caught:
+        fetch_geog(root=root, datasets=("alpha_ds",), source="hf",
+                   keep_archives=False, progress=lambda *_: None,
+                   urlopen_fn=_fake_transport({"alpha_ds.tar.bz2": payload}))
+    monkeypatch.setattr(Path, "open", real_open)
+
+    message = str(caught.value)
+    archive = root / geog_assets.ARCHIVE_SUBDIR / "alpha_ds.tar.bz2"
+    assert "272 characters" in message
+    assert "13 characters shorter" in message
+    assert "not a download failure" in message
+    assert "verified archive is kept" in message
+    assert archive.read_bytes() == payload
+    assert not (root / "alpha_ds").exists()
+
+
+def test_geography_staging_adds_no_more_than_the_longest_published_name():
+    """Every staging name is compact, so a folder deep enough to hold the
+    published geography is deep enough to stage it.
+
+    Measured at the deepest WRF dataset: the published tile
+    ``modis_landuse_20class_30s_with_lakes/00001-01200.00001-01200`` is 61
+    characters below the geography folder.  Staging used to reach 110 (the
+    resume record's staging copy) and 101 (the extraction folder).
+    """
+
+    root = Path("G")
+    deepest_tile = (root / "modis_landuse_20class_30s_with_lakes"
+                    / "00001-01200.00001-01200")
+    archive = (root / geog_assets.ARCHIVE_SUBDIR
+               / "modis_landuse_20class_30s_with_lakes.tar.bz2")
+    sidecar = geog_assets._resume_sidecar(archive)
+    sidecar_staging = geog_assets.fetch_guard._staging_path(sidecar, "geog")
+    extraction = geog_assets._extraction_staging(root)
+    staged_tile = extraction / deepest_tile.relative_to(root)
+
+    def below(path: Path) -> int:
+        return len(str(path)) - len(str(root))
+
+    assert below(deepest_tile) == 61
+    assert below(sidecar) == 75
+    assert below(sidecar_staging) <= below(sidecar)
+    assert below(staged_tile) <= below(deepest_tile) + 24
+
+
+def _max_path_applies() -> bool:
+    """Read independently of the code under test, which also decides it."""
+
+    if os.name != "nt":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\FileSystem"
+                            ) as key:
+            return winreg.QueryValueEx(key, "LongPathsEnabled")[0] != 1
+    except OSError:
+        return True
+
+
+@pytest.mark.skipif(not _max_path_applies(),
+                    reason="MAX_PATH applies only to Windows without long "
+                           "paths")
+def test_a_deep_windows_geography_folder_on_the_real_file_system(
+        tmp_path, monkeypatch):
+    """The real Windows path, not a mock of it.
+
+    A geography folder of 170 characters holds the published tree (231 at
+    its deepest tile) and used to fail anyway on the resume record's
+    280-character staging copy.  At 200 characters the resume record
+    itself (275) cannot exist, and the refusal says so in characters.
+    """
+
+    payload = _build_archive(("modis_landuse_20class_30s_with_lakes",))
+    monkeypatch.setattr(geog_assets, "GEOG_ARCHIVES", (_pin(
+        "modis_landuse_20class_30s_with_lakes", payload),))
+
+    def folder(length: int) -> Path:
+        path = tmp_path / str(length)
+        assert len(str(path)) <= length - 2
+        while len(str(path)) < length:
+            remaining = length - len(str(path))
+            name = min(60, remaining - 1)
+            if remaining - 1 - name == 1:
+                name -= 1
+            path = path / ("p" * name)
+        assert len(str(path)) == length
+        return path
+
+    fits = folder(170)
+    fetch_geog(root=fits, datasets=("modis_landuse_20class_30s_with_lakes",),
+               source="hf", progress=lambda *_: None,
+               urlopen_fn=_fake_transport(
+                   {"modis_landuse_20class_30s_with_lakes.tar.bz2": payload}))
+    ok, detail = validate_dataset_dir(
+        fits, "modis_landuse_20class_30s_with_lakes")
+    assert ok, detail
+
+    deep = folder(200)
+    with pytest.raises(GeogFetchError) as caught:
+        fetch_geog(root=deep,
+                   datasets=("modis_landuse_20class_30s_with_lakes",),
+                   source="hf", progress=lambda *_: None,
+                   urlopen_fn=_fake_transport(
+                       {"modis_landuse_20class_30s_with_lakes.tar.bz2":
+                        payload}))
+    message = str(caught.value)
+    assert "download failed" not in message
+    assert "resumes" not in message
+    assert "characters" in message and "259" in message
+
+
+# ---------------------------------------------------------------------------
 # Remedy text: doctor and wizard point at this command
 # ---------------------------------------------------------------------------
 
@@ -887,6 +1177,57 @@ def test_cli_list_mode_runs_offline_through_dispatch(tmp_path, capsys):
     assert "fetch-geog: total" in out
     for dataset in GEOG_DATASETS:
         assert dataset in out
+
+
+def _stage_every_index(root: Path, datasets: tuple[str, ...]) -> None:
+    """A root on which every requested dataset validates as staged."""
+    for dataset in datasets:
+        subdirs = geog_assets.archive_for(dataset).index_subdirs
+        for directory in ([root / dataset] if not subdirs
+                          else [root / dataset / name for name in subdirs]):
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "index").write_text(_INDEX_TEXT)
+
+
+def test_list_on_a_fully_staged_root_prints_no_download(tmp_path, capsys):
+    """hrrr-full-09 (b): a fully staged root listed every dataset "staged"
+    and then ended "total 1.21 GiB download", a download that a fetch of
+    that root would never make."""
+    import re
+    from gpuwm.cli import main
+    datasets = parse_datasets("wrf")
+    _stage_every_index(tmp_path, datasets)
+    assert main(["fetch-geog", "--datasets", "wrf", "--list",
+                 "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "  needed  " not in out
+    assert out.count("  staged  ") == len(datasets)
+    assert f"all {len(datasets)} requested dataset(s) are staged" in out
+    assert "nothing to download" in out
+    downloads = [float(size) for size in
+                 re.findall(r"([0-9.]+) GiB download", out)]
+    assert not any(downloads), out
+
+
+def test_list_totals_only_the_datasets_still_needed(tmp_path, capsys):
+    """The total is the sum of the "needed" rows, the same bill fetch prints."""
+    from gpuwm.cli import main
+    datasets = parse_datasets("wrf")
+    # The largest archive is left unstaged, so the total is a figure the
+    # two-decimal GiB format cannot round to zero.
+    needed = max(datasets,
+                 key=lambda name: geog_assets.archive_for(name).archive_bytes)
+    _stage_every_index(tmp_path, tuple(name for name in datasets
+                                       if name != needed))
+    assert main(["fetch-geog", "--datasets", "wrf", "--list",
+                 "--root", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    archive = geog_assets.archive_for(needed)
+    assert archive.archive_bytes >= 0.01 * 1024 ** 3
+    assert f"  needed  {needed}:" in out
+    assert (f"fetch-geog: total {archive.archive_bytes / 1024 ** 3:.2f} GiB "
+            "download") in out
+    assert f"for the 1 of {len(datasets)} dataset(s) still needed" in out
 
 
 def test_cli_refuses_unknown_dataset_as_a_usage_error(tmp_path, capsys):

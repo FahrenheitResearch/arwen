@@ -1,23 +1,24 @@
 # Storm cells as objects: `gpuwm cells`
 
 ArWen writes fields. A person deciding about a storm -- a forecaster, a
-seeding pilot, a verification script -- needs objects: *this* cell, how
+researcher, a verification script -- needs objects: *this* cell, how
 old it is, how fast its updraft is, whether it is still growing, where it
 will be in twenty minutes. `gpuwm cells` is the door that turns a run's
 history into those objects and the per-cell numbers a decision reads.
 
 ## What titan is, and what ArWen adds
 
-**titan** (titan-rs) is a Rust implementation of the TITAN storm-cell
+**titan** is a Rust implementation of the TITAN storm-cell
 engine: three-dimensional identification of convective cells in a
 reflectivity volume, persistent tracking of each cell through time
 including splits and merges, a lineage graph, trend estimation, and
 forecast footprints at fixed lead times. It reads checksummed Cartesian
 volumes and writes an analysis bundle (`frames.jsonl`, `tracks.json`,
 `lineage.json`, `objects.geojson`, `forecasts.geojson`, `summary.json`).
-It is a separate program: `gpuwm` does not vendor it and does not
-reimplement any part of it. When the binary is not installed the door
-refuses by name and says what to set.
+It is a separate program that ArWen does not ship: `gpuwm` does not
+vendor it, depend on it or reimplement any part of it. The `analyze` door
+is optional. When no titan binary is installed it is off, and says so in
+one plain message; `export` and `catalog` work without it.
 
 titan supplies, per cell per frame: object id, track id, whether this is
 the track's first observation, area, volume, geometric centroid, maximum

@@ -188,12 +188,12 @@ def test_the_cap_adds_nothing_to_stderr_on_an_ordinary_request(
     assert "--polygon" in fact[0]
 
 
-def test_the_extent_cap_is_default_and_takes_no_flag(capsys) -> None:
+def test_the_extent_cap_is_default(capsys) -> None:
     """"Fixed means default": a bare fit is the fixed one.
 
     ``fit_ladder`` is called here with nothing but the arguments a
-    point request always supplies -- no cap argument exists to pass --
-    and the result is already bounded.
+    point request always supplies -- no extent is passed -- and the
+    result is already bounded by the default.
     """
     projection = dw._projection_entries(41.5, -98.0)
     dims, _ = dw.fit_ladder(
@@ -633,3 +633,235 @@ def test_a_memory_exhausted_ladder_claims_no_request_bound() -> None:
         _road_fit(bounded=True, gib=0.5)
     assert "the centre is what moves" not in str(caught.value)
     assert caught.value.resource in {"vram", "host", "memory"}
+
+
+# ---------------------------------------------------------------------------
+# The extent is the request's, so a front end can pass it.
+#
+# 6,000 km was only ever a default: a point carries no extent, and the
+# number stands in for one.  It had no door, so a front end asking for a
+# wider domain from a point had to draw a polygon instead.  The flag moves
+# the default and nothing else: the projection pole, the source's coverage
+# and the card still bound the fit.
+# ---------------------------------------------------------------------------
+
+
+def _root_extent_km(out) -> float:
+    exp = dw.experiment_from_text(out.read_text(encoding="utf-8"),
+                                  source=str(out))
+    root = exp.domains[0].run
+    return max(root.nx, root.ny) * root.dx / 1000.0
+
+
+def test_the_point_extent_is_an_argument_the_fit_sizes_to(
+        tmp_path, capsys) -> None:
+    out = tmp_path / "wide.toml"
+    assert cli_main(["domain", "--point=30,-98", "--vram-gib", "180",
+                     "--ladder", "12", "--source", "gfs",
+                     "--cycle", "2026-07-29T18", "--hours", "6",
+                     "--point-extent-km", "9000", "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    extent = _root_extent_km(out)
+    assert dw.POINT_FIT_MAX_EXTENT_KM < extent <= 9000.0 + 1e-6
+    # The plan summary states the extent used and the limit it was sized
+    # under, on stdout, and the cap that bound it once.
+    header = [line for line in captured.out.splitlines()
+              if line.startswith("gpuwm domain: ")]
+    assert f"root extent {extent:.0f} km (--point-extent-km 9000)" in (
+        header[-1]), captured.out
+    fact = [line for line in captured.out.splitlines()
+            if line.startswith("domain: point request:")]
+    assert len(fact) == 1, captured.out
+    assert f"extent capped at {extent:.0f} km" in fact[0]
+    assert "point request:" not in captured.err
+
+
+def test_the_template_point_route_takes_the_same_extent(tmp_path,
+                                                         capsys) -> None:
+    from argparse import Namespace
+    import tomllib
+    from gpuwm import starter_template as st
+
+    dx_m = 12000.0
+    text = dw.render_config(
+        name="template-point-extent", start_time=START, hours=6,
+        projection=dw._projection_entries(30.0, -98.0, "auto"),
+        dims=dw._dims_for_scale(1, ()), ratios=(), root_dx_m=dx_m,
+        fetch_hints=dict(source="gfs", cycle="2026-09-09T00", hours=6,
+                         out="data/test", cadence=3), case_data=None)
+    raw = tomllib.loads(text)
+    path = tmp_path / "starter.toml"
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    out = tmp_path / "resolved.toml"
+    assert st.fit_main(Namespace(
+        template=path, out=out, point="30,-98", polygon=None,
+        buffer_km=None, source=None, card=None, vram_gib=180.0,
+        start_time=None, hours=None, write=True,
+        point_extent_km=9000.0)) == 0
+    printed = capsys.readouterr().out
+    fitted = tomllib.loads(out.read_text(encoding="utf-8"))["domain"][0]
+    extent = max(fitted["nx"], fitted["ny"]) * float(fitted["dx"]) / 1000.0
+    assert dw.POINT_FIT_MAX_EXTENT_KM < extent <= 9000.0 + 1e-6
+    assert "point request:" in printed
+
+
+def test_the_point_extent_takes_the_door_on_the_command_line() -> None:
+    from gpuwm.cli import build_parser
+
+    parser = build_parser()
+    for command in (["domain", "--point=30,-98", "--cycle", "2026-07-29T18",
+                     "--out", "x.toml"],
+                    ["domain-fit", "t.toml", "--point=30,-98",
+                     "--out", "x.toml"]):
+        assert parser.parse_args(command).point_extent_km == (
+            dw.POINT_FIT_MAX_EXTENT_KM)
+        assert parser.parse_args(
+            [*command, "--point-extent-km", "7500"]).point_extent_km == 7500.0
+        for bad in ("0", "-5", "nan", "wide"):
+            with pytest.raises(SystemExit):
+                parser.parse_args([*command, "--point-extent-km", bad])
+
+
+def test_a_point_extent_beside_a_drawn_area_is_refused(tmp_path,
+                                                        capsys) -> None:
+    """A polygon is sized to the drawing and never reads the extent, so
+    a value given with it would be dropped; it is refused instead."""
+
+    area = tmp_path / "area.geojson"
+    area.write_text(json.dumps({
+        "type": "Polygon",
+        "coordinates": [[[-100.0, 30.0], [-96.0, 30.0], [-96.0, 33.0],
+                         [-100.0, 33.0], [-100.0, 30.0]]]}), encoding="utf-8")
+    out = tmp_path / "drawn.toml"
+    rc = cli_main(["domain", f"--polygon={area}", "--card", "16gb",
+                   "--source", "gfs", "--cycle", "2026-07-28T06",
+                   "--point-extent-km", "9000", "--out", str(out)])
+    assert rc == 2
+    assert "--point-extent-km" in capsys.readouterr().err
+    assert not out.exists()
+
+
+# ---------------------------------------------------------------------------
+# What the extent cannot move, and what it cannot shrink.
+#
+# Once the extent became an argument two things the fixed 6,000 km had
+# hidden were reachable.  An extent below the smallest root a ladder
+# hosts was quietly exceeded under a line saying the cap bound it, and a
+# Mercator point fit had nothing to stop it wrapping round the globe.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ladder,extent", [("12", 50.0), ("12-3", 500.0)])
+def test_an_extent_below_the_smallest_root_gets_that_root_and_says_so(
+        ladder: str, extent: float) -> None:
+    stop: dict = {}
+    projection = dw._projection_entries(39.0, -98.0)
+    dims, _ = dw.fit_ladder(
+        ladder=ladder, free_bytes=int(24 * GIB), vram_gib=24.0, hours=6,
+        start_time=START, projection=projection, source="gfs",
+        name="floor", stop_out=stop, point_extent_km=extent)
+    smallest = dw._dims_for_scale(dw._MIN_SCALE, dw.LADDER_RATIOS[ladder])
+    assert dims[0] == smallest[0]
+    assert _extent_km(dims) > extent
+    assert stop["scope"] == dw.POINT_FIT_FLOOR_SCOPE
+    assert stop["scope"] in dw.POINT_FIT_SCOPES
+    note = dw.point_fit_cap_note(stop["scope"], dims,
+                                 point_extent_km=extent)
+    assert "is the smallest root this ladder hosts" in note
+    assert f"larger than --point-extent-km {extent:g}" in note
+    assert "capped" not in note and "raise" not in note
+
+
+def test_the_door_states_the_floor_rather_than_a_cap(tmp_path,
+                                                     capsys) -> None:
+    """The reported shape: 50 km on the 12 km ladder emitted a 720 km
+    root and told the reader to raise the value for a larger domain."""
+
+    out = tmp_path / "small.toml"
+    assert cli_main(["domain", "--point=39,-98", "--source", "gfs",
+                     "--cycle", "2026-07-29T18", "--hours", "6",
+                     "--vram-gib", "24", "--ladder", "12",
+                     "--point-extent-km", "50", "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    assert _root_extent_km(out) == 720.0
+    header = [line for line in captured.out.splitlines()
+              if line.startswith("gpuwm domain: ")]
+    assert "root extent 720 km (--point-extent-km 50)" in header[-1]
+    fact = [line for line in captured.out.splitlines()
+            if line.startswith("domain: point request:")]
+    assert len(fact) == 1, captured.out
+    assert ("is the smallest root this ladder hosts, larger than "
+            "--point-extent-km 50") in fact[0]
+    assert "capped" not in captured.out
+    assert "raise --point-extent-km" not in captured.out
+    assert "point request:" not in captured.err
+
+
+def test_the_longitude_span_is_measured_without_wrapping() -> None:
+    from gpuwm.static.projection import (EARTH_RADIUS_M,
+                                         footprint_longitude_span)
+    import math
+
+    merc = dw._projection_entries(0.0, -30.0)
+    assert merc["map_proj"] == "mercator"
+    # Mercator longitude is linear in x: nx cells of dx at the equator.
+    expected = math.degrees(5000 * 12000.0 / EARTH_RADIUS_M)
+    assert expected > 500.0
+    assert footprint_longitude_span(merc, 5000, 4000, 12000.0) == (
+        pytest.approx(expected, rel=1e-9))
+    # A footprint that does not wrap measures what its full corner grid
+    # measures: the perimeter carries the extremes.
+    lam = dw._projection_entries(41.5, -98.0)
+    _, lon_c = dw._root_grid(lam, 500, 400, 12000.0).latlon_c()
+    assert footprint_longitude_span(lam, 500, 400, 12000.0) == (
+        pytest.approx(float(lon_c.max() - lon_c.min()), abs=1e-6))
+
+
+def test_a_root_past_one_trip_around_the_globe_is_a_request_bound() -> None:
+    merc = dw._projection_entries(0.0, -30.0)
+    scope, reason = dw.point_request_bound(merc, 5000, 4000, 12000.0,
+                                           max_extent_km=1.0e6)
+    assert scope == dw.POINT_FIT_BAND_SCOPE
+    assert "more than once around the globe" in reason
+    assert dw.point_request_bound(merc, 3000, 2400, 12000.0,
+                                  max_extent_km=1.0e6) is None
+
+
+@pytest.mark.parametrize("lat,projection_name", [(0.0, "mercator"),
+                                                  (26.0, "lambert")])
+def test_a_point_fit_stays_inside_one_trip_around_the_globe(
+        lat: float, projection_name: str) -> None:
+    """The reported shape: --point-extent-km 60000 at (0, -30) on a 2000
+    GiB budget sized a 5000 x 4000 Mercator root and printed PASS.  The
+    Lambert cone at 26 N crosses the band before its pole margin, so the
+    same bound is what holds it."""
+
+    from gpuwm.static.projection import footprint_longitude_span
+
+    stop: dict = {}
+    projection = dw._projection_entries(lat, -30.0)
+    assert projection["map_proj"] == projection_name
+    dims, _ = dw.fit_ladder(
+        ladder="12", free_bytes=int(2000 * GIB), vram_gib=2000.0, hours=6,
+        start_time=START, projection=projection, source="gfs",
+        name="band", stop_out=stop, point_extent_km=60000.0)
+    span = footprint_longitude_span(projection, *dims[0], dw.ROOT_DX_M)
+    assert 300.0 < span < 360.0
+    assert stop["scope"] == dw.POINT_FIT_BAND_SCOPE
+    dw._pole_clearance_refusal(projection, *dims[0], dw.ROOT_DX_M)
+    note = dw.point_fit_cap_note(stop["scope"], dims)
+    assert "less than once around the globe" in note
+
+
+def test_the_advisory_names_the_extent_flag_and_the_floor_names_root_dx(
+        ) -> None:
+    box = "-6.39,-159.63,73.19,-35.37"
+    for bound in (dw.POINT_FIT_EXTENT_SCOPE, dw.POINT_FIT_PROJECTION_SCOPE,
+                  dw.POINT_FIT_BAND_SCOPE):
+        (line,) = dw.oversized_footprint_advisory(box, request_bound=bound)
+        assert "lower --point-extent-km" in line and "--polygon" in line
+        assert "--vram-gib" not in line and "--root-dx" not in line
+    (floor,) = dw.oversized_footprint_advisory(
+        box, request_bound=dw.POINT_FIT_FLOOR_SCOPE)
+    assert "a finer --root-dx KM" in floor
+    assert "no --point-extent-km makes it smaller" in floor

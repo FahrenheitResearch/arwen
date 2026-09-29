@@ -171,24 +171,56 @@ pub fn request_for_source(
         "grid": grid,
         "fields": inventory,
     });
-    let mut output = std::io::stdout().lock();
-    writeln!(output, "{event}")
-        .and_then(|_| output.flush())
-        .map_err(|e| frame_invalid(format!("cannot request atmospheric support: {e}")))?;
-    drop(output);
-    let mut line = String::new();
-    let count = std::io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .map_err(|e| frame_invalid(format!("cannot read atmospheric support response: {e}")))?;
-    if count == 0 {
-        return Err(frame_invalid(
-            "atmospheric support requester closed before replying",
-        ));
-    }
+    let line = exchange(
+        &event.to_string(),
+        &mut std::io::stdout().lock(),
+        &mut std::io::stdin().lock(),
+    )?;
     let response: Value = serde_json::from_str(&line)
         .map_err(|e| frame_invalid(format!("invalid atmospheric support response: {e}")))?;
     parse_inventory(&response, &geometry, [latitude.len(), longitude.len()], inventory)
+}
+
+/// Send one request line to the process that started the engine and read
+/// its one-line reply.
+///
+/// A pipe the parent closed is its own refusal, `requester_closed`: the
+/// parent stopped reading or replying, so nothing is wrong with a disk or
+/// an output directory, and a remedy about either would send the reader
+/// to the wrong place.  Any other failure to write the request keeps the
+/// write refusal a real file would get (stdout redirected to a full disk
+/// is still a full disk).
+fn exchange(request: &str, output: &mut impl Write, input: &mut impl BufRead) -> Result<String> {
+    writeln!(output, "{request}")
+        .and_then(|_| output.flush())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                crate::refusal::requester_closed(format!(
+                    "the process that started the engine stopped reading before it \
+                     took the atmospheric support request: {error}"
+                ))
+            } else {
+                crate::refusal::write_error("request atmospheric support on stdout", &error, None)
+            }
+        })?;
+    let mut line = String::new();
+    let count = input.read_line(&mut line).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            crate::refusal::requester_closed(format!(
+                "the process that started the engine closed the reply pipe while \
+                 its atmospheric support reply was being read: {error}"
+            ))
+        } else {
+            frame_invalid(format!("cannot read atmospheric support response: {error}"))
+        }
+    })?;
+    if count == 0 {
+        return Err(crate::refusal::requester_closed(
+            "the process that started the engine closed the reply pipe before it \
+             answered the atmospheric support request",
+        ));
+    }
+    Ok(line)
 }
 
 impl Window {
@@ -263,6 +295,52 @@ pub fn pressure_levels(values: &[f64], plane_size: usize) -> Result<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writer whose every write fails the way the named kind says.
+    struct Failing(std::io::ErrorKind);
+
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(self.0))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::from(self.0))
+        }
+    }
+
+    #[test]
+    fn a_parent_that_stopped_reading_is_a_closed_pipe_not_an_output_directory() {
+        let mut reply = std::io::Cursor::new(b"{}\n".to_vec());
+        let refusal = exchange("{}", &mut Failing(std::io::ErrorKind::BrokenPipe), &mut reply)
+            .unwrap_err();
+        assert_eq!(refusal.class, crate::refusal::class::REQUESTER_CLOSED);
+        assert!(refusal.message.contains("stopped reading"), "{}", refusal.message);
+        assert!(!refusal.remedy.contains("output directory"), "{}", refusal.remedy);
+        assert!(!refusal.remedy.contains("disk"), "{}", refusal.remedy);
+
+        // A parent that took the request and closed without a reply.
+        let mut sent = Vec::new();
+        let mut nothing = std::io::Cursor::new(Vec::new());
+        let refusal = exchange("{}", &mut sent, &mut nothing).unwrap_err();
+        assert_eq!(refusal.class, crate::refusal::class::REQUESTER_CLOSED);
+        assert!(refusal.message.contains("before it answered"), "{}", refusal.message);
+        assert_eq!(sent, b"{}\n");
+    }
+
+    #[test]
+    fn a_request_written_to_a_real_file_keeps_the_write_refusals() {
+        let mut reply = std::io::Cursor::new(b"{}\n".to_vec());
+        let full = exchange("{}", &mut Failing(std::io::ErrorKind::StorageFull), &mut reply)
+            .unwrap_err();
+        assert_eq!(full.class, crate::refusal::class::DISK_FULL);
+        let denied = exchange("{}", &mut Failing(std::io::ErrorKind::PermissionDenied), &mut reply)
+            .unwrap_err();
+        assert_eq!(denied.class, crate::refusal::class::WRITE_FAILED);
+
+        let mut sent = Vec::new();
+        let mut answered = std::io::Cursor::new(b"{\"mode\":\"full\"}\n".to_vec());
+        assert_eq!(exchange("{}", &mut sent, &mut answered).unwrap(), "{\"mode\":\"full\"}\n");
+    }
 
     #[test]
     fn retained_rows_preserve_level_and_column_order() {

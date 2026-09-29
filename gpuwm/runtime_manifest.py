@@ -25,11 +25,12 @@ containing the ``gpuwm`` package -- which is a checkout for a developer
 and ``site-packages`` for everyone else.  On every pip install that is
 ``CalledProcessError: returned non-zero exit status 128``, and on a venv
 nested inside some unrelated repository it is worse: it succeeds and
-binds a stranger's commit.  :func:`provenance` resolves the three real
-cases in order -- sealed manifest, genuine checkout of THIS tree,
-installed wheel -- and the wheel case is answered from the distribution
-metadata and its ``RECORD`` digests, which is exactly the identity pip
-installed.
+binds a stranger's commit.  :func:`provenance` resolves the real cases
+in order -- sealed manifest, genuine checkout of THIS tree, an editable
+install's source tree (by git, or by its content when it has no
+``.git``), installed wheel -- and the wheel case is answered from the
+distribution metadata and its ``RECORD`` digests, which is exactly the
+identity pip installed.
 
 Nothing here imports numpy, cupy, or any ingest module: ``gpuwm doctor``
 runs it on a base install to report which path an install has *before*
@@ -67,6 +68,7 @@ IDENTITY_SOURCES = (
     "gpuwm-native-distribution-manifest",
     "git",
     "installed-editable-source",
+    "installed-source-content",
     "installed-wheel-record",
 )
 
@@ -80,15 +82,31 @@ _GIT_TIMEOUT_S = 30
 
 #: Appended to every unbindable-identity refusal.  An editable install
 #: legitimately has no wheel identity, so "reinstall it with pip" is the
-#: wrong advice on its own: what such an install needs is a readable
-#: checkout to bind instead.
+#: wrong advice on its own: what such an install needs is a source tree
+#: it can bind instead.
 _EDITABLE_REMEDY = (
     ".  If this is an editable install (pip install -e), its identity "
     "binds to the source tree instead -- and every way of reading that "
     "tree has been tried here: git on PATH, git at its default install "
-    "location, and a direct read of the tree's own .git files.  What is "
-    "missing is a source tree with a readable .git beside the gpuwm "
-    "package")
+    "location, a direct read of the tree's own .git files, and the file "
+    "list pip install -e . writes into a source tree that has no .git "
+    "(gpuwm.egg-info/SOURCES.txt).  What is missing is one of those two "
+    "beside the gpuwm package: a readable .git, or that file list, which "
+    "running pip install -e . in the source folder writes")
+
+#: Where :func:`source_content_identity` keeps the digests it has already
+#: read, per source root.  A cache of this user's own measurements and
+#: nothing more: a missing, unreadable or foreign file costs one full read
+#: of the tree and changes no answer.
+_CONTENT_CACHE_SCHEMA = "gpuwm-source-content-cache-v1"
+
+#: A digest is remembered only for a file last modified at least this
+#: long before it was read.  Two writes inside one timestamp tick leave
+#: the same size and modification time behind (FAT stores even seconds,
+#: and Linux stamps from a clock that advances once per scheduler tick),
+#: so a digest taken inside that window could outlive the bytes it
+#: describes.
+_CONTENT_RACY_NS = 2_000_000_000
 
 
 class ManifestError(ValueError):
@@ -323,6 +341,35 @@ def installed_distribution(package: str = "gpuwm"):
     return None
 
 
+def serving_import_root(package: str = "gpuwm") -> Path | None:
+    """The folder a fresh interpreter must put on its path to import THIS
+    ``package``, or ``None`` when an installed distribution provides it.
+
+    A child started as ``python -P -m gpuwm`` never looks in its working
+    folder (a checkout there cannot shadow the installed wheel), so a
+    wheel install needs nothing more.  A source tree or an editable
+    install is not what the environment's own distribution locates, so
+    its root is named here and handed to the child explicitly.
+    """
+
+    if installed_distribution(package) is not None:
+        return None
+    return Path(__file__).resolve().parent.parent
+
+
+def child_python_env(package: str = "gpuwm") -> dict[str, str]:
+    """Environment additions for a ``python -P -m gpuwm`` child of this
+    process: the serving source root first on ``PYTHONPATH`` when there
+    is one, and nothing for an installed wheel.
+    """
+
+    root = serving_import_root(package)
+    if root is None:
+        return {}
+    existing = os.environ.get("PYTHONPATH")
+    return {"PYTHONPATH": os.pathsep.join([str(root), existing] if existing else [str(root)])}
+
+
 def _is_compiled_bytecode(item) -> bool:
     """True for a ``__pycache__``/``.pyc``/``.pyo`` RECORD entry."""
 
@@ -553,9 +600,154 @@ def _editable_provenance(identity: dict[str, object]) -> dict[str, object]:
     return document
 
 
+# ---------------------------------------------------------------------------
+# A source tree with no .git: the identity is its CONTENT
+# ---------------------------------------------------------------------------
+
+def _content_cache_path(root: Path) -> Path:
+    key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:32]
+    return Path.home() / ".gpuwm" / "cache" / "source-content" / f"{key}.json"
+
+
+def _load_content_cache(path: Path, root: Path) -> dict:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if (not isinstance(document, dict)
+            or document.get("schema") != _CONTENT_CACHE_SCHEMA
+            or document.get("source_root") != str(root)
+            or not isinstance(document.get("entries"), dict)):
+        return {}
+    return document["entries"]
+
+
+def _store_content_cache(path: Path, root: Path, entries: dict) -> None:
+    partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_text(json.dumps(
+            {"schema": _CONTENT_CACHE_SCHEMA, "source_root": str(root),
+             "entries": entries}, sort_keys=True), encoding="utf-8")
+        os.replace(partial, path)
+    except OSError:
+        try:
+            partial.unlink()
+        except OSError:
+            pass
+
+
+def _stat_key(status: os.stat_result) -> list[int]:
+    return [status.st_size, status.st_mtime_ns, status.st_ctime_ns,
+            status.st_ino]
+
+
+def source_content_identity(root: Path) -> dict[str, object] | None:
+    """The identity of a source tree that has no ``.git``, from its bytes.
+
+    An extracted source archive installed with ``pip install -e .`` has
+    no commit to name and no RECORD to read, but setuptools leaves the
+    distribution's file list in ``gpuwm.egg-info/SOURCES.txt`` beside
+    it.  The identity is the SHA-256 over every listed file's current
+    bytes: the source tree's counterpart of a wheel's RECORD, measured
+    rather than trusted, because an editable tree exists to be edited and
+    stage reuse and the end-of-run check both read this answer.  Git fields
+    stay ``None``: no commit is claimed.  A listed file that is gone is
+    recorded as missing rather than refused, the way ``git status``
+    records a deletion.
+
+    Reading 3,000 files costs seconds, so each digest is remembered
+    against the file's size, modification time, change time and inode in
+    ``~/.gpuwm/cache/source-content``.  A later call re-reads only files
+    whose stat moved, which is how git keeps ``git status`` cheap, and a
+    file written within :data:`_CONTENT_RACY_NS` of its read is never
+    remembered.  Returns ``None`` when ``root`` is a checkout (git
+    answers for it, including by retry), not a source tree of this
+    project, or carries no file list.
+    """
+
+    from pathlib import PurePosixPath
+    import stat as stat_module
+    import time
+
+    from gpuwm.provenance import pyproject_version, source_inventory
+
+    root = Path(root).resolve()
+    if (root / ".git").exists() or not (root / "gpuwm" / "__init__.py").is_file():
+        return None
+    version = pyproject_version(root)[0]
+    if version is None:
+        return None
+    for distribution in metadata.distributions(path=[str(root)]):
+        name = str(distribution.metadata.get("Name") or "")
+        if name.lower().replace("_", "-") not in _CANDIDATE_DISTRIBUTIONS:
+            continue
+        inventory = source_inventory(distribution, root)
+        if inventory is not None:
+            break
+    else:
+        return None
+    cache_path = _content_cache_path(root)
+    cached = _load_content_cache(cache_path, root)
+    remembered: dict[str, list] = {}
+    aggregate = hashlib.sha256()
+    listed = missing = 0
+    for relative in sorted({item.replace("\\", "/") for item in inventory}):
+        if _is_compiled_bytecode(relative):
+            continue
+        parts = PurePosixPath(relative).parts
+        if (not parts or PurePosixPath(relative).is_absolute()
+                or ".." in parts or ":" in parts[0]):
+            raise IdentityError(
+                f"the source file list at {root} names {relative!r}, which "
+                "is outside that folder, so the tree cannot be bound by its "
+                "content" + _EDITABLE_REMEDY)
+        path = root.joinpath(*parts)
+        listed += 1
+        try:
+            before = os.stat(path)
+        except FileNotFoundError:
+            before = None
+        if before is None or not stat_module.S_ISREG(before.st_mode):
+            missing += 1
+            aggregate.update(relative.encode("utf-8") + b"\0missing\n")
+            continue
+        key = _stat_key(before)
+        entry = cached.get(relative)
+        if (isinstance(entry, list) and len(entry) == 5
+                and entry[:4] == key and isinstance(entry[4], str)):
+            digest = entry[4]
+            remembered[relative] = entry
+        else:
+            started = time.time_ns()
+            with open(path, "rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if _stat_key(os.stat(path)) != key:
+                raise IdentityError(
+                    f"{relative} changed while this source tree's content "
+                    "was being read; run again once the edit is saved")
+            # Only the modification time decides: any later write moves
+            # it, while the change time also moves on a mere utime or
+            # chmod, which rewrites no byte.
+            if before.st_mtime_ns < started - _CONTENT_RACY_NS:
+                remembered[relative] = [*key, digest]
+        aggregate.update(relative.encode("utf-8") + b"\0"
+                         + digest.encode("ascii") + b"\n")
+    if remembered != cached:
+        _store_content_cache(cache_path, root, remembered)
+    return {
+        "distribution_name": name,
+        "distribution_version": distribution.version,
+        "source_version": version,
+        "source_file_count": listed,
+        "missing_file_count": missing,
+        "content_sha256": aggregate.hexdigest(),
+    }
+
+
 def provenance(root: Path, *,
                gpuwm_version: str | None = None) -> dict[str, object]:
-    """What this install is, by the first of three paths that applies.
+    """What this install is, by the first identity path that applies.
 
     ``root`` is the directory that contains the ``gpuwm`` package: a
     checkout root for a developer, ``site-packages`` for a wheel.  The
@@ -563,17 +755,18 @@ def provenance(root: Path, *,
     ``git_tree`` and ``git_status_short`` -- the shape every existing
     receipt consumer reads -- plus whichever of
     ``distribution_manifest_sha256`` / ``installed_wheel`` /
-    ``installed_editable`` the resolved path earned.  It raises only
-    when NO path can answer, which is a broken install rather than an
-    unusual one.
+    ``installed_editable`` / ``installed_source_content`` the resolved
+    path earned.  It raises only when NO path can answer, which is a
+    broken install rather than an unusual one.
 
     The paths, in order: a sealed manifest, a genuine checkout of THIS
-    tree, an editable install's source tree, then the installed wheel's
-    RECORD.  The editable path comes before the wheel because an
-    editable install's RECORD describes the redirect pip wrote, not the
-    code -- binding it would be a receipt naming two shim files.  A
-    plain wheel install never reaches that branch and so pays for no
-    extra git subprocess.
+    tree, an editable install's git source tree, a source tree with no
+    ``.git`` bound by its content (:func:`source_content_identity`),
+    then the installed wheel's RECORD.  The editable paths come before
+    the wheel because an editable install's RECORD describes the
+    redirect pip wrote, not the code -- binding it would be a receipt
+    naming two shim files.  A plain wheel install never reaches either
+    and so pays for no extra git subprocess and no file reads.
     """
 
     bound = manifest_from_environment(gpuwm_version=gpuwm_version)
@@ -612,6 +805,18 @@ def provenance(root: Path, *,
         source = source_tree_identity()
         if source is not None:
             return _editable_provenance(source)
+    content = source_content_identity(root)
+    if content is not None:
+        return {
+            "identity_source": "installed-source-content",
+            "git_commit": None,
+            "git_tree": None,
+            "git_status_short": None,
+            "distribution_manifest_sha256": None,
+            "installed_wheel": None,
+            "installed_editable": None,
+            "installed_source_content": content,
+        }
     try:
         wheel = wheel_record_identity()
     except IdentityError:
@@ -638,7 +843,8 @@ def provenance(root: Path, *,
 __all__ = [
     "IDENTITY_SOURCES", "IdentityError", "KNOWN_BACKENDS", "MANIFEST_ENV",
     "ManifestError", "RUNTIME_SCHEMA", "git_checkout_root",
-    "installed_distribution", "load_manifest", "manifest_defects",
-    "manifest_from_environment", "provenance", "source_tree_identity",
+    "child_python_env", "installed_distribution", "load_manifest", "manifest_defects",
+    "manifest_from_environment", "provenance", "serving_import_root",
+    "source_content_identity", "source_tree_identity",
     "validate_manifest", "wheel_record_identity",
 ]

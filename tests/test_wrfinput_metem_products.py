@@ -9,6 +9,7 @@ first-products receipt and no `latest-run.txt`.  These tests hold the
 flags to the worker argv, the arming to the shared decision, and the
 finalize render to `gpuwm go`'s own stage.
 """
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,6 +100,12 @@ class _FakePopen:
         out = Path(command[command.index('--out') + 1])
         out.mkdir(parents=True, exist_ok=True)
         (out / 'refl_0000.png').write_bytes(b'\x89PNG\r\n\x1a\n')
+        # Empty pipes, read while the render runs.
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+
+    def wait(self, timeout=None):
+        return self.returncode
 
     def communicate(self):
         return '', ''

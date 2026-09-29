@@ -315,3 +315,48 @@ def test_a_binary_whose_own_name_begins_with_lib_keeps_it(
         assert status.artifact == "libra"
     finally:
         bridges._CRATE_INDEX.clear()
+
+
+def _record_inputs(binary: Path, *inputs: Path) -> None:
+    """Write the dep-info cargo leaves beside an artifact it linked."""
+
+    listed = " ".join(str(path).replace(" ", "\ ") for path in inputs)
+    binary.with_name(binary.stem + ".d").write_text(
+        f"{binary}: {listed}\n", encoding="utf-8")
+
+
+def test_a_crate_file_this_binary_was_not_compiled_from_does_not_condemn_it(checkout):
+    # A module only a sibling binary includes by #[path]: when it moves,
+    # cargo relinks that sibling alone, so this binary stays as built and
+    # the remedy's build could never make it current.
+    workspace, binary = checkout
+    crate = workspace / "crates" / "rw-netcdf"
+    only_the_sibling = _write(crate / "src" / "sibling_core.rs", "// sibling\n")
+    _record_inputs(binary, crate / "src" / "main.rs",
+                   workspace / "vendor" / "netcrust" / "src" / "lib.rs")
+    _touch(only_the_sibling, 2_000_086_400)
+    assert bridges.checkout_build_status(binary).current is True
+
+
+def test_a_file_cargo_recorded_for_this_binary_still_condemns_it(checkout):
+    workspace, binary = checkout
+    crate = workspace / "crates" / "rw-netcdf"
+    _record_inputs(binary, crate / "src" / "main.rs",
+                   workspace / "vendor" / "netcrust" / "src" / "lib.rs")
+    _touch(workspace / "vendor" / "netcrust" / "src" / "lib.rs", 2_000_086_400)
+    status = bridges.checkout_build_status(binary)
+    assert status.current is False
+    assert status.newest_source.name == "lib.rs"
+    # The manifests still price every build.
+    _touch(workspace / "vendor" / "netcrust" / "src" / "lib.rs", 1_000_000_000)
+    _touch(crate / "Cargo.toml", 2_000_086_400)
+    assert bridges.checkout_build_status(binary).current is False
+
+
+def test_a_record_naming_a_file_that_is_gone_falls_back_to_the_crate(checkout):
+    workspace, binary = checkout
+    crate = workspace / "crates" / "rw-netcdf"
+    only_the_sibling = _write(crate / "src" / "sibling_core.rs", "// sibling\n")
+    _record_inputs(binary, crate / "src" / "main.rs", crate / "src" / "removed.rs")
+    _touch(only_the_sibling, 2_000_086_400)
+    assert bridges.checkout_build_status(binary).current is False

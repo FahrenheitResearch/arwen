@@ -163,6 +163,14 @@ impl Crs {
                     spec.stand_lon,
                     EARTH_RADIUS_M,
                 )),
+                ProjectionKind::Rows => {
+                    return Err(StaticError::Invalid(
+                        "high-resolution overlays have no CRS for a rows \
+                         grid: the global spectral statics take the \
+                         30-arc-second build only"
+                            .to_string(),
+                    ))
+                }
             },
         })
     }

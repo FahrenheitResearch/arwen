@@ -146,7 +146,7 @@ CASE_TOKENS: tuple[str, ...] = (
     "dodgecity",
     "dodge city",
     "20160524",
-    # The case attempt #1 actually runs, after Drew moved it on 2026-08-06.
+    # The case attempt #1 actually runs, after it moved on 2026-08-06.
     # The Dodge City tokens above stay registered: that config and its case
     # module remain in the tree, parked behind an unadjudicated ingest
     # question, and a parked case needs its confinement enforced exactly as

@@ -207,7 +207,7 @@ def test_qv_construction_uses_wrf_floor_and_invalid_guard():
         c.SVP2 * (temperature[1] - c.SVPT0)
         / (temperature[1] - c.SVP3)
     )
-    # rh_to_mxrat1's own EPS = 0.622 (module_initialize_real.F:7379),
+    # WRF v4.6.1 rh_to_mxrat1's own EPS = 0.622 (module_initialize_real.F:7366),
     # not module ep_2 -- the ingest lane review's parity residual.
     expected = 0.622 * es_hpa / (pressure[1] / 100.0 - es_hpa)
     assert got[1] == pytest.approx(expected, rel=0.0, abs=1.0e-15)
@@ -1190,16 +1190,23 @@ class _ReferencePreprocessBackend:
 def _analyzed_hrrr_real_init(
         mp_physics, *, state_backend="cpu", terrain_m=0.0,
         drop=(), reshape=None, wif_grid_latlon=None, wif_valid_date=None,
-        analyzed_species=None, horizontal_operators=None,
-        **config_overrides):
+        analyzed_species=None, horizontal_operators=None, init_kwargs=None,
+        preprocess_backend=None, shape=(2, 3), cloud_water=None,
+        landmask=1.0, extra_fields=None, **config_overrides):
     """One decoded-native-HRRR real initialization, never a fabricated state.
 
     ``drop`` removes analyzed species from the decoded snapshot and
     ``reshape`` truncates one of them, so the required-field and shape gates
-    can be exercised for real rather than asserted about.
+    can be exercised for real rather than asserted about.  ``init_kwargs``
+    reach :func:`initialize_real` unchanged.  ``cloud_water`` replaces the
+    analyzed QC with one value per source level (kg/kg), and ``landmask``
+    is the target LANDMASK every production door passes (a scalar fills
+    the grid; None passes none).  ``extra_fields`` are added to the
+    decoded snapshot as they are, for analysed number fields.
     """
 
-    ny, nx, nz = 2, 3, 8
+    ny, nx = shape
+    nz = 8
     levels = np.array(
         [100.0, 300.0, 500.0, 700.0, 850.0, 1000.0], dtype=np.float64)
     pressure = np.broadcast_to(
@@ -1221,6 +1228,10 @@ def _analyzed_hrrr_real_init(
         # One exact zero so a nonzero-mask fingerprint is a real discriminator.
         value[0, 0, 0] = np.float32(0.0)
         analyzed[name] = value
+    if cloud_water is not None:
+        analyzed["QC"] = np.ascontiguousarray(np.broadcast_to(
+            np.asarray(cloud_water, dtype=np.float32)[:, None, None],
+            (levels.size, ny, nx)))
     for name in drop:
         analyzed.pop(name)
     if reshape is not None:
@@ -1239,6 +1250,11 @@ def _analyzed_hrrr_real_init(
         "V10": np.full((ny + 1, nx), -1.0, dtype=np.float32),
         **analyzed,
     }
+    if extra_fields is not None:
+        fields.update({name: np.broadcast_to(
+            np.asarray(value, dtype=np.float32),
+            (ny, nx) if name.endswith("_SFC") else (levels.size, ny, nx)
+        ).copy() for name, value in extra_fields.items()})
     snapshot = HorizontalSnapshot(
         valid_time=datetime(2026, 7, 20, 6), levels_hpa=levels, fields=fields,
         horizontal_operators=horizontal_operators)
@@ -1248,14 +1264,20 @@ def _analyzed_hrrr_real_init(
         terrain_opt=1, mp_physics=mp_physics, **config_overrides)
     eta = np.linspace(1.0, 0.0, nz + 1)
     terrain = np.full((ny, nx), float(terrain_m), dtype=np.float64)
+    init_kwargs = dict(init_kwargs or {})
+    if landmask is not None:
+        init_kwargs.setdefault("landmask", np.broadcast_to(
+            np.asarray(landmask, dtype=np.float32), (ny, nx)))
     result = initialize_real(
         snapshot, cfg,
         make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
         terrain, source_orography=terrain, p_top=10000.0, use_sh_qv=True,
-        preprocess_backend=_ReferencePreprocessBackend(),
+        preprocess_backend=(_ReferencePreprocessBackend()
+                            if preprocess_backend is None
+                            else preprocess_backend),
         state_backend=state_backend,
         wif_grid_latlon=wif_grid_latlon, wif_valid_date=wif_valid_date,
-        analyzed_species=analyzed_species)
+        analyzed_species=analyzed_species, **init_kwargs)
     return result, cfg
 
 
@@ -1993,7 +2015,7 @@ def test_mp28_real_ingest_defaults_to_the_wif_climatology(
     assert receipt["dataset"]["sha256"]
     # STALE PIN, CORRECTED IN THE MERGE.  lane/wif-default wrote "...-v1"
     # here, but gpuwm/ingest/wif_climatology.py has stamped "...-v2" since
-    # 474e0e9a0 ("the WIF climatology data path moves onto Drew's Rust"),
+    # 474e0e9a0 ("the WIF climatology data path moves onto the project's Rust"),
     # an ANCESTOR of that commit -- so this assertion was already false of
     # the code when it was written.  Nothing caught it because the
     # ``wif_dataset`` fixture SKIPPED: it resolves the dataset the way the
@@ -2006,15 +2028,18 @@ def test_mp28_real_ingest_defaults_to_the_wif_climatology(
         "wrf-v4.7.1-wif-climatology-ingest-v2")
 
 
-def _pressure_level_real_init(mp_physics, **config_overrides):
+def _pressure_level_real_init(mp_physics, *, init_kwargs=None, shape=(2, 3),
+                              **config_overrides):
     """The other production lane: pressure-level TT/RH forcing (ERA5, GFS).
 
     No analyzed hydrometeors exist on this lane for ANY scheme, which is
     exactly why the mp=28 aerosol policy cannot live inside the native-HRRR
     ``if hydrometeors:`` branch -- a user arriving with ERA5 must still get
     the exact-zero aerosol state thompson_init's presence test needs.
+    ``init_kwargs`` reach :func:`initialize_real` unchanged.
     """
-    ny, nx, nz = 2, 3, 8
+    ny, nx = shape
+    nz = 8
     levels = np.array(
         [100.0, 300.0, 500.0, 700.0, 850.0, 1000.0], dtype=np.float64)
     pressure = np.broadcast_to(
@@ -2048,7 +2073,7 @@ def _pressure_level_real_init(mp_physics, **config_overrides):
         make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
         terrain, source_orography=terrain, p_top=10000.0,
         preprocess_backend=_ReferencePreprocessBackend(),
-        state_backend="cpu"), cfg
+        state_backend="cpu", **(init_kwargs or {})), cfg
 
 
 def test_mp28_pressure_level_lane_also_publishes_the_aerosol_policy():
@@ -2139,7 +2164,8 @@ def test_mp28_real_ingest_runs_on_the_production_cuda_preprocessing():
         snapshot, cfg,
         make_vertical_coord(nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
         terrain, source_orography=terrain, p_top=10000.0, use_sh_qv=True,
-        preprocess_backend="cuda", state_backend="cuda")
+        preprocess_backend="cuda", state_backend="cuda",
+        landmask=np.ones((ny, nx), dtype=np.float32))
     state = result.state
 
     for name in ("qc", "qr", "qi", "qs", "qg"):
@@ -2286,7 +2312,7 @@ def test_rh_lane_surface_qv_already_carries_the_same_floor():
     """The divergence this fix closed, stated as a test.
 
     GFS/ERA5 build surface_qv through :func:`_saturation_mixing_ratio`,
-    which floors at WRF's qv_min_value inline (real.exe rh_to_mxrat1:7379)
+    which floors at WRF's qv_min_value inline (WRF v4.6.1 rh_to_mxrat1:7402)
     -- so that lane could never present a negative to the prepared
     near-surface guard, and a nested GFS run over the same eastern
     Colorado placement completed while the HRRR one refused.  The FLAG_SH
@@ -2360,14 +2386,16 @@ def test_the_hydrometeor_receipt_names_the_horizontal_owner_and_the_zero_w():
 def test_mp28_cold_start_closes_the_number_moments_over_the_imported_mass():
     """Mass in, numbers consistent with it: the scheme's own entry block.
 
-    real.exe leaves the aerosol-aware scheme's three number moments at
-    exact zero and lets Thompson's entry block set them on the first call.
-    Between the cold start and that first call the state carried mass
-    with no number in every cloudy cell (orphan cells), and anything
-    that reads the state there -- the between-step reflectivity operator,
-    a t=0 analysis, a picture of the initial frame -- read a rain number
-    at the scheme's R2 floor and diagnosed a reflectivity burst.  The
-    cold start now runs the same entry block once, from
+    real.exe seeds the aerosol-aware scheme's three number moments where
+    the mass is present (make_DropletNumber, make_RainNumber,
+    make_IceNumber) and Thompson's entry block rediagnoses them on the
+    first call.  The start used to leave them at zero, so the state
+    carried mass with no number in every cloudy cell (orphan cells), and
+    anything that reads the state there -- the between-step reflectivity
+    operator, a t=0 analysis, a picture of the initial frame -- read a
+    rain number at the scheme's R2 floor and diagnosed a reflectivity
+    burst.  The cold start now seeds them and runs the same entry block
+    once, from
     gpuwm.core.thompson_entry (the authority gpuwm.da.moments
     .repair_moments applies), on the density the initializer formed,
     and says so in hydrometeor_initialization.
@@ -2400,10 +2428,241 @@ def test_mp28_cold_start_closes_the_number_moments_over_the_imported_mass():
     assert set(closure["written_state_fields"]) == {"nc", "nr", "ni"}
 
 
-def test_mp8_cold_start_keeps_the_zero_moment_contract_it_pins():
-    """The mp=8 arm is unchanged by the mp=28 closure and says so."""
-    result, _ = _analyzed_hrrr_real_init(8)
-    receipt = result.hydrometeor_initialization
-    assert "cold_start_moment_closure" not in receipt
-    for name in ("ni", "nr"):
-        assert int(_host_array(getattr(result.state, name)).view(np.uint32).max()) == 0
+#: A stand-in HRRR pressure-level cloud column, one value per source level
+#: (100..1000 hPa), 0.01 to 0.3 g/kg: a typical cloud-water range.
+_CLOUDY_COLUMN_KG_KG = (1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 2.0e-4, 5.0e-5)
+
+
+@pytest.mark.parametrize("landmask, diameter_um", [(1.0, 8.2), (0.0, 14.9)])
+def test_mp28_cold_start_droplet_number_is_real_exe_make_droplet_number(
+        landmask, diameter_um):
+    """Analysed cloud water starts as cloud, not drizzle.
+
+    real.exe sets the droplet number where cloud water has none
+    (WRF v4.7.1 module_initialize_real.F:4829-4838) from
+    make_DropletNumber (:9119-9158).  With no aerosol yet (thompson_init
+    fills it later) the surface sizes the drops: nu_c = 4 at 11 um over
+    land, nu_c = 12 at 17 um over water, mean volume diameters of 8.2 and
+    14.9 um.  The start used to hand the entry block a zero number, which
+    floored it at 2 m^-3 and returned 0.02 to 0.7 drops per cm3 near
+    89 um: drops that rained out and froze in the first minutes.
+    """
+    from gpuwm.core.thompson_entry import (
+        droplet_mean_diameter_m, make_droplet_number)
+
+    result, _ = _analyzed_hrrr_real_init(
+        28, cloud_water=_CLOUDY_COLUMN_KG_KG, landmask=landmask)
+    state = result.state
+    qc = _host_array(state.qc)
+    nc = _host_array(state.nc)
+    alt = np.asarray(result.total_specific_volume, dtype=np.float32)
+    rho = (np.float32(1.0) / alt).astype(np.float32)
+    cloudy = qc > 0.0
+    assert cloudy.sum() > 0
+    xland = np.float32(1.0 if landmask >= 0.5 else 2.0)
+    wrf = (make_droplet_number((qc * rho)[cloudy], np.float32(0.0), xland)
+           / rho[cloudy]).astype(np.float32)
+    # The entry block's rediagnosis returns the same population unless a
+    # size clamp fires, and none does between 1 and 100 um.
+    np.testing.assert_allclose(nc[cloudy], wrf, rtol=2.0e-6)
+    per_cm3 = nc[cloudy] * rho[cloudy] * 1.0e-6
+    diameter = droplet_mean_diameter_m(
+        qc[cloudy] * rho[cloudy], nc[cloudy] * rho[cloudy]) * 1.0e6
+    np.testing.assert_allclose(diameter, diameter_um, atol=0.1)
+    assert per_cm3.min() > 1.0, per_cm3.min()
+    seed = result.hydrometeor_initialization[
+        "cold_start_moment_closure"]["droplet_number_seed"]
+    assert seed["seeded_cells"] == int(cloudy.sum())
+    branch = "land_branch_cells" if landmask >= 0.5 else "water_branch_cells"
+    assert seed[branch] == int(cloudy.sum())
+    assert seed["aerosol_branch_cells"] == 0
+
+
+def test_mp28_cold_start_without_a_landmask_refuses_to_guess_the_drop_size():
+    with pytest.raises(ValueError, match="LANDMASK"):
+        _analyzed_hrrr_real_init(
+            28, cloud_water=_CLOUDY_COLUMN_KG_KG, landmask=None)
+
+
+def _real_exe_seed_then_entry(species, mass, alt, temperature):
+    """real.exe's make_RainNumber/make_IceNumber seed, then the entry block.
+
+    The seed where the mass is present (module_initialize_real.F:4840-4852,
+    WRF v4.7.1) in REAL, per volume at rho = 1./alt; then Thompson's entry
+    block over the cells with mass above R1, at the closure's density.
+    """
+    from gpuwm.core.thompson_entry import (
+        R1, make_ice_number, make_rain_number, np_thompson_entry_numbers)
+
+    function = make_rain_number if species == "rain" else make_ice_number
+    rho = (np.float32(1.0) / alt).astype(np.float32)
+    seed = np.zeros_like(mass)
+    present = mass > 0.0
+    seed[present] = (function((mass * rho)[present], temperature[present])
+                     / rho[present]).astype(np.float32)
+    closed = np_thompson_entry_numbers(
+        species, mass, seed, 1.0 / alt.astype(np.float64))
+    return np.where(mass > R1, closed.astype(np.float32), seed)
+
+
+def _state_temperature(result):
+    state = result.state
+    theta = (_host_array(state.thb).astype(np.float64)
+             + _host_array(state.thp).astype(np.float64))
+    pressure = np.asarray(result.total_pressure, dtype=np.float64)
+    return (theta * (pressure / c.P0) ** c.RCP).astype(np.float32)
+
+
+@pytest.mark.parametrize("mp_physics", [8, 28])
+def test_cold_start_rain_and_ice_numbers_are_real_exe_make_numbers(
+        mp_physics):
+    """Analysed rain and ice start at real.exe's sizes, on mp=8 and mp=28.
+
+    real.exe gives rain and ice mass without a number make_RainNumber and
+    make_IceNumber (WRF v4.7.1 module_initialize_real.F:4840-4852,
+    :9163-9194, :9044-9114): a Marshall-Palmer intercept that rises to
+    8e8 at or below -2 C, so supercooled rain starts as drizzle, and a
+    crystal size read from temperature.  The start used to leave mp=8 at
+    zero and hand mp=28's entry block a zero number, which made every
+    rain drop 1 mm and every crystal 5 um, capped at 999e3 per m3.
+    """
+    from gpuwm.core.thompson_entry import rain_median_volume_diameter_m
+
+    result, _ = _analyzed_hrrr_real_init(mp_physics)
+    state = result.state
+    alt = np.asarray(result.total_specific_volume, dtype=np.float32)
+    rho = (np.float32(1.0) / alt).astype(np.float32)
+    temperature = _state_temperature(result)
+    closure = result.hydrometeor_initialization["cold_start_moment_closure"]
+    assert closure["mp_physics"] == mp_physics
+    for species, mass_name, number_name in (
+            ("rain", "qr", "nr"), ("ice", "qi", "ni")):
+        mass = _host_array(getattr(state, mass_name))
+        number = _host_array(getattr(state, number_name))
+        present = mass > 0.0
+        assert present.sum() > 0
+        expected = _real_exe_seed_then_entry(species, mass, alt, temperature)
+        np.testing.assert_allclose(number[present], expected[present],
+                                   rtol=1.0e-4)
+        assert (number[~present] == 0.0).all()
+        seed = closure[f"{species}_number_seed"]
+        assert seed["seeded_cells"] == int(present.sum())
+    qr = _host_array(state.qr)
+    nr = _host_array(state.nr)
+    mvd = rain_median_volume_diameter_m(qr * rho, nr * rho)
+    cold = (qr > 0.0) & (temperature <= np.float32(271.15))
+    warm = (qr > 0.0) & (temperature >= np.float32(273.15))
+    assert cold.sum() > 0 and warm.sum() > 0
+    # Supercooled rain starts as drizzle, well under the 1 mm the entry
+    # block gives a zero number, and smaller than any warm drop.
+    assert mvd[cold].max() < 0.35e-3, mvd[cold].max()
+    assert mvd[cold].max() < mvd[warm].min(), (mvd[cold], mvd[warm])
+    assert closure["rain_number_seed"]["supercooled_cells"] == int(cold.sum())
+    if mp_physics == 8:
+        # mp=8 has no droplet number: real.exe's P_QNC test is false.
+        assert set(closure["written_state_fields"]) == {"nr", "ni"}
+        assert closure["droplet_number_seed"] is None
+        assert [entry["species"] for entry in closure["species"]] == [
+            "rain", "ice"]
+
+
+def test_analysed_zero_numbers_are_seeded_like_absent_ones():
+    """An installed analysed NR/NI of zero is filled, as real.exe fills it.
+
+    real.exe seeds wherever the number it holds is <= 0, after the
+    analysed numbers are in (module_initialize_real.F:4840-4852).  The
+    closure used to run before the install, so an analysed zero
+    overwrote the seed and left rain and ice mass with no number.
+    """
+    extra = {"QNR": 0.0, "QNR_SFC": 0.0, "QNI": 0.0, "QNI_SFC": 0.0}
+    analysed, _ = _analyzed_hrrr_real_init(
+        28, extra_fields=extra,
+        init_kwargs={"analyzed_number_fields": ("QNI", "QNR")})
+    absent, _ = _analyzed_hrrr_real_init(28)
+    assert "number_moments" in analysed.hydrometeor_initialization
+    for number_name, mass_name in (("nr", "qr"), ("ni", "qi")):
+        got = _host_array(getattr(analysed.state, number_name))
+        mass = _host_array(getattr(analysed.state, mass_name))
+        assert (got[mass > 0.0] > 0.0).all(), number_name
+        np.testing.assert_array_equal(
+            got.view(np.uint32),
+            _host_array(getattr(absent.state, number_name)).view(np.uint32))
+
+
+def test_the_seed_temperature_is_built_only_when_a_cell_is_seeded():
+    """No rain or ice cell to seed, no temperature built; else built once.
+
+    The temperature real.exe sizes rain and ice by is a full 3-D pass
+    over the domain, and a start whose rain and ice numbers are all
+    analysed above zero, or whose rain and ice mass is zero, seeds no
+    cell and has no use for it.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.ingest.real import _thompson_cold_start_moment_closure
+
+    shape = (3, 2, 2)
+    alt = np.full(shape, 0.9, dtype=np.float32)
+    calls = []
+
+    def temperature():
+        calls.append(1)
+        return np.full(shape, 268.0, dtype=np.float32)
+
+    def state(mass, number):
+        return SimpleNamespace(
+            qc=np.zeros(shape, np.float32), nc=np.zeros(shape, np.float32),
+            qr=np.full(shape, mass, np.float32),
+            nr=np.full(shape, number, np.float32),
+            qi=np.full(shape, mass, np.float32),
+            ni=np.full(shape, number, np.float32))
+
+    for unseeded in (state(0.0, 0.0), state(2.0e-5, 1234.5)):
+        receipt = _thompson_cold_start_moment_closure(
+            unseeded, np, SimpleNamespace(mp_physics=8), alt,
+            temperature=temperature)
+        assert receipt["rain_number_seed"]["seeded_cells"] == 0
+        assert receipt["ice_number_seed"]["seeded_cells"] == 0
+    assert calls == []
+
+    seeded = state(2.0e-5, 0.0)
+    receipt = _thompson_cold_start_moment_closure(
+        seeded, np, SimpleNamespace(mp_physics=8), alt,
+        temperature=temperature)
+    assert calls == [1]
+    assert receipt["rain_number_seed"]["seeded_cells"] == seeded.qr.size
+    assert receipt["ice_number_seed"]["seeded_cells"] == seeded.qi.size
+    assert (seeded.nr > 0.0).all() and (seeded.ni > 0.0).all()
+
+
+def test_closure_keeps_an_analysed_number_above_zero_and_seeds_the_rest():
+    """Only numbers at or below zero are written; every other bit is kept."""
+    from types import SimpleNamespace
+
+    from gpuwm.ingest.real import _thompson_cold_start_moment_closure
+
+    shape = (3, 2, 2)
+    mass = np.full(shape, 2.0e-5, dtype=np.float32)
+    mass[0, 0, 0] = 0.0
+    installed = np.full(shape, 1234.5, dtype=np.float32)
+    installed[1] = 0.0
+    installed[2, 1, 1] = -3.0
+    state = SimpleNamespace(
+        qc=np.zeros(shape, np.float32), nc=np.zeros(shape, np.float32),
+        qr=mass.copy(), nr=installed.copy(),
+        qi=mass.copy(), ni=installed.copy())
+    alt = np.full(shape, 0.9, dtype=np.float32)
+    temperature = np.full(shape, 268.0, dtype=np.float32)
+    receipt = _thompson_cold_start_moment_closure(
+        state, np, SimpleNamespace(mp_physics=8), alt,
+        temperature=temperature)
+    keep = installed > 0.0
+    for species, name in (("rain", "nr"), ("ice", "ni")):
+        got = getattr(state, name)
+        np.testing.assert_array_equal(got[keep].view(np.uint32),
+                                      installed[keep].view(np.uint32))
+        expected = _real_exe_seed_then_entry(species, mass, alt, temperature)
+        np.testing.assert_array_equal(got[~keep].view(np.uint32),
+                                      expected[~keep].view(np.uint32))
+        assert receipt[f"{species}_number_seed"]["seeded_cells"] == int(
+            np.count_nonzero(~keep & (mass > 0.0)))

@@ -1,4 +1,4 @@
-# Announcement draft (for Drew to adapt; ~520 words)
+# Announcement draft (for the maintainer to adapt; ~520 words)
 
 <!-- Venue-neutral. First person singular; adjust to taste. -->
 

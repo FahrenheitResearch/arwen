@@ -115,3 +115,24 @@ def test_array_record_uses_elementwise_bound_not_common_finite_mask():
     result = _array_record(reference, candidate, WIND_RULE)
     assert result["status"] == "FAIL"
     assert result["violations"] == 1
+
+
+def test_soil_liquid_water_is_held_to_the_moisture_rule_not_byte_exact():
+    """SH2O follows the backend's soil temperature through a frozen layer.
+
+    It is derived on the host from a temperature the two backends round
+    differently in the last bit, so byte-exact failed every CPU/CUDA pair
+    with frozen soil.  A difference at that scale passes; one a hundred
+    times the bound still fails.
+    """
+
+    from gpuwm.wrf_backend_parity import MOISTURE_RULE, _wrfinput_rule
+
+    assert _wrfinput_rule("SH2O") is MOISTURE_RULE
+    reference = np.asarray([0.10742228, 0.17730580, 0.31], dtype=np.float32)
+    rounding = reference.copy()
+    rounding[0] = np.float32(0.10742227)
+    assert _array_record(reference, rounding, MOISTURE_RULE)["status"] == "PASS"
+    wrong = reference.copy()
+    wrong[0] += np.float32(1.0e-3)
+    assert _array_record(reference, wrong, MOISTURE_RULE)["status"] == "FAIL"

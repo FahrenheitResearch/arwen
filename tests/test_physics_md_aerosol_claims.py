@@ -555,7 +555,7 @@ def test_every_published_residual_is_the_gates_own_number():
 #: vocabulary does not have to anticipate every sentence in the port; it has
 #: to cover the ways the port talks about a residual that is gone.
 _NOT_A_CURRENT_RESIDUAL_CLAIM = re.compile(
-    r"(?i)\b(was|were|used to|previously|superseded|until|pre-fix|old|"
+    r"(?i)\b(was|were|had been|used to|previously|superseded|until|pre-fix|old|"
     r"earlier|former|closed|no longer|published|removing|without|"
     r"returns? to|moved|fell|rose|now measures?|now measure)\b|->|→")
 
@@ -807,6 +807,16 @@ def test_no_publication_states_a_clean_count_the_gate_does_not_produce():
     list additionally said "Six of 22 fixtures miss", spelled out, where the
     gate misses four -- which is why the sweep reads the spelled forms too.
     """
+    # The pluperfect is history too.  CHANGELOG.md's 2.7.6 section says "9 of
+    # 22 profiles had been refused on the namelist route", a count of physics
+    # profiles a fix closed; the vocabulary knew "was" and "were" but not
+    # "had been", so this sweep read it as a live fixture claim and stage 1
+    # stayed red on text that claims nothing about the deck.  A bare count
+    # still reads as live.
+    assert _NOT_A_CURRENT_RESIDUAL_CLAIM.search(
+        "9 of 22 profiles had been refused on the namelist route")
+    assert not _NOT_A_CURRENT_RESIDUAL_CLAIM.search(
+        "17 of 22 WRF column fixtures clear the flat gate")
     adapter = _adapter()
     total = len(adapter._FIXTURES)
     # The three counts the gate's own partition produces, and nothing else:
@@ -1214,10 +1224,10 @@ def test_the_published_aerosol_sensitivity_is_a_live_measurement():
 #: not string equality -- that is what lets a page quote 19.8638 while the
 #: table quotes 19.863753181374097 without either being unbound.
 _PAGE_DEPLETION_CLAIMS = {
-    "front_speed_ms": "19.8638",
-    "front_speed_ratio": "0.99319",
-    "nwfa_retained": "0.4566",
-    "nifa_retained": "0.3363",
+    "front_speed_ms": "20.0909",
+    "front_speed_ratio": "1.00454",
+    "nwfa_retained": "0.3314",
+    "nifa_retained": "0.3272",
     "surface_emission_per_kg_s": "5540.14",
 }
 

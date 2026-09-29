@@ -10,6 +10,16 @@ from __future__ import annotations
 
 AEROSOL_BOUNDARY_FIELDS = ("nwfa", "nifa")
 
+#: The supplied boundary scalars WRF carries in its ``scalar`` array rather
+#: than ``moist``.  WRF's end-of-step ``spec_bdy_final`` forces a
+#: scalar-array species back onto its boundary value only on a NESTED domain
+#: (solve_em.F ``scalar_species_bdy_loop_3``).  On a SPECIFIED domain its
+#: ring moves by the boundary tendency alone (``spec_bdy_scalar``), which the
+#: RK scalar update integrates onto the table.  Water vapour is a moist-array
+#: species and is forced back on both kinds of domain.  A further supplied
+#: scalar joins this tuple when WRF keeps it in the scalar array.
+SCALAR_ARRAY_BOUNDARY_FIELDS = AEROSOL_BOUNDARY_FIELDS
+
 
 def external_scalar_fields(cfg, *, aerosol_from_input: bool | None = None):
     """Ordered scalar inventory, with an optional resolved ingest decision.

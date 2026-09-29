@@ -1,0 +1,897 @@
+{
+  "arithmetic_backend": "portable-libm-0.2.16",
+  "cases": {
+    "lam_d03": {
+      "arrays": {
+        "surface_lat_c": {
+          "dtype": "f32",
+          "file": "lam_d03.surface_lat_c.f32",
+          "sha256": "8527a0b00dbb1b2ef94a562e9a548fc4f1827a8a644bf9bbb4376959c4cc91ec",
+          "shape": [
+            29,
+            32
+          ]
+        },
+        "surface_lat_e": {
+          "dtype": "f32",
+          "file": "lam_d03.surface_lat_e.f32",
+          "sha256": "fce8dda1c3294f9289c44519ee4f752c1dfdbbd4d44ed4ea68f095bea9436b89",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "surface_lat_integer_band": {
+          "dtype": "u8",
+          "file": "lam_d03.surface_lat_integer_band.u8",
+          "sha256": "60b2789a68bdcbb6bbda951c3a24854e64d8f51ccdaad0d7db302b5123af1cbb",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "surface_lat_lower_e": {
+          "dtype": "f32",
+          "file": "lam_d03.surface_lat_lower_e.f32",
+          "sha256": "5a74828ecd7927675082a9fb4bb07e7558c5d81da4f56f02531f66df59d906bc",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "surface_lon_boundary_band": {
+          "dtype": "u8",
+          "file": "lam_d03.surface_lon_boundary_band.u8",
+          "sha256": "700951c86880e1e39b06d34b35dcfd1de58c4fa0bc132ade777b2d679350ca0a",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "surface_lon_c": {
+          "dtype": "f64",
+          "file": "lam_d03.surface_lon_c.f64",
+          "sha256": "1893cd5622672a4c34297291bfe191332dfcac1aef9566b15bbc977a69f2ff0e",
+          "shape": [
+            29,
+            32
+          ]
+        },
+        "surface_lon_e": {
+          "dtype": "f32",
+          "file": "lam_d03.surface_lon_e.f32",
+          "sha256": "0a534fd8048eae5a276d9af69ddb003ef8a56e84a9e5c15e3c99424eed4887f1",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "lam_d03.twin_lat.f32",
+          "sha256": "caadfd32ed36f22058e6562ddd52102b29625ee32393fe89714847247a4862ed",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "lam_d03.twin_llij_x.f32",
+          "sha256": "cc74579ce837c1ad80cef06baaab950abb0cb1498d35e5227f2e5eb154c700e9",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "lam_d03.twin_llij_y.f32",
+          "sha256": "0446635e2eee23b9f01f0f30d053447c5c677ac20939484949739bd34e20757a",
+          "shape": [
+            28,
+            31
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "lam_d03.twin_lon.f32",
+          "sha256": "62760419e89c0b0d0b1ba13cef54c19b3f164f57e351b24f941fa0777aa77b8b",
+          "shape": [
+            28,
+            31
+          ]
+        }
+      },
+      "twin_state": {
+        "cone": "3f22daca",
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "42a6002a",
+        "polej": "464a7aa6",
+        "rad": "3c8efa35",
+        "rebydx": "4625e2ab",
+        "rsw": "464a77b0",
+        "stand_lon": "c2a80000",
+        "tl1": "42180000",
+        "tl2": "42240000"
+      },
+      "twin_state_adopted": {
+        "cone": "3f22daca",
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "42a60000",
+        "polej": "464a7aa6",
+        "rad": "3c8efa35",
+        "rebydx": "4625e2ab",
+        "rsw": "464a77b0",
+        "stand_lon": "c2a80000",
+        "tl1": "42180000",
+        "tl2": "42240000"
+      }
+    },
+    "lam_parent": {
+      "arrays": {
+        "surface_lat_c": {
+          "dtype": "f32",
+          "file": "lam_parent.surface_lat_c.f32",
+          "sha256": "bd45cd346698477b6e22a51f0b599387a6eccb2661c7be9bcaba779738a43c2f",
+          "shape": [
+            51,
+            58
+          ]
+        },
+        "surface_lat_e": {
+          "dtype": "f32",
+          "file": "lam_parent.surface_lat_e.f32",
+          "sha256": "e069c343e1bc2de9111f6be1b344466f0867f39825ffefe12e94efdf1b16152a",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "surface_lat_integer_band": {
+          "dtype": "u8",
+          "file": "lam_parent.surface_lat_integer_band.u8",
+          "sha256": "12d7defbd58807134cb2e31923b59e598ed8ea7db415cd21e8a9d17c3faa9bff",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "surface_lat_lower_e": {
+          "dtype": "f32",
+          "file": "lam_parent.surface_lat_lower_e.f32",
+          "sha256": "795b554c94e113dda2d519a12db63ccb93e957b4116883abaaabcb1c49beee20",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "surface_lon_boundary_band": {
+          "dtype": "u8",
+          "file": "lam_parent.surface_lon_boundary_band.u8",
+          "sha256": "b9323f3ff43526b7ee3361d124bf910856f8aa958c4eae38cbc399dd0978b5ff",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "surface_lon_c": {
+          "dtype": "f64",
+          "file": "lam_parent.surface_lon_c.f64",
+          "sha256": "38d8f8b4173d8e98226a3fb1a7676fce64a137d08f6bf5fec4898ffb174e5f4c",
+          "shape": [
+            51,
+            58
+          ]
+        },
+        "surface_lon_e": {
+          "dtype": "f64",
+          "file": "lam_parent.surface_lon_e.f64",
+          "sha256": "e6b6b0235bf50db681c1e9039eacfe2d4c5feb3d572b15434efccce1232b793b",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "lam_parent.twin_lat.f32",
+          "sha256": "e069c343e1bc2de9111f6be1b344466f0867f39825ffefe12e94efdf1b16152a",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "lam_parent.twin_llij_x.f32",
+          "sha256": "57eb3eeb8ac76e50308531dc9bb598d64e6bd3fe50ea41bc7885b78bb9cec3cd",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "lam_parent.twin_llij_y.f32",
+          "sha256": "34df64e22d314a67d00423fe314a9eb237190d4576e91d8d0586050a6c483bfd",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "lam_parent.twin_lon.f32",
+          "sha256": "5278bd0c7dde9eef5bd7290c083abcc641449349b767279ffe930f9f3f4f71ed",
+          "shape": [
+            50,
+            57
+          ]
+        }
+      },
+      "twin_state": {
+        "cone": "3f22daca",
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "41d00000",
+        "polej": "445c2d7e",
+        "rad": "3c8efa35",
+        "rebydx": "4430f1c7",
+        "rsw": "44568d7e",
+        "stand_lon": "c2a80000",
+        "tl1": "42180000",
+        "tl2": "42240000"
+      },
+      "twin_state_adopted": {
+        "cone": "3f22daca",
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "41d00000",
+        "polej": "445c2d7e",
+        "rad": "3c8efa35",
+        "rebydx": "4430f1c7",
+        "rsw": "44568d7e",
+        "stand_lon": "c2a80000",
+        "tl1": "42180000",
+        "tl2": "42240000"
+      }
+    },
+    "lam_sh": {
+      "arrays": {
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "lam_sh.twin_lat.f32",
+          "sha256": "08d41dacbcf32729db6bcbc2fe710730bc9015d6c48afc0704c8499f0b0d5147",
+          "shape": [
+            39,
+            45
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "lam_sh.twin_llij_x.f32",
+          "sha256": "a0c154c962fc2f3da8eb67f1bb7dbdd52ce2a63a662ba209bc732e70cbc008f8",
+          "shape": [
+            39,
+            45
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "lam_sh.twin_llij_y.f32",
+          "sha256": "c7a4b1860344329d8aef9b9a501a0426f2d1e1887a4f7cecc27a2a7153f3031b",
+          "shape": [
+            39,
+            45
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "lam_sh.twin_lon.f32",
+          "sha256": "47c85c68c381c24f2240aeb6414496d0cd174736f5ac8efe948aa7a804a048d1",
+          "shape": [
+            39,
+            45
+          ]
+        }
+      },
+      "twin_state": {
+        "cone": "3f1680ea",
+        "deg": "42652ee1",
+        "hemi": "bf800000",
+        "polei": "c1a00000",
+        "polej": "44311a04",
+        "rad": "3c8efa35",
+        "rebydx": "4404b555",
+        "rsw": "44355a04",
+        "stand_lon": "43110000",
+        "tl1": "c2080000",
+        "tl2": "c2180000"
+      },
+      "twin_state_adopted": {
+        "cone": "3f1680ea",
+        "deg": "42652ee1",
+        "hemi": "bf800000",
+        "polei": "c1a00000",
+        "polej": "44311a01",
+        "rad": "3c8efa35",
+        "rebydx": "4404b555",
+        "rsw": "44355a04",
+        "stand_lon": "43110000",
+        "tl1": "c2080000",
+        "tl2": "c2180000"
+      }
+    },
+    "merc": {
+      "arrays": {
+        "surface_lat_c": {
+          "dtype": "f32",
+          "file": "merc.surface_lat_c.f32",
+          "sha256": "f777c162a782356c7a1dc8983868217e7642e2c8e0b88a835c3937c1f386e2fd",
+          "shape": [
+            42,
+            48
+          ]
+        },
+        "surface_lat_e": {
+          "dtype": "f32",
+          "file": "merc.surface_lat_e.f32",
+          "sha256": "7f686b366b630a14e2fa5233b3149150ed659dc9050305a2787e57305b380b12",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "surface_lat_integer_band": {
+          "dtype": "u8",
+          "file": "merc.surface_lat_integer_band.u8",
+          "sha256": "7d5bf8e0b4b08e430a68005918fa0553b579ad53bdd61398d81eebbcbbaca2a2",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "surface_lat_lower_e": {
+          "dtype": "f32",
+          "file": "merc.surface_lat_lower_e.f32",
+          "sha256": "9df79aa5e2ab09370ca7fbfc5ae1ec0cab8eab65fede0eb541fc39cbc3280143",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "surface_lon_boundary_band": {
+          "dtype": "u8",
+          "file": "merc.surface_lon_boundary_band.u8",
+          "sha256": "7d5bf8e0b4b08e430a68005918fa0553b579ad53bdd61398d81eebbcbbaca2a2",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "surface_lon_c": {
+          "dtype": "f64",
+          "file": "merc.surface_lon_c.f64",
+          "sha256": "fa45c56e0efb89ddfa14a539c64dee3ac379b22143d97c47fff7e696e0fc485e",
+          "shape": [
+            42,
+            48
+          ]
+        },
+        "surface_lon_e": {
+          "dtype": "f64",
+          "file": "merc.surface_lon_e.f64",
+          "sha256": "f35cc1a41d2b38f79eb105a8a954e1e64de27dd00065989ecc493cd946f61d81",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "merc.twin_lat.f32",
+          "sha256": "7f686b366b630a14e2fa5233b3149150ed659dc9050305a2787e57305b380b12",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "merc.twin_llij_x.f32",
+          "sha256": "964f3fe244f3e9333f2012dd7bdf2d8e8e04e22dc2b48f9eb61d441b72c896c3",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "merc.twin_llij_y.f32",
+          "sha256": "498461f33e82e8c5acf6b510a52c212a31f48129db8df3486aa81b03932f57f9",
+          "shape": [
+            41,
+            47
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "merc.twin_lon.f32",
+          "sha256": "1888636be4613ed7d82e16a7147a309f607885d0ef609c9273fda895ea3bce90",
+          "shape": [
+            41,
+            47
+          ]
+        }
+      },
+      "twin_state": {
+        "deg": "42652ee1",
+        "dlon": "3b0361cc",
+        "knowni": "41a80000",
+        "knownj": "41900000",
+        "lat1": "41ac0000",
+        "lon1": "42f20000",
+        "rad": "3c8efa35",
+        "rsw": "433fbbf2"
+      },
+      "twin_state_adopted": {
+        "deg": "42652ee1",
+        "dlon": "3b0361cc",
+        "knowni": "41a80000",
+        "knownj": "41900000",
+        "lat1": "41ac0000",
+        "lon1": "42f20000",
+        "rad": "3c8efa35",
+        "rsw": "433fbbf5"
+      }
+    },
+    "merc_subkm": {
+      "arrays": {
+        "surface_lat_c": {
+          "dtype": "f32",
+          "file": "merc_subkm.surface_lat_c.f32",
+          "sha256": "851e4b696f83f9ffe6805fc0489a9b6365195c33d8c0959ac95f2bf65943f6b7",
+          "shape": [
+            32,
+            36
+          ]
+        },
+        "surface_lat_e": {
+          "dtype": "f32",
+          "file": "merc_subkm.surface_lat_e.f32",
+          "sha256": "a9d05f55846097fa9ccab2b9958460cd0dd6f7803e95cde4ecf7a006a1f9f138",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "surface_lat_integer_band": {
+          "dtype": "u8",
+          "file": "merc_subkm.surface_lat_integer_band.u8",
+          "sha256": "59412bf48b467bd9272cad51bf93f31d86762d7196da63ee3cec78aed31bfae0",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "surface_lat_lower_e": {
+          "dtype": "f32",
+          "file": "merc_subkm.surface_lat_lower_e.f32",
+          "sha256": "a36f29392a43a172ef1323a45b9ee7acdef7894a8fadd1788de9374b3146d2c6",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "surface_lon_boundary_band": {
+          "dtype": "u8",
+          "file": "merc_subkm.surface_lon_boundary_band.u8",
+          "sha256": "59412bf48b467bd9272cad51bf93f31d86762d7196da63ee3cec78aed31bfae0",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "surface_lon_c": {
+          "dtype": "f64",
+          "file": "merc_subkm.surface_lon_c.f64",
+          "sha256": "2460f76b696a689457b584102fe1432f783052fd801477bb27cfce75e6fce214",
+          "shape": [
+            32,
+            36
+          ]
+        },
+        "surface_lon_e": {
+          "dtype": "f64",
+          "file": "merc_subkm.surface_lon_e.f64",
+          "sha256": "7cc7766dddca5c383b11a39e40b531568a98f3824419b70b23a4fabeffdc5f4f",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "merc_subkm.twin_lat.f32",
+          "sha256": "a9d05f55846097fa9ccab2b9958460cd0dd6f7803e95cde4ecf7a006a1f9f138",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "merc_subkm.twin_llij_x.f32",
+          "sha256": "7ca304b70cd67083c7df947a5208bfba857e032fd5183a7d0fe000cbd2a06247",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "merc_subkm.twin_llij_y.f32",
+          "sha256": "5e70d0361b776e57084c1a3f47f2bc0e170bcc127ee770a222ddd8e6fdf0fe41",
+          "shape": [
+            31,
+            35
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "merc_subkm.twin_lon.f32",
+          "sha256": "c70ab618760249a005b72f943c9df395fdec1d65c147f6db4d4d880fc81c86b9",
+          "shape": [
+            31,
+            35
+          ]
+        }
+      },
+      "twin_state": {
+        "deg": "42652ee1",
+        "dlon": "390c240d",
+        "knowni": "41700000",
+        "knownj": "41500000",
+        "lat1": "41ac0000",
+        "lon1": "42f20000",
+        "rad": "3c8efa35",
+        "rsw": "4533c033"
+      },
+      "twin_state_adopted": {
+        "deg": "42652ee1",
+        "dlon": "390c240d",
+        "knowni": "41700000",
+        "knownj": "41500000",
+        "lat1": "41ac0000",
+        "lon1": "42f20000",
+        "rad": "3c8efa35",
+        "rsw": "4533c036"
+      }
+    },
+    "polar": {
+      "arrays": {
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "polar.twin_lat.f32",
+          "sha256": "07a8efc9f929df2be077ef64cb5fea3050911cb6c7e9d5865853c60fd5a1bfcd",
+          "shape": [
+            39,
+            45
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "polar.twin_llij_x.f32",
+          "sha256": "58aeaaa7623b072eb49b315c514cc2938dbf80716110b8de8d4febf8a59d94d2",
+          "shape": [
+            39,
+            45
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "polar.twin_llij_y.f32",
+          "sha256": "767beda0de4aecbd4e918f85080733e0f411d1fcef47d6d5a5df7e3512776c0b",
+          "shape": [
+            39,
+            45
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "polar.twin_lon.f32",
+          "sha256": "aafd7b114a2d5480a058e1b9e02db864a8c6777a9fa4cf774a5b734f181f5944",
+          "shape": [
+            39,
+            45
+          ]
+        }
+      },
+      "twin_state": {
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "41d54128",
+        "polej": "434fa05b",
+        "rad": "3c8efa35",
+        "rebydx": "43d45555",
+        "rsw": "433ebe1a",
+        "scale_top": "3ff906c0",
+        "stand_lon": "c3160000",
+        "tl1": "428e0000"
+      },
+      "twin_state_adopted": {
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "41d5412b",
+        "polej": "434fa05b",
+        "rad": "3c8efa35",
+        "rebydx": "43d45555",
+        "rsw": "433ebe1a",
+        "scale_top": "3ff906c0",
+        "stand_lon": "c3160000",
+        "tl1": "428e0000"
+      }
+    },
+    "polar_sh": {
+      "arrays": {
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "polar_sh.twin_lat.f32",
+          "sha256": "8dd750d5c2a0d58355c26d00b6e83003297a94dfb21d7a59703cb271d7381557",
+          "shape": [
+            35,
+            41
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "polar_sh.twin_llij_x.f32",
+          "sha256": "76ca4f86186bc869897664360a34c6a5113876451d12c9e874f6c041f7580648",
+          "shape": [
+            35,
+            41
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "polar_sh.twin_llij_y.f32",
+          "sha256": "874efb7de5c602cbff2a990362f45a36d7d0e3be2b56c52f6f0311fada19cc45",
+          "shape": [
+            35,
+            41
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "polar_sh.twin_lon.f32",
+          "sha256": "3b67721de5aaca0dfff6f0b2a54de38924b963de3ed64ad569f543edd93f2ddd",
+          "shape": [
+            35,
+            41
+          ]
+        }
+      },
+      "twin_state": {
+        "deg": "42652ee1",
+        "hemi": "bf800000",
+        "polei": "420a7f4c",
+        "polej": "c32f044a",
+        "rad": "3c8efa35",
+        "rebydx": "43d45555",
+        "rsw": "433ebe1a",
+        "scale_top": "3ff906c0",
+        "stand_lon": "43250000",
+        "tl1": "c28e0000"
+      },
+      "twin_state_adopted": {
+        "deg": "42652ee1",
+        "hemi": "bf800000",
+        "polei": "420a7f4b",
+        "polej": "c32f044a",
+        "rad": "3c8efa35",
+        "rebydx": "43d45555",
+        "rsw": "433ebe1a",
+        "scale_top": "3ff906c0",
+        "stand_lon": "43250000",
+        "tl1": "c28e0000"
+      }
+    },
+    "polar_subkm": {
+      "arrays": {
+        "surface_lat_c": {
+          "dtype": "f32",
+          "file": "polar_subkm.surface_lat_c.f32",
+          "sha256": "67dd7b035217604ae87f6f03b16895bcebc91c0790a67670531619e0bd73682c",
+          "shape": [
+            30,
+            34
+          ]
+        },
+        "surface_lat_e": {
+          "dtype": "f32",
+          "file": "polar_subkm.surface_lat_e.f32",
+          "sha256": "e921faeed9821a130fd0dffddee4ec8516068e83dcba100099d2107f0d6bd014",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "surface_lat_integer_band": {
+          "dtype": "u8",
+          "file": "polar_subkm.surface_lat_integer_band.u8",
+          "sha256": "828b083c63798988a52f8c734bf5b5c6163216f88d516084f5ef6cf5524c804f",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "surface_lat_lower_e": {
+          "dtype": "f32",
+          "file": "polar_subkm.surface_lat_lower_e.f32",
+          "sha256": "78da34320eaf13a0b00597d08e10c8f3d16ee94a76fffcc9bebdca72ab3bd31e",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "surface_lon_boundary_band": {
+          "dtype": "u8",
+          "file": "polar_subkm.surface_lon_boundary_band.u8",
+          "sha256": "828b083c63798988a52f8c734bf5b5c6163216f88d516084f5ef6cf5524c804f",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "surface_lon_c": {
+          "dtype": "f64",
+          "file": "polar_subkm.surface_lon_c.f64",
+          "sha256": "2fc2f20e56dbc2e8444c06dd3a1a140a579aa82afff0f461a1a08775bc5d7e6b",
+          "shape": [
+            30,
+            34
+          ]
+        },
+        "surface_lon_e": {
+          "dtype": "f64",
+          "file": "polar_subkm.surface_lon_e.f64",
+          "sha256": "04e5ca52f856b2f31a4ab37227ee8b1cdcd69d18f3761710707b8bac0552f1b3",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "polar_subkm.twin_lat.f32",
+          "sha256": "e921faeed9821a130fd0dffddee4ec8516068e83dcba100099d2107f0d6bd014",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "polar_subkm.twin_llij_x.f32",
+          "sha256": "8c77eebc05cbb3e2f190b09379786b4ef45088434526ca1dd32bb0ffa1e83271",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "polar_subkm.twin_llij_y.f32",
+          "sha256": "b842c518f130dd9102db9c9d7dd75770be9e69db6b4af7c5a73e67f74ff51195",
+          "shape": [
+            29,
+            33
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "polar_subkm.twin_lon.f32",
+          "sha256": "dfe2c4b586c2722f0293ebe8af1e073319a6fc1bca0792a1cd561d3a3996c727",
+          "shape": [
+            29,
+            33
+          ]
+        }
+      },
+      "twin_state": {
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "42f9e4d0",
+        "polej": "454751b5",
+        "rad": "3c8efa35",
+        "rebydx": "45dd2e39",
+        "rsw": "4546b0b1",
+        "scale_top": "3ff906c0",
+        "stand_lon": "c3160000",
+        "tl1": "428e0000"
+      },
+      "twin_state_adopted": {
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "42f9e4dd",
+        "polej": "454751b4",
+        "rad": "3c8efa35",
+        "rebydx": "45dd2e39",
+        "rsw": "4546b0b1",
+        "scale_top": "3ff906c0",
+        "stand_lon": "c3160000",
+        "tl1": "428e0000"
+      }
+    },
+    "translated": {
+      "arrays": {
+        "twin_lat": {
+          "dtype": "f32",
+          "file": "translated.twin_lat.f32",
+          "sha256": "a773e470c82ce0721715a07ae29e191971e8bac478f195e713f60ba8a0fd97e2",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_llij_x": {
+          "dtype": "f32",
+          "file": "translated.twin_llij_x.f32",
+          "sha256": "b6b0ba4505b72dc319b293264db5a17bba17943c056acfc90fe817de63b94a5e",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_llij_y": {
+          "dtype": "f32",
+          "file": "translated.twin_llij_y.f32",
+          "sha256": "04b29a0c531d7e3fb6122e91d52916f8a484b9379d3ca04c9d117f107ab59bb0",
+          "shape": [
+            50,
+            57
+          ]
+        },
+        "twin_lon": {
+          "dtype": "f32",
+          "file": "translated.twin_lon.f32",
+          "sha256": "5716ca1ae73a0a312e73615db4a3fed682201cfa493b4e9f71ebadbfaf672441",
+          "shape": [
+            50,
+            57
+          ]
+        }
+      },
+      "twin_state": {
+        "cone": "3f22daca",
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "41b80000",
+        "polej": "445cad7e",
+        "rad": "3c8efa35",
+        "rebydx": "4430f1c7",
+        "rsw": "44568d7e",
+        "stand_lon": "c2a80000",
+        "tl1": "42180000",
+        "tl2": "42240000"
+      },
+      "twin_state_adopted": {
+        "cone": "3f22daca",
+        "deg": "42652ee1",
+        "hemi": "3f800000",
+        "polei": "41b80000",
+        "polej": "445cad7e",
+        "rad": "3c8efa35",
+        "rebydx": "4430f1c7",
+        "rsw": "44568d7e",
+        "stand_lon": "c2a80000",
+        "tl1": "42180000",
+        "tl2": "42240000"
+      }
+    }
+  },
+  "reason": "Identical WPS sampling on preparation and run machines"
+}

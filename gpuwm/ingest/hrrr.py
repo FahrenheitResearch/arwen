@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import hashlib
+import sys
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, MutableMapping
@@ -52,6 +53,16 @@ _ATMOSPHERE_2D = (
     "U10_MASS", "V10_MASS", "LANDSEA", "XICE",
 )
 _SOIL_3D = ("SOILT", "SOILW")
+
+#: The cloud-ice codes the bridge may bind QI to, as its gate spells them:
+#: CIMIXR (0/1/82) from HRRRv3 (July 2018) on, and CICE (0/6/0), the code
+#: HRRRv1 and v2 wrfnat files publish the same mixing ratio under.  The
+#: bridge reads CICE only from a file that publishes no CIMIXR; a gate
+#: binding QI to any other code is refused.
+HRRR_CLOUD_ICE_GATES = (
+    "PASS discipline=0 category=1 parameter=82 level_type=105",
+    "PASS discipline=0 category=6 parameter=0 level_type=105",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -150,9 +161,11 @@ def _read_gate(root: Path) -> dict[str, str]:
         if expected is not None and values[key] != expected:
             raise ValueError(
                 f"gate.txt {key} is {values[key]!r}, expected {expected!r}")
-    if not values["qice_mapping"].startswith(
-            "PASS discipline=0 category=1 parameter=82 level_type=105"):
-        raise ValueError("gate.txt does not bind current-HRRR CIMIXR/QICE")
+    if not values["qice_mapping"].startswith(HRRR_CLOUD_ICE_GATES):
+        raise ValueError(
+            "gate.txt binds QI to none of the cloud-ice codes HRRR publishes "
+            "(CIMIXR 0/1/82, or CICE 0/6/0 before July 2018): "
+            f"{values['qice_mapping']!r}")
     if not values["cross_time_inventory"].startswith("PASS"):
         raise ValueError("gate.txt cross-time inventory did not pass")
     return values
@@ -428,16 +441,18 @@ def _announce_projected_numpy_fallback(reason: str) -> None:
     if _PROJECTED_FALLBACK_ANNOUNCED:
         return
     _PROJECTED_FALLBACK_ANNOUNCED = True
-    from gpuwm import explain
+    from gpuwm import bridges, explain
 
+    # The build line comes from the shared shell rule: a literal `&&`
+    # here was a Windows PowerShell 5.1 parser error.
     explain.warn(
         "projected-source horizontal mapping is running the NumPy mirror "
         f"instead of the native operator ({reason}).  It is the same "
         "arithmetic and it is slow: the native entry evaluates the same "
         "stencil across every core with no whole-array temporaries.  "
-        "Rebuild the CPU preprocessing bridge (cd tools/grib1_bridge && "
-        "cargo build --release --locked --offline) or stage a current "
-        "bridges bundle.",
+        "Rebuild the CPU preprocessing bridge ("
+        + bridges.cargo_build_one_liner(bridges.CRATE_RELATIVE)
+        + ") or stage a current bridges bundle.",
         "The NumPy mirror issues 32 fancy-index gathers per 3-D field and "
         "evaluates roughly 150 whole-target-shape temporaries inside the "
         "five `oned` calls, on one core, to produce one target-shape "
@@ -515,11 +530,13 @@ class _ProjectedGpuPlan:
             cp.float32, copy=False)
 
     def masked_bilinear_stencil(
-            self, source_valid, target_apply, *, fallback_radius=8):
+            self, source_valid, target_apply, *, fallback_radius=8,
+            closed_edges=(), native=None, workers=None):
         indices_y, indices_x, weights, report = (
             _build_masked_bilinear_stencil(
                 self.x_host, self.y_host, source_valid, target_apply,
-                fallback_radius=fallback_radius))
+                fallback_radius=fallback_radius,
+                closed_edges=closed_edges, native=native, workers=workers))
         return _GpuMaskedBilinearStencil(
             self.source_shape, indices_y, indices_x, weights, report)
 
@@ -642,13 +659,17 @@ class _ProjectedCpuPlan:
                           dtype=np.float32)
 
     def masked_bilinear_stencil(
-            self, source_valid, target_apply, *, fallback_radius=8):
+            self, source_valid, target_apply, *, fallback_radius=8,
+            closed_edges=(), native=None, workers=None):
+        native, workers = _stencil_engine(native, workers)
         indices_y, indices_x, weights, report = (
             _build_masked_bilinear_stencil(
                 self.x_host, self.y_host, source_valid, target_apply,
-                fallback_radius=fallback_radius))
+                fallback_radius=fallback_radius,
+                closed_edges=closed_edges, native=native, workers=workers))
         return _CpuMaskedBilinearStencil(
-            self.source_shape, indices_y, indices_x, weights, report)
+            self.source_shape, indices_y, indices_x, weights, report,
+            native=native, workers=workers)
 
 
 @dataclass(frozen=True)
@@ -684,18 +705,40 @@ class _GpuMaskedBilinearStencil:
             result = term if result is None else result + term
         return result.astype(cp.float32, copy=False)
 
+    def apply_selected(self, field, select, fill):
+        """:meth:`apply`, with ``fill`` on every target ``select`` leaves out."""
+        cp = _cupy()
+        mapped = self.apply(field)
+        selector = cp.asarray(select, dtype=cp.bool_)[None, :, :]
+        fill = cp.asarray(fill, dtype=cp.float32)
+        if fill.ndim == 0:
+            fill = cp.full(mapped.shape, fill, dtype=cp.float32)
+        else:
+            fill = cp.broadcast_to(fill[None, :, :], mapped.shape)
+        return cp.where(selector, mapped, fill)
+
 
 @dataclass(frozen=True)
 class _CpuMaskedBilinearStencil:
-    """Host equivalent of the convex four-donor surface stencil."""
+    """Host equivalent of the convex four-donor surface stencil.
+
+    Applied in the Rust preprocessing library
+    (``gpuwm_masked_stencil_apply_f32``) on every layer at once, across
+    every CPU the process may use; the NumPy apply it replaced is the test
+    oracle (:mod:`gpuwm.verify.hrrr_stencil_oracle`).
+    """
 
     source_shape: tuple[int, int]
     indices_y: np.ndarray
     indices_x: np.ndarray
     weights: np.ndarray
     report: Mapping[str, object]
+    native: object
+    workers: int
 
-    def __init__(self, source_shape, indices_y, indices_x, weights, report):
+    def __init__(self, source_shape, indices_y, indices_x, weights, report,
+                 *, native=None, workers=None):
+        native, workers = _stencil_engine(native, workers)
         object.__setattr__(self, "source_shape", tuple(source_shape))
         object.__setattr__(
             self, "indices_y", np.asarray(indices_y, dtype=np.int32))
@@ -704,44 +747,64 @@ class _CpuMaskedBilinearStencil:
         object.__setattr__(
             self, "weights", np.asarray(weights, dtype=np.float32))
         object.__setattr__(self, "report", MappingProxyType(dict(report)))
+        object.__setattr__(self, "native", native)
+        object.__setattr__(self, "workers", int(workers))
 
-    def apply(self, field):
+    def _checked(self, field):
         field = np.asarray(field, dtype=np.float32)
         if field.ndim < 2 or field.shape[-2:] != self.source_shape:
             raise ValueError("HRRR field trailing dimensions do not match window")
-        lead = (slice(None),) * (field.ndim - 2)
-        expand = (None,) * (field.ndim - 2)
-        result = None
-        for corner in range(4):
-            value = field[lead + (
-                self.indices_y[corner], self.indices_x[corner])]
-            term = value * self.weights[corner][expand]
-            result = term if result is None else result + term
-        return np.asarray(result, dtype=np.float32)
+        return field
+
+    def apply(self, field):
+        return self.native.masked_stencil_apply(
+            self._checked(field), self.indices_y, self.indices_x,
+            self.weights, workers=self.workers)
+
+    def apply_selected(self, field, select, fill):
+        """:meth:`apply`, with ``fill`` on every target ``select`` leaves out."""
+        return self.native.masked_stencil_apply(
+            self._checked(field), self.indices_y, self.indices_x,
+            self.weights, select=select, fill=fill, workers=self.workers)
 
 
-#: Exact nearest-donor distances are measured per unresolved point when
-#: the fallback search fails; beyond this many failing points the domain
-#: is misplaced rather than under-radiused, and the measurement (whose
-#: cost is points x valid cells) says nothing a placement fix needs.
-_DONOR_ANALYSIS_MAX_POINTS = 512
+#: A fallback donor farther than this many source cells from its target
+#: cell is listed by name in the mapping report and announced in one
+#: warning.  Eight cells (24 km on HRRR's 3 km grid) was the fixed search
+#: radius every HRRR target carried when the search stopped at its
+#: radius; donors within it are the ordinary disagreement between two
+#: land masks along a coast and are counted in the distance histogram.
+DISTANT_DONOR_CELLS = 8
+
+#: How many distant donors one report lists entry by entry.  Every one is
+#: still counted, and inside the histogram and the maximum distance; the
+#: list stops here and says how many it left out, so a target land mask
+#: that disagrees with HRRR over a whole lake bed cannot turn one receipt
+#: into megabytes.
+_DISTANT_DONORS_LISTED = 256
+
+#: The four window edges, in the order a clearance is measured.
+WINDOW_EDGES = ("west", "east", "south", "north")
 
 
 class SurfaceDonorSearchError(ValueError):
-    """No surface-matched donor within the configured fallback radius.
+    """No surface-matched donor this source window can vouch for.
 
     Carries the facts remediation has to be computed from: the failing
     target cells and the smallest integer radius whose donor disk
     reaches a valid source cell for all of them (``None`` when the
-    window holds no valid donor at any radius, or when the failure is
-    too large for per-point measurement).  The stencil builder is
+    window holds no valid donor at any radius).  The stencil builder is
     generic and states facts only; the caller that knows WHICH grid was
     being mapped -- and where its window sits on the native HRRR grid --
     turns them into advice validated against the coverage guard.
+    ``search_inputs`` is the builder's own input, kept so that advice
+    (a trim) can be checked by running the same search on what it
+    would leave.
     """
 
     def __init__(self, message, *, fallback_radius_cells,
-                 required_radius_cells, unresolved_targets):
+                 required_radius_cells, unresolved_targets,
+                 search_inputs=None):
         super().__init__(message)
         self.fallback_radius_cells = int(fallback_radius_cells)
         self.required_radius_cells = (
@@ -750,16 +813,62 @@ class SurfaceDonorSearchError(ValueError):
         self.unresolved_targets = tuple(
             tuple(int(index) for index in target)
             for target in unresolved_targets)
+        self.search_inputs = search_inputs
+
+
+#: The bit each window edge takes in the native stencil entry's mask.
+_EDGE_BITS = {"west": 1, "east": 2, "south": 4, "north": 8}
+
+
+def _stencil_engine(native=None, workers=None):
+    """The Rust library and worker count the soil stencil runs on.
+
+    ``native`` is a loaded :class:`gpuwm.ingest.cpu_backend.CpuPreprocessBackend`
+    (a CPU backend's own, which honours an explicit bridge); without one,
+    the library the resolution ladder picks, on every CPU the process may
+    use.  A library without the stencil is refused by name with the
+    remedy: there is no NumPy route.
+    """
+    from gpuwm.ingest.cpu_backend import (
+        available_cpu_count, shared_cpu_backend)
+
+    if native is None:
+        native = shared_cpu_backend()
+    native.require_masked_stencil()
+    return native, (available_cpu_count() if workers is None
+                    else int(workers))
 
 
 def _build_masked_bilinear_stencil(
-        x, y, source_valid, target_apply, *, fallback_radius=8):
-    """Build a convex, surface-type-aware bilinear stencil on the CPU.
+        x, y, source_valid, target_apply, *, fallback_radius=8,
+        closed_edges=(), native=None, workers=None):
+    """Build a convex, surface-type-aware bilinear stencil.
 
     Invalid source corners receive zero weight and the remaining weights are
-    renormalized.  A target with no valid bilinear corner receives its nearest
-    valid source donor within ``fallback_radius`` cells.  The explicit finite
-    radius prevents a silently distant land/ocean substitution.
+    renormalized.  A target with no valid bilinear corner receives the
+    NEAREST valid source cell, ties going to the lowest row and then the
+    lowest column.  The search scans the ``fallback_radius`` disk first,
+    exactly as it always has; a target with nothing there -- a land cell
+    the source's land mask has as sea, such as a small island -- is
+    searched further, and takes the nearest valid cell in the window only
+    when that cell is nearer than any cell outside the window could be
+    (``closed_edges`` names the window edges that are also edges of the
+    whole source grid, beyond which nothing lies).  So a donor is always
+    the nearest valid cell of the whole source grid, whatever the radius,
+    and a target whose nearest cell this window cannot vouch for is
+    refused with the radius that would decide it.
+
+    Nothing distant is silent: every donor farther than
+    :data:`DISTANT_DONOR_CELLS` is listed in the report with its target
+    cell, its source cell and the distance.  Before the search went past
+    the radius, a two-cell island 33 km from HRRR's nearest land refused
+    a whole 750 m nest at radius 8.
+
+    The arithmetic runs in the Rust preprocessing library
+    (``gpuwm_masked_bilinear_stencil_f64``) on every CPU the process may
+    use, byte-identical to the NumPy builder kept as its test oracle
+    (:mod:`gpuwm.verify.hrrr_stencil_oracle`); ``native`` and ``workers``
+    name the library and the worker count (see :func:`_stencil_engine`).
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -769,151 +878,117 @@ def _build_masked_bilinear_stencil(
         raise ValueError("masked-bilinear target arrays must have equal shapes")
     if source_valid.ndim != 2:
         raise ValueError("masked-bilinear source_valid must be 2-D")
-    if not np.isfinite(x).all() or not np.isfinite(y).all():
-        raise ValueError("masked-bilinear coordinates must be finite")
+    if x.size == 0:
+        raise ValueError("masked-bilinear stencil has no target points to map")
     fallback_radius = int(fallback_radius)
-    if fallback_radius < 0:
+    closed_edges = tuple(sorted(set(closed_edges)))
+    unknown = set(closed_edges) - set(WINDOW_EDGES)
+    native, workers = _stencil_engine(native, workers)
+    code, raw = native.masked_bilinear_stencil(
+        x, y, source_valid, target_apply,
+        fallback_radius=fallback_radius,
+        closed_edges=sum(_EDGE_BITS[edge] for edge in closed_edges
+                         if edge in _EDGE_BITS),
+        edges_unknown=bool(unknown), distant_cells=float(DISTANT_DONOR_CELLS),
+        listed=_DISTANT_DONORS_LISTED, workers=workers)
+    if code == 3:
+        raise ValueError("masked-bilinear coordinates must be finite")
+    if code == 20:
         raise ValueError("fallback_radius must be non-negative")
-
-    ny, nx = source_valid.shape
-    x0 = np.floor(x).astype(np.int64)
-    y0 = np.floor(y).astype(np.int64)
-    x1 = x0 + 1
-    y1 = y0 + 1
-    if (np.min(x0) < 0 or np.max(x1) >= nx
-            or np.min(y0) < 0 or np.max(y1) >= ny):
+    if code == 21:
+        raise ValueError(
+            f"closed_edges names {sorted(unknown)}; the window edges are "
+            f"{', '.join(WINDOW_EDGES)}")
+    if code == 22:
         raise ValueError("masked-bilinear coordinates leave the source window")
-    fx = x - x0
-    fy = y - y0
-    indices_x = np.stack((x0, x1, x0, x1))
-    indices_y = np.stack((y0, y0, y1, y1))
-    weights = np.stack((
-        (1.0 - fx) * (1.0 - fy),
-        fx * (1.0 - fy),
-        (1.0 - fx) * fy,
-        fx * fy,
-    ))
-    corner_valid = source_valid[indices_y, indices_x]
-    weights *= corner_valid
-    raw_support = np.sum(weights, axis=0)
-    direct = target_apply & (raw_support > 0.0)
-    weights[:, direct] /= raw_support[direct]
-
-    needs_fallback = target_apply & ~direct
-    fallback_count = int(np.count_nonzero(needs_fallback))
-    fallback_max_distance = 0.0
-    fallback_distance_histogram: dict[str, int] = {}
-    if fallback_count:
-        flat_missing = np.flatnonzero(needs_fallback)
-        missing_x = x.ravel()[flat_missing]
-        missing_y = y.ravel()[flat_missing]
-        center_x = np.floor(missing_x + 0.5).astype(np.int64)
-        center_y = np.floor(missing_y + 0.5).astype(np.int64)
-        best_distance2 = np.full(flat_missing.size, np.inf)
-        donor_x = np.full(flat_missing.size, -1, dtype=np.int64)
-        donor_y = np.full(flat_missing.size, -1, dtype=np.int64)
-        for offset_y in range(-fallback_radius, fallback_radius + 1):
-            candidate_y = center_y + offset_y
-            y_inside = (candidate_y >= 0) & (candidate_y < ny)
-            for offset_x in range(-fallback_radius, fallback_radius + 1):
-                candidate_x = center_x + offset_x
-                inside = y_inside & (candidate_x >= 0) & (candidate_x < nx)
-                if not np.any(inside):
-                    continue
-                candidate_valid = np.zeros(flat_missing.size, dtype=bool)
-                positions = np.flatnonzero(inside)
-                candidate_valid[positions] = source_valid[
-                    candidate_y[positions], candidate_x[positions]]
-                distance2 = ((candidate_x - missing_x) ** 2
-                             + (candidate_y - missing_y) ** 2)
-                candidate_valid &= distance2 <= float(fallback_radius ** 2)
-                improve = candidate_valid & (distance2 < best_distance2)
-                donor_x[improve] = candidate_x[improve]
-                donor_y[improve] = candidate_y[improve]
-                best_distance2[improve] = distance2[improve]
-        if np.any(donor_x < 0):
-            unresolved_mask = donor_x < 0
-            unresolved = int(np.count_nonzero(unresolved_mask))
-            unresolved_targets = tuple(zip(*np.unravel_index(
-                flat_missing[unresolved_mask], x.shape)))
-            # The smallest integer radius whose donor disk reaches a
-            # valid cell for EVERY failing point -- measured, so the
-            # refusal's remediation can be validated instead of guessed.
-            required_radius = None
-            valid_cells_y, valid_cells_x = np.nonzero(source_valid)
-            if valid_cells_y.size and unresolved <= _DONOR_ANALYSIS_MAX_POINTS:
-                worst_distance2 = max(
-                    float(np.min((valid_cells_x - point_x) ** 2
-                                 + (valid_cells_y - point_y) ** 2))
-                    for point_x, point_y in zip(
-                        missing_x[unresolved_mask],
-                        missing_y[unresolved_mask]))
-                required_radius = int(np.ceil(np.sqrt(worst_distance2)))
-            raise SurfaceDonorSearchError(
-                f"no valid surface-matched HRRR donor within "
-                f"{fallback_radius} cells for {unresolved} target point(s)",
-                fallback_radius_cells=fallback_radius,
-                required_radius_cells=required_radius,
-                unresolved_targets=unresolved_targets)
-        flat_x = indices_x.reshape(4, -1)
-        flat_y = indices_y.reshape(4, -1)
-        flat_weights = weights.reshape(4, -1)
-        flat_x[:, flat_missing] = donor_x[None, :]
-        flat_y[:, flat_missing] = donor_y[None, :]
-        flat_weights[:, flat_missing] = 0.0
-        flat_weights[0, flat_missing] = 1.0
-        fallback_distances = np.sqrt(best_distance2)
-        fallback_max_distance = float(np.max(fallback_distances))
-        distance_bins = np.ceil(fallback_distances).astype(np.int64)
-        fallback_distance_histogram = {
-            str(int(cell_radius)): int(np.count_nonzero(
-                distance_bins == cell_radius))
-            for cell_radius in np.unique(distance_bins)
-        }
-
-    # Non-applicable targets are overwritten by the complementary stencil or
-    # an explicit physical fill.  Give them a harmless unit-sum donor so no
-    # NaN can be created transiently on the GPU.
-    unused = ~target_apply
-    weights[:, unused] = 0.0
-    weights[0, unused] = 1.0
-    sums = np.sum(weights, axis=0)
-    selected_source_is_valid = source_valid[indices_y, indices_x]
-    cross_surface = (
-        (weights > 0.0) & target_apply[None, :, :]
-        & ~selected_source_is_valid)
-    cross_surface_count = int(np.count_nonzero(cross_surface))
+    counts = [int(value) for value in raw["counts"]]
+    (source_valid_count, target_apply_count, direct_count,
+     renormalized_count, fallback_count, cross_surface_count,
+     negative_count, distant_count, unresolved, listed) = counts
+    max_distance, min_raw, sum_min, sum_max, worst = (
+        float(value) for value in raw["reals"])
+    weights_convex, any_valid = (bool(value) for value in raw["flags"])
+    if code == 23:
+        worst_distance = worst if any_valid else None
+        required_radius = (None if worst_distance is None
+                           else int(np.ceil(worst_distance)))
+        unresolved_targets = tuple(zip(*np.unravel_index(
+            raw["unresolved"][:unresolved].astype(np.int64), x.shape)))
+        reason = (
+            "" if worst_distance is None else
+            f"; the nearest one in the decoded source window is "
+            f"up to {worst_distance:.1f} cells away, farther than "
+            "the window reaches from those points, so a nearer one "
+            "outside it cannot be ruled out")
+        raise SurfaceDonorSearchError(
+            f"no valid surface-matched HRRR donor within "
+            f"{fallback_radius} cells for {unresolved} target "
+            f"point(s){reason}",
+            fallback_radius_cells=fallback_radius,
+            required_radius_cells=required_radius,
+            unresolved_targets=unresolved_targets,
+            search_inputs=(x, y, source_valid, target_apply,
+                           fallback_radius, closed_edges))
+    if code:
+        native._raise_native(code, "masked bilinear stencil")
+    histogram = raw["histogram"]
+    fallback_distance_histogram = {
+        str(int(cell_radius)): int(histogram[cell_radius])
+        for cell_radius in np.flatnonzero(histogram)}
+    # A window whose four edges are all HRRR's own edges has nothing
+    # beyond it, so its reach is unlimited (infinity in the search).  The
+    # receipt says that as null, with closed_window_edges naming why:
+    # infinity is not JSON, and the prepared cache refused to write a
+    # receipt carrying it.
+    distant_donors = []
+    for k in range(listed):
+        row, col = np.unravel_index(int(raw["distant_target"][k]), x.shape)
+        reach = float(raw["distant_reach"][k])
+        distant_donors.append({
+            "target_index": [int(row), int(col)],
+            "source_index": [int(raw["distant_source"][k][0]),
+                             int(raw["distant_source"][k][1])],
+            "distance_cells": float(raw["distant_distance"][k]),
+            "window_reach_cells": reach if np.isfinite(reach) else None})
     if cross_surface_count:
         raise AssertionError(
             "masked-bilinear stencil selected an incompatible surface donor")
-    if (not np.isfinite(weights).all() or np.any(weights < 0.0)
-            or not np.allclose(sums, 1.0, rtol=0.0, atol=2.0e-15)):
+    if not weights_convex:
         raise AssertionError("masked-bilinear stencil is not finite and convex")
     if sum(fallback_distance_histogram.values()) != fallback_count:
         raise AssertionError("fallback distance histogram is incomplete")
     report = {
         "operator": "masked_convex_bilinear_with_nearest_valid_fallback",
-        "source_valid_count": int(np.count_nonzero(source_valid)),
-        "target_apply_count": int(np.count_nonzero(target_apply)),
-        "direct_target_count": int(np.count_nonzero(direct)),
-        "renormalized_target_count": int(np.count_nonzero(
-            direct & (raw_support < 1.0 - 1.0e-12))),
+        "source_valid_count": source_valid_count,
+        "target_apply_count": target_apply_count,
+        "direct_target_count": direct_count,
+        "renormalized_target_count": renormalized_count,
         "fallback_target_count": fallback_count,
         "fallback_radius_cells": fallback_radius,
-        "fallback_max_distance_cells": fallback_max_distance,
+        "fallback_max_distance_cells": max_distance,
         "fallback_distance_ceiling_histogram_cells": (
             fallback_distance_histogram),
+        "donor_rule": (
+            "nearest surface-matched source cell, ties to the lowest row "
+            "then the lowest column; past fallback_radius_cells only when "
+            "nearer than any cell outside the window"),
+        "closed_window_edges": list(closed_edges),
+        "distant_donor_threshold_cells": DISTANT_DONOR_CELLS,
+        "distant_donor_count": distant_count,
+        "distant_donors": distant_donors,
+        "distant_donors_not_listed": distant_count - len(distant_donors),
         "unresolved_target_count": 0,
         "cross_surface_donor_count": cross_surface_count,
         "donor_surface_class": "land",
         "minimum_nonzero_raw_support": (
-            float(np.min(raw_support[direct])) if np.any(direct) else None),
-        "weight_sum_minimum": float(np.min(sums)),
-        "weight_sum_maximum": float(np.max(sums)),
-        "negative_weight_count": int(np.count_nonzero(weights < 0.0)),
+            min_raw if direct_count else None),
+        "weight_sum_minimum": sum_min,
+        "weight_sum_maximum": sum_max,
+        "negative_weight_count": negative_count,
     }
-    return (indices_y.astype(np.int32), indices_x.astype(np.int32),
-            weights.astype(np.float32), report)
+    shape = (4, *x.shape)
+    return (raw["indices_y"].reshape(shape), raw["indices_x"].reshape(shape),
+            raw["weights"].reshape(shape), report)
 
 
 def _source_window_rotation(
@@ -951,6 +1026,19 @@ def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
     temperature and humidity ranges below are plausibility windows no
     real value approaches, and are untouched.
 
+    SOILT keeps its 170..400 K band on source OPEN WATER (LANDSEA and
+    XICE both below 0.5) and is admitted outside it on source LAND, the
+    cells the soil initializer rebuilds TSK-to-TMN as real.exe does
+    (:func:`gpuwm.ingest.soil.unreasonable_land_soil_columns`), which is
+    the split :func:`_record_soil_field_stats` makes on the target.
+    Refusing the band on land refused every HRRRv2 cycle over western
+    snowpack, whose analyses carry land soil temperatures of 60 to 168 K.
+    An ICE-covered water cell is admitted too: HRRR runs its land-ice
+    column there, and on 2017-01-19 00Z a one-cell frozen lake at
+    46.2N 113.3W carries the same 158 K snowpack column as the land
+    around it.  Neither is a donor for a target land column, and target water
+    starts from its skin temperature, so no such value reaches the model.
+
     This is admission, not repair: a snapshot's field mapping is a
     read-only proxy, so the clamped copies decide the verdict here and
     the arrays are clamped again where they are consumed (the soil seam,
@@ -972,15 +1060,80 @@ def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
     if (not np.isfinite(soilw).all()
             or np.any((soilw < 0.0) | (soilw > 1.0))):
         raise ValueError("source HRRR SOILW is non-finite or outside 0..1")
-    if (not np.isfinite(soilt).all()
-            or np.any((soilt < 170.0) | (soilt > 400.0))):
-        raise ValueError("source HRRR SOILT is non-finite or outside 170..400 K")
+    if not np.isfinite(soilt).all():
+        raise ValueError("source HRRR SOILT is non-finite")
+    # Named breakage: a SOILT record out of band on OPEN WATER, where no
+    # land or ice model runs, is not the snowpack analysis the land
+    # rebuild answers but a mis-decoded or mis-mapped record, and
+    # admitting it would pass that record's land cells to the rebuild as
+    # if they were snowpack.  A source without XICE is judged on LANDSEA
+    # alone, the stricter reading.
+    open_water = np.asarray(landsea) < 0.5
+    xice = source.get("XICE") if hasattr(source, "get") else None
+    if xice is not None:
+        open_water = open_water & ~(np.asarray(xice) >= 0.5)
+    outside = (soilt < 170.0) | (soilt > 400.0)
+    water_cells = int(np.count_nonzero(
+        open_water & outside.reshape((-1,) + open_water.shape).any(axis=0)))
+    if water_cells:
+        raise ValueError(
+            "source HRRR SOILT is outside 170..400 K on "
+            f"{water_cells} source open-water cell(s) (LANDSEA and XICE "
+            "below 0.5); only a land or ice column is admitted outside the "
+            "range, and a land column is rebuilt TSK-to-TMN as real.exe "
+            "rebuilds it, so a value out of range on open water is a "
+            "broken SOILT record")
     if (not np.isfinite(spfh).all()
             or np.any((spfh < 0.0) | (spfh > 0.1))):
         raise ValueError("source HRRR SPFH is non-finite or outside 0..0.1")
     if (not np.isfinite(q2).all()
             or np.any((q2 < 0.0) | (q2 > 0.1))):
         raise ValueError("source HRRR Q2 is non-finite or outside 0..0.1")
+
+
+#: Snow undershoot repairs already announced, one line per grid and field.
+_REPORTED_SNOW_UNDERSHOOT: set = set()
+
+
+def _zero_snow_undershoot(out, source, xp, *, target_name, valid_time):
+    """Put the overlapping parabola's snow undershoot at zero, counted.
+
+    Snow water and snow depth are mapped with the overlapping parabola
+    above, which is not a weighted mean: beside a patch with little snow
+    inside a snowpack (a valley floor that has nearly melted out) its
+    negative weights take the patch below zero, by up to 9/32 of the snow
+    around it.  From a source with
+    no negative value every negative result is that undershoot and
+    nothing else, so each goes to zero here, where the source that bounds
+    it is known.  A source that is negative or not finite somewhere is
+    left as mapped, for the snow admission (gpuwm/ingest/soil.py) to
+    judge.  Every non-negative value is untouched.
+    """
+    for name in ("SNOW", "SNOWH"):
+        values = np.asarray(source[name])
+        if values.size == 0 or not np.isfinite(values).all() \
+                or float(values.min()) < 0.0:
+            continue
+        mapped = out[name]
+        below = mapped < 0
+        count = int(xp.count_nonzero(below))
+        if not count:
+            continue
+        lowest = float(mapped.min())
+        out[name] = xp.where(below, xp.float32(0.0), mapped).astype(
+            xp.float32, copy=False)
+        key = (target_name, name)
+        if key in _REPORTED_SNOW_UNDERSHOOT:
+            continue
+        _REPORTED_SNOW_UNDERSHOOT.add(key)
+        when = (valid_time.isoformat() if hasattr(valid_time, "isoformat")
+                else str(valid_time))
+        print(
+            f"HRRR {name} on {target_name} at {when}: {count} value(s) the "
+            "overlapping parabola took below zero beside cells with little snow "
+            f"(most negative {lowest:.4g}, source maximum "
+            f"{float(values.max()):.4g}) put at 0; said once per grid",
+            file=sys.stderr)
 
 
 #: What a soil-mapping refusal or report calls its target when the caller
@@ -991,33 +1144,156 @@ def _require_source_physical_ranges(source: Mapping[str, np.ndarray]) -> None:
 DEFAULT_SOIL_TARGET_NAME = "the HRRR target grid"
 
 
+def _native_edges_of(snapshot: HrrrNativeSnapshot) -> tuple[str, ...]:
+    """The edges of this window that are also edges of HRRR's grid.
+
+    Nothing lies beyond them, so a donor search near one need not rule
+    out a nearer cell on the far side.
+    """
+    from gpuwm.ingest.hrrr_target import HRRR_SOURCE_NX, HRRR_SOURCE_NY
+
+    return tuple(edge for edge, closed in (
+        ("west", snapshot.i_start == 0),
+        ("east", snapshot.i_start + snapshot.nx == HRRR_SOURCE_NX),
+        ("south", snapshot.j_start == 0),
+        ("north", snapshot.j_start + snapshot.ny == HRRR_SOURCE_NY),
+    ) if closed)
+
+
+#: (target, cells) pairs already announced by this process: the root's
+#: boundary strips and every forecast hour map the same cells again.
+_DISTANT_DONORS_ANNOUNCED: set[tuple[str, tuple]] = set()
+
+
+def _named_distant_donors(report, snapshot: HrrrNativeSnapshot,
+                          target_lat, target_lon, target_name: str):
+    """The stencil report with each distant donor placed on the map.
+
+    The stencil builder names cells by index; the receipt a person reads
+    needs where they are: each distant donor gains its target cell's
+    latitude and longitude, its HRRR cell as a native (i, j) and as a
+    latitude and longitude, and the distance in kilometres.  One warning
+    per target says how many land cells took a donor that far away.
+    """
+    report = dict(report)
+    listed = []
+    for entry in report.get("distant_donors", ()):
+        row, col = entry["target_index"]
+        source_row, source_col = entry["source_index"]
+        donor_lat, donor_lon = snapshot.source_cell_latlon(
+            source_row, source_col)
+        listed.append({
+            **entry,
+            "target_lat": float(target_lat[row, col]),
+            "target_lon": float(target_lon[row, col]),
+            "donor_hrrr_index": {"i": int(source_col + snapshot.i_start),
+                                 "j": int(source_row + snapshot.j_start)},
+            "donor_lat": float(donor_lat),
+            "donor_lon": float(donor_lon),
+            "distance_km": float(entry["distance_cells"]
+                                 * HRRR_GRID_SPACING_M / 1000.0),
+        })
+    report["distant_donors"] = listed
+    count = int(report.get("distant_donor_count", 0))
+    key = (target_name, tuple(tuple(entry["target_index"])
+                              for entry in listed))
+    if count and key not in _DISTANT_DONORS_ANNOUNCED:
+        _DISTANT_DONORS_ANNOUNCED.add(key)
+        from gpuwm import explain
+
+        first = listed[0]
+        farthest_km = (float(report["fallback_max_distance_cells"])
+                       * HRRR_GRID_SPACING_M / 1000.0)
+        explain.warn(
+            f"{target_name}: {count} land cell(s) that HRRR's land mask "
+            f"has as sea took their soil from the nearest HRRR land cell, "
+            f"up to {farthest_km:.0f} km away (the first, at "
+            f"{first['target_lat']:.4f}, {first['target_lon']:.4f}, from "
+            f"HRRR land at {first['donor_lat']:.4f}, "
+            f"{first['donor_lon']:.4f}); the preparation receipt lists "
+            "each one under land_stencil.distant_donors",
+            "Small islands and narrow spits are land on the forecast grid "
+            "and sea on HRRR's 3 km grid, so HRRR has no soil state for "
+            "them.  Each takes the soil temperature and moisture columns "
+            "of the nearest HRRR land cell, found by a search that is "
+            "only accepted when the decoded HRRR window shows no nearer "
+            "land cell can exist.")
+    return report
+
+
+def _trim_leaves_every_cell_a_donor(error: SurfaceDonorSearchError,
+                                    side: str, trim: int) -> bool:
+    """Whether a domain trimmed by ``trim`` cells on ``side`` maps.
+
+    Runs the same donor search on what the trim would leave, over the
+    smallest window that domain could be given: the remaining mass
+    points' own donor box.  Its real window also covers the staggered
+    points and the interpolation halo, so it is at least this large and
+    every donor vouched for here is vouched for there.  A trim can
+    shrink the window past a donor that was vouched for before, which
+    is why it is checked rather than assumed.  A nest mapped on its
+    parent's window keeps that window whatever its own size, so for a
+    nest this check is stricter than it has to be: it can pass over a
+    trim that would work, and never names one that would not.
+    """
+    if error.search_inputs is None:
+        return False
+    x, y, valid, apply, radius, closed = error.search_inputs
+    rows, cols = x.shape
+    keep = {
+        "north (j-max)": (slice(0, rows - trim), slice(None)),
+        "south (j-min)": (slice(trim, rows), slice(None)),
+        "east (i-max)": (slice(None), slice(0, cols - trim)),
+        "west (i-min)": (slice(None), slice(trim, cols)),
+    }[side]
+    x, y, apply = x[keep], y[keep], apply[keep]
+    if x.size == 0:
+        return False
+    ny, nx = valid.shape
+    low_x = max(0, min(int(np.ceil(x.min() - radius)), int(np.floor(x.min()))))
+    high_x = min(nx - 1, max(int(np.floor(x.max() + radius)),
+                             int(np.floor(x.max())) + 1))
+    low_y = max(0, min(int(np.ceil(y.min() - radius)), int(np.floor(y.min()))))
+    high_y = min(ny - 1, max(int(np.floor(y.max() + radius)),
+                             int(np.floor(y.max())) + 1))
+    still_closed = tuple(edge for edge, at_edge in (
+        ("west", low_x == 0), ("east", high_x == nx - 1),
+        ("south", low_y == 0), ("north", high_y == ny - 1),
+    ) if at_edge and edge in closed)
+    try:
+        _build_masked_bilinear_stencil(
+            x - low_x, y - low_y, valid[low_y:high_y + 1, low_x:high_x + 1],
+            apply, fallback_radius=radius, closed_edges=still_closed)
+    except SurfaceDonorSearchError:
+        return False
+    return True
+
+
 def _validated_donor_remediation(error: SurfaceDonorSearchError,
                                  snapshot: HrrrNativeSnapshot,
                                  target_name: str,
                                  target_shape: tuple[int, int]) -> str:
-    """Advice that survives the guard it names, computed before printing.
-
-    Field 2026-08: a fitter-maximum 3 km root sat with its radius-8
-    source window exactly on HRRR's native top edge, two land cells had
-    no donor within 8 cells, and the refusal recommended raising
-    ``surface_fallback_radius_cells`` -- a setting the coverage guard
-    (``required_hrrr_source_window``) refuses at ANY sufficient value
-    there, because a larger radius enlarges the required window past
-    the native edge.  Advice is therefore checked against the same
-    limits first:
+    """Advice that works, computed before printing.
 
     * the radius that reaches a donor for every unfilled cell was
-      measured by the stencil builder;
-    * the window a raise needs is contained in this snapshot's window
-      grown by the radius increase on every side (the fallback bound
-      moves cell-for-cell with the radius, the parabolic bound not at
-      all), so when THAT stays inside the native grid the guard
-      provably accepts the raise;
-    * otherwise the raise is named impossible and the computed trim is
-      printed instead: removing exactly the rows or columns that carry
-      the unfillable cells changes no remaining cell's donor disk, so
-      the trimmed domain maps for precisely the reason this one could
-      not, and its smaller window passes the guard by construction.
+      measured by the stencil builder.  Up to the supported maximum it
+      is the advice: the source window it needs is this snapshot's
+      window grown by the radius increase on every side (the fallback
+      bound moves cell-for-cell with the radius, the parabolic bound not
+      at all), stopped at HRRR's own edge, where nothing lies beyond,
+      and the coverage test accepts any such window;
+    * past the maximum the raise is named impossible and a trim is
+      printed instead: the smallest one-side trim that removes every
+      unfillable cell AND, run through the same donor search on the
+      domain it leaves (:func:`_trim_leaves_every_cell_a_donor`), leaves
+      every remaining land cell a donor.  Since the search can reach
+      past the radius, a trim that shrinks the window could cost a cell
+      its donor, so this is checked, not assumed; when no trim passes,
+      the advice is to move the domain.
+
+    A raise is set where the run's own radius is set: the
+    ``surface_fallback_radius_cells`` key of its d01 target document,
+    which `gpuwm domain` writes beside the experiment.
     """
     from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NX, HRRR_SOURCE_NY,
                                           SURFACE_FALLBACK_RADIUS_MAX)
@@ -1031,37 +1307,25 @@ def _validated_donor_remediation(error: SurfaceDonorSearchError,
                 f"donor for these cells at any radius.  Instead, {move}.")
 
     growth = required - error.fallback_radius_cells
-    grown_i = (snapshot.i_start - growth,
-               snapshot.i_start + snapshot.nx - 1 + growth)
-    grown_j = (snapshot.j_start - growth,
-               snapshot.j_start + snapshot.ny - 1 + growth)
-    overflows = [
-        (side, gap) for side, gap in (
-            ("west", -grown_i[0]),
-            ("east", grown_i[1] - (HRRR_SOURCE_NX - 1)),
-            ("south", -grown_j[0]),
-            ("north", grown_j[1] - (HRRR_SOURCE_NY - 1)),
-        ) if gap > 0]
-    if required <= SURFACE_FALLBACK_RADIUS_MAX and not overflows:
+    grown_i = (max(0, snapshot.i_start - growth),
+               min(HRRR_SOURCE_NX - 1,
+                   snapshot.i_start + snapshot.nx - 1 + growth))
+    grown_j = (max(0, snapshot.j_start - growth),
+               min(HRRR_SOURCE_NY - 1,
+                   snapshot.j_start + snapshot.ny - 1 + growth))
+    if required <= SURFACE_FALLBACK_RADIUS_MAX:
         return (f"Raising surface_fallback_radius_cells to {required} "
                 "reaches a surface-matched donor for every unfilled "
-                "cell, and the enlarged source window (within "
+                "cell; its source window grows to at most "
                 f"i={grown_i[0]}..{grown_i[1]}, "
-                f"j={grown_j[0]}..{grown_j[1]}) stays inside the native "
-                f"HRRR grid i=0..{HRRR_SOURCE_NX - 1}, "
-                f"j=0..{HRRR_SOURCE_NY - 1}, so the coverage guard "
-                f"accepts it.  Alternatively, {move}.")
+                f"j={grown_j[0]}..{grown_j[1]} of the native HRRR grid "
+                f"i=0..{HRRR_SOURCE_NX - 1}, j=0..{HRRR_SOURCE_NY - 1}, "
+                "stopping at HRRR's own edge.  Set it in the run's d01 "
+                "target document (the .d01-target.json file beside the "
+                f"experiment).  Alternatively, {move}.")
 
-    if overflows:
-        named = ", ".join(f"{gap} cell(s) at its {side} edge"
-                          for side, gap in overflows)
-        reason = (f"the enlarged source window would leave the native "
-                  f"HRRR grid i=0..{HRRR_SOURCE_NX - 1}, "
-                  f"j=0..{HRRR_SOURCE_NY - 1} by {named}, so the "
-                  "coverage guard refuses that setting")
-    else:
-        reason = (f"that exceeds the supported maximum of "
-                  f"{SURFACE_FALLBACK_RADIUS_MAX}")
+    reason = (f"that exceeds the supported maximum of "
+              f"{SURFACE_FALLBACK_RADIUS_MAX}")
     advice = (f"Raising surface_fallback_radius_cells cannot work here: "
               f"the nearest donors need radius {required}, and {reason}.")
 
@@ -1071,15 +1335,19 @@ def _validated_donor_remediation(error: SurfaceDonorSearchError,
             if len(target) == 2]
     if rows and len(rows) == len(error.unresolved_targets):
         target_rows, target_cols = int(target_shape[0]), int(target_shape[1])
-        trim, side = min(
-            (target_rows - min(rows), "north (j-max)"),
-            (max(rows) + 1, "south (j-min)"),
-            (target_cols - min(cols), "east (i-max)"),
-            (max(cols) + 1, "west (i-min)"),
-        )
-        advice += (f"  What works: trim {trim} cell(s) from its {side} "
-                   f"side, which removes every unfillable land cell of "
-                   f"{target_name}, or {move}.")
+        for trim, side in sorted((
+                (target_rows - min(rows), "north (j-max)"),
+                (max(rows) + 1, "south (j-min)"),
+                (target_cols - min(cols), "east (i-max)"),
+                (max(cols) + 1, "west (i-min)"))):
+            if _trim_leaves_every_cell_a_donor(error, side, trim):
+                return advice + (
+                    f"  What works: trim {trim} cell(s) from its {side} "
+                    f"side, which removes every unfillable land cell of "
+                    f"{target_name} and leaves every remaining one a "
+                    f"donor, or {move}.")
+        advice += (f"  No trim of one side removes those cells and leaves "
+                   f"every remaining land cell a donor; instead, {move}.")
     else:
         advice += f"  Instead, {move}."
     return advice
@@ -1087,7 +1355,8 @@ def _validated_donor_remediation(error: SurfaceDonorSearchError,
 
 def _record_soil_field_stats(report, name, source, candidate,
                              source_land, target_land, limits, *,
-                             target_name=DEFAULT_SOIL_TARGET_NAME):
+                             target_name=DEFAULT_SOIL_TARGET_NAME,
+                             land_columns_rebuilt=False):
     """Record one mapped soil field's admission checks and land diagnostics.
 
     A target with NO land cells is a legitimate configuration, not a
@@ -1111,6 +1380,13 @@ def _record_soil_field_stats(report, name, source, candidate,
     land cells with no reachable HRRR land donor.  The stencil builder
     refuses that before this function is ever called, and it counts the
     unresolved points.
+
+    ``land_columns_rebuilt`` is SOILT's: a target LAND column outside the
+    limits is admitted and counted here, because the soil initializer
+    rebuilds it TSK-to-TMN as real.exe does
+    (:func:`gpuwm.ingest.soil.unreasonable_land_soil_columns`); a
+    non-finite value, or one outside the limits off land, is still
+    refused.
     """
     if hasattr(candidate, "get"):
         candidate = candidate.get()
@@ -1122,11 +1398,21 @@ def _record_soil_field_stats(report, name, source, candidate,
     # Interpolation inherits the source's bound-kissing cells, so the
     # mapped output is admitted on the same terms the source was.
     candidate, _ = clamp_bound_kissing(candidate, minimum=lower, maximum=upper)
-    if (not np.isfinite(candidate).all()
-            or np.any((candidate < lower) | (candidate > upper))):
+    outside = (candidate < lower) | (candidate > upper)
+    rebuilt_land_columns = 0
+    if land_columns_rebuilt:
+        land_outside = np.any(outside, axis=0) & target_land
+        rebuilt_land_columns = int(np.count_nonzero(land_outside))
+        outside = outside & ~target_land[None, ...]
+    if not np.isfinite(candidate).all() or np.any(outside):
         raise ValueError(
             f"mapped HRRR {name} for {target_name} is non-finite or outside "
             f"{lower}..{upper}")
+    # Present only when a land column is left for the soil initializer's
+    # rebuild, so a healthy cycle's report is unchanged.
+    rebuilt_entry = (
+        {"target_land_columns_outside_limits_rebuilt_tsk_to_tmn":
+            rebuilt_land_columns} if rebuilt_land_columns else {})
     if source_values.shape[1] == 0 or target_values.shape[1] == 0:
         empty = "target" if target_values.shape[1] == 0 else "source window"
         report[name] = {
@@ -1141,6 +1427,7 @@ def _record_soil_field_stats(report, name, source, candidate,
                 "land comparison to report"),
             "source_land_cell_count": int(source_values.shape[1]),
             "target_land_cell_count": int(target_values.shape[1]),
+            **rebuilt_entry,
         }
         return
     source_min = np.min(source_values, axis=1)
@@ -1173,6 +1460,7 @@ def _record_soil_field_stats(report, name, source, candidate,
         "mean_delta_note": (
             "Diagnostic only: source window and target land masks/areas differ; "
             "this is not an integral-conservation claim."),
+        **rebuilt_entry,
     }
 
 
@@ -1187,8 +1475,10 @@ def interpolate_hrrr_to_lambert(
     """Interpolate a verified HRRR window to one WRF Lambert C grid.
 
     Atmospheric continuous fields use WPS's overlapping-parabolic operator.
-    Soil uses non-negative bilinear weights restricted to source land, with a
-    bounded nearest-valid fallback.
+    Soil uses non-negative bilinear weights restricted to source land; a
+    land cell with no land corner takes the nearest HRRR land cell, past
+    ``surface_fallback_radius`` only where this window shows no nearer one
+    can exist (see :func:`_build_masked_bilinear_stencil`).
     This intentionally repairs WPS ``sixteen_pt`` overshoot (including
     negative soil moisture) rather than reproducing it.  Target-water soil is
     filled with target skin temperature and unit moisture, as WRF soil setup
@@ -1237,20 +1527,27 @@ def interpolate_hrrr_to_lambert(
         raise ValueError("target_landmask must contain only finite 0/1 values")
     target_land = target_landmask.astype(bool)
     source_land = np.asarray(source["LANDSEA"]) >= 0.5
+    # Soil is built and (on the CPU) applied in the Rust preprocessing
+    # library under both backends: the CPU backend's own library and
+    # worker count, or the ladder's library on every CPU under CUDA.  A
+    # library without the stencil is refused here, before any field.
+    from gpuwm.ingest.horiz import _masked_chain_for_backend
+
+    stencil_native, stencil_workers = _stencil_engine(
+        *_masked_chain_for_backend(engine))
     try:
         land_stencil = mass_plan.masked_bilinear_stencil(
             source_land, target_land,
-            fallback_radius=surface_fallback_radius)
+            fallback_radius=surface_fallback_radius,
+            closed_edges=_native_edges_of(snapshot),
+            native=stencil_native, workers=stencil_workers)
     except SurfaceDonorSearchError as error:
         # The one soil case that genuinely cannot be mapped: this target
         # has land cells and the HRRR window has no land within reach of
         # them.  The stencil builder is generic and measures the facts;
         # only here is it known WHICH grid was being mapped and where
-        # its window sits on the native HRRR grid, which is the whole
-        # difference between an actionable refusal and one whose advice
-        # the coverage guard refuses -- the field met exactly that: a
-        # recommended radius raise that could never pass
-        # required_hrrr_source_window on a fitter-maximum domain.
+        # its window sits on the native HRRR grid, which is what the
+        # advice is computed from.
         raise ValueError(
             f"HRRR soil mapping for {target_name} cannot fill its land "
             f"cells: {error}.  "
@@ -1263,6 +1560,8 @@ def interpolate_hrrr_to_lambert(
             "SPFH", "PSFC", "SOILHGT", "SKINTEMP", "SNOW", "SNOWH",
             "T2", "Q2"):
         out[name] = mass_plan.apply(source[name], method="parabolic")
+    _zero_snow_undershoot(out, source, xp, target_name=target_name,
+                          valid_time=snapshot.valid_time)
     # WPS METGRID.TBL routes hydrometeor mass through
     # ``four_pt+average_4pt`` rather than the overshooting parabolic operator.
     # Bilinear interpolation preserves both non-negativity and compact support.
@@ -1277,15 +1576,9 @@ def interpolate_hrrr_to_lambert(
     # initialize_real uses WPS's GHT spelling; retain HGT as the native-GRIB
     # diagnostic spelling so oracle reports stay explicit.
     out["GHT"] = out["HGT"]
-    target_land_backend = engine.bool_array(target_land)
     for name, water_fill in (("SOILT", out["SKINTEMP"]), ("SOILW", 1.0)):
-        mapped_land = land_stencil.apply(source[name])
-        selector = target_land_backend[None, :, :]
-        if name == "SOILT":
-            fill = xp.broadcast_to(water_fill[None, :, :], mapped_land.shape)
-        else:
-            fill = xp.full(mapped_land.shape, water_fill, dtype=xp.float32)
-        out[name] = xp.where(selector, mapped_land, fill)
+        out[name] = land_stencil.apply_selected(
+            source[name], target_land, water_fill)
     # LANDSEA is the model/static surface classification.  Preserve the
     # nearest source classification separately for WPS-oracle diagnostics.
     out["SOURCE_LANDSEA"] = mass_plan.apply(
@@ -1340,8 +1633,8 @@ def interpolate_hrrr_to_lambert(
     local_report: dict[str, object] = {
         "target": target_name,
         "policy": (
-            "source-land-masked convex bilinear; bounded nearest-valid "
-            "fallback; "
+            "source-land-masked convex bilinear; nearest-valid fallback, "
+            "past the radius only where the window vouches for it; "
             "target-water SOILT=SKINTEMP and SOILW=1"),
         "integral_conservation_claimed": False,
         "preprocess_backend": engine.receipt(),
@@ -1370,13 +1663,14 @@ def interpolate_hrrr_to_lambert(
         "source_water_count": int(np.count_nonzero(~source_land)),
         "target_land_count": int(np.count_nonzero(target_land)),
         "target_water_count": int(np.count_nonzero(~target_land)),
-        "land_stencil": dict(land_stencil.report),
+        "land_stencil": _named_distant_donors(
+            land_stencil.report, snapshot, mass_lat, mass_lon, target_name),
         "fields": {},
     }
     _record_soil_field_stats(
         local_report["fields"], "SOILT", source["SOILT"], out["SOILT"],
         source_land, target_land, (170.0, 400.0),
-        target_name=target_name)
+        target_name=target_name, land_columns_rebuilt=True)
     _record_soil_field_stats(
         local_report["fields"], "SOILW", source["SOILW"], out["SOILW"],
         source_land, target_land, (0.0, 1.0), target_name=target_name)

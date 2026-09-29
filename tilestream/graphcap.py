@@ -141,6 +141,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 from typing import Any, Callable
+import weakref
 
 import numpy as np
 
@@ -231,8 +232,46 @@ def cadence_key(state, cfg) -> tuple:
 _SCALARISH = (bool, int, float, str, bytes, type(None))
 
 
+class ObjectLifetimes:
+    """Names an object by its LIFETIME rather than by its address.
+
+    ``id()`` is an address, and CPython hands a freed address to the next
+    object of the same size.  :func:`capture_step` asks whether an object a
+    step rebinds comes BACK on a later capture; with bare ids, a fresh
+    tendency bundle allocated where the previous capture's already freed
+    bundle lived reads as the same object, and a correct rebinding is
+    refused as a double buffer.  MEASURED on the graph section: the ship
+    config and the real Lambert projection row were each refused that way
+    on some runs and not others.
+
+    A weak reference tells the two apart.  A serial is reused only while
+    the object it was issued to is still alive and is the very object
+    asked about; an address reused by a new object gets a new serial.  An
+    object that cannot be weakly referenced is held strongly for as long as
+    this ledger lives, so its address cannot be reused while it is compared.
+    A ledger lives for one :func:`capture_step` call.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[Callable[[], Any], int]] = {}
+        self._issued = 0
+
+    def serial(self, obj) -> int:
+        entry = self._entries.get(id(obj))
+        if entry is not None and entry[0]() is obj:
+            return entry[1]
+        try:
+            ref = weakref.ref(obj)
+        except TypeError:
+            ref = (lambda held=obj: held)
+        self._issued += 1
+        self._entries[id(obj)] = (ref, self._issued)
+        return self._issued
+
+
 def _fingerprint_value(value, depth: int = 0, *, ids: bool = True,
-                       shapes_only: bool = False) -> str:
+                       shapes_only: bool = False,
+                       identity: Callable[[Any], int] | None = None) -> str:
     """A stable text rendering of one host attribute.
 
     Device arrays are rendered as their identity and shape, NOT their
@@ -246,6 +285,10 @@ def _fingerprint_value(value, depth: int = 0, *, ids: bool = True,
     thing" from "this attribute holds a freshly allocated one of the same
     thing".  :func:`capture_step` needs both, and treats them very
     differently -- see the rebinding discussion there.
+
+    ``identity`` replaces the bare ``id()`` in that rendering, and
+    :func:`capture_step` passes :meth:`ObjectLifetimes.serial` so a freed
+    address that a new object reuses does not read as the old object.
     """
     if isinstance(value, _SCALARISH):
         return "" if shapes_only else repr(value)
@@ -257,16 +300,23 @@ def _fingerprint_value(value, depth: int = 0, *, ids: bool = True,
         return "{" + ",".join(
             f"{k!r}:{part}" for k, part in (
                 (k, _fingerprint_value(v, depth + 1, ids=ids,
-                                       shapes_only=shapes_only))
+                                       shapes_only=shapes_only,
+                                       identity=identity))
                 for k, v in sorted(value.items(), key=lambda kv: repr(kv[0])))
             if part or not shapes_only) + "}"
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(
             part for part in (
                 _fingerprint_value(v, depth + 1, ids=ids,
-                                   shapes_only=shapes_only) for v in value)
+                                   shapes_only=shapes_only,
+                                   identity=identity) for v in value)
             if part or not shapes_only) + "]"
-    tag = f" id={id(value):x}" if ids and not shapes_only else ""
+    if not ids or shapes_only:
+        tag = ""
+    elif identity is None:
+        tag = f" id={id(value):x}"
+    else:
+        tag = f" id=#{identity(value)}"
     shape = getattr(value, "shape", None)
     if shape is not None:
         dtype = getattr(value, "dtype", "")
@@ -280,14 +330,16 @@ def _fingerprint_value(value, depth: int = 0, *, ids: bool = True,
         return ("<" + type(value).__name__ + " " + ",".join(
             f"{k}={part}" for k, part in (
                 (k, _fingerprint_value(v, depth + 1, ids=ids,
-                                       shapes_only=shapes_only))
+                                       shapes_only=shapes_only,
+                                       identity=identity))
                 for k, v in sorted(fields.items()))
             if part or not shapes_only) + ">")
     return f"<{type(value).__name__}{tag}>"
 
 
 def host_fingerprint(state, *, ids: bool = True,
-                     shapes_only: bool = False) -> str:
+                     shapes_only: bool = False,
+                     identity: Callable[[Any], int] | None = None) -> str:
     """Digest the host-side state a replay would NOT update.
 
     Walks the ``DomainState``'s and the ``PhysicsDriver``'s ``__dict__`` --
@@ -299,6 +351,8 @@ def host_fingerprint(state, *, ids: bool = True,
     repeating the step leaves the host state where it already is.  Comparing
     the fingerprint after two consecutive captures from the SAME clock tests
     that directly, and names the attribute when it fails.
+
+    ``identity`` is passed through to :func:`_fingerprint_value`.
     """
     parts = []
     driver = getattr(state, "physics", None)
@@ -314,7 +368,8 @@ def host_fingerprint(state, *, ids: bool = True,
                 # this check caught printed 883 KB.
                 continue
             part = _fingerprint_value(value, ids=ids,
-                                      shapes_only=shapes_only)
+                                      shapes_only=shapes_only,
+                                      identity=identity)
             if part or not shapes_only:
                 parts.append(f"{label}.{name}={part}")
     return "\n".join(parts)
@@ -508,6 +563,10 @@ def capture_step(state, cfg, stream, *, step_fn=None, scalars_fn=None,
     key = cadence_key(state, cfg)
     pool = pool or cp.cuda.MemoryPool()
     t0 = time.perf_counter()
+    # Identities in the host fingerprints below are LIFETIMES, not
+    # addresses: a fresh object that lands on a freed predecessor's
+    # address must not read as that predecessor coming back.
+    lifetimes = ObjectLifetimes()
 
     before = None if scalars_fn is None else dict(scalars_fn(state))
 
@@ -606,7 +665,7 @@ def capture_step(state, cfg, stream, *, step_fn=None, scalars_fn=None,
                 "which produces an empty graph that launches successfully "
                 "and does nothing")
         captures.append((graph, nodes, fp,
-                         host_fingerprint(state),
+                         host_fingerprint(state, identity=lifetimes.serial),
                          host_fingerprint(state, shapes_only=True),
                          None if scalars_fn is None else dict(scalars_fn(state))))
         if attempt == 0:

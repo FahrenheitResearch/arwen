@@ -1,0 +1,206 @@
+{
+  "about": "Stand-in /proc/meminfo, /proc/self/cgroup and cgroup mount files, with the answers every host-memory reader must give: headroom (the least room left under any memory cgroup limit on the path from the process's own cgroup up to its mount), limit (the smallest such limit) and available (MemAvailable capped by the headroom). Held by rw_host_memory, which the renderer reads as rusty_weather::host_memory (cargo test -p rw-host-memory), by the MPAS static builder's rw_mpas::static_memory (cargo test -p rw-mpas), and by tilestream.autoplan and gpuwm.core.preflight.host_available_bytes (tests/test_preflight.py). A null meminfo or proc_self_cgroup is a file that is not there; cgroup maps a path under the mount to its text.",
+  "cases": [
+    {
+      "name": "bare host with no memory limit reads MemAvailable",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/user.slice/user-1000.slice/session-2.scope\n",
+      "cgroup": {},
+      "limit": null,
+      "headroom": null,
+      "available": 8589934592
+    },
+    {
+      "name": "cgroup v2 limit on the process's own scope, inactive page cache not counted as used",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r1.scope\n",
+      "cgroup": {
+        "user.slice/user-1000.slice/user@1000.service/app.slice/run-r1.scope/memory.max": "2147483648\n",
+        "user.slice/user-1000.slice/user@1000.service/app.slice/run-r1.scope/memory.current": "536870912\n",
+        "user.slice/user-1000.slice/user@1000.service/app.slice/run-r1.scope/memory.stat": "anon 402653184\nfile 134217728\nactive_file 0\ninactive_file 134217728\n"
+      },
+      "limit": 2147483648,
+      "headroom": 1744830464,
+      "available": 1744830464
+    },
+    {
+      "name": "cgroup v2 limit on an ancestor slice binds a leaf that has none",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/pool.slice/job.scope\n",
+      "cgroup": {
+        "pool.slice/memory.max": "1073741824\n",
+        "pool.slice/memory.current": "268435456\n",
+        "pool.slice/job.scope/memory.max": "max\n",
+        "pool.slice/job.scope/memory.current": "134217728\n"
+      },
+      "limit": 1073741824,
+      "headroom": 805306368,
+      "available": 805306368
+    },
+    {
+      "name": "the smallest limit and the least room sit on different cgroups",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/pool.slice/job.scope\n",
+      "cgroup": {
+        "pool.slice/memory.max": "4294967296\n",
+        "pool.slice/memory.current": "3758096384\n",
+        "pool.slice/job.scope/memory.max": "2147483648\n",
+        "pool.slice/job.scope/memory.current": "268435456\n"
+      },
+      "limit": 2147483648,
+      "headroom": 536870912,
+      "available": 536870912
+    },
+    {
+      "name": "cgroup v2 container at its own namespace root on a large host",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:        131072000 kB\nMemAvailable:   262144000 kB\n",
+      "proc_self_cgroup": "0::/\n",
+      "cgroup": {
+        "memory.max": "4294967296\n",
+        "memory.current": "1073741824\n"
+      },
+      "limit": 4294967296,
+      "headroom": 3221225472,
+      "available": 3221225472
+    },
+    {
+      "name": "cgroup v2 container whose membership still names the host path",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:        131072000 kB\nMemAvailable:   268435456 kB\n",
+      "proc_self_cgroup": "0::/kubepods.slice/pod-a.slice/cri-b.scope\n",
+      "cgroup": {
+        "memory.max": "17179869184\n",
+        "memory.current": "1073741824\n",
+        "memory.stat": "anon 536870912\ninactive_file 536870912\n"
+      },
+      "limit": 17179869184,
+      "headroom": 16642998272,
+      "available": 16642998272
+    },
+    {
+      "name": "cgroup v2 with no limit anywhere reads MemAvailable",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/a.slice/b.scope\n",
+      "cgroup": {
+        "a.slice/memory.max": "max\n",
+        "a.slice/memory.current": "1073741824\n",
+        "a.slice/b.scope/memory.max": "max\n",
+        "a.slice/b.scope/memory.current": "536870912\n"
+      },
+      "limit": null,
+      "headroom": null,
+      "available": 8589934592
+    },
+    {
+      "name": "cgroup v1 memory controller limit, hierarchical inactive page cache not counted as used",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "12:memory:/docker/abc\n4:cpu,cpuacct:/docker/abc\n1:name=systemd:/docker/abc\n",
+      "cgroup": {
+        "memory/memory.limit_in_bytes": "3221225472\n",
+        "memory/memory.usage_in_bytes": "2147483648\n",
+        "memory/memory.stat": "cache 1073741824\ninactive_file 1\ntotal_inactive_file 536870912\n"
+      },
+      "limit": 3221225472,
+      "headroom": 1610612736,
+      "available": 1610612736
+    },
+    {
+      "name": "cgroup v1 unlimited sentinel is no limit",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "5:memory:/user.slice\n",
+      "cgroup": {
+        "memory/memory.limit_in_bytes": "9223372036854771712\n",
+        "memory/memory.usage_in_bytes": "4294967296\n",
+        "memory/user.slice/memory.limit_in_bytes": "9223372036854771712\n",
+        "memory/user.slice/memory.usage_in_bytes": "1073741824\n"
+      },
+      "limit": null,
+      "headroom": null,
+      "available": 8589934592
+    },
+    {
+      "name": "usage over the limit leaves no room",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/\n",
+      "cgroup": {
+        "memory.max": "2147483648\n",
+        "memory.current": "2281701376\n"
+      },
+      "limit": 2147483648,
+      "headroom": 0,
+      "available": 0
+    },
+    {
+      "name": "a limit whose usage cannot be read is the room",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/job.scope\n",
+      "cgroup": {
+        "job.scope/memory.max": "6442450944\n"
+      },
+      "limit": 6442450944,
+      "headroom": 6442450944,
+      "available": 6442450944
+    },
+    {
+      "name": "no MemAvailable line answers unknown even under a limit",
+      "meminfo": "MemTotal:        16777216 kB\nMemFree:          1048576 kB\n",
+      "proc_self_cgroup": "0::/\n",
+      "cgroup": {
+        "memory.max": "2147483648\n",
+        "memory.current": "0\n"
+      },
+      "limit": 2147483648,
+      "headroom": 2147483648,
+      "available": null
+    },
+    {
+      "name": "a host with less free than the container's room reads the host",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:           524288 kB\nMemAvailable:     1048576 kB\n",
+      "proc_self_cgroup": "0::/\n",
+      "cgroup": {
+        "memory.max": "8589934592\n",
+        "memory.current": "1073741824\n"
+      },
+      "limit": 8589934592,
+      "headroom": 7516192768,
+      "available": 1073741824
+    },
+    {
+      "name": "an unreadable /proc/self/cgroup reads the mount's own root",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": null,
+      "cgroup": {
+        "memory.max": "3221225472\n",
+        "memory.current": "0\n"
+      },
+      "limit": 3221225472,
+      "headroom": 3221225472,
+      "available": 3221225472
+    },
+    {
+      "name": "a v1 memory limit and a v2 limit on the same process, the tighter binds",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/sess.scope\n7:memory:/sess.scope\n",
+      "cgroup": {
+        "sess.scope/memory.max": "5368709120\n",
+        "sess.scope/memory.current": "1073741824\n",
+        "memory/sess.scope/memory.limit_in_bytes": "3221225472\n",
+        "memory/sess.scope/memory.usage_in_bytes": "1073741824\n"
+      },
+      "limit": 3221225472,
+      "headroom": 2147483648,
+      "available": 2147483648
+    },
+    {
+      "name": "an unreadable limit is no limit",
+      "meminfo": "MemTotal:       536870912 kB\nMemFree:          1048576 kB\nMemAvailable:     8388608 kB\n",
+      "proc_self_cgroup": "0::/\n",
+      "cgroup": {
+        "memory.max": "junk\n",
+        "memory.current": "1073741824\n"
+      },
+      "limit": null,
+      "headroom": null,
+      "available": 8589934592
+    }
+  ]
+}

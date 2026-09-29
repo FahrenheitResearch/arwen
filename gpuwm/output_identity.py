@@ -11,7 +11,15 @@ from contextlib import nullcontext
 
 @dataclass(frozen=True)
 class FileRevision:
-    """A descriptor's file identity and observed content-change metadata."""
+    """A descriptor's file identity and observed content-change metadata.
+
+    ``file_id`` names one file only at one moment. NTFS, ReFS and ext4 keep
+    it for the file's whole life, but exFAT derives it from the file's
+    directory entry, and a rename can move that entry: the same open
+    handle read 1271434313728 before a rename on an exFAT drive and
+    1271434313888 after it. Compare ids between two observations taken
+    together, never across a rename.
+    """
 
     device: int
     inode: int
@@ -38,6 +46,20 @@ class CompletedFileRecord:
 
     def record(self):
         return {"path": self.path, "bytes": self.size, "sha256": self.sha256}
+
+
+class OutputChangedError(RuntimeError):
+    """An output is no longer the file its writer completed.
+
+    Finalizing again cannot help: the proof that bound the receipt to the
+    written bytes belonged to the run that wrote them. The remedy is to
+    stop whatever else touched the file and write it again.
+    """
+
+    remedy = ("Another program wrote to, moved or replaced this output "
+              "while the forecast was writing or recording it. Keep file "
+              "sync, backup and other forecasts out of this forecasts "
+              "folder, then start the forecast again.")
 
 
 @lru_cache(maxsize=1)
@@ -98,19 +120,19 @@ def _address_matches(path, revision):
                 return _revision(addressed) == revision
         info = path.stat()
     except OSError as exc:
-        raise RuntimeError(
-            f"Output {path} disappeared while its receipt was hashed. "
-            "Keep the completed output stable and retry finalization.") from exc
+        raise OutputChangedError(
+            f"Output {path} disappeared while its receipt was hashed.") from exc
     return ((info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
              info.st_ctime_ns)
             == (revision.device, revision.inode, revision.size,
                 revision.modified_ns, revision.stat_ctime_ns))
 
 
-def _changed(path):
-    return RuntimeError(
+def _changed(path, detail=None):
+    observed = f" ({detail})" if detail else ""
+    return OutputChangedError(
         f"Output {path} changed while its receipt was hashed or after "
-        "writer completion. Keep the completed output stable and retry finalization.")
+        f"writer completion{observed}.")
 
 
 def open_publication_file(path):
@@ -166,14 +188,32 @@ class PublicationFile:
             raise _changed(self.path)
 
     def published(self, path):
+        """The revision at ``path``, proved to be the file this handle validated.
+
+        A rename moves a name, not a file. The retained handle keeps naming
+        the validated file on every filesystem, and no filesystem's rename
+        changes that file's length or last content-write time, so those are
+        compared across the rename. A rename may change ctime/ChangeTime,
+        and on exFAT it can change the file id (see FileRevision),
+        so neither is compared across it. Which file the published address
+        names is instead settled by comparing the address with the retained
+        handle at one moment, before and after the address is opened.
+        """
         current = _revision(self.handle)
-        # A rename legitimately changes ctime/ChangeTime. It cannot change
-        # the retained file identity, length, or last content-write time.
-        if ((current.file_id, current.size, current.modified_ns)
-                != (self.written.file_id, self.written.size,
-                    self.written.modified_ns)):
-            raise _changed(path)
-        return publication_revision(path, expected=current)
+        for label, written, now in (
+                ("length", self.written.size, current.size),
+                ("last write time", self.written.modified_ns,
+                 current.modified_ns)):
+            if written != now:
+                raise _changed(path, f"its {label} went from {written} to "
+                                     f"{now} after it was validated")
+        revision = publication_revision(path, expected=current)
+        # Where the id follows the directory entry, a replacement could take
+        # the entry the retained file just left. The retained file cannot
+        # then also report that entry, so observe it once more.
+        if _revision(self.handle) != revision:
+            raise _changed(path, "the address stopped naming the validated file")
+        return revision
 
     def close(self):
         self.handle.close()
@@ -184,8 +224,10 @@ def publication_revision(path, *, expected=None) -> FileRevision:
     path = Path(path).resolve(strict=True)
     with path.open("rb") as handle:
         revision = _revision(handle)
-        if (expected is not None and revision != expected
-                or not _address_matches(path, revision)
+        if expected is not None and revision != expected:
+            raise _changed(path, "the address names a file other than the "
+                                 "one the writer validated")
+        if (not _address_matches(path, revision)
                 or _revision(handle) != revision):
             raise _changed(path)
     return revision

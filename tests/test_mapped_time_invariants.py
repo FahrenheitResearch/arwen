@@ -481,9 +481,11 @@ def test_declared_nearest_column_repair_fills_a_bounded_coastal_gap():
         assert moisture[0, 0, 0] == 0.3
 
 
-def test_repair_beyond_the_declared_radius_still_refuses_with_counts():
+def test_a_source_with_no_soil_value_on_any_land_cell_refuses_by_name():
+    """The one soil gap no mapping can answer: the field is not there."""
     frames = _soil_frames([[np.nan, np.nan], [np.nan, np.nan]])
-    with pytest.raises(ValueError, match="4 land"):
+    with pytest.raises(ValueError,
+                       match="no value on any of the source's 4 land"):
         ms.mapped_frames_to_regular_snapshots(
             frames,
             soil_land_repair={
@@ -493,10 +495,20 @@ def test_repair_beyond_the_declared_radius_still_refuses_with_counts():
         )
 
 
-def test_undeclared_repair_keeps_the_historical_refusal():
+def test_an_undeclared_soil_gap_is_left_missing_and_said(capsys):
+    """A land cell with no soil value is not a donor; it is not a refusal.
+
+    The masked horizontal mapping treats the missing value as metgrid
+    does, so the join leaves it missing and says how many there were.
+    """
     frames = _soil_frames([[np.nan, 0.3], [0.25, 0.2]])
-    with pytest.raises(ValueError, match="missing source-land"):
-        ms.mapped_frames_to_regular_snapshots(frames)
+    snapshots = ms.mapped_frames_to_regular_snapshots(frames)
+    from gpuwm.ingest.soil_contract import MAPPED_SOIL_MOISTURE
+    for snapshot in snapshots:
+        moisture = snapshot.fields[MAPPED_SOIL_MOISTURE]
+        assert np.isnan(moisture[0, 0, 0])
+        assert moisture[0, 0, 1] == 0.3
+    assert "carry no value" in capsys.readouterr().err
 
 
 def test_soil_contract_accepts_the_bounded_repair_and_refuses_wider(tmp_path):

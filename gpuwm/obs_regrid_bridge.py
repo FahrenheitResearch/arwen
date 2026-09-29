@@ -178,7 +178,13 @@ def resolve_obsregrid_bridge() -> Path:
             raise FileNotFoundError(
                 f"{OBSREGRID_BRIDGE_ENV} names a missing file: {candidate}")
     rendered = "\n  ".join(str(c) for c in library_candidates())
-    separator = ";" if os.name == "nt" else " &&"
+    # The separator comes from gpuwm.bridges.WINDOWS_SHELL, the one shell
+    # rule every remedy reads, and is read here rather than from os.name
+    # so a test can force each shell's spelling: Windows PowerShell 5.1
+    # rejects `&&` with a parser error.
+    from gpuwm import bridges
+
+    separator = ";" if bridges.WINDOWS_SHELL else " &&"
     raise FileNotFoundError(
         "the Rust observation-remap library was not found; searched:\n  "
         + rendered

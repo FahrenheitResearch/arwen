@@ -9,34 +9,62 @@ import subprocess
 import tempfile
 import time
 
-from gpuwm.bridges import (accept_resolved, artifact_remedy, default_bridge_dir,
+from gpuwm.bridges import (BRIDGE_ABI_MARKERS, DecoderContractError, accept_resolved,
+                           artifact_remedy, bridge_abi_matches, default_bridge_dir,
                            executable_name, packaged_bridge_dir)
 
 CRATE_RELATIVE = "tools/zarr_bridge"
 BRIDGE_ENV = "GPUWM_RW_ZARR"
-ABI_MARKER = b"arwen.regular-forcing-record.v1"
+ABI_MARKER = BRIDGE_ABI_MARKERS["rw_zarr"]
+
+
+def _remedy(filename: str) -> str:
+    return artifact_remedy(env_var=BRIDGE_ENV, filename=filename,
+                           subject="the native Zarr reader", crate_relative=CRATE_RELATIVE,
+                           artifact="rw_zarr")
 
 
 def resolve_zarr_bin() -> Path:
+    """The Zarr reader this tree's fetch launches, or a refusal saying why not.
+
+    A reader that exists but predates this tree's reader contract is
+    passed over for the next rung, and refused when no rung holds a
+    current one.  Existence alone is not the question: a reader staged
+    by an older release launched, then refused every ARCO ERA5 request
+    with 'level: source units "Hectopascal(hPa)" disagree with declared
+    units "hPa"', a spelling the current reader reads through its units
+    table.
+    """
     filename = executable_name("rw_zarr")
     override = os.environ.get(BRIDGE_ENV)
     if override:
         path = Path(override).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"GPUWM_RW_ZARR names a missing file: {path}")
-        return accept_resolved(path.resolve())
-    root = Path(__file__).resolve().parent.parent
-    for path in (root / CRATE_RELATIVE / "target/release" / filename,
-                 root / CRATE_RELATIVE / "target/debug" / filename,
-                 root / "libexec/bridges" / filename,
-                 packaged_bridge_dir() / filename,
-                 default_bridge_dir() / filename):
-        if path.is_file():
+        candidates = (path,)
+    else:
+        root = Path(__file__).resolve().parent.parent
+        candidates = (root / CRATE_RELATIVE / "target/release" / filename,
+                      root / CRATE_RELATIVE / "target/debug" / filename,
+                      root / "libexec/bridges" / filename,
+                      packaged_bridge_dir() / filename,
+                      default_bridge_dir() / filename)
+    stale = []
+    for path in candidates:
+        if not path.is_file():
+            continue
+        current, evidence = bridge_abi_matches("rw_zarr", path)
+        if current:
             return accept_resolved(path.resolve())
+        stale.append(f"{path} {evidence}")
+    if stale:
+        raise DecoderContractError(
+            "The native Zarr reader rw_zarr found here is older than this gpuwm: "
+            + "; ".join(stale) + ". An older reader refuses ARCO ERA5 requests it "
+            "should read (for example the level axis written as Hectopascal(hPa)). "
+            + _remedy(filename))
     raise FileNotFoundError(
-        "The native Zarr reader rw_zarr is not installed. "
-        + artifact_remedy(env_var=BRIDGE_ENV, filename=filename,
-            subject="the native Zarr reader", crate_relative=CRATE_RELATIVE, artifact="rw_zarr"))
+        "The native Zarr reader rw_zarr is not installed. " + _remedy(filename))
 
 
 def extract_regular_zarr(request: dict, *, request_path: Path,

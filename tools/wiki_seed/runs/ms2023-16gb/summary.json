@@ -1,0 +1,38 @@
+{
+ "run": "ms2023-16gb",
+ "exit": 0,
+ "completed": {
+  "dry_run": false
+ },
+ "stages_s": {
+  "fetch": 1.4934,
+  "prepare": 88.671038,
+  "forecast": 806.977119,
+  "finalize": 0.001256
+ },
+ "failed": null,
+ "domains": {
+  "d01": {
+   "files": 6,
+   "last_time": "2023-03-24_22:00:00",
+   "max_w_ms": 21.36,
+   "max_wind10_ms": 16.66,
+   "max_rain_mm": 60.94,
+   "min_psfc_hpa": 924.2,
+   "nan": false,
+   "nx": 364,
+   "ny": 336
+  },
+  "d02": {
+   "files": 6,
+   "last_time": "2023-03-24_22:00:00",
+   "max_w_ms": 33.64,
+   "max_wind10_ms": 30.33,
+   "max_rain_mm": 68.31,
+   "min_psfc_hpa": 948.36,
+   "nan": false,
+   "nx": 492,
+   "ny": 408
+  }
+ }
+}

@@ -379,6 +379,23 @@ def test_the_runner_refuses_provenance_that_contradicts_the_experiment():
 # The front door itself, entered the way rw-wps enters it
 # ---------------------------------------------------------------------------
 
+def _fetched_ladder(config) -> dict:
+    """The pressure ladder `gpuwm go` fetches for CONFIG, as its manifest records it.
+
+    The config's own model top decides it, so a fixture manifest reaches
+    the top the config asks for, as the real fetch's does.
+    """
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.source_adapters import fetch_model_top_pa
+
+    top = fetch_model_top_pa("gfs", load_experiment(config).vertical.p_top)
+    levels = [float(level) for level in
+              fetch.container_subset_levels("gfs", top_pressure_pa=top)]
+    return {"pressure_levels_hpa": levels,
+            "top_pressure_pa": min(levels) * 100.0}
+
+
 def _front_door_case(tmp_path, *, start_hour: int, series_hours,
                      run_hours: int = 3, acks=()):
     """A wizard config at cycle+K, plus the series/manifest pair beside it.
@@ -448,7 +465,8 @@ def _front_door_case(tmp_path, *, start_hour: int, series_hours,
     manifest.write_text(json.dumps({
         "schema": "gpuwm-gfs-direct-input-manifest-v1",
         "source": {"model": "GFS", "product": "pgrb2.0p25",
-                   "cycle": "2026-07-29T18:00:00Z"},
+                   "cycle": "2026-07-29T18:00:00Z",
+                   **_fetched_ladder(config)},
         "files": {
             role: {"name": path.name,
                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}

@@ -420,7 +420,6 @@
         }
       },
       "grid_fingerprint": "55077ad9b7cb53620267729f1cd98f74f26af524163151f9ccc2ac722500e32c",
-      "header_sha256": "5d1b76d91e7ef3b5c9ad775111d9c7e50c861062860702c8d253a9ad3922fd7f",
       "inputs": [
         {
           "name": "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_FI.grib2.bz2",
@@ -1440,6 +1439,7 @@
         "sha256": "b99e40202ceebb79e72e6a605aa2ea0b686ad073ca9cbe62a07024996aeb0205"
       },
       "member": null,
+      "portable_header_sha256": "e2631a6ed61fa0ff5207c935acf61ceaa6a2d8ca5e92e199142f55d4e856149a",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T00:00:00",
       "vertical": {
@@ -1822,7 +1822,6 @@
         }
       },
       "grid_fingerprint": "55077ad9b7cb53620267729f1cd98f74f26af524163151f9ccc2ac722500e32c",
-      "header_sha256": "56d503d2aaa4769b4a976bab53ff14fc2c3fb0c8866b5dbbc75c1c4253a94096",
       "inputs": [
         {
           "name": "icon-eu_europe_regular-lat-lon_pressure-level_2026081700_000_1000_FI.grib2.bz2",
@@ -2842,6 +2841,7 @@
         "sha256": "b99e40202ceebb79e72e6a605aa2ea0b686ad073ca9cbe62a07024996aeb0205"
       },
       "member": null,
+      "portable_header_sha256": "bbc3f77211f1597b5ce4a0e2478694ff996fea9d1ad0606ad3c1a700fbf1dfb3",
       "source_cycle": "2026-08-17T00:00:00",
       "valid_time": "2026-08-17T01:00:00",
       "vertical": {
@@ -2852,15 +2852,16 @@
       "vertical_units": "Pa"
     }
   ],
+  "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-icon-eu-regular-grib2.mapping.json",
-    "sha256": "141c635c9adc6690719fd52ff0fbcfe78d478a14e18cea8bb13df812359b3fc1"
+    "sha256": "ae8075c069206c4f3917830aa769a2c4ef8f39a03ae31b3d7ee8c31c63f23cea"
   },
   "measured_on": {
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
     "depth_units": "m",
     "missing": {

@@ -9,8 +9,14 @@
 exclude gpuwm_data/data/thompson/tables/freezeH2O.dat
 exclude gpuwm_data/data/thompson/tables/qr_acr_qg_V4.dat
 
-# The four CC-BY-NC-SA-4.0 RFMIP reference-result NetCDFs are excluded from
-# the WHEEL for licensing, and this file states no rule about them.  It USED
+# No RFMIP file is excluded here because none is in the tree: since 2.8.0
+# the RFMIP input and reference-result NetCDFs are fetched from upstream by
+# the tests that read them (gpuwm/core/rfmip_upstream.py), so neither
+# artifact can carry them.  The history below is kept because it records
+# how setuptools treats exclude-package-data for the sdist.
+#
+# The four CC-BY-NC-SA-4.0 RFMIP reference-result NetCDFs were excluded
+# from the WHEEL for licensing, and this file stated no rule about them.  It USED
 # to claim they were "deliberately NOT excluded here", on the reasoning that
 # the sdist is the source repository's own form and a source build must be
 # able to run the suite that reads them.  The built artifact disproved it:

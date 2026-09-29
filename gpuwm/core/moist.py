@@ -405,6 +405,42 @@ def _pd_fold_sources(state: DomainState, cfg: RunConfig, name: str,
     return q0_eff
 
 
+def _exclude_specified_ring_advection(tend, spec_zone: int) -> None:
+    """Clear the specified ring of a PD advective tendency, in place.
+
+    WRF ``rk_update_scalar`` on a specified or nested domain narrows the
+    loop that applies ``advect_tend`` to the cells INSIDE the specified
+    zone (module_em.F:1671-1678, used at :1695-1700 and :1746-1751); the
+    ring itself moves by ``sc_tend`` alone, which on the final PD stage
+    has already been folded into the time-t scalar
+    (``_pd_fold_sources``, module_em.F:1889-1894).  ``advect_scalar_pd``
+    still writes the ring's VERTICAL divergence (module_advect_em.F:
+    7787-7791); WRF computes it and never applies it.
+
+    The port applied it.  On the ring the vertical transport of a scalar
+    has no horizontal divergence to balance it, so wherever the ring's
+    eta mass flux converges into a layer the scalar there grows by a
+    fixed fraction every step: a supplied aerosol number compounded in
+    the model-top layer of a specified parent's boundary row by about
+    5x per half hour, from 5.5e8 to 1.03e15 per kg in 3.9 h, where the
+    full-state health gate stopped the forecast (nwfa at k = nz-1,
+    j = ny-1).  Every scalar that the end-of-step finalizer or the
+    flow-dependent boundary overwrites hid it; a scalar neither of them
+    rewrites carried it.
+
+    ``tend`` is the (nz, ny, nx) PD output.  The non-PD stages already
+    match WRF: ``flux_div_scalar`` writes nothing on the ring and the held
+    boundary tendency takes its place.
+    """
+    sz = int(spec_zone)
+    if sz <= 0:
+        return
+    tend[:, :sz, :] = 0
+    tend[:, -sz:, :] = 0
+    tend[:, sz:-sz, :sz] = 0
+    tend[:, sz:-sz, -sz:] = 0
+
+
 #: CuPy's own ``maximum`` ufunc carries exactly this guard, so the clamp arm
 #: below has to resolve ``NAN`` the same way it does or a NaN carrier would
 #: come out with a different payload.
@@ -677,6 +713,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                    dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
                                    msft=state.msft, has_msf=state.has_msf,
                                    open_x=boundary_x, open_y=boundary_y)
+            if boundary_forced:
+                _exclude_specified_ring_advection(tend, cfg.spec_zone)
             # ``msft`` carries WRF rk_update_scalar's
             # tendency = advect_tend*msfty, now inside the fused update.
             _update_scalar_in_place(
@@ -771,6 +809,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                        msft=state.msft,
                                        has_msf=state.has_msf,
                                        open_x=boundary_x, open_y=boundary_y)
+                if boundary_forced:
+                    _exclude_specified_ring_advection(tend, cfg.spec_zone)
                 _update_scalar_in_place(
                     q, q0_eff, tend, state.c1h, state.c2h, mu0_row, mu_row,
                     dt_eff,

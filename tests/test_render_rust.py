@@ -801,6 +801,26 @@ def test_engine_outputs_are_rebranded_to_the_product_prefix(monkeypatch,
 
 
 @needs_renderer
+def test_a_picture_warning_from_the_engine_reaches_the_reader(
+        wrfout, tmp_path, capsys):
+    """The engine says when it cut a subtitle; the render says it too.
+
+    At the smallest size the door allows, the provenance line does not
+    fit the header row and the engine cuts it, warning once on its
+    stderr.  The picture still renders and the render still succeeds.
+    """
+
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", "t2", "--timeidx", "0",
+                   "--size", "320x240", "--out", str(out)])
+    assert rc == 0
+    assert len(_delivered(out)) == 1
+    err = capsys.readouterr().err
+    assert err.count("warning: the left subtitle does not fit") == 1, err
+
+
+@needs_renderer
 def test_rust_engine_unknown_slug_fails_loudly(wrfout, tmp_path, capsys):
     rc = cli.main(["render", str(wrfout), "--engine", "rust",
                    "--products", "definitely_not_a_product",
@@ -839,8 +859,8 @@ def test_engine_auto_refuses_when_the_renderer_is_not_built(
         wrfout, tmp_path, monkeypatch, capsys):
     """`auto` used to degrade here; the render law says it may not.
 
-    Weather-field product plots come from ``rw_wrfbatch`` (CLAUDE.md,
-    Drew 2026-08-06), and the one permitted fallback --
+    Weather-field product plots come from ``rw_wrfbatch`` (the render law,
+    2026-08-06), and the one permitted fallback --
     ``da_nowcast_render.py`` -- draws none of this door's products.  So
     with nothing staged the answer is a refusal naming the artifact and
     the staging remedy, at a nonzero exit; drawing five matplotlib
@@ -1047,7 +1067,7 @@ def test_both_engine_resolvers_treat_an_explicit_request_the_same(
     not an oversight: ``fetch --engine auto`` still degrades to the
     Python engine, because moving bytes on Python is a workaround, while
     ``render --engine auto`` refuses, because DRAWING a weather field on
-    matplotlib is not permitted at all (the render law, CLAUDE.md, Drew
+    matplotlib is not permitted at all (the render law,
     2026-08-06).
     """
 
@@ -1179,9 +1199,11 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # The fixture's fields prove out the reflectivity composite ...
     assert any("composite_reflectivity" in line and "renderable" in line
                for line in out.splitlines())
-    # ... and its exact-time (half-hourly) axis excludes fixed-hour
-    # windowed accumulations with the reason spelled out.
-    assert any("qpf_total" in line and "exact-time" in line
+    # ... and on its exact-time (half-hourly) axis the fixed-hour windows
+    # are blocked with the reason spelled out: its frames end at +30 min,
+    # so no whole hour of it closes a window.
+    assert any("qpf_total" in line and "blocked" in line
+               and "stored frames end at F000" in line
                for line in out.splitlines())
     # Every non-renderable row carries a reason string.
     for line in out.splitlines():
@@ -1226,15 +1248,16 @@ def test_general_products_skip_unavailable_subhour_windows(
                           "data/tui/plot-presets.json").read_text())
     general = next(row["products"] for row in presets["presets"]
                    if row["id"] == presets["default"])
-    # 24, not 25: simulated_ir_satellite left the general and hurricane
-    # presets when the lane record gained its reason (no forward
-    # radiative-transfer operator exists on the history-import lane).
-    assert len(general) == 24 and "qpf_1h" in general
+    # 22: simulated_ir_satellite left the general and hurricane presets
+    # when the lane record gained its reason, and 10m_wind_gusts and
+    # precipitation_type left general when every run of it was measured
+    # drawing 20 of 24 (no wrfout carries their fields).
+    assert len(general) == 22 and "qpf_1h" in general
     if single_frame:
         wrfout = _write_wrfout(tmp_path / "first-wrfout.nc", _STAMPS[:1])
     frame_idx = 0 if single_frame else 1
     reason = ("more than one stored whole-hour frame" if single_frame
-              else "exact-time ordinal axis")
+              else "stored frames end at F000")
     out = tmp_path / "general"
     rc = cli.main(["render", str(wrfout), "--engine", "rust",
                    "--products", ",".join(general), "--timeidx", str(frame_idx),
@@ -1264,22 +1287,34 @@ def test_only_unavailable_subhour_window_still_returns_nonzero(
                    "--run-stamp", "off", "--explain"])
     captured = capsys.readouterr()
     assert rc == 1 and not _delivered(out)
-    assert "qpf_1h" in captured.err and "exact-time ordinal axis" in captured.err
+    assert ("qpf_1h" in captured.err
+            and "stored frames end at F000" in captured.err), captured.err
     assert "Nothing else was drawn" in captured.err
     assert "render FAIL:" not in captured.err
 
 
 @needs_renderer
-def test_native_explicit_exact_time_window_remains_a_strict_refusal(
-        wrfout, tmp_path):
-    """The orchestration skip must not weaken the native axis guard."""
+def test_native_exact_time_window_is_never_drawn_short(wrfout, tmp_path):
+    """A half-hour store holds no hour: the engine draws no 1 h window.
+
+    The engine serves windows on an exact-time axis from each frame's
+    lead, and one ends only on a whole-hour frame with the frame an hour
+    before it stored.  This fixture's frames are at +0 and +30 min, so
+    the one window anchor (+0) is refused by name, the +30 min frame is
+    no window anchor at all, and nothing shorter is drawn as an hour.
+    """
 
     written, failures, skipped = rustwx.run_renderer(
         RENDERER, wrfout, store_root=tmp_path / "strict-store",
         out_dir=tmp_path / "strict-png", products="qpf_1h", frames="all",
         width=400, height=300)
-    assert not written and not skipped
-    assert failures and all("exact-time ordinal axis" in row for row in failures)
+    assert not written
+    assert [slug for slug, _reason in skipped] == ["qpf_1h"], skipped
+    assert "F000:" in skipped[0][1] and "forecast hour >= 1" in skipped[0][1]
+    # A render that drew nothing still exits nonzero, and its count says
+    # it was one skip and no failed item.
+    assert failures and all("rendered=0 skipped=1 failed=0" in row
+                            for row in failures), failures
 
 
 @needs_renderer

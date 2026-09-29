@@ -344,10 +344,11 @@ def test_ingest_builds_the_column_with_the_category_noah_will_run(params):
 
     geogrid's LANDMASK and its dominant soil category are independent
     fields and disagree at shorelines, so a LAND cell carrying SOILPARM's
-    WATER category (row 14) is ordinary.  real.exe rewrites exactly that
-    column to IVGTYP 5 / ISLTYP 8 (module_initialize_real.F:3608-3650) and
-    WRF's SH2O is derived afterwards, in LSMINIT -- so WRF's liquid water
-    already reads the reconciled category.
+    WATER category (row 14) is ordinary.  real.exe gives exactly that
+    column ISLTYP 8 and keeps its land-use category
+    (module_initialize_real.F:3108-3131), and WRF's SH2O is derived
+    afterwards, in LSMINIT -- so WRF's liquid water already reads the
+    reconciled category.
 
     Ours read the RAW geogrid category, because the reconciliation lived
     inside initialize_landuse and that call consumes the ingest's own
@@ -375,7 +376,7 @@ def test_ingest_builds_the_column_with_the_category_noah_will_run(params):
         iswater=17, islake=21, isice=15,
         soil_temperature=np.full(shape, 285.0), sst=None)
     assert int(reconciled[0, 0]) == 8, (
-        "real.exe rewrites land-carrying-water-soil to ISLTYP 8")
+        "real.exe gives land-carrying-water-soil ISLTYP 8")
 
     state = preprocess_noah_soil(
         _era5_fields(shape, smois=0.0), soil_type=reconciled)

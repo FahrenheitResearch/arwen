@@ -10,7 +10,7 @@ turned "run it again" into "invent a directory name by hand, every
 time".
 
 The remedy is a run-stamped level at the case root, above everything a
-run writes, and it EXTENDS Drew's 2026-08-06 ruling rather than
+run writes, and it EXTENDS the 2026-08-06 project ruling rather than
 replacing any of it: ``<domain>/<product>/<valid-day>`` survives
 underneath, in the same order, from the same module.
 
@@ -330,7 +330,7 @@ def test_two_back_to_back_renders_land_in_two_run_folders(wrfout, tmp_path,
 
 
 def test_the_render_layout_survives_underneath_unchanged(wrfout, tmp_path):
-    """Drew's 2026-08-06 ruling is extended, never inverted."""
+    """The 2026-08-06 project ruling is extended, never inverted."""
 
     out = tmp_path / "png"
     assert _render(wrfout, out) == 0
@@ -600,9 +600,9 @@ def _bundle(root: Path, *, source: str = "gfs") -> Path:
 def _sim_outdir(printed: str) -> Path:
     """The ``--outdir`` value out of a printed runner command."""
 
-    import shlex
+    from host_shell_words import host_shell_words
 
-    fields = shlex.split(printed.strip().splitlines()[-1])
+    fields = host_shell_words(printed.strip().splitlines()[-1])
     return Path(fields[fields.index("--outdir") + 1])
 
 

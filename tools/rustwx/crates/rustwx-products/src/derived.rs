@@ -55,6 +55,7 @@ mod query;
 mod recipes;
 mod store;
 mod store_render;
+mod store_units;
 mod types;
 
 use compute::{
@@ -84,6 +85,7 @@ pub use store::{
     store_derived_recipe_slugs, store_heavy_recipe_slugs,
 };
 pub use store_render::{StoreProductGrid, render_derived_recipes_from_store_grids};
+pub use store_units::{StoreUnitConversion, derived_product_units, store_plane_conversion};
 pub use types::{
     DerivedBatchReport, DerivedBatchRequest, DerivedMemoryProfile, DerivedRecipeBlocker,
     DerivedRecipeTiming, DerivedRenderedRecipe, DerivedSharedTiming, HrrrDerivedBatchReport,

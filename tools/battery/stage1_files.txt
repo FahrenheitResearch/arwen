@@ -461,7 +461,7 @@ tests/test_multigpu_specified_bc.py
 # entries in tilestream/physics_inventory.py; the real 2 h streamed
 # boundary crossing is the node regate's twin row on the GPU shard.
 tests/test_streamed_carrier_freshness.py
-# Drew's 2026-08-12 ruling ("probably we would want tests right") made
+# The 2026-08-12 project ruling ("probably we would want tests right") made
 # the Rust crate tests a release gate, at tools/battery/cargo_gates.txt.
 # This is the gate on that list, and it is on stage 1 rather than only
 # on the cargo leg because it needs no Rust toolchain and no card: it
@@ -1267,8 +1267,10 @@ tests/test_spectral_operator_cli.py
 # release exists to end, found by scoping every added file against the
 # three lists at the close. CPU-bound by conftest's detector except
 # test_p3_front_door.py, whose five device functions ride the GPU shard
-# while its CPU half runs here.
-tests/test_branch_dispositions.py
+# while its CPU half runs here. tests/test_branch_dispositions.py left this
+# list when RELEASE-EXCLUDE.txt took it out of the public tree: a public
+# list naming an excluded file is what tests/test_stage1_manifest.py
+# refuses, and the gate skips outside a git checkout anyway.
 tests/test_check_nested_mixed_road.py
 tests/test_cycle_anchor.py
 tests/test_cycle_children.py

@@ -487,6 +487,65 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     # above) and gpuwm.io.restart (not staged).  A preprocessing wheel
     # has no checkpoints to resume from.
     assert "gpuwm/resume.py" not in files
+    # The saved history a resumed forecast's first pictures read: its
+    # importers are the excluded go and live-render doors, and it reaches
+    # gpuwm.io.restart, gpuwm.resume and gpuwm.live_products.  Staged, it
+    # made this staging refuse outright.
+    assert "gpuwm/restart_render.py" not in files
+    # Auto's card-load probe ships as its own leaf and the forecast memory
+    # preflight that re-exports it stays out, so the backend selector
+    # reaches nothing this package omits: no optional import stands in for
+    # the load reading.
+    assert "gpuwm/core/device_probe.py" in files
+    assert "gpuwm/core/preflight.py" not in files
+    assert not [item for item in receipt["optional_internal_imports"]
+                if item["path"] == "gpuwm/ingest/preprocess_backend.py"]
+    # The run disk projection and its download and preparation pricing are
+    # read only by the excluded run-plan door, and the pricing parses a
+    # fetch argv with gpuwm.cli's parser: staged, the 2.8.0 cut battery
+    # found an unresolved import of gpuwm.cli here.
+    assert "gpuwm/disk_budget.py" not in files
+    assert "gpuwm/download_budget.py" not in files
+    # The source table reads ArchiveWindow from the date guidance at import,
+    # so the guidance ships; its availability answer reaches the domain
+    # wizard, which does not, and that one import is named optional.
+    assert "gpuwm/source_availability.py" in files
+    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
+        ("gpuwm/source_availability.py", "gpuwm.domain_wizard")}
+    # The initial-state perturbation ships with the ingest package; the
+    # radiation ceiling it reads when a forecast runner builds one is in
+    # the RTE+RRTMGP module, which does not, and that import is named
+    # optional.
+    assert "gpuwm/ingest/init_perturbation.py" in files
+    assert "gpuwm/core/rrtmgp.py" not in files
+    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
+        ("gpuwm/ingest/init_perturbation.py", "gpuwm.core.rrtmgp")}
+    # Preparation builds and seals the moving-nest statics corridor, so the
+    # corridor module ships.  Its check of a corridor sealed under an older
+    # build contract reads the relocation planner and the relocation
+    # initializer's overlap rule; only the prepared-tree forecast runner
+    # loads a corridor, so those two stay out and the imports are named
+    # optional.  Unnamed, they made this staging refuse outright.
+    assert "gpuwm/static/corridor.py" in files
+    assert "gpuwm/core/nest_relocation.py" not in files
+    assert "gpuwm/ingest/relocation_init.py" not in files
+    assert "gpuwm/prepared_domain_tree_forecast.py" not in files
+    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
+        ("gpuwm/static/corridor.py", "gpuwm.core.nest_relocation"),
+        ("gpuwm/static/corridor.py", "gpuwm.ingest.relocation_init")}
+    # The steep-terrain clock sets the time step a forecast starts with;
+    # its importers are the excluded runners and it reaches
+    # gpuwm.core.adaptive_clock, which does not ship.  Staged, it made
+    # this staging refuse outright.
+    assert "gpuwm/acoustic_adaptation.py" not in files
+    assert "gpuwm/terrain_clock.py" not in files
+    assert "gpuwm/core/adaptive_clock.py" not in files
+    # The chained writer ships with the era5, gfs and mapped routes; the
+    # forecast admission it reaches only when it chains does not, and a
+    # preparation-only install never chains, so that import is optional.
+    assert "gpuwm/ingest/boundary_stream.py" in files
+    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
+        ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.preflight")}
     # doctor, on the other hand, belongs: a preprocessing install is
     # exactly the one that needs to be told which bridge is missing.  It
     # is here because its WPS_GEOG check reads the dataset list from
@@ -597,7 +656,7 @@ assert cam_ozone_domain_ids(replace(exp, domains=(exp.root, child))) == {1, 2}
 assert metgrid_number_targets(replace(cfg, moist=True, mp_physics=28)) == {
     'QNI': 'ni', 'QNC': 'nc', 'QNR': 'nr', 'QNWFA': 'nwfa', 'QNIFA': 'nifa'}
 raw = {'experiment': {'name': 'prepared'}, 'domain': [{'grid_id': 1}],
-       'static': {'highres': {'path': "Drew's terrain", 'enabled': True}}}
+       'static': {'highres': {'path': "Ana's terrain", 'enabled': True}}}
 assert tomllib.loads(render_experiment_document(raw)) == raw
 assert 'mapped' in mapped_sources()
 assert source_schemas()['mapped'] == 'gpuwm-mapped-composition-inputs-v1'
@@ -682,6 +741,186 @@ for name in (
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(staged)
     environment["RW_WPS_STAGED_ROOT"] = str(staged)
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_standalone_auto_backend_reads_the_card_load(tmp_path):
+    """The staged package prices its preparation against the card's load.
+
+    Auto's load probe lived in the forecast memory preflight, which this
+    package does not carry, so the package kept a certified card another
+    program had nearly filled or held busy, where gpuwm prepared on the
+    CPU.  The probe here is the real one, run as its own subprocess from
+    the staged tree against a stand-in CuPy that reports the card's
+    memory; CUDA_VISIBLE_DEVICES=-1 keeps the machine's own nvidia-smi
+    out of it.  Whether the preparation fits is its price against that
+    free memory (A65), and the price is computed in the staged tree from
+    a mapped preparation's decoded inventory: while the price read its
+    inventories from the forecast preflight, this import raised
+    ModuleNotFoundError here and stopped every preparation.  The fitting
+    half also holds the older fix: a probe that cannot be imported must
+    not read as a CuPy that could not load.
+    """
+
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    shadow = tmp_path / "shadow"
+    (shadow / "cupy").mkdir(parents=True)
+    (shadow / "cupy" / "__init__.py").write_text(
+        "import os\n"
+        "\n"
+        "GIB = 1024 ** 3\n"
+        "\n"
+        "\n"
+        "class _Runtime:\n"
+        "    @staticmethod\n"
+        "    def memGetInfo():\n"
+        "        return int(os.environ['SHADOW_FREE_GIB']) * GIB, 32 * GIB\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def getDeviceProperties(device):\n"
+        "        return {'name': 'shadow card', 'multiProcessorCount': 64,\n"
+        "                'maxThreadsPerMultiProcessor': 1536}\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def deviceGetLimit(limit):\n"
+        "        return 1024\n"
+        "\n"
+        "\n"
+        "class cuda:\n"
+        "    runtime = _Runtime\n",
+        encoding="utf-8")
+    script = r"""
+from pathlib import Path
+from types import SimpleNamespace
+import os
+
+GIB = 1024 ** 3
+root = Path(os.environ["RW_WPS_STAGED_ROOT"]).resolve()
+assert not (root / "gpuwm" / "core" / "preflight.py").exists()
+import gpuwm.ingest.preprocess_backend as backend
+assert Path(backend.__file__).resolve().is_relative_to(root)
+
+runtime = SimpleNamespace(getDeviceCount=lambda: 1, getDevice=lambda: 0,
+                          runtimeGetVersion=lambda: 13020)
+card = SimpleNamespace(name="cuda", array_module=SimpleNamespace(
+    __version__="14.2.0", cuda=SimpleNamespace(runtime=runtime)))
+cpu = SimpleNamespace(name="cpu")
+backend.CudaPreprocessBackend = lambda: card
+backend.ParallelCpuPreprocessBackend = lambda **_: cpu
+backend._gpu_runtime_installed = lambda: True
+
+from gpuwm.config import RunConfig
+from gpuwm.ingest.preparation_price import price_forcing_preparation
+
+run = RunConfig(nx=896, ny=512, nz=59, dx=6000.0, dy=6000.0, ztop=20000.0,
+                dt=30.0, run_seconds=21600.0, terrain_opt=1, moist=True,
+                mp_physics=8, km_opt=4, bl_pbl_physics=1, specified=True,
+                spec_bdy_width=5, sf_sfclay_physics=91, sf_surface_physics=2)
+exp = SimpleNamespace(domains=[SimpleNamespace(run=run)])
+level = SimpleNamespace(shape=(40, 1059, 1799))
+snapshot = SimpleNamespace(fields={
+    "TT": level, "UU": level, "VV": level, "RH": level, "GHT": level,
+    "PSFC": SimpleNamespace(shape=(1059, 1799))})
+price = price_forcing_preparation("mapped", exp, [snapshot] * 7)
+# The stand-in card is 32 GiB: 2 GiB free cannot hold this preparation
+# and 30 GiB free can.
+assert 2 * GIB < price.need_bytes < 30 * GIB, price.need_bytes
+
+os.environ["SHADOW_FREE_GIB"] = "2"
+chosen = backend.resolve_preprocess_backend("auto", price=price)
+assert chosen is cpu, chosen.selection
+reason = chosen.selection["reason"]
+assert reason.startswith("the CUDA preparation needs "), reason
+assert "the card has 2.0 GiB free of 32.0 GiB" in reason, reason
+fit = chosen.selection["device_fit"]
+assert fit["fits"] is False, fit
+assert fit["need_bytes"] == price.need_bytes, fit
+assert fit["free_bytes"] == 2 * GIB, fit
+assert fit["route"] == "mapped", fit
+load = chosen.selection["device_load"]
+assert load["free_bytes"] == 2 * GIB, load
+assert load["total_bytes"] == 32 * GIB, load
+
+os.environ["SHADOW_FREE_GIB"] = "30"
+chosen = backend.resolve_preprocess_backend("auto", price=price)
+assert chosen is card, chosen.selection
+assert "certified" in chosen.selection["reason"], chosen.selection
+assert chosen.selection["device_load"]["free_bytes"] == 30 * GIB, chosen.selection
+fit = chosen.selection["device_fit"]
+assert fit["fits"] is True, fit
+assert fit["need_bytes"] == price.need_bytes, fit
+assert fit["free_bytes"] == 30 * GIB, fit
+
+import gpuwm.core.device_probe as probe
+assert Path(probe.__file__).resolve().is_relative_to(root)
+"""
+    environment = os.environ.copy()
+    environment.pop("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", None)
+    environment.pop("GPUWM_NO_LOCAL_GPU", None)
+    environment.pop("PYTHONSAFEPATH", None)
+    environment["CUDA_VISIBLE_DEVICES"] = "-1"
+    environment["PYTHONPATH"] = os.pathsep.join((str(shadow), str(staged)))
+    environment["RW_WPS_STAGED_ROOT"] = str(staged)
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "could not be loaded" not in completed.stderr
+
+
+def test_standalone_preparation_publishes_at_its_seal(tmp_path):
+    """The staged chained writer admits a CUDA producer without a forecast.
+
+    The package stages the chained writer for its era5, gfs and mapped
+    routes but not the forecast, so a CUDA preparation died at its
+    admission on the missing gpuwm.core.preflight.  Run against the staged
+    tree, with chaining asked for, the writer declines it by name and
+    prices nothing.
+    """
+
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    script = r"""
+from pathlib import Path
+import os
+import sys
+
+root = Path(os.environ["RW_WPS_STAGED_ROOT"]).resolve()
+from gpuwm.ingest import boundary_stream
+assert Path(boundary_stream.__file__).resolve().is_relative_to(root)
+assert not boundary_stream.forecast_installed()
+staging = Path(os.environ["RW_WPS_WORK"]) / ".tmp-tree"
+staging.mkdir()
+writer = boundary_stream.PreparedTreeWriter(
+    staging=staging, output_root=staging.parent / "tree", identity={})
+expected = {"chained": False,
+            "reason": boundary_stream.PREPARATION_ONLY_REASON}
+assert writer.chained is False
+for backend in ("cuda", "cpu"):
+    decision = writer.admit(experiment=object(), backend=backend,
+                            device_bytes=1 << 30, card=(1 << 40, 0))
+    assert decision == expected, decision
+assert "gpuwm.core.preflight" not in sys.modules
+"""
+    environment = os.environ.copy()
+    environment["GPUWM_CHAINED_PREP"] = "1"
+    environment["PYTHONPATH"] = str(staged)
+    environment["RW_WPS_STAGED_ROOT"] = str(staged)
+    environment["RW_WPS_WORK"] = str(tmp_path)
     completed = subprocess.run(
         [sys.executable, "-P", "-c", script],
         cwd=tmp_path,

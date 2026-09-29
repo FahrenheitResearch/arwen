@@ -36,6 +36,7 @@ JOURNAL = MODEL / "tools" / "data" / "knob_survey_lanes.jsonl"
 REGISTRY_PATH = MODEL / "gpuwm" / "physics_registry_v2.json"
 
 from gpuwm.config import (  # noqa: E402
+    GF_CLOSURE_MEMBERS,
     MP28_AEROSOL_SOURCES as MP28_AEROSOL_SOURCES,
 )
 from gpuwm.physics_registry import (  # noqa: E402
@@ -137,9 +138,9 @@ IMPLEMENTED: dict[str, dict] = {
         "warnings": [
             "DIVERGENCE from WRF's default 1: gpuwm defaults feedback to 0 "
             "to preserve every assembled one-way trajectory. feedback=1 is "
-            "experimental and supported only by the native gpuwm run "
-            "multi-domain executor; prepared hierarchy artifacts remain "
-            "static one-way and refuse it."]},
+            "experimental; the native gpuwm run multi-domain executor and "
+            "the prepared-tree executor, the native HRRR route's included, "
+            "both run it."]},
     # surface layer -- newly ported this pass
     "isfflx": {"type": "integer", "enum": [0, 1], "default": 1},
     "isftcflx": {"type": "integer", "enum": [0, 1, 2], "default": 0},
@@ -311,10 +312,10 @@ TIGHTEN: dict[str, dict] = {
     "smooth_option": {"type": "integer", "enum": [0, 1, 2], "default": 0,
                       "warnings": [
                           "0 is no smoothing, 1 is WRF's sm121 and 2 is "
-                          "smdsm. Prepared hierarchy artifacts remain "
-                          "static one-way, so this smooths a resident "
-                          "parent after feedback and does nothing to a "
-                          "prepared child."]},
+                          "smdsm. Prepared hierarchy artifacts are the "
+                          "same at every value: this smooths the parent "
+                          "after feedback while the tree runs and does "
+                          "nothing to a prepared child."]},
     # wif_input_opt / aer_init_opt: gpuwm/ingest/wif_climatology.py IS the
     # WIF ingest, gpuwm/ingest/real.py branches on the (aer_init_opt,
     # wif_input_opt) == (1, 1) pair, and gpuwm/config.py's own error text
@@ -512,12 +513,17 @@ TIGHTEN: dict[str, dict] = {
     "cudt_minutes": {"type": "number", "minimum": 0.0, "default": 5.0},
     # Grell-family keys, WRF v4.6.1 Registry defaults
     # (Registry.EM_COMMON:2544,2546); read only where cu_physics = 3.
+    # 0 is the ensemble mean, 1..16 one closure member alone; anything
+    # else has no meaning in cup_forcing_ens_3d (gpuwm.config
+    # gf_clos_choice_refusal names the breakage).
     "clos_choice": {
-        "type": "integer", "enum": [0], "default": 0,
+        "type": "integer",
+        "enum": list(range(GF_CLOSURE_MEMBERS + 1)), "default": 0,
         "warnings": [
-            "Only the 16-member ensemble closure (0, the Registry default) "
-            "is admitted: the single-closure arms of cup_forcing_ens_3d "
-            "carry no GF oracle coverage."]},
+            "0 (the Registry default) is the 16-member ensemble mean, "
+            "compared bitwise against WRF v4.6.1. 1..16 run one closure "
+            "member of cup_forcing_ens_3d alone: WRF's own code path, "
+            "implemented but not verified against a WRF run."]},
     "ishallow": {"type": "integer", "enum": [0, 1], "default": 0},
 }
 
@@ -2048,21 +2054,21 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                         "bubble, two runs identical but for the init call"),
                     "initial_mean_nwfa_per_kg_with_profile": 6.6532e7,
                     "initial_mean_nwfa_per_kg_without_profile": 0.0,
-                    "final_interior_nwfa_per_kg_with_profile": 3.0059e7,
-                    "final_interior_nwfa_per_kg_without_profile": 1.2620e7,
+                    "final_interior_nwfa_per_kg_with_profile": 2.1737e7,
+                    "final_interior_nwfa_per_kg_without_profile": 4.2877e6,
                     "peak_nc_per_kg_with_profile": 1.5980e8,
-                    "peak_nc_per_kg_without_profile": 2.8439e7,
-                    "droplet_ratio_with_over_without": 5.62,
-                    "domain_total_rainnc_mm_with_profile": 1.781185,
-                    "domain_total_rainnc_mm_without_profile": 3.102043,
-                    "domain_total_rainnc_relative_excess": 0.7416,
-                    "peak_rainnc_mm_with_profile": 0.675036,
-                    "peak_rainnc_mm_without_profile": 0.925492,
+                    "peak_nc_per_kg_without_profile": 2.9451e7,
+                    "droplet_ratio_with_over_without": 5.43,
+                    "domain_total_rainnc_mm_with_profile": 1.957357,
+                    "domain_total_rainnc_mm_without_profile": 3.207102,
+                    "domain_total_rainnc_relative_excess": 0.6385,
+                    "peak_rainnc_mm_with_profile": 0.794230,
+                    "peak_rainnc_mm_without_profile": 1.029196,
                     "reading": (
                         "the LEFT column is what a run does today; the RIGHT "
                         "column is the counterfactual with the profile "
-                        "removed. Removing WRF's CCN/IN loading gives 5.6x "
-                        "fewer cloud droplets and 74.2% MORE domain-total "
+                        "removed. Removing WRF's CCN/IN loading gives 5.4x "
+                        "fewer cloud droplets and 63.8% MORE domain-total "
                         "surface rain over 30 minutes. Until 2026-08-01 the "
                         "right column WAS the shipped behaviour and this was "
                         "published as the port's largest measured error; it "
@@ -2247,9 +2253,9 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "MUCH THAT IS WORTH, measured over 150 steps x 12 s on a "
             "28 x 16 x 24 2 km specified-BC convective domain against an "
             "otherwise identical run with the profile removed: initial mean "
-            "nwfa 6.6532e+07 vs 0.0 kg^-1, peak nc 1.5980e+08 vs 2.8439e+07 "
-            "kg^-1 (5.6x fewer droplets without it), domain-total RAINNC "
-            "1.781185 vs 3.102043 mm -- the aerosol-free run rains 74.2% "
+            "nwfa 6.6532e+07 vs 0.0 kg^-1, peak nc 1.5980e+08 vs 2.9451e+07 "
+            "kg^-1 (5.4x fewer droplets without it), domain-total RAINNC "
+            "1.957357 vs 3.207102 mm -- the aerosol-free run rains 63.8% "
             "MORE. Read that as the sensitivity of an mp=28 forecast to its "
             "aerosol initial condition; it is also the magnitude the "
             "lateral-boundary deviation below converges to after the domain "
@@ -2267,18 +2273,21 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "boundaries with zero inflow, so aerosol-free air advects in at "
             "the upstream face and monotonically depletes nwfa/nifa for as "
             "long as the run continues -- with no NaN, no negative and no "
-            "health trip, because WRF's own terminal clamps (nwfa >= 11.1e6, "
-            "nifa >= 5.0e3 per m3) hold the floor. WRF's Registry gives "
+            "health trip: where the scheme runs WRF's terminal clamps "
+            "(nwfa >= 11.1e6, nifa >= 5.0e3 per m3) hold the floor, and a "
+            "clear column, which WRF leaves at its no-microphysics exit "
+            "(phys/module_mp_thompson.F:2020), keeps the zero the inflow "
+            "brought. WRF's Registry gives "
             "qnwfa/qnifa real bdy arrays and forces them from the boundary "
             "file. MEASURED on a deliberately cloud-free 150-step run, so "
             "every kilogram lost is the boundary policy and not "
             "microphysics: with a 20.0 m/s inflow the depletion front "
-            "advances at 19.8638 m/s (0.99319 of the wind), and over 1800 s "
-            "the domain-interior mean nwfa falls to 0.4566 of its initial "
-            "value and nifa to 0.3363. At 10 m/s the front runs at "
-            "9.808 m/s, so this is a law and not one number: the upstream "
-            "U*t of your domain is at WRF's aerosol floor after time t, and "
-            "the whole domain after L/U -- 13.9 hours for a 1000 km domain "
+            "advances at 20.0909 m/s (1.00454 of the wind), and over 1800 s "
+            "the domain-interior mean nwfa falls to 0.3314 of its initial "
+            "value and nifa to 0.3272. At 10 m/s the front runs at "
+            "9.958 m/s, so this is a law and not one number: the upstream "
+            "U*t of your domain has lost its initial aerosol after time t, "
+            "and the whole domain after L/U -- 13.9 hours for a 1000 km domain "
             "in a 20 m/s flow, 83 minutes for a 100 km nest. The only "
             "interior source is the fixed surface emission nwfa2d at k=0, "
             "measured at 5540.14 kg^-1 s^-1, which replaces about 5% of the "
@@ -2286,9 +2295,10 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "level only. SEPARATELY, the spec_zone ring itself ends at "
             "EXACTLY zero aerosol on three of its four faces (west/south/"
             "north 1.000, east 0.125), because WRF's clipped microphysics "
-            "tile means the terminal clamp never runs there -- a value WRF "
-            "itself cannot produce, and what a nest boundary or a wrfout "
-            "reader sees. This matches gpuwm's existing hydrometeor policy "
+            "tile means the terminal clamp never runs there, and that is "
+            "what a nest boundary or a wrfout reader sees; WRF forces "
+            "qnwfa/qnifa at the boundary, so in WRF this zero does not "
+            "arise. This matches gpuwm's existing hydrometeor policy "
             "and is documented, not fixed.",
             "DIVERGENCE, PBL: gpuwm passes flag_qnc/flag_qnwfa/flag_qnifa to "
             "MYNN as literal False (gpuwm/core/mynn_pbl.py), so nc/nwfa/nifa "
@@ -4296,6 +4306,34 @@ def _lateral_forcing_remedy_is_reachable(registry: dict) -> None:
         route["allowed_parameter_keys"] = sorted(keys | wanted)
 
 
+def _tke_nest_child(registry: dict) -> None:
+    """km_opt=2 on a nest child: what the child does, not a refusal.
+
+    The carried-through row refused it "until a nested prognostic-TKE
+    domain has been run", a reason that names no breakage.
+    gpuwm.experiment admits it under any parent; this row says what the
+    child does and what is measured.
+    """
+    tke = registry["components"]["turbulence"]["options"]["tke-1.5-order"]
+    tke.setdefault("extensions", {}).pop("nest_child_restriction", None)
+    tke["extensions"]["nest_child"] = {
+        "behaviour": (
+            "a km_opt=2 nest child cold-starts its own TKE under any parent "
+            "and never returns it, as in WRF v4.6.1, whose Registry gives "
+            "tke no nest-interpolation (i) and no feedback (f) flag; tke is "
+            "not a nest-forced field in gpuwm/core/nest_fields.py"),
+        "measured": (
+            "a 250 m km_opt=2 child under a km_opt=4 parent, 7 h, status "
+            "PASS. A km_opt=2 child under a km_opt=2 parent loads with a "
+            "not-yet-verified warning"),
+    }
+    tke["warnings"] = [
+        ("Runs on a nest child under any parent; the child cold-starts its "
+         "own TKE. See extensions.nest_child.")
+        if warning.startswith("Refused on a nest child") else warning
+        for warning in tke.get("warnings", [])]
+
+
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
     _surface_coupling_warnings(registry)
@@ -4308,6 +4346,7 @@ def build(registry: dict) -> dict:
         "warnings"] = list(MORRISON_WARNINGS)
     # After every microphysics option is registered, because it walks them.
     _rte_rrtmgp_cloud_optics_constraints(registry)
+    _tke_nest_child(registry)
     registry["authority"][
         "wrf_v461_compatibility_matrix"
     ] = _wrf_compatibility_authority()
@@ -5140,11 +5179,19 @@ def build(registry: dict) -> dict:
         "radiation": [
             "off", "dudhia-shortwave", "wrf-rrtm-dudhia", "rte-rrtmgp"],
     }
-    # Grell-Freitas is selectable per domain on the tree route, the same
-    # terms as shinhong/sase above; off and kain-fritsch are listed so the
-    # per-domain override surface names the whole implemented cumulus set.
-    tree_route["allowed_component_options"]["cumulus"] = [
-        "off", "kain-fritsch", "grell-freitas"]
+    # The per-domain override surface names the WHOLE implemented cumulus
+    # set, so it is derived from the options rather than typed: a typed
+    # list was not updated when New Tiedtke (cu_physics 16) landed, and
+    # the published declaration went on naming three schemes while the
+    # engine ran four.  Ordered by cu_physics.  Each option's own
+    # required_settings row (New Tiedtke's cudt_minutes 0 and moist)
+    # still applies to every plan that names it, and the single-domain
+    # route inherits this list below.
+    tree_route["allowed_component_options"]["cumulus"] = sorted(
+        (option_id for option_id, option in cumulus_options.items()
+         if option.get("implemented") is True),
+        key=lambda option_id: cumulus_options[option_id]["selectors"][
+            "cu_physics"])
     surface_options["revised-mm5"]["reachability"] = {
         "state": "component-override"}
     radiation_options = registry["components"]["radiation"]["options"]
@@ -5659,6 +5706,9 @@ def build(registry: dict) -> dict:
     # every base they copy exists and before the route declarations are
     # audited, from the table beside _SUITELESS_TEMPLATES.
     _radiation_arm_siblings(registry)
+    # And the microphysics-arm siblings, at the same point for the same
+    # reason: their bases exist and are declared on their final routes.
+    _microphysics_arm_siblings(registry)
 
     # Owner-ratified declaration: the GFS runner has always advertised this
     # profile and retains the existing Noah-MP route acknowledgement.
@@ -6080,6 +6130,11 @@ _COUPLINGS_NOT_YET_REGISTRY_ROWS = {
         "moisture. The coupling is to moist, not to any component, so no "
         "option row can carry it yet. Set it in the experiment config, "
         "where validate_run_config checks the pair."),
+    "clos_choice": (
+        "clos_choice and ishallow are Grell-family keys, read only where "
+        "cu_physics=3; gpuwm.config refuses a nonzero value beside any "
+        "other cumulus scheme. Select Grell-Freitas and set them in the "
+        "experiment config."),
     "ishallow": (
         "clos_choice and ishallow are Grell-family keys, read only where "
         "cu_physics=3; gpuwm.config refuses a nonzero value beside any "
@@ -6740,6 +6795,139 @@ def _radiation_arm_siblings(registry: dict) -> None:
                         declared.index(base_id) + 1, template_id)
 
 
+#: Microphysics-arm siblings: a registered composition with ONE component
+#: moved, the microphysics, and declared on precisely the routes and
+#: sources its base is declared on, immediately after it.
+#:
+#: The suite-less table below cannot carry these: it registers a suite on
+#: EVERY declared source of every route, and a RUC suite runs only where
+#: RUC's nine-layer soil ingest does, which is what the base's own route
+#: set already states.  Moving the microphysics neither widens nor narrows
+#: that set, so the sibling inherits it.
+#:
+#: The maturity is not written here: :func:`_composition_ceiling` derives
+#: it from the option rows the composition selects, and the build refuses
+#: a row whose id names a maturity the derivation does not reach.
+_MICROPHYSICS_ARM_SIBLINGS = (
+    # (new id, base id, microphysics option, maturity the id names,
+    #  label, lead warnings)
+    (
+        "thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "thompson-mp8",
+        "implemented-unverified",
+        "Thompson + MYNN PBL + MYNN surface layer + RUC LSM + RTE+RRTMGP",
+        (
+            "Composition candidate: Thompson mp8 is wrf-matched-run and "
+            "RTE+RRTMGP is the shipped 4/4 radiation arm, while MYNN and RUC "
+            "are implemented-unverified, so this suite sits at the "
+            "implemented-unverified ceiling its weakest members set. No "
+            "receipt covers the composed suite; its first stock-WRF-paired "
+            "t0/case receipt is what moves the label.",
+            "This template differs from "
+            "wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 in "
+            "exactly ONE component, the microphysics (WSM6 -> Thompson), so "
+            "the pair isolates it; every other component and parameter is "
+            "transcribed from that template, and it is offered on exactly "
+            "the routes and sources that template is.",
+            "Both radiation streams run, so this is the nocturnally valid "
+            "member of the Thompson + MYNN + RUC pair and the one to choose "
+            "for low cloud, fog and stratus, where the night-time longwave "
+            "cooling is the process being forecast.",
+            "RADIATION IS THE ONLY DIFFERENCE from "
+            "thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1: "
+            "ra_lw_physics 0 -> 4, ra_sw_physics 1 -> 4 and radt 1.0 -> 12.0. "
+            "This row is nocturnally valid and that one is not.",
+        ),
+    ),
+    (
+        "thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
+        "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+        "thompson-mp8",
+        "implemented-unverified",
+        "Thompson + MYNN PBL + MYNN surface layer + RUC LSM + Dudhia SW",
+        (
+            "Composition candidate: Thompson mp8 is wrf-matched-run, while "
+            "MYNN and RUC are implemented-unverified, so this suite sits at "
+            "the implemented-unverified ceiling its weakest members set. No "
+            "receipt covers the composed suite.",
+            "This template differs from "
+            "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1 in "
+            "exactly ONE component, the microphysics (WSM6 -> Thompson), so "
+            "the pair isolates it; every other component and parameter is "
+            "transcribed from that template, and it is offered on exactly "
+            "the routes and sources that template is.",
+            "DAYTIME VALIDATION SUITE. The radiation component is "
+            "'dudhia-shortwave': ra_lw_physics 0 with ra_sw_physics 1, so "
+            "Dudhia shortwave runs and no longwave scheme does, and GLW "
+            "stays at zero for the whole forecast. A real window containing "
+            "local night refuses to load unless [experiment] declares "
+            "acknowledgements = [\"asymmetric-radiation-nocturnal-window-v1\"]. "
+            "For fog and stratus choose "
+            "thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1, "
+            "which runs both streams.",
+        ),
+    ),
+)
+
+
+#: Warning sentences that describe a sibling's BASE pairing rather than the
+#: minted composition: carried over, they would name the base's partner (a
+#: WSM6 row) as this row's only difference.
+_BASE_DESCRIBING_WARNING_PREFIXES = (
+    "This template differs from ",
+    "RADIATION IS THE ONLY DIFFERENCE from ",
+)
+
+
+def _microphysics_arm_siblings(registry: dict) -> None:
+    """Mint every row of :data:`_MICROPHYSICS_ARM_SIBLINGS`.
+
+    Idempotent, as :func:`_radiation_arm_siblings` is: a minted id is
+    removed from every route list before it is inserted after its base, so
+    a second build over this build's own output produces the same bytes.
+
+    The base's warnings are inherited after the row's own, less the two
+    kinds of sentence that describe the BASE rather than the composition:
+    its "differs from" pairing sentence, and the frozen-name warning a
+    'no-radiation' id carries, which would be false on an id that does not
+    say 'no-radiation'.
+    """
+
+    templates = registry["templates"]
+    routes = registry["runner_routes"]
+    for (template_id, base_id, microphysics, named_maturity, label,
+         warnings) in _MICROPHYSICS_ARM_SIBLINGS:
+        base = templates[base_id]
+        template = copy.deepcopy(base)
+        template["components"]["microphysics"] = microphysics
+        template["label"] = label
+        maturity = _composition_ceiling(registry, template["components"])
+        if MATURITY_RENAMES.get(named_maturity, named_maturity) != maturity:
+            raise SystemExit(
+                f"template {template_id!r} names maturity {named_maturity!r} "
+                f"and its composition ceiling is {maturity!r}; an id that "
+                "states a rank its components do not reach is a false claim "
+                "every door would repeat")
+        template["maturity"] = maturity
+        inherited = [
+            warning for warning in base.get("warnings", [])
+            if not warning.startswith(_BASE_DESCRIBING_WARNING_PREFIXES)
+            and warning != NO_RADIATION_NAME_WARNING
+        ]
+        template["warnings"] = [*warnings, *inherited]
+        templates[template_id] = template
+        for route in routes.values():
+            for declared in route.get("source_template_ids", {}).values():
+                if template_id in declared:
+                    declared.remove(template_id)
+        for route in routes.values():
+            for declared in route.get("source_template_ids", {}).values():
+                if base_id in declared:
+                    declared.insert(
+                        declared.index(base_id) + 1, template_id)
+
+
 #: Audit R-067.  Eleven implemented options had no shipped template at all,
 #: so every one of them was a scheme a user could not select from a named
 #: suite -- ``implemented: true`` with no front door.  Each row below is
@@ -6911,8 +7099,6 @@ _SUITELESS_TEMPLATES = (
 #: building its product from the registry alone.  Named once, here, so the
 #: exclusion table below and the gate that checks it read the same string.
 _NATIVE_BENCHMARK_ROUTE = "tools.hrrr_single_domain_benchmark"
-_FIXED_TEMPLATE_ROUTES = (
-    _NATIVE_BENCHMARK_ROUTE, "tools.prepared_single_domain_forecast")
 
 #: Which suite-less template stays off which route, and the concrete
 #: breakage that keeps it off.  A template is registered on every route it
@@ -6921,22 +7107,19 @@ _FIXED_TEMPLATE_ROUTES = (
 #: absent from a route with no row -- which is the reverse leg the first
 #: pass lacked, when six suites were declared on a route whose runner
 #: refuses all six.
-_TEMPLATE_ROUTES_REFUSED: dict[str, dict[str, str]] = {
-    "thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1": {
-        route_id: (
-            "gpuwm/ingest/microphysics_cold_start.py "
-            "source_absent_microphysics has no arm for mp_physics=28: a "
-            "real analysis supplies none of the aerosol-aware boundary "
-            "species and there is no cold-start row for them, so a runner "
-            "that prepares its own initialization from the named source "
-            "cannot build an initialization contract for this suite at "
-            "all. Both fixed-template routes do exactly that. Audit R-044 "
-            "owns the arm; the template rides the domain-tree route, whose "
-            "plan states its own per-domain composition, until it lands.")
-        for route_id in _FIXED_TEMPLATE_ROUTES
-    },
-}
-#: The six composition suites are valid compositions and the prepared
+#:
+#: RETIRED, with the fix it waited on: the aerosol-aware Thompson row that
+#: kept its suite off BOTH fixed-template routes because
+#: source_absent_microphysics had no mp_physics=28 arm (audit R-044).  The
+#: arm exists (gpuwm/ingest/microphysics_cold_start.py, nc/nr/ni at exact
+#: zero), gpuwm/ingest/real.py seeds nwfa/nifa from the WIF monthly
+#: climatology, and a missing dataset is refused by name before the fetch
+#: by gpuwm.config.mp28_aerosol_lateral_forcing_precondition, which offers
+#: mp28_aerosol_source = 'synthetic' as the way out.  The suite is on the
+#: prepared single-domain route now; the native benchmark keeps it off for
+#: its own reason, in the composition loop below.
+_TEMPLATE_ROUTES_REFUSED: dict[str, dict[str, str]] = {}
+#: The composition suites are valid compositions and the prepared
 #: single-domain route resolves each of them from the registry alone.  The
 #: NATIVE BENCHMARK route cannot: its product is a replay of a native WRF
 #: run, gated field for field against a transcribed namelist contract
@@ -6950,6 +7133,9 @@ for _composition_suite_id, _off_the_benchmark_because in (
          "no native run of this composition exists, so there is no "
          "namelist contract to gate its replay against"),
         ("wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+         "no native run of this composition exists, so there is no "
+         "namelist contract to gate its replay against"),
+        ("thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1",
          "no native run of this composition exists, so there is no "
          "namelist contract to gate its replay against"),
         ("wsm6-sase-revised-mm5-noah-closure-supplied-v1",

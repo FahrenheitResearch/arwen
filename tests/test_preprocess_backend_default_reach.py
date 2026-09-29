@@ -64,10 +64,68 @@ def test_the_three_prep_doors_default_to_auto():
             module.__name__
 
 
+def test_the_hrrr_tree_preparer_defaults_to_auto_like_the_other_doors():
+    """``tools/prepare_hrrr_wrf`` is the door ``gpuwm go`` and the source
+    CLI drive for HRRR, and neither passes a backend.  Its ``cuda``
+    default sent a bare HRRR preparation on a CPU-only install to the
+    named cuda refusal, while the same preparation with
+    ``--preprocess-backend cpu`` ran."""
+
+    from tools import prepare_hrrr_wrf
+
+    assert prepare_hrrr_wrf._parser().get_default(
+        "preprocess_backend") == "auto"
+
+
+def test_the_hrrr_root_receipt_keeps_why_auto_chose_the_cpu(
+        monkeypatch, _fresh_announcement):
+    """Pinning the CPU worker budget is not a second choice of backend.
+
+    The HRRR root preparation re-resolves the CPU backend to fix one
+    explicit worker total, and that re-resolution used to replace the
+    receipt's selection with ``requested: cpu`` and "named by the
+    caller" -- on a bare run where nobody named anything and auto had
+    fallen to the CPU because cupy was absent.
+    """
+
+    import os
+    from types import SimpleNamespace
+
+    from tools import hrrr_single_domain_benchmark as benchmark
+
+    class _Cpu:
+        name = "cpu"
+
+        def __init__(self, workers=None, bridge=None):
+            self.workers = workers
+            self.selection = None
+
+    _cupyless(monkeypatch)
+    monkeypatch.setattr(backend_module, "ParallelCpuPreprocessBackend", _Cpu)
+
+    bare = SimpleNamespace(preprocess_backend="auto",
+                           preprocess_workers=None, cpu_preprocess_bridge=None)
+    chosen, workers = benchmark._budgeted_preprocess_backend(bare)
+    assert workers == int(os.cpu_count() or 1)
+    assert chosen.workers == workers
+    assert chosen.selection["requested"] == "auto"
+    assert chosen.selection["backend"] == "cpu"
+    assert "cupy" in chosen.selection["reason"]
+
+    named = SimpleNamespace(preprocess_backend="cpu",
+                            preprocess_workers=None, cpu_preprocess_bridge=None)
+    chosen, _workers = benchmark._budgeted_preprocess_backend(named)
+    assert chosen.selection == {
+        "requested": "cpu", "backend": "cpu",
+        "reason": backend_module.NAMED_BY_CALLER}
+
+
 def test_auto_without_cupy_resolves_cpu_and_says_so(
         monkeypatch, capsys, _fresh_announcement):
+    from types import SimpleNamespace
+
     _cupyless(monkeypatch)
-    cpu = object()
+    cpu = SimpleNamespace(name="cpu")
     monkeypatch.setattr(
         backend_module, "ParallelCpuPreprocessBackend",
         lambda **_kwargs: cpu)
@@ -82,10 +140,12 @@ def test_the_auto_line_prints_once_per_process(
         monkeypatch, capsys, _fresh_announcement):
     """nest initialization re-resolves per child; four lines is noise."""
 
+    from types import SimpleNamespace
+
     _cupyless(monkeypatch)
     monkeypatch.setattr(
         backend_module, "ParallelCpuPreprocessBackend",
-        lambda **_kwargs: object())
+        lambda **_kwargs: SimpleNamespace(name="cpu"))
     resolve_preprocess_backend("auto")
     resolve_preprocess_backend("auto")
     resolve_preprocess_backend("auto")
@@ -120,15 +180,15 @@ def test_cuda_with_cupy_present_stays_lazy(monkeypatch,
 
 def test_auto_with_unusable_runtime_names_the_runtime(
         monkeypatch, capsys, _fresh_announcement):
-    """cupy installed but outside the certified family: the one line
-    names the runtime it declined, not a missing install."""
+    """cupy installed but on a runtime with no certification row: the
+    one line names the runtime it declined, not a missing install."""
 
     from types import SimpleNamespace
 
     class _Runtime:
         @staticmethod
         def runtimeGetVersion():
-            return 13_000
+            return 14_000
 
         @staticmethod
         def getDeviceCount():
@@ -137,7 +197,7 @@ def test_auto_with_unusable_runtime_names_the_runtime(
     cuda = SimpleNamespace(
         name="cuda",
         array_module=SimpleNamespace(
-            __version__="13.1.0",
+            __version__="14.2.0",
             cuda=SimpleNamespace(runtime=_Runtime())))
     monkeypatch.setattr(
         backend_module, "CudaPreprocessBackend", lambda: cuda)
@@ -148,7 +208,76 @@ def test_auto_with_unusable_runtime_names_the_runtime(
     assert resolve_preprocess_backend("auto") is cpu
     err = capsys.readouterr().err
     assert err.count("\n") == 1
-    assert "13" in err
+    assert "14000" in err
+    assert "CUDA 14" in err
+
+
+def test_auto_with_cupy_installed_and_no_device_does_not_say_not_installed(
+        monkeypatch, capsys, _fresh_announcement):
+    """cupy installed, no device answering (CUDA_VISIBLE_DEVICES empty):
+    the line said "cupy is not installed here", which sends a reader with
+    a working cupy to reinstall it.  It names the device error instead."""
+
+    from types import SimpleNamespace
+
+    class _Runtime:
+        @staticmethod
+        def runtimeGetVersion():
+            raise RuntimeError(
+                "cudaErrorNoDevice: no CUDA-capable device is detected")
+
+        @staticmethod
+        def getDeviceCount():
+            raise RuntimeError(
+                "cudaErrorNoDevice: no CUDA-capable device is detected")
+
+    cuda = SimpleNamespace(
+        name="cuda",
+        array_module=SimpleNamespace(
+            __version__="14.2.0",
+            cuda=SimpleNamespace(runtime=_Runtime())))
+    monkeypatch.setattr(
+        backend_module, "CudaPreprocessBackend", lambda: cuda)
+    monkeypatch.setattr(
+        backend_module, "_gpu_runtime_installed", lambda: True)
+    cpu = SimpleNamespace(name="cpu")
+    monkeypatch.setattr(
+        backend_module, "ParallelCpuPreprocessBackend",
+        lambda **_kwargs: cpu)
+    assert resolve_preprocess_backend("auto") is cpu
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "not installed" not in err
+    assert "no CUDA device is visible here" in err
+    assert "no CUDA-capable device is detected" in err
+
+
+def test_auto_with_cupy_installed_but_unloadable_says_it_could_not_be_loaded(
+        monkeypatch, capsys, _fresh_announcement):
+    """cupy resolves but its import fails (a missing CUDA library, say):
+    the real loader wraps that in "CuPy is required ...", and the line
+    quoted that wrapper after "no CUDA device answered", naming neither
+    the failure nor its cause.  It says cupy could not be loaded and
+    quotes the import error."""
+
+    import sys
+
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    monkeypatch.setattr(
+        backend_module, "_gpu_runtime_installed", lambda: True)
+    cpu = SimpleNamespace(name="cpu")
+    monkeypatch.setattr(
+        backend_module, "ParallelCpuPreprocessBackend",
+        lambda **_kwargs: cpu)
+    assert resolve_preprocess_backend("auto") is cpu
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "cupy is installed but could not be loaded" in err
+    assert "import of cupy halted" in err
+    assert "device" not in err
+    assert "CuPy is required" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -164,35 +293,40 @@ def _remedy_install_lines():
             if line.strip().startswith("remedy:")]
 
 
-def test_the_gpu_preprocess_remedy_names_only_a_certified_pair():
-    """Following the remedy used to land on an UNCERTIFIED pair.
+def test_the_gpu_preprocess_remedy_names_exactly_the_certified_pairs():
+    """One install line per certified CUDA major, and nothing else.
 
-    The text sent a CUDA-13 box to `pip install 'gpuwm[gpu-cu13]'`, but
-    the auto resolver certifies only the CUDA 12.x runtime family, so
-    the user who did exactly that got preprocessing on the CPU backend
-    and no sentence tying it to the advice they had followed.  A remedy
-    names what is certified or it is not a remedy.
+    A remedy that installs a wheel for a runtime ``auto`` still declines
+    leaves the reader on the CPU backend after doing what it said; a
+    certified major with no line leaves that box without a remedy.
     """
+
+    from gpuwm.ingest.preprocess_backend import (
+        CERTIFIED_PREPROCESS_CUDA_MAJORS)
 
     lines = _remedy_install_lines()
     assert lines, "the remedy stopped naming a command to run"
-    assert all("gpu-cu12" in line for line in lines), lines
-    assert not any("gpu-cu13" in line for line in lines), lines
+    expected = [f"remedy: pip install 'gpuwm[{row['extra']}]'"
+                for _major, row in sorted(
+                    CERTIFIED_PREPROCESS_CUDA_MAJORS.items())]
+    assert lines == expected
 
 
-def test_the_remedy_states_the_certified_family_and_the_cuda13_outcome():
-    """cu13 is still described -- as what it is, not as a way to the GPU."""
-
+def test_the_remedy_states_the_certified_majors():
     from gpuwm.ingest.preprocess_backend import _GPU_PREPROCESS_REMEDY
 
-    text = _GPU_PREPROCESS_REMEDY
-    assert "CUDA 12.x runtime family only" in text
-    assert "no certified GPU preprocessing pair" in text
-    assert "CPU backend" in text
+    assert "certified on CUDA 12 and CUDA 13" in _GPU_PREPROCESS_REMEDY
+    assert "--preprocess-backend cpu" in _GPU_PREPROCESS_REMEDY
 
 
-def test_the_certified_range_is_the_pin_not_a_restated_literal():
-    """Three copies of a literal pair is how the answers drift apart."""
+def test_the_certification_is_the_table_not_a_restated_literal():
+    """The resolver asks the table; the sealed bundle keeps its own pin.
+
+    A literal runtime range inside the resolver is how the answer to
+    "what is certified" stayed CUDA 12 after CUDA 13 passed the same
+    parity certification.  The sealed native-WRF distribution ships one
+    CuPy wheel and pins its runtime family separately.
+    """
 
     import inspect
 
@@ -200,6 +334,8 @@ def test_the_certified_range_is_the_pin_not_a_restated_literal():
     from gpuwm.gpu_stack_identity import CUDA_RUNTIME_RANGE
 
     source = inspect.getsource(ingest.preprocess_backend)
-    assert "CUDA_RUNTIME_RANGE" in source
+    assert "CERTIFIED_PREPROCESS_CUDA_MAJORS.get(major)" in source
     assert "12_000 <= runtime_version < 13_000" not in source
+    resolver = source.split("def resolve_preprocess_backend", 1)[1]
+    assert "CUDA_RUNTIME_RANGE" not in resolver
     assert CUDA_RUNTIME_RANGE == (12_000, 13_000)

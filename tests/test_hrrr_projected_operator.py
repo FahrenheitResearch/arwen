@@ -162,6 +162,46 @@ def test_a_backend_without_the_entry_keeps_the_mirror_and_says_so(
     assert "warning:" in capsys.readouterr().err
 
 
+#: The CPU preprocessing bridge's checkout build as each shell must
+#: receive it, written out rather than derived so a generator that loses
+#: its shell rule cannot also rewrite what it is judged against.  Windows
+#: PowerShell 5.1 rejects `&&` with a parser error.
+CPU_BRIDGE_BUILD_FOR_SHELL = {
+    False: "cd tools/grib1_bridge && cargo build --release --locked "
+           "--offline && cd ../..",
+    True: "cd tools\\grib1_bridge; cargo build --release --locked "
+          "--offline; cd ..\\..",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_fallback_sentence_spells_the_rebuild_for_the_shell(
+        monkeypatch, windows):
+    """The rebuild in this warning is one a Windows user can paste.
+
+    It printed `cd tools/grib1_bridge && cargo build ...` on every OS,
+    which Windows PowerShell 5.1 cannot parse.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.setattr(
+        hrrr_module, "_PROJECTED_FALLBACK_ANNOUNCED", False, raising=False)
+    records: list[dict] = []
+    explain.add_warning_observer(records.append)
+    try:
+        _plan(object())
+    finally:
+        explain.remove_warning_observer(records.append)
+    assert len(records) == 1
+    action = records[0]["action"]
+    assert CPU_BRIDGE_BUILD_FOR_SHELL[windows] in action, action
+    if windows:
+        assert "&&" not in action, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {action}")
+
+
 def test_the_fallback_sentence_is_said_once_per_process(monkeypatch):
     monkeypatch.setattr(
         hrrr_module, "_PROJECTED_FALLBACK_ANNOUNCED", False, raising=False)

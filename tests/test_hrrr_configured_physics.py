@@ -72,6 +72,234 @@ def test_named_profile_remains_an_explicit_equality_assertion(tmp_path):
             experiment_config=config, physics_profile=WSM6_PROFILE_ID)
 
 
+@pytest.mark.parametrize("root_pbl,nest_pbl", [(1, 900), (900, 1)],
+                         ids=["ysu-root", "sase-root"])
+def test_the_root_of_a_mixed_sase_tree_prepares_with_a_shared_sase_selector(
+        tmp_path, root_pbl, nest_pbl):
+    """The HRRR root preparation keeps d01 alone and rebuilds it.
+
+    On a tree that mixes SASE with YSU the loader applies a [shared] SASE
+    selector to the SASE domains only.  Cut down to a YSU root, the
+    selector reached no kept domain, and the rebuild refused the root for
+    "sase_moist_n2=False requires bl_pbl_physics=900", so a tree whose
+    whole-tree load succeeds stopped at prepare.  The root now prepares
+    with the values it runs in the tree; a SASE root keeps the selector.
+    """
+    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
+                              p_top=5000., hybrid_opt=2, etac=.2)
+    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
+    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
+                                          physics_profile=WSM6_PROFILE_ID)
+    raw["shared"]["sase_moist_n2"] = False
+    raw["domain"][0].update(bl_pbl_physics=root_pbl, km_opt=0 if root_pbl == 900 else 4)
+    raw["domain"].append({
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 18, "j_parent_start": 18,
+        "parent_grid_ratio": 3, "parent_time_step_ratio": 3, "nx": 30, "ny": 30,
+        "history_interval_s": 300.0, "specified": False, "nested": True,
+        "bl_pbl_physics": nest_pbl, "km_opt": 0 if nest_pbl == 900 else 4})
+    tree = build_experiment(copy.deepcopy(raw), source="mixed SASE tree")
+    by_pbl = {d.run.bl_pbl_physics: d.run for d in tree.domains}
+    assert by_pbl[900].sase_moist_n2 is False and by_pbl[1].sase_moist_n2 is True
+    config = tmp_path / "experiment.toml"
+    config.write_text(render_experiment_document(raw), encoding="utf-8")
+    actual, _ = resolve_root_experiment(target=target, vertical=tree.vertical,
+        namelist_input=tmp_path / "namelist.input", start_time=tree.start_time,
+        run_seconds=tree.run_seconds, experiment_config=config)
+    assert actual.root.run.bl_pbl_physics == root_pbl
+    assert actual.root.run.sase_moist_n2 is tree.root.run.sase_moist_n2
+
+
+def _grell_tree_tables(*, root_cu, child_cu, shared=None, root=None,
+                       child=None):
+    """A route tree whose root and nest run the given cumulus schemes."""
+    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
+                              p_top=5000., hybrid_opt=2, etac=.2)
+    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
+    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
+                                          physics_profile=WSM6_PROFILE_ID)
+    raw["shared"].update(cu_physics=0, cudt_minutes=0.0, **(shared or {}))
+    raw["domain"][0].update(cu_physics=root_cu, **(root or {}))
+    raw["domain"].append({
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 18, "j_parent_start": 18,
+        "parent_grid_ratio": 3, "parent_time_step_ratio": 3, "nx": 30, "ny": 30,
+        "history_interval_s": 300.0, "specified": False, "nested": True,
+        # The root's radiation cadence, which the namelists state per domain.
+        "radt": raw["domain"][0]["radt"],
+        "radt_minutes": raw["domain"][0]["radt_minutes"],
+        "cu_physics": child_cu, **(child or {})})
+    return raw, target
+
+
+def test_the_route_namelists_carry_the_grell_freitas_closure(tmp_path):
+    """Both namelists state clos_choice and ishallow, and the route runs them.
+
+    Omitted, the stock-WRF arm ran the Registry default closure while the
+    gpuwm arm ran the configured one, and the hierarchy read 0 on the
+    Grell-Freitas root: it stopped after the fetch and the root
+    preparation.  The pair now carries the configured values, the raw
+    runtime contract admits them, the hierarchy imports them on the
+    Grell-Freitas root only, and the drift check takes the cumulus-off
+    nest's 0.
+    """
+    from gpuwm.hrrr_hierarchy_direct import _require_raw_stock_delta
+    from gpuwm.hrrr_route_inputs import write_hrrr_route_inputs
+    from gpuwm.namelist_import import import_namelists, parse_namelist
+    import tomllib
+
+    raw, _target = _grell_tree_tables(
+        root_cu=3, child_cu=0, shared={"clos_choice": 1, "ishallow": 1})
+    exp = build_experiment(copy.deepcopy(raw), source="grell tree")
+    assert [(d.run.clos_choice, d.run.ishallow) for d in exp.domains] == [
+        (1, 1), (0, 0)]
+    config = tmp_path / "experiment.toml"
+    config.write_text(render_experiment_document(raw), encoding="utf-8")
+    wps, target, native, stock = write_hrrr_route_inputs(
+        config, exp, wps_text=render_wps_namelist(exp),
+        writer=lambda path, text: path.write_text(text, encoding="utf-8"))
+    for path in (native, stock):
+        physics = parse_namelist(path)["physics"]
+        assert physics["clos_choice"] == [1]
+        assert physics["ishallow"] == [1]
+    _require_raw_stock_delta(native, stock)
+    text, _ = import_namelists(wps, native, name=exp.name,
+                               acknowledgements=tuple(exp.acknowledgements))
+    imported = build_experiment(tomllib.loads(text), source="imported tree")
+    assert [(d.run.cu_physics, d.run.clos_choice, d.run.ishallow)
+            for d in imported.domains] == [(3, 1, 1), (0, 0, 0)]
+
+
+def test_grell_freitas_domains_with_different_closures_are_refused_on_the_route(
+        tmp_path):
+    """WRF reads clos_choice once for the whole run, so the pair cannot
+    carry two; the refusal says which domains and the way out."""
+    from gpuwm.hrrr_route_inputs import HrrrRouteInputError
+
+    raw, _target = _grell_tree_tables(
+        root_cu=3, child_cu=3, root={"clos_choice": 1},
+        child={"clos_choice": 5})
+    exp = build_experiment(copy.deepcopy(raw), source="two closures")
+    with pytest.raises(HrrrRouteInputError,
+                       match="set different closures") as caught:
+        render_namelist_input(exp)
+    assert "d01 clos_choice = 1" in str(caught.value)
+    assert "d02 clos_choice = 5" in str(caught.value)
+    assert "[shared]" in str(caught.value)
+
+
+def test_the_root_under_a_grell_freitas_nest_prepares_with_a_shared_closure(
+        tmp_path):
+    """The HRRR root preparation keeps d01 alone and rebuilds it.
+
+    A [shared] clos_choice on a cumulus-off root under a Grell-Freitas
+    nest reached only the nest; cut down to the root, the key would have
+    refused the rebuild.  The root prepares with the values it runs in
+    the tree, and a Grell-Freitas root keeps them.
+    """
+    for root_cu, child_cu in ((0, 3), (3, 0)):
+        raw, target = _grell_tree_tables(
+            root_cu=root_cu, child_cu=child_cu,
+            shared={"clos_choice": 1, "ishallow": 1})
+        tree = build_experiment(copy.deepcopy(raw), source="grell tree")
+        config = tmp_path / f"experiment-{root_cu}.toml"
+        config.write_text(render_experiment_document(raw), encoding="utf-8")
+        actual, _ = resolve_root_experiment(target=target, vertical=tree.vertical,
+            namelist_input=tmp_path / "namelist.input", start_time=tree.start_time,
+            run_seconds=tree.run_seconds, experiment_config=config)
+        assert actual.root.run.cu_physics == root_cu
+        assert actual.root.run.clos_choice == tree.root.run.clos_choice
+        assert actual.root.run.ishallow == tree.root.run.ishallow
+
+
+def _storm_following_tables(mover_source):
+    """A route tree with a moving child, as a storm-following layout writes it.
+
+    ``mover_source`` picks what moves the child: the weather tracker
+    (``follow``), a scheduled itinerary (``move``), or the tracker on a
+    grandchild whose parent slides to keep it contained
+    (``containment``).
+    """
+    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
+                              p_top=5000., hybrid_opt=2, etac=.2)
+    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
+    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
+                                          physics_profile=WSM6_PROFILE_ID)
+    root = raw["domain"][0]
+    raw["domain"].append({
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 14, "j_parent_start": 14,
+        "parent_grid_ratio": 3, "parent_time_step_ratio": 3, "nx": 60, "ny": 60,
+        "history_interval_s": 300.0, "specified": False, "nested": True,
+        "radt": root["radt"], "radt_minutes": root["radt_minutes"]})
+    follow = {"field": "uh", "threshold": 40.0, "fallback_threshold": 40.0,
+              "search_margin_cells": 8, "min_shift_cells": 2,
+              "max_shift_cells": 6, "cooldown_seconds": 600.0}
+    relocation = {"enabled": True, "grid_id": 2, "cadence_seconds": 600.0,
+                  "max_move_parent_cells": 6, "min_overlap_fraction": 0.25}
+    if mover_source == "follow":
+        relocation["follow"] = follow
+    elif mover_source == "move":
+        relocation["move"] = [{"at_seconds": 1200.0, "di_parent_cells": 2,
+                               "dj_parent_cells": 1}]
+    else:
+        raw["domain"].append({
+            "grid_id": 3, "parent_id": 2, "i_parent_start": 20, "j_parent_start": 20,
+            "parent_grid_ratio": 3, "parent_time_step_ratio": 3, "nx": 45, "ny": 45,
+            "history_interval_s": 300.0, "specified": False, "nested": True,
+            "radt": root["radt"], "radt_minutes": root["radt_minutes"]})
+        relocation.update(grid_id=3, follow=follow,
+                          containment={"grid_id": 2, "deadband_cells": 4})
+    raw["relocation"] = relocation
+    return raw, target
+
+
+@pytest.mark.parametrize("mover_source", ["follow", "move", "containment"])
+def test_the_root_of_a_storm_following_tree_prepares(tmp_path, mover_source):
+    """The HRRR root preparation keeps d01 alone and rebuilds it.
+
+    The [relocation] table names the child that moves, never the root,
+    so a root cut down from a storm-following tree kept a table naming a
+    domain it no longer had, and the rebuild refused it: "grid_id = 2 in
+    [relocation] ... is not a domain of this experiment (have [1])".
+    Every storm-following layout stopped at the root preparation that
+    way.  The root now prepares as it runs in the tree, without the
+    mover's table, and the tree itself still moves its child.
+    """
+    raw, target = _storm_following_tables(mover_source)
+    tree = build_experiment(copy.deepcopy(raw), source="storm-following tree")
+    assert tree.relocation.enabled
+    from gpuwm.toml_document import emit_experiment_toml
+    config = tmp_path / "experiment.toml"
+    config.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    actual, root_tables = resolve_root_experiment(target=target, vertical=tree.vertical,
+        namelist_input=tmp_path / "namelist.input", start_time=tree.start_time,
+        run_seconds=tree.run_seconds, experiment_config=config)
+    assert [d.grid_id for d in actual.domains] == [1]
+    assert not actual.relocation.enabled
+    assert "relocation" not in root_tables
+    assert asdict(actual.root.run) == asdict(tree.root.run)
+    publish_experiment_document(tmp_path / "published.toml", root_tables, actual)
+    # The operator's configuration is untouched: the tree keeps its mover.
+    import tomllib
+    reread = build_experiment(tomllib.loads(config.read_text(encoding="utf-8")),
+                              source="storm-following tree, reread")
+    assert reread.relocation == tree.relocation
+
+
+def test_a_cut_that_keeps_the_mover_keeps_its_relocation():
+    """Only a cut that drops the mover drops its table."""
+    from gpuwm.experiment import drop_unreached_relocation
+
+    raw, _target = _storm_following_tables("containment")
+    kept = copy.deepcopy(raw)
+    drop_unreached_relocation(kept, [1, 2, 3])
+    assert kept["relocation"] == raw["relocation"]
+    cut = copy.deepcopy(raw)
+    drop_unreached_relocation(cut, [1, 2])
+    assert "relocation" not in cut
+    disabled = {"relocation": {"enabled": False}}
+    drop_unreached_relocation(disabled, [1])
+    assert disabled == {"relocation": {"enabled": False}}
+
+
 def test_configuration_geometry_mismatch_still_refuses_before_source_consumption(tmp_path):
     exp, target, config, namelist, _ = _case(tmp_path)
     with pytest.raises(ValueError, match="configured d01 differs"):
@@ -344,3 +572,93 @@ def test_the_native_route_admits_mp28_once_the_dataset_question_is_answered(
                        match="QNWFA_QNIFA_SIGMA_MONTHLY.dat") as refusal:
         validate_run_preparation(auto.root.run)
     assert "mp28_aerosol_source='synthetic'" in str(refusal.value)
+
+
+@pytest.mark.parametrize("feedback,smooth", [(0, 0), (1, 0), (1, 2)])
+def test_route_namelists_carry_the_configured_feedback(tmp_path, feedback, smooth):
+    """The route's namelists say what the config says about feedback.
+
+    The renderer used to refuse feedback=1 and, below that refusal,
+    spelled feedback and smooth_option as literal zeros; the hierarchy
+    stage rebuilds the experiment from these bytes, so lifting only the
+    refusal would have prepared every two-way tree as one-way.
+    """
+    from gpuwm.namelist_import import parse_namelist_text
+    exp, *_ = _case(tmp_path)
+    exp = replace(exp, feedback=feedback, smooth_option=smooth)
+    for stock in (False, True):
+        domains = parse_namelist_text(
+            render_namelist_input(exp, stock=stock))["domains"]
+        assert domains["feedback"] == [feedback]
+        assert domains["smooth_option"] == [smooth]
+
+
+#: Every adaptive-clock field the route carries, scope-1 keys first.
+_ADAPTIVE_FIELDS = (
+    "use_adaptive_time_step", "step_to_output_time", "adaptation_domain",
+    "target_cfl", "target_hcfl", "max_step_increase_pct",
+    "starting_time_step", "starting_time_step_den",
+    "max_time_step", "max_time_step_den",
+    "min_time_step", "min_time_step_den")
+
+
+def test_a_two_way_adaptive_tree_goes_through_the_route(tmp_path):
+    """A parent and nest on two-way feedback and an adaptive clock with per-domain clamps.
+
+    The shape of a lean 1 km / 500 m layout: feedback 1, the adaptive
+    clock on, the nest growing by 51 % a step against its parent's 5 %
+    and clamped to its own bounds.  Four refusals stood in turn on the
+    route: the renderer's one-way refusal before anything was fetched;
+    behind it, namelists that carried no adaptive key, so the round trip
+    refused the clock; then the importer, which read each max_domains
+    clamp as one value for the tree and refused the nest's own; then the
+    hierarchy stage's drift check, which took those preparation-inert
+    clamps for a trajectory difference after the root was prepared.  The
+    pair now carries all of it from the config, the importer rebuilds the
+    same tree from the bytes, and the hierarchy gate admits it.
+    """
+    from gpuwm.hrrr_forecast import hrrr_forcing_end_hour
+    from gpuwm.hrrr_hierarchy_direct import (_require_raw_stock_delta,
+                                             _supported_hierarchy_slice)
+    from gpuwm.hrrr_route_inputs import write_hrrr_route_inputs
+    from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
+    from gpuwm.namelist_import import import_namelists, parse_namelist
+    import tomllib
+
+    raw, _target = _grell_tree_tables(
+        root_cu=0, child_cu=0,
+        shared={"use_adaptive_time_step": True, "step_to_output_time": True},
+        root={"max_step_increase_pct": 5, "starting_time_step": 5,
+              "min_time_step": 2, "max_time_step": 8},
+        child={"max_step_increase_pct": 51, "starting_time_step": 5,
+               "starting_time_step_den": 3, "min_time_step": 1,
+               "min_time_step_den": 2, "max_time_step": 3})
+    raw["experiment"].update(feedback=1, smooth_option=0)
+    exp = build_experiment(copy.deepcopy(raw), source="two-way adaptive tree")
+    expected = [[getattr(d.run, name) for name in _ADAPTIVE_FIELDS]
+                for d in exp.domains]
+    assert expected[0] != expected[1]
+    config = tmp_path / "experiment.toml"
+    config.write_text(render_experiment_document(raw), encoding="utf-8")
+    wps, target, native, stock = write_hrrr_route_inputs(
+        config, exp, wps_text=render_wps_namelist(exp),
+        writer=lambda path, text: path.write_text(text, encoding="utf-8"))
+
+    for path in (native, stock):
+        domains = parse_namelist(path)["domains"]
+        assert domains["feedback"] == [1]
+        assert domains["use_adaptive_time_step"] == [True]
+        assert domains["max_step_increase_pct"] == [5, 51]
+        assert domains["starting_time_step_den"] == [0, 3]
+    _require_raw_stock_delta(native, stock)
+
+    text, _ = import_namelists(wps, native, name=exp.name,
+                               acknowledgements=tuple(exp.acknowledgements))
+    imported = build_experiment(tomllib.loads(text), source="imported tree")
+    assert (imported.feedback, imported.smooth_option) == (1, 0)
+    assert [[getattr(d.run, name) for name in _ADAPTIVE_FIELDS]
+            for d in imported.domains] == expected
+    _supported_hierarchy_slice(
+        imported, load_hrrr_target_domain(target),
+        forcing_hours=tuple(range(
+            hrrr_forcing_end_hour(imported.run_seconds) + 1)))

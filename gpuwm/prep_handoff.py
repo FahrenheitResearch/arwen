@@ -20,12 +20,27 @@ def _digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def lead_generation(steps: list[int]) -> str:
+    """The folder name one member selection's lead list is staged under.
+
+    A fetch folder is reused for a longer or shorter window, and each
+    window selects its own leads.  Staging every lead list in its own
+    folder keeps a tree an earlier preparation listed exactly as it was,
+    so a changed window neither replaces it nor is refused by it.
+    """
+    digest = hashlib.sha256(json.dumps(list(steps)).encode("utf-8")).hexdigest()[:8]
+    return f"f{steps[0]:03d}-f{steps[-1]:03d}-{digest}"
+
+
 def preparation_arguments(handoff: Mapping[str, object]) -> list[str]:
     """Run any declared member selection before exposing inputs to prep.
 
     A previous selected tree is reusable only when every expected file is
     still identical to its upstream input and passes the native member
     identity check again. Extra, missing and changed files do not pass.
+    Each lead list is staged under its own :func:`lead_generation`
+    folder, so reusing the fetch folder for another window stages that
+    window beside the earlier one.
     """
     raw_argv = handoff.get("argv")
     if not isinstance(raw_argv, list):
@@ -62,7 +77,8 @@ def preparation_arguments(handoff: Mapping[str, object]) -> list[str]:
     grammar = load_member_grammar(packaged_member_grammar(str(spec["set"])))
     selected = grammar.member(str(spec["member"]))
     inputs = Path(str(spec["inputs"])).resolve()
-    output = Path(str(spec["output"])).resolve()
+    generation = lead_generation(steps)
+    output = Path(str(spec["output"])).resolve() / generation
     member_dir = output / grammar.name / (cycle.strftime("%Y%m%dT%H") + "Z") / selected.member_id
     from gpuwm.fetch_guard import hold
     with hold("member-preparation", member_dir, progress=lambda _: None):
@@ -118,7 +134,8 @@ def preparation_arguments(handoff: Mapping[str, object]) -> list[str]:
                   for path in member_dir.rglob("*") if path.is_file()}
         if actual != set(by_staged) | {member_prep.RECEIPT_NAME}:
             raise ValueError("The selected member tree contains unexpected files. Use a clean output directory.")
-        input_list = Path(str(spec["input_list_after"])).resolve()
+        declared = Path(str(spec["input_list_after"])).resolve()
+        input_list = declared.with_name(f"{declared.stem}-{generation}{declared.suffix}")
         from gpuwm.fetch_guard import atomic_write_text
         input_list.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(input_list,

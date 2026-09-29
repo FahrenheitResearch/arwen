@@ -11,6 +11,7 @@ most recent durable manifest-valid restart; there is no in-process retry path.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import dataclasses
 import errno
@@ -44,6 +45,7 @@ from gpuwm.certify.capsule import emit_run_capsule
 # has to go through this first.
 from gpuwm.explain import split as explain_split
 from gpuwm.explain import warn
+from gpuwm.filesystem_paths import publish_new
 # A killed run's only chance to say anything.  Both processes below are
 # front doors that own a whole run, and neither had a signal handler:
 # SIGTERM killed them at SIG_DFL with nothing printed.
@@ -117,6 +119,12 @@ _SNAPSHOT_FILE_ROLES = frozenset({
 # Retry for at most 0.50 s total, then let durable artifacts fail loudly while
 # heartbeat callers quarantine their unique temporary and keep the worker up.
 _REPLACE_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19)
+
+#: Heartbeat statuses whose bound is sized from the bytes the record
+#: declares (:func:`finalization_stale_threshold_seconds`) rather than from
+#: the model step alone.
+WORK_SIZED_PREFIXES = ("finalizing:", "writing:")
+_PHASE_PREFIXES = ("preparing:",) + WORK_SIZED_PREFIXES
 _TEMP_COUNTER = itertools.count()
 
 _HEARTBEAT_FIELDS = frozenset({
@@ -124,6 +132,9 @@ _HEARTBEAT_FIELDS = frozenset({
     "updated_at_utc", "status", "model_elapsed_seconds", "outer_step",
     "last_durable_wrfout", "last_checkpoint",
 })
+# Present only on a ``finalizing:`` or ``writing:`` record that declares its
+# work, so every other record keeps exactly the field set above.
+_HEARTBEAT_OPTIONAL_FIELDS = frozenset({"work_bytes"})
 _CUDA_FATAL_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"device(?: |-)lost", r"cudaErrorDeviceLost", r"illegal(?: memory)? address",
     r"cudaErrorIllegalAddress", r"cuda.error.illegal.address",
@@ -293,6 +304,13 @@ class Heartbeat:
     outer_step: int
     last_durable_wrfout: str | None
     last_checkpoint: str | None
+    #: Bytes the worker will write or read before its next record, declared
+    #: by a ``finalizing:`` record (a frame to hash, queued frames to drain,
+    #: a state to digest) or a ``writing:`` record (a history frame or a
+    #: checkpoint written between two model steps).  It sizes that phase's
+    #: watchdog bound; see :func:`finalization_stale_threshold_seconds`.
+    #: ``None`` everywhere else, and then absent from the published record.
+    work_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema != HEARTBEAT_SCHEMA:
@@ -303,22 +321,41 @@ class Heartbeat:
         # to beat on, so before it was published a large run went silent
         # there for minutes and the stale-integration watchdog killed a
         # worker that was finishing normally.
+        #
+        # ``writing:<phase>`` is a history frame or a checkpoint written
+        # between two model steps.  The write sits between two step
+        # records, so without its own record a large streamed frame (5.24
+        # GB, 81 s to write) and the stop-tick work after it were timed as
+        # one model step, and a finished run was stopped at its last step.
         if (self.status not in {"integrating", "complete", "failed"}
-                and not self.status.startswith("preparing:")
-                and not self.status.startswith("finalizing:")):
+                and not self.status.startswith(_PHASE_PREFIXES)):
             raise ValueError(f"invalid heartbeat status {self.status!r}")
         if self.pid <= 0 or self.outer_step < 0:
             raise ValueError("heartbeat pid must be positive and step nonnegative")
         if (not math.isfinite(self.model_elapsed_seconds)
                 or self.model_elapsed_seconds < 0.0):
             raise ValueError("heartbeat model time must be finite and nonnegative")
+        if self.work_bytes is not None:
+            if (isinstance(self.work_bytes, bool)
+                    or not isinstance(self.work_bytes, int)
+                    or self.work_bytes < 0):
+                raise ValueError(
+                    "heartbeat work_bytes must be a nonnegative integer, "
+                    f"not {self.work_bytes!r}")
+            if not self.status.startswith(WORK_SIZED_PREFIXES):
+                raise ValueError(
+                    "heartbeat work_bytes belongs to a finalizing or writing "
+                    f"record, not to status {self.status!r}")
 
     def as_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        payload = dataclasses.asdict(self)
+        if payload["work_bytes"] is None:
+            del payload["work_bytes"]
+        return payload
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "Heartbeat":
-        extra = set(payload) - _HEARTBEAT_FIELDS
+        extra = set(payload) - _HEARTBEAT_FIELDS - _HEARTBEAT_OPTIONAL_FIELDS
         missing = _HEARTBEAT_FIELDS - set(payload)
         if extra or missing:
             raise ValueError(
@@ -372,6 +409,54 @@ def stale_threshold_seconds(step_wall_seconds: list[float] | tuple[float, ...]
     for value in step_wall_seconds:
         history.add(value)
     return history.stale_threshold_seconds
+
+
+#: The slowest rate at which a healthy worker is taken to move its own
+#: bytes after the last model step: write a queued history frame, read it
+#: back for its SHA-256, digest a domain's state.  Set for the slowest
+#: storage a run folder plausibly sits on (a network share over Wi-Fi, a
+#: USB 2 disk), because a floor set above it kills a finishing run there.
+#: It prices the finalization bound below and nothing else.
+FINALIZATION_FLOOR_BYTES_PER_SECOND = 8 * 1024 * 1024
+
+
+def finalization_stale_threshold_seconds(step_threshold_seconds: float,
+                                         work_bytes: int | None) -> float:
+    """How long one ``finalizing:`` or ``writing:`` record may stay newest.
+
+    Finalization is not a model step, so the step bound says nothing about
+    it: draining a large tree's queued history frames or hashing a
+    multi-GiB frame runs well past ``max(3*p99, 120 s)`` on a healthy
+    machine, and timing it as a step killed workers that were finishing.
+    It is not unbounded either, because a worker hung in a writer, a
+    device synchronize or a dead network share holds the GPU lock until
+    something stops it.
+
+    Each finalizing record declares the bytes it will move before the next
+    one.  The bound is the step bound, for the fixed cost every phase pays,
+    plus that work at :data:`FINALIZATION_FLOOR_BYTES_PER_SECOND`.  A record
+    that declares nothing (device synchronize, receipts, the capsule) keeps
+    the step bound alone.
+
+    A ``writing:`` record is the same kind of work in the middle of the
+    run: a history frame or a checkpoint written between two model steps,
+    which is no model step either.
+    """
+    work = 0 if work_bytes is None else max(0, int(work_bytes))
+    return (float(step_threshold_seconds)
+            + work / FINALIZATION_FLOOR_BYTES_PER_SECOND)
+
+
+def _byte_words(count: int | None) -> str:
+    if not count:
+        return "no declared work"
+    value = float(count)
+    for unit in ("bytes", "KiB", "MiB", "GiB"):
+        if value < 1024.0 or unit == "GiB":
+            break
+        value /= 1024.0
+    return (f"{int(value)} bytes" if unit == "bytes"
+            else f"{value:.1f} {unit}") + " of declared work"
 
 
 def config_digest(path: str | Path) -> str:
@@ -663,7 +748,7 @@ def _content_authority_path(source: Path, root: Path,
             try:
                 # Atomic and create-only: a racing publisher's digest path
                 # can never be replaced by this process.
-                os.link(temporary, destination)
+                publish_new(temporary, destination)
             except FileExistsError:
                 observed = _hash_file(destination)
                 if observed != expected_sha256:
@@ -1444,6 +1529,13 @@ def write_failure_capsule(
     return atomic_write_json(path, payload)
 
 
+def _file_bytes(path: str | Path) -> int | None:
+    try:
+        return int(Path(path).stat().st_size)
+    except OSError:
+        return None
+
+
 class RuntimeHeartbeat:
     """Runtime callback installed by the deferred runtime handoff patch."""
 
@@ -1461,13 +1553,22 @@ class RuntimeHeartbeat:
         self.last_phase = "preparing:worker-start"
         self.last_step = 0
         self.model_elapsed_seconds = 0.0
+        #: The status the latest record published, and the one a
+        #: :meth:`writing` record hands back to in :meth:`written`.
+        self.last_status: str | None = None
+        self._before_write: str | None = None
 
-    def _write(self, status: str) -> None:
+    def _write(self, status: str, *, work_bytes: int | None = None) -> None:
+        self.last_status = status
+        if not status.startswith("writing:"):
+            # Any other record ends a write: there is nothing left for
+            # :meth:`written` to hand back.
+            self._before_write = None
         write_heartbeat(self.path, Heartbeat(
             HEARTBEAT_SCHEMA, self.run_id, self.config_sha256, os.getpid(),
             self.started_at_utc, utc_now(), status,
             self.model_elapsed_seconds, self.last_step, self.last_wrfout,
-            self.last_checkpoint))
+            self.last_checkpoint, work_bytes))
 
     def __call__(self, *, model_elapsed_seconds: float, outer_step: int,
                  last_durable_wrfout: str | Path | None,
@@ -1482,6 +1583,14 @@ class RuntimeHeartbeat:
         if last_checkpoint is not None:
             resolved_checkpoint = str(Path(last_checkpoint).resolve())
             if resolved_checkpoint != self.last_checkpoint:
+                # Every member is read back before this step's record, and a
+                # checkpoint is the whole state: 10.6 GB of a 1132x906x55
+                # streamed domain took 104 s after the stop-tick checkpoint
+                # was written, silent, against a 120 s step bound.  The read
+                # is its own record, sized from the file; the step record
+                # below ends it.
+                self.writing("verify-checkpoint",
+                             work_bytes=_file_bytes(last_checkpoint))
                 self.last_checkpoint = str(validate_manifest_checkpoint(
                     last_checkpoint))
         self.model_elapsed_seconds = float(model_elapsed_seconds)
@@ -1501,18 +1610,53 @@ class RuntimeHeartbeat:
         """Backward-compatible spelling for the immediate worker heartbeat."""
         self.preparing("worker-start")
 
-    def finalizing(self, phase: str) -> None:
+    def finalizing(self, phase: str, *, work_bytes: int | None = None) -> None:
         """Publish one named beat from the post-integration stretch.
 
         Same normalization and same shape as :meth:`preparing`; the
         different prefix is what lets the monitor tell "still working, no
         model steps left" from "stopped answering mid-integration".
+
+        ``work_bytes`` is what this beat will write or read before the
+        next one, and it is what the monitor sizes this phase's bound
+        from; a beat that moves no bulk data leaves it out.
         """
         normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", phase).strip("-")
         if not normalized:
             raise ValueError("finalization phase must not be empty")
         self.last_phase = f"finalizing:{normalized}"
-        self._write(self.last_phase)
+        self._write(self.last_phase,
+                    work_bytes=None if work_bytes is None else int(work_bytes))
+
+    def writing(self, phase: str, *, work_bytes: int | None = None) -> None:
+        """Publish the start of one write between two model steps.
+
+        A history frame or a checkpoint is written after one step's record
+        and before the next one, so without this the monitor times the
+        write as part of a model step.  This record names the write and
+        declares its bytes, which size the write's bound
+        (:func:`finalization_stale_threshold_seconds`).  :meth:`written`
+        ends it.
+        """
+        normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", phase).strip("-")
+        if not normalized:
+            raise ValueError("write phase must not be empty")
+        if self._before_write is None:
+            self._before_write = self.last_status
+        self._write(f"writing:{normalized}",
+                    work_bytes=None if work_bytes is None else int(work_bytes))
+
+    def written(self) -> None:
+        """End a :meth:`writing` record: publish the status it interrupted.
+
+        The fresh record is the beat after the write, and it carries the
+        status from before it, so a write during preparation (the analysis
+        frame) goes back to preparation's rules and one during integration
+        back to the step bound.
+        """
+        before, self._before_write = self._before_write, None
+        if before is not None:
+            self._write(before)
 
     def complete(self, model_elapsed_seconds: float) -> None:
         self.model_elapsed_seconds = float(model_elapsed_seconds)
@@ -1521,6 +1665,34 @@ class RuntimeHeartbeat:
 
     def failed(self) -> None:
         self._write("failed")
+
+
+@contextlib.contextmanager
+def writing_progress(progress_callback, phase: str, *,
+                      work_bytes: int | None = None):
+    """Beat before and after one write made between two model steps.
+
+    A history frame and a checkpoint are written after one step's record
+    and before the next, so a supervisor that heard nothing timed the write
+    as a model step: a 1132x906x55 streamed forecast writing its last 5.24
+    GB frame and its stop-tick checkpoint went past the step bound and was
+    stopped with every step done.  ``progress_callback.writing`` publishes a
+    ``writing:<phase>`` record declaring ``work_bytes``, which sizes that
+    write's bound; ``written`` publishes the status the write interrupted.
+    Same optional-hook convention as
+    :func:`gpuwm.runtime._finalizing_progress`: a callback without them is
+    left alone.  Nothing is published when the write raises, because the
+    failure record follows.
+    """
+    reporter = getattr(progress_callback, "writing", None)
+    if reporter is None:
+        yield
+        return
+    reporter(phase, work_bytes=None if work_bytes is None else int(work_bytes))
+    yield
+    done = getattr(progress_callback, "written", None)
+    if done is not None:
+        done()
 
 
 @dataclass(frozen=True)
@@ -1987,7 +2159,26 @@ def supervise_experiment(
                     if on_progress is not None:
                         on_progress(current)
                 silent_seconds = time.monotonic() - last_signal_monotonic
-                if (not integrating_seen and prep_timeout_seconds is not None
+                status = (None if last_heartbeat is None
+                          else last_heartbeat.status)
+                # A published terminal record retires the watchdog.  The
+                # worker has said the run is over; what remains is
+                # process teardown (CUDA context release, interpreter
+                # shutdown), which has no heartbeat and is not
+                # integration, so counting its silence as a stalled step
+                # killed a finished worker and replayed the completed run
+                # as a restart loop.  The exit status still decides
+                # success below -- this only stops the SIGTERM.
+                finished = status == "complete"
+                # Finalization is timed by its own bound, never by the
+                # preparation timeout or the step bound: a run resumed at
+                # its stop tick finalizes without ever integrating.  A
+                # write between two steps (``writing:``) is timed the
+                # same way, by the bytes it declares.
+                finalizing = (status is not None
+                              and status.startswith(WORK_SIZED_PREFIXES))
+                if (not integrating_seen and not finalizing and not finished
+                        and prep_timeout_seconds is not None
                         and silent_seconds > prep_timeout_seconds):
                     monitor_failure_kind = "prep-timeout"
                     phase = ("preparing:launch" if last_heartbeat is None
@@ -1997,17 +2188,24 @@ def supervise_experiment(
                         f"{silent_seconds:.1f} s without a heartbeat")
                     _terminate_fresh_worker(process)
                     break
-                # A published terminal record retires the watchdog.  The
-                # worker has said the run is over; what remains is
-                # process teardown (CUDA context release, interpreter
-                # shutdown), which has no heartbeat and is not
-                # integration, so counting its silence as a stalled step
-                # killed a finished worker and replayed the completed run
-                # as a restart loop.  The exit status still decides
-                # success below -- this only stops the SIGTERM.
-                finished = (last_heartbeat is not None
-                            and last_heartbeat.status == "complete")
-                if (integrating_seen and not finished
+                if finalizing:
+                    bound = finalization_stale_threshold_seconds(
+                        history.stale_threshold_seconds,
+                        last_heartbeat.work_bytes)
+                    if silent_seconds > bound:
+                        finishing = status.startswith("finalizing:")
+                        monitor_failure_kind = (
+                            "stale-finalization" if finishing
+                            else "stale-write")
+                        monitor_failure = (
+                            f"worker {'finalization' if finishing else 'write'} "
+                            f"heartbeat ({status}) "
+                            f"became stale after {silent_seconds:.1f} s; "
+                            f"its bound was {bound:.1f} s for "
+                            f"{_byte_words(last_heartbeat.work_bytes)}")
+                        _terminate_fresh_worker(process)
+                        break
+                elif (integrating_seen and not finished
                         and silent_seconds > history.stale_threshold_seconds):
                     monitor_failure_kind = "stale-integration"
                     monitor_failure = (
@@ -2121,7 +2319,7 @@ def supervise_experiment(
                     f"restart(s) (failure capsule: {capsule_path})")
 
 
-def _success_output(summary) -> dict[str, Any]:
+def _success_output(summary, *, progress_callback=None) -> dict[str, Any]:
     """The success capsule's ``output`` block, hashing nothing twice.
 
     ``runtime.run_experiment`` already reads and digests every emitted
@@ -2129,13 +2327,15 @@ def _success_output(summary) -> dict[str, Any]:
     them a second time here doubled the finalization cost of every run
     over the same hundreds of GiB, for an identical answer.  An empty
     record set still hashes: the capsule must never silently ship a run
-    with no frames in it.
+    with no frames in it, and that pass beats once per frame with the
+    frame's size, like the run route's own.
     """
     from gpuwm import runtime
 
     frames = list(getattr(summary, "frame_records", ()) or ())
     if not frames:
-        frames = runtime._frame_records(summary.wrfout_paths)
+        frames = runtime._frame_records(
+            summary.wrfout_paths, progress_callback=progress_callback)
     return {"frames": frames,
             "trajectory_digest": summary.trajectory_digest}
 
@@ -2244,7 +2444,7 @@ def _worker_main(args: argparse.Namespace) -> int:
             run_shape={"route": "supervisor:gpuwm run",
                        "domain_count": len(exp.domains),
                        "run_seconds": float(exp.run_seconds)},
-            output=_success_output(summary),
+            output=_success_output(summary, progress_callback=progress),
             receipts=_success_receipts(outdir, summary),
         )
         progress.complete(summary.completed_seconds)
@@ -2279,6 +2479,8 @@ def register_cli(subparsers: argparse._SubParsersAction,
     continues a supervised run and therefore takes the identical
     supervision surface.
     """
+    from gpuwm.cli_numbers import nonnegative_int, positive_float
+
     run = subparsers.choices.get(command)
     if run is None:
         raise ValueError(
@@ -2289,10 +2491,10 @@ def register_cli(subparsers: argparse._SubParsersAction,
              "fresh-process recovery and exclusive-GPU supervision)")
     run.add_argument("--gpu-uuid", default=None, metavar="GPU-UUID",
                      help="physical GPU UUID to lock (required on multi-GPU hosts)")
-    run.add_argument("--supervisor-max-restarts", type=int, default=3,
+    run.add_argument("--supervisor-max-restarts", type=nonnegative_int, default=3,
                      metavar="N", help="fresh-process recovery attempts (default 3)")
     run.add_argument(
-        "--prep-timeout", type=float, default=None, metavar="SECONDS",
+        "--prep-timeout", type=positive_float, default=None, metavar="SECONDS",
         help="optional preparation heartbeat timeout; default is no timeout "
              "until integration begins")
     run.add_argument(
@@ -2421,6 +2623,8 @@ if __name__ == "__main__":
 __all__ = [
     "COMPUTE_MEMORY_THRESHOLD_MIB", "DIRECTORY_HASH_DEFAULT",
     "DIRECTORY_HASH_ENV", "DIRECTORY_HASH_MODES", "FAILURE_CAPSULE_NAME",
+    "FINALIZATION_FLOOR_BYTES_PER_SECOND",
+    "finalization_stale_threshold_seconds",
     "GPUAlreadyLockedError", "GPUFileLock", "GPUIdentity",
     "GPU_LOCK_ROOT_ENV", "INPUT_AUTHORITIES_ENV",
     "GPUPreflightError", "GPUProcess", "HEARTBEAT_NAME",

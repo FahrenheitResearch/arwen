@@ -15,6 +15,7 @@ from gpuwm.mapped_composition import (
     MappedSourceBundle,
     _compose_terrain,
     _decoder_inventory,
+    _exact_subset_indices,
     _verify_manifest,
     decode_composed_source,
     load_composition,
@@ -24,7 +25,9 @@ from gpuwm.ingest.soil_contract import (
     MAPPED_SOIL_MOISTURE,
     MAPPED_SOIL_TEMPERATURE,
 )
-from gpuwm.mapped_source import _DecodedCollection, _DirectValue, _sha256
+from gpuwm.mapped_source import (
+    CanonicalField, _DecodedCollection, _DirectValue, _sha256,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -257,6 +260,175 @@ def test_composition_rejects_missing_time_changed_or_nonexact_grid():
     )
     with pytest.raises(ValueError, match="exact matches"):
         _compose_terrain(primary, perturbed)
+
+
+def _global_terrain(primary_longitude, donor_longitude):
+    """A primary crossing the seam of a whole-globe terrain donor."""
+    time = datetime(2026, 9, 27)
+    latitude = np.asarray([10.0, 10.25])
+    donor_longitude = np.asarray(donor_longitude, dtype=np.float64)
+    values = np.arange(latitude.size * donor_longitude.size,
+                       dtype=np.float64).reshape(latitude.size, -1)
+    primary = _collection(latitude, primary_longitude, {
+        (time, None, "surface_pressure"): _direct(
+            "surface_pressure", time,
+            np.full((latitude.size, len(primary_longitude)), 100000.0))})
+    donor = _collection(latitude, donor_longitude, {
+        (time, None, "terrain_height"): _direct(
+            "terrain_height", time, values)})
+    return time, primary, donor, values
+
+
+@pytest.mark.parametrize("primary_longitude, donor_longitude, indices", [
+    # A European domain across 0 deg on a 0..360 donor, both directions.
+    ([-0.5, -0.25, 0.0, 0.25], np.arange(0.0, 360.0, 0.25),
+     [1438, 1439, 0, 1]),
+    ([0.25, 0.0, -0.25, -0.5], np.arange(0.0, 360.0, 0.25),
+     [1, 0, 1439, 1438]),
+    # A Pacific domain across 180 deg on a -180..180 donor.
+    ([179.5, 179.75, 180.0, 180.25], np.arange(-180.0, 180.0, 0.25),
+     [1438, 1439, 0, 1]),
+    # A donor running west.
+    ([0.25, 0.0, -0.25, -0.5], np.arange(359.75, -0.01, -0.25),
+     [1438, 1439, 0, 1]),
+    # A whole-globe primary spelled -180..180 on a 0..360 donor.
+    (np.arange(-180.0, 180.0, 90.0), np.arange(0.0, 360.0, 90.0),
+     [2, 3, 0, 1]),
+])
+def test_terrain_composes_across_the_seam_of_a_global_donor(
+        primary_longitude, donor_longitude, indices):
+    """A primary crossing the donor's seam takes the exact cells it names.
+
+    The donor's last and first longitudes are neighbours on a global axis,
+    so the run of cells is contiguous although its indices wrap.  It was
+    refused as "not a contiguous terrain-grid subset".
+    """
+    time, primary, donor, values = _global_terrain(
+        primary_longitude, donor_longitude)
+
+    combined, receipt = _compose_terrain(primary, donor)
+
+    np.testing.assert_array_equal(
+        combined.direct[(time, None, "terrain_height")].values,
+        values[:, indices])
+    assert receipt["longitude_index_range"] == [indices[0], indices[-1]]
+    step = (indices[1] - indices[0]) % len(donor_longitude)
+    assert receipt["longitude_index_direction"] == (1 if step == 1 else -1)
+
+
+def test_a_rounded_decoded_global_axis_still_closes_its_seam():
+    """A 0.15 deg axis decoded as micro-degrees over 1e6 is not exactly
+    even, and still goes once round the globe with no missing cell."""
+    donor = np.arange(2400) * 150000 / 1.0e6
+    steps = np.diff(donor)
+    assert steps.min() != steps.max()
+    primary = np.asarray([donor[-2], donor[-1], donor[0], donor[1]])
+    result = _exact_subset_indices(
+        donor, primary, "longitude", cyclic_degrees=True)
+    np.testing.assert_array_equal(result, [2398, 2399, 0, 1])
+
+
+@pytest.mark.parametrize("donor, primary, cyclic", [
+    ([0.0, 1.0, 2.0], [2.0, 0.0], True),         # regional: a real gap
+    ([0.0, 90.0, 180.0, 270.0], [270.0, 90.0], True),     # skips a cell
+    ([0.0, 90.0, 180.0, 270.0], [270.0, 0.0, 90.0], False),  # latitude
+    ([0.0, 90.0, 180.0], [180.0, 0.0], True),    # one cell short of a globe
+    ([0.0, 90.0, 180.0, 270.0, 360.0], [0.0], True),  # duplicated seam
+    ([0.0, 90.0, 180.0, 270.0], [270.0, 1.0e-6], True),  # not exact
+    ([0.0, 90.0, 180.0, 270.0],
+     [270.0, 0.0, 90.0, 180.0, 270.0], True),    # more than one turn
+])
+def test_the_seam_wraps_only_a_closed_axis_and_one_turn(donor, primary, cyclic):
+    with pytest.raises(ValueError):
+        _exact_subset_indices(np.asarray(donor), np.asarray(primary),
+                              "longitude", cyclic_degrees=cyclic)
+
+
+def test_an_unwrapped_subset_keeps_its_receipt_direction():
+    primary, terrain, _expected = _collections()
+    reversed_primary = _collection(
+        primary.latitude, primary.longitude[::-1], dict(primary.direct))
+    _combined, receipt = _compose_terrain(reversed_primary, terrain)
+    assert receipt["longitude_index_direction"] == -1
+    assert receipt["longitude_index_range"] == [5, 2]
+
+
+def _terrain_with_missing_cell(*, only_first: bool, inside: bool = False):
+    primary, terrain, expected = _collections()
+    fields = {}
+    for key, value in sorted(terrain.direct.items(),
+                             key=lambda item: item[0][0]):
+        array = value.values.copy()
+        # Row 0, column 0 is outside the primary's rows 2..4, columns 2..5.
+        array[(3, 3) if inside else (0, 0)] = np.nan
+        fields[key] = _DirectValue(
+            name=value.name, valid_time=value.valid_time,
+            member=value.member, source_cycle=value.source_cycle,
+            axes=value.axes, values=array, missing_count=1,
+            references=value.references)
+        if only_first:
+            break
+    return primary, _collection(
+        terrain.latitude, terrain.longitude, fields), expected
+
+
+@pytest.mark.parametrize("only_first", [False, True])
+def test_missing_donor_cells_outside_the_subset_are_not_a_change(only_first):
+    """An unchanged static with a missing cell outside the primary window.
+
+    Several identical records were refused as "changes across supplied
+    valid times" (NaN != NaN), and a single broadcast record kept the whole
+    donor's missing count, which the canonical validator refused as not
+    matching the cropped array.
+    """
+    primary, terrain, expected = _terrain_with_missing_cell(
+        only_first=only_first)
+    alignment = ("cycle_invariant_broadcast" if only_first
+                 else "valid_time_exact")
+
+    combined, _receipt = _compose_terrain(
+        primary, terrain, time_alignment=alignment)
+
+    for valid_time, member in combined.source_cycles:
+        field = combined.direct[(valid_time, member, "terrain_height")]
+        canonical = CanonicalField(
+            name=field.name, units="m", axes=field.axes, location="surface",
+            staggering="mass", values=field.values,
+            missing_count=field.missing_count,
+            source_references=field.references)
+        assert canonical.missing_count == 0
+        np.testing.assert_array_equal(canonical.values, expected)
+
+
+def test_a_missing_cell_inside_the_subset_is_counted_there():
+    primary, terrain, _expected = _terrain_with_missing_cell(
+        only_first=False, inside=True)
+    combined, _receipt = _compose_terrain(primary, terrain)
+    for valid_time, member in combined.source_cycles:
+        field = combined.direct[(valid_time, member, "terrain_height")]
+        assert field.missing_count == 1
+        assert int(np.isnan(field.values).sum()) == 1
+
+
+@pytest.mark.parametrize("change", ["finite", "newly_missing"])
+def test_a_changing_static_still_refuses_beside_a_stable_missing_cell(change):
+    primary, terrain, _expected = _terrain_with_missing_cell(only_first=False)
+    fields = dict(terrain.direct)
+    last = max(fields)
+    array = fields[last].values.copy()
+    if change == "finite":
+        array[-1, -1] += 1.0
+    else:
+        array[-1, -1] = np.nan
+    fields[last] = _DirectValue(
+        name=fields[last].name, valid_time=fields[last].valid_time,
+        member=None, source_cycle=fields[last].source_cycle,
+        axes=fields[last].axes, values=array,
+        missing_count=int(np.isnan(array).sum()),
+        references=fields[last].references)
+    changed = _collection(terrain.latitude, terrain.longitude, fields)
+    with pytest.raises(ValueError, match="changes across supplied valid times"):
+        _compose_terrain(primary, changed)
 
 
 def test_composition_manifest_binds_every_authority_before_decode(tmp_path):
@@ -613,6 +785,10 @@ def _engine_compose_harness(tmp_path, monkeypatch):
         valid_time=datetime(2026, 8, 17, 0),
         fields={"terrain_height": SimpleNamespace(
             values=np.zeros((2, 2), dtype=np.float64))},
+        header={"fields": [{
+            "canonical_name": "terrain_height", "shape": [2, 2],
+            "source_field": "terrain.grb2:0",
+        }]},
     )
     # The route opens the frameset lazily and hands it the scratch
     # handle, so the stub answers the document questions the seal asks
@@ -746,3 +922,35 @@ def test_compose_scratch_falls_back_to_system_temp_without_a_destination(
     harness.compose(None)
 
     assert harness.captured["kwargs"].get("dir") is None
+
+
+def test_a_full_scratch_disk_names_where_the_next_attempt_stages(
+        tmp_path, monkeypatch):
+    """The disk refusal's remedy names the scratch base, not the temp folder.
+
+    The engine names its own temporary folder, which is deleted as the
+    preparation fails; what the user can act on is where the next attempt
+    stages and the variable that moves it.
+    """
+
+    from gpuwm import mapped_engine_bridge
+    from gpuwm.ingest.source_coverage import ScratchDiskRefusal
+
+    monkeypatch.delenv("GPUWM_COMPOSE_SCRATCH", raising=False)
+    harness = _engine_compose_harness(tmp_path, monkeypatch)
+
+    def full_disk(*_args, **_kwargs):
+        raise mapped_engine_bridge.refusal_error(
+            {"class": "disk_full",
+             "message": "the frame stream in X needs 9 bytes",
+             "remedy": "free space"})
+
+    monkeypatch.setattr(mapped_engine_bridge, "run_engine", full_disk)
+    destination = tmp_path / "case" / "prep-output"
+    with pytest.raises(ScratchDiskRefusal) as caught:
+        harness.compose(destination)
+
+    assert "needs 9 bytes" in str(caught.value)
+    assert f"stages its frame stream in {destination.parent}." in caught.value.remedy
+    assert "GPUWM_COMPOSE_SCRATCH" in caught.value.remedy
+    assert not list(destination.parent.glob("gpuwm-mapped-compose-*"))

@@ -31,8 +31,8 @@ $env:GPUWM_TUI_BIN = Join-Path $candidateAcceptance 'verified-native\arwen-tui.e
 & $candidatePython -I -m gpuwm.cli --help
 & $candidatePython -I -m gpuwm.cli version
 & $candidatePython -I -m gpuwm.cli tui --help
-& $candidatePython -I -m gpuwm.cli tui --snapshot "Drew's terminal preview.html"
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "Drew's terminal preview.html")) { throw 'Installed TUI snapshot failed' }
+& $candidatePython -I -m gpuwm.cli tui --snapshot "Ana's terminal preview.html"
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "Ana's terminal preview.html")) { throw 'Installed TUI snapshot failed' }
 ```
 
 Every command must exit zero. The TUI override binds this subprocess to the
@@ -60,8 +60,8 @@ export GPUWM_TUI_BIN="$candidate_acceptance/verified-native/arwen-tui"
 "$candidate_python" -I -m gpuwm.cli --help
 "$candidate_python" -I -m gpuwm.cli version
 "$candidate_python" -I -m gpuwm.cli tui --help
-"$candidate_python" -I -m gpuwm.cli tui --snapshot "Drew's terminal preview.html"
-test -s "Drew's terminal preview.html"
+"$candidate_python" -I -m gpuwm.cli tui --snapshot "Ana's terminal preview.html"
+test -s "Ana's terminal preview.html"
 ```
 
 With a Linux platform wheel, repeat in another new venv using

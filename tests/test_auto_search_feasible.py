@@ -52,7 +52,14 @@ def test_exhaustive_fallback_preserves_a_nonprefix_mixed_road(tmp_path, monkeypa
     # resident. Neither one changed choice nor a reverse-order cumulative
     # prefix finds this actual configured/host/coupling fit.
     assert [row.stream for row in rows.values()] == [True, True, False, False]
-    assert frozenset({1, 2, 3, 4}) in calls  # fast all-auto alternative tried
+    # The fast all-auto alternative is no longer walked: the two 63x63
+    # siblings have no tiling within the redundancy limit auto keeps
+    # (since the 1,190-tile road of 2026-09-26), so every candidate that
+    # streams them is skipped at its floors before it costs a walk.
+    siblings = st._config_tree_nodes(exp.domains)[2:]
+    assert all(st._inbound_stream_tiling(node, exp.tiles) is None
+               for node in siblings)
+    assert not any(forced & {3, 4} for forced in calls)
     assert calls[-1] == frozenset({1, 2})
     assert result.configured_mixed_envelope_bytes <= int(17.5 * GIB)
     assert result.host_spent_bytes <= 16 * GIB

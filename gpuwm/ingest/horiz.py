@@ -102,12 +102,41 @@ class HorizontalSnapshot:
     #: read off the run rather than inferred from the source's route.
     #: ``None`` for a snapshot this process did not map (a met_em file).
     horizontal_operators: Mapping[str, str] | None = None
+    #: What the masked chain did to each bounded surface field (soil
+    #: moisture, soil and skin temperature, sea ice), keyed by output name:
+    #: counts of target values whose ``sixteen_pt`` overshoot took a
+    #: weighted mean instead, of source values outside the physical range
+    #: kept from being donors, of target values the WPS search filled
+    #: because the source had no value of that surface near them, of skin
+    #: temperatures taken from the other surface because the source holds
+    #: none of the target's own (``other_surface``,
+    #: :func:`_skin_temperature_on_both_surfaces`), and of target values
+    #: left at fill_missing
+    #: (:func:`wps_masked_field_interpolate`).  A receipt, announced in
+    #: the preparation log when any count is nonzero.  ``None`` for a
+    #: snapshot this process did not map.
+    masked_field_repairs: Mapping[str, Mapping[str, int]] | None = None
+    #: The land cells whose soil the source could not map because it holds
+    #: no land the search reaches from them: an island in a source area of
+    #: open sea.  Boolean on the mass grid, ``None`` when every land cell
+    #: was reached.  Their soil fields keep METGRID.TBL fill_missing (a
+    #: 285 K column saturated at 1.0), and the soil initializer builds
+    #: their column instead
+    #: (:func:`gpuwm.ingest.ruc_soil.island_soil_columns`); the count rides
+    #: ``masked_field_repairs`` as ``no_source_land``.
+    soil_no_source_land: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.horizontal_operators is not None:
             object.__setattr__(
                 self, "horizontal_operators",
                 MappingProxyType(dict(self.horizontal_operators)))
+        if self.masked_field_repairs is not None:
+            object.__setattr__(
+                self, "masked_field_repairs",
+                MappingProxyType({
+                    key: MappingProxyType(dict(value))
+                    for key, value in self.masked_field_repairs.items()}))
         if not isinstance(self.specific_humidity_authority, (bool, np.bool_)):
             raise TypeError("specific_humidity_authority must be boolean")
         floor = self.specific_humidity_undershoot_floor
@@ -138,6 +167,12 @@ class HorizontalSnapshot:
         copied.setflags(write=False)
         object.__setattr__(self, "levels_hpa", copied)
         object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
+        if self.soil_no_source_land is not None:
+            mask = np.array(self.soil_no_source_land, dtype=bool, copy=True)
+            if mask.ndim != 2:
+                raise ValueError("soil_no_source_land must be a 2-D mask")
+            mask.setflags(write=False)
+            object.__setattr__(self, "soil_no_source_land", mask)
 
 
 def _regular_coordinates(latitude, longitude, target_lat, target_lon, *,
@@ -391,10 +426,49 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
         # the period detection below never fires -- this guard says so
         # explicitly rather than by arithmetic accident).
         return snapshot
-    longitude = np.asarray(snapshot.longitude, dtype=np.float64)
+    cut = global_ring_cut(snapshot.longitude, *target_longitudes)
+    if cut is None:
+        return snapshot
+    return recut_global_ring(snapshot, cut)
+
+
+@dataclass(frozen=True)
+class GlobalRingCut:
+    """Where a whole-globe longitude ring is re-cut, and the axis it then has.
+
+    ``start`` is the stored column that becomes column 0 and ``longitude``
+    is the re-cut axis.  Applying it is a permutation of stored columns
+    (:func:`recut_global_ring`), so a caller that holds only a source's
+    axes -- a lazily packed forcing series describing its geometry before
+    any field is read -- can state the geometry its snapshots will have
+    without reading one.
+    """
+
+    start: int
+    period: int
+    longitude: np.ndarray
+
+    def columns(self) -> np.ndarray:
+        """Stored column of each re-cut column."""
+
+        return (self.start + np.arange(self.longitude.size, dtype=np.int64)) \
+            % self.period
+
+
+def global_ring_cut(longitude, *target_longitudes):
+    """The re-cut a whole-globe axis needs for these targets, or ``None``.
+
+    ``None`` when the axis is not a ring (a regional crop, whose edges are
+    real) and when its stored cut is already clear of every stencil the
+    targets reach, which keeps every off-seam preparation byte for byte
+    what it was.  The rule is :func:`orient_global_source_longitudes`'s;
+    this is that rule on the axis alone.
+    """
+
+    longitude = np.asarray(longitude, dtype=np.float64)
     period = global_longitude_period_columns(longitude)
     if period is None:
-        return snapshot
+        return None
     increment = float(longitude[1] - longitude[0])
 
     pooled = np.concatenate([
@@ -409,7 +483,7 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
     on_axis = _regular_longitude_index(longitude, pooled)
     if (float(on_axis.min()) >= 1.0
             and float(on_axis.max()) <= longitude.size - 3.0):
-        return snapshot
+        return None
 
     reference = float(pooled[0])
     unwrapped = reference + (
@@ -439,70 +513,78 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
                 and float(candidate_x.max()) <= longitude.size - 3.0):
             start, rotated = candidate, candidate_axis
     if start == 0:
-        return snapshot
+        return None
+    return GlobalRingCut(start=start, period=period, longitude=rotated)
+
+
+def recut_global_ring(snapshot, cut):
+    """``snapshot`` indexed from ``cut``'s start column: same values, other origin.
+
+    The cut must have been taken on this snapshot's own axis; one taken on
+    another axis would move every value to a longitude it was not
+    produced at, so that is refused rather than applied.
+    """
+
     from gpuwm.ingest.atmospheric_window import WindowedAtmosphericSnapshot
+
+    stored = np.asarray(snapshot.longitude, dtype=np.float64)
+    take = cut.columns()
+    if stored.size != cut.longitude.size or global_longitude_period_columns(
+            stored) != cut.period:
+        raise ValueError(
+            "a longitude re-cut was taken on another source axis; applying "
+            "it would move values to longitudes they were not produced at")
+    offset = np.mod(cut.longitude - stored[take] + 180.0, 360.0) - 180.0
+    if not np.all(np.abs(offset) <= 1.0e-6):
+        raise ValueError(
+            "a longitude re-cut was taken on another source axis; applying "
+            "it would move values to longitudes they were not produced at")
     if isinstance(snapshot, WindowedAtmosphericSnapshot):
         snapshot = snapshot.full_snapshot()
-    take = (start + columns) % period
     return replace(
         snapshot,
-        longitude=rotated,
+        longitude=cut.longitude,
         fields={name: np.asarray(value)[..., take]
                 for name, value in snapshot.fields.items()},
     )
 
 
-def _nearest_finite_source_water(skin, water, y: float, x: float) -> float:
-    """Return the global Euclidean-nearest water value in source indices.
+def unrolled_source_ring(arrays, longitude, x):
+    """Three revolutions of a whole-globe source side by side, or the inputs.
 
-    The window begins at metgrid's established masked-search radius, then
-    expands until the best point is provably closer than every point outside
-    the searched rectangle.  Thus remote inland lakes are supported without
-    allocating a target-by-global-source distance matrix.
+    A globally periodic source is stored as one revolution with one
+    artificial cut, and a nearest-cell search stops there: a lake a few
+    cells from the cut could take farther water on its own side while
+    nearer water sat just across it, in the same array.  Laying three
+    copies of the revolution side by side and moving each target column
+    into the middle one puts the whole ring within half a revolution of
+    every target on both sides, so an ordinary windowed search finds the
+    nearest cell on the ring.  Returns ``(arrays, x, period)``; a regional
+    crop returns its inputs unchanged and ``None``.
     """
-    ny, nx = skin.shape
-    radius = 8.0
-    while True:
-        j0 = max(0, int(np.ceil(y - radius)))
-        j1 = min(ny - 1, int(np.floor(y + radius)))
-        i0 = max(0, int(np.ceil(x - radius)))
-        i1 = min(nx - 1, int(np.floor(x + radius)))
-        local = water[j0:j1 + 1, i0:i1 + 1]
-        rows, cols = np.nonzero(local)
-        if rows.size:
-            rows = rows + j0
-            cols = cols + i0
-            distance_squared = (rows - y) ** 2 + (cols - x) ** 2
-            nearest = int(np.argmin(distance_squared))
-            best_squared = float(distance_squared[nearest])
-            outside_distance = []
-            if j0 > 0:
-                outside_distance.append(y - (j0 - 1))
-            if j1 < ny - 1:
-                outside_distance.append((j1 + 1) - y)
-            if i0 > 0:
-                outside_distance.append(x - (i0 - 1))
-            if i1 < nx - 1:
-                outside_distance.append((i1 + 1) - x)
-            # Strict comparison forces expansion on a possible distance tie;
-            # the final np.argmin therefore preserves global row-major order.
-            if (not outside_distance
-                    or best_squared < min(outside_distance) ** 2):
-                return float(skin[rows[nearest], cols[nearest]])
-        if j0 == 0 and j1 == ny - 1 and i0 == 0 and i1 == nx - 1:
-            raise RuntimeError("global source-water search lost validated support")
-        radius *= 2.0
+    period = global_longitude_period_columns(longitude)
+    if period is None:
+        return tuple(arrays), x, None
+    unrolled = tuple(
+        np.concatenate([np.asarray(array)[:, :period]] * 3, axis=1)
+        for array in arrays)
+    middle = np.mod(np.asarray(x, dtype=np.float64), period) + period
+    return unrolled, middle, period
 
 
 def interpolate_lake_skin_temperature(
-        snapshot: Era5Snapshot, grid: ProjectedGrid, lake_mask) -> np.ndarray:
+        snapshot: Era5Snapshot, grid: ProjectedGrid, lake_mask, *,
+        workers: int | None = None) -> np.ndarray:
     """Select WPS-style source-water ``SKINTEMP`` for raw GEOG lakes.
 
     ERA5's coarser LANDSEA can classify a small model lake as land.  WPS
     nevertheless initializes that GEOG lake from the nearest finite source
     water point.  This setup-time CPU helper performs that search globally
     and returns float64 values at lake cells; non-lake entries are NaN and
-    must not be consumed.
+    must not be consumed.  A source that holds no finite water at all (a
+    regional crop over dry land) has nothing to search, and every lake
+    cell is NaN too: the caller gives those lakes the skin temperature
+    the source has there and counts them.
     """
     if not isinstance(snapshot, Era5Snapshot):
         raise TypeError("snapshot must be an Era5Snapshot")
@@ -534,17 +616,29 @@ def interpolate_lake_skin_temperature(
         raise ValueError("LANDSEA and SKINTEMP must be 2-D source fields")
     water = np.isfinite(landsea) & (landsea < 0.5) & np.isfinite(skin)
     if not np.any(water):
-        raise ValueError("no finite source-water SKINTEMP is available")
+        return result
 
     lake_transform, _ = source_coordinate_transform(snapshot)
     target_ty, target_tx = lake_transform(target_lat, target_lon)
+    axis_space = source_axis_space(snapshot)
     y, x = _regular_coordinates(
         snapshot.latitude, snapshot.longitude, target_ty, target_tx,
-        axis_space=source_axis_space(snapshot),
+        axis_space=axis_space,
         target_geographic=(target_lat, target_lon))
-    for j, i in np.argwhere(lakes):
-        result[j, i] = _nearest_finite_source_water(
-            skin, water, float(y[j, i]), float(x[j, i]))
+    if axis_space is None:
+        # A whole-globe source is a ring: search it as one.
+        (skin, water), x, _ = unrolled_source_ring(
+            (skin, water), snapshot.longitude, x)
+    # The per-lake search runs in the Rust preprocessing library on the
+    # preparation's host workers (``workers``; the automatic count when
+    # None), byte-identical to the NumPy search kept as its test oracle
+    # (gpuwm/verify/water_blend_oracle.py).  A library without the entry
+    # is refused by name with the remedy.
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    rows, cols = np.nonzero(lakes)
+    result[rows, cols] = water_blend_backend().lake_water_nearest(
+        skin, water, y[rows, cols], x[rows, cols], workers=workers)
     return result
 
 
@@ -934,35 +1028,6 @@ def masked_nearest_gpu(field, latitude, longitude, target_lat, target_lon,
     return best_value
 
 
-def _wps_oned(x, a, b, c, d):
-    """Vectorized float64 transcription of metgrid ``oned`` (interp_module.F).
-
-    One-dimensional overlapping-parabolic interpolation with WPS's exact
-    zero-value special cases: a zero ``b`` or ``c`` collapses the result to
-    0 unless ``x`` is exactly 0 or 1, and a zero ``a`` or ``d`` selects the
-    one-sided parabola or the linear form.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    c = np.asarray(c, dtype=np.float64)
-    d = np.asarray(d, dtype=np.float64)
-    result = np.zeros(np.broadcast(x, a, b, c, d).shape, dtype=np.float64)
-    result = np.where(x == 0.0, b, result)
-    result = np.where(x == 1.0, c, result)
-    parab_b = b + x * (0.5 * (c - a) + x * (0.5 * (c + a) - b))
-    parab_c = c + (1.0 - x) * (0.5 * (b - d) + (1.0 - x) * (0.5 * (b + d) - c))
-    linear = b * (1.0 - x) + c * x
-    both = (1.0 - x) * parab_b + x * parab_c
-    inner = np.where(
-        (a == 0.0) & (d == 0.0), linear,
-        np.where(a != 0.0,
-                 np.where(d != 0.0, both, parab_b),
-                 parab_c))
-    return np.where(b * c != 0.0, inner, result)
-
-
-_WPS_SEARCH_DEPTH = 1200
 _WPS_FULL_CHAIN = (
     "sixteen_pt", "four_pt", "wt_average_4pt", "wt_average_16pt", "search")
 _WPS_SNOW_CHAIN = ("four_pt", "average_4pt")
@@ -985,245 +1050,137 @@ _WPS_SNOW_CHAIN = ("four_pt", "average_4pt")
 _WPS_SST_CHAIN = ("sixteen_pt", "four_pt")
 
 
-def _wps_sixteen_pt(field, valid, yy, xx, todo):
-    """Metgrid ``sixteen_pt`` on active cells; NaN marks fall-through.
+#: The count keys of one chain call, in the order the receipt stores them
+#: (``wps_masked_field_interpolate``); skin temperature on both surfaces
+#: appends ``other_surface``.  Each is a slot of the native entry's
+#: per-layer count row (tools/grib1_bridge/src/wps_masked.rs).
+_CHAIN_COUNT_KEYS = (
+    "sixteen_pt_outside_range", "search", "search_past_unusable", "fill",
+    "source_outside_range", "source_roundoff_at_bound")
+_SKIN_COUNT_KEYS = _CHAIN_COUNT_KEYS + ("other_surface",)
+_COUNT_SLOT = {key: slot for slot, key in enumerate(_SKIN_COUNT_KEYS)}
+_RECOVERED_SLOT = 7
 
-    ``field``/``valid`` are (ny,nx) float64/bool source arrays; ``yy``/``xx``
-    are zero-based fractional source coordinates of the target cells.  The
-    16-point overlapping parabolic requires every stencil point unmasked
-    (interp_module.F:1262-1272); edge stencils clamp indices exactly like
-    the Fortran (``kk``/``ll`` clipping, :1227-1241).  WPS's REAL*4 quirk of
-    substituting 1e-20 for exact zeros before ``oned`` and mapping an exact
-    1e-20 result back to zero (:1255-1257,1299) is transcribed as-is.
+
+def _masked_chain_engine(native=None, workers=None):
+    """The Rust library and the worker count the masked chain runs on.
+
+    ``native`` is a loaded :class:`gpuwm.ingest.cpu_backend.CpuPreprocessBackend`
+    (the CPU backend's own, which honours an explicit bridge); without
+    one, the library the resolution ladder picks.  A library without the
+    chain is refused by name with the remedy: there is no NumPy route.
     """
-    ny, nx = field.shape
-    out = np.full(yy.shape, np.nan, dtype=np.float64)
-    if not np.any(todo):
-        return out
-    i = np.floor(xx + 1.0e-5).astype(np.int64)
-    j = np.floor(yy + 1.0e-5).astype(np.int64)
-    xf = xx - i
-    yf = yy - j
-    near = (np.abs(xf) <= 1.0e-4) & (np.abs(yf) <= 1.0e-4)
-    # Coincident-point branch (interp_module.F:1301-1332): take the source
-    # point when usable, otherwise fall through.
-    sel = todo & near
-    if np.any(sel):
-        jj = np.clip(j[sel], 0, ny - 1)
-        ii = np.clip(i[sel], 0, nx - 1)
-        ok = valid[jj, ii]
-        vals = np.where(ok, field[jj, ii], np.nan)
-        out[sel] = vals
-    sel = todo & ~near
-    if np.any(sel):
-        i_s = i[sel]
-        j_s = j[sel]
-        stl = np.empty((4, 4) + i_s.shape, dtype=np.float64)
-        all_ok = np.ones(i_s.shape, dtype=bool)
-        for k in range(4):          # x offset -1..2
-            kk = np.clip(i_s + (k - 1), 0, nx - 1)
-            for l in range(4):      # y offset -1..2
-                ll = np.clip(j_s + (l - 1), 0, ny - 1)
-                value = field[ll, kk]
-                all_ok &= valid[ll, kk]
-                stl[k, l] = np.where(value == 0.0, 1.0e-20, value)
-        a = _wps_oned(xf[sel], stl[0, 0], stl[1, 0], stl[2, 0], stl[3, 0])
-        b = _wps_oned(xf[sel], stl[0, 1], stl[1, 1], stl[2, 1], stl[3, 1])
-        c = _wps_oned(xf[sel], stl[0, 2], stl[1, 2], stl[2, 2], stl[3, 2])
-        d = _wps_oned(xf[sel], stl[0, 3], stl[1, 3], stl[2, 3], stl[3, 3])
-        value = _wps_oned(yf[sel], a, b, c, d)
-        value = np.where(value == 1.0e-20, 0.0, value)
-        out[sel] = np.where(all_ok, value, np.nan)
-    return out
+    from gpuwm.ingest.cpu_backend import (
+        available_cpu_count, shared_cpu_backend)
+
+    if native is None:
+        native = shared_cpu_backend()
+    native.require_wps_masked_chain()
+    return native, (available_cpu_count() if workers is None
+                    else int(workers))
 
 
-def _wps_four_pt(field, valid, yy, xx, todo, *, average):
-    """Metgrid ``four_pt`` bilinear or ``four_pt_average``; NaN falls through.
+def _masked_chain_for_backend(engine):
+    """The library and worker count a preprocessing backend maps masks on.
 
-    ``four_pt`` requires all four corners usable (interp_module.F:1099-1148)
-    and handles integer-coordinate degeneracy exactly (:1150-1169);
-    ``average_4pt`` renormalizes over the usable corners (:691-732).
+    Both backends run the masked chain in the same Rust library: the CPU
+    backend on its own library and worker count, the CUDA backend (whose
+    fields are copied to the host for this chain) on the library the
+    resolution ladder picks, on every CPU the process may use.
     """
-    ny, nx = field.shape
-    out = np.full(yy.shape, np.nan, dtype=np.float64)
-    if not np.any(todo):
-        return out
-    fx = np.floor(xx).astype(np.int64)
-    cx = np.ceil(xx).astype(np.int64)
-    fy = np.floor(yy).astype(np.int64)
-    cy = np.ceil(yy).astype(np.int64)
-    fx = np.clip(fx, 0, nx - 1)
-    cx = np.clip(cx, 0, nx - 1)
-    fy = np.clip(fy, 0, ny - 1)
-    cy = np.clip(cy, 0, ny - 1)
-    v_ff = field[fy, fx]
-    v_fc = field[cy, fx]
-    v_cf = field[fy, cx]
-    v_cc = field[cy, cx]
-    ok_ff = valid[fy, fx]
-    ok_fc = valid[cy, fx]
-    ok_cf = valid[fy, cx]
-    ok_cc = valid[cy, cx]
-    if average:
-        w_ff = np.where(ok_ff, 1.0, 0.0)
-        w_fc = np.where(ok_fc, 1.0, 0.0)
-        w_cf = np.where(ok_cf, 1.0, 0.0)
-        w_cc = np.where(ok_cc, 1.0, 0.0)
-        wsum = w_ff + w_fc + w_cf + w_cc
-        with np.errstate(invalid="ignore", divide="ignore"):
-            value = np.where(
-                wsum > 0.0,
-                (w_ff * v_ff + w_fc * v_fc + w_cf * v_cf + w_cc * v_cc)
-                / np.where(wsum > 0.0, wsum, 1.0),
-                np.nan)
-        out[todo] = value[todo]
-        return out
-    all_ok = ok_ff & ok_fc & ok_cf & ok_cc
-    x_int = fx == cx
-    y_int = fy == cy
-    lin_x = v_ff * (cx - xx) + v_cf * (xx - fx)
-    lin_y = v_ff * (cy - yy) + v_fc * (yy - fy)
-    bilinear = ((yy - fy) * (v_fc * (cx - xx) + v_cc * (xx - fx))
-                + (cy - yy) * (v_ff * (cx - xx) + v_cf * (xx - fx)))
-    value = np.where(
-        x_int, np.where(y_int, v_ff, lin_y),
-        np.where(y_int, lin_x, bilinear))
-    out[todo] = np.where(all_ok, value, np.nan)[todo]
-    return out
+    bind = getattr(engine, "wps_masked_chain_engine", None)
+    if callable(bind):
+        return bind()
+    return _masked_chain_engine()
 
 
-def _wps_wt_average(field, valid, yy, xx, todo, *, sixteen):
-    """Metgrid ``wt_average_4pt``/``wt_average_16pt``; NaN falls through.
+def _physical_bounds(physical_range):
+    """``(low, high)`` as floats, or None; refused unless low < high."""
+    if physical_range is None:
+        return None
+    low, high = (float(bound) for bound in physical_range)
+    if not low < high:
+        raise ValueError("physical_range must be (low, high) with low < high")
+    return low, high
 
-    Weights are ``max(0, 1-d)`` on the four corners (interp_module.F:776-779)
-    or ``max(0, 2-d)`` on the 4x4 stencil (:1011-1024), zeroed on unusable
-    points and renormalized; the 16-point form rejects stencils that would
-    leave the array (:993-998) instead of clamping.
+
+def _merge_counts(tally, counts, keys):
+    """Add one layer's count row into ``tally`` in the receipt's key order."""
+    if tally is None:
+        return
+    for key in keys:
+        tally[key] = tally.get(key, 0) + int(counts[_COUNT_SLOT[key]])
+
+
+#: How far past its donors' span, as a fraction of the physical range, a
+#: ``sixteen_pt`` value may sit and still be read as the donors' own value:
+#: float64 evaluation error on a uniform stencil, far below any overshoot.
+#: The Rust chain carries the same number (``DONOR_SPAN_TOLERANCE`` in
+#: tools/grib1_bridge/src/wps_masked.rs); a test binds the two.
+_DONOR_SPAN_TOLERANCE = 1.0e-9
+
+#: How far outside its physical range a SOURCE value may sit and still be
+#: that field's value, as a fraction of the range.  GRIB simple packing
+#: puts a value stored at a bound a little past it: ERA5's volumetric soil
+#: moisture reaches -9.52e-4 on land (gpuwm/ingest/preflight.py records it).
+#: One percent is ten times that and a hundredth of what a fill value
+#: (-999, 9999) or a percent read as a fraction puts there.  It decides
+#: which source values are donors, and it is the donor range
+#: :func:`parabolic_reach` starts from.  The Rust chain carries the same
+#: number (``SOURCE_ROUNDOFF_FRACTION`` in wps_masked.rs); a test binds them.
+SOURCE_ROUNDOFF_FRACTION = 0.01
+
+
+def source_value_in_range(values, low, high):
+    """Which finite source values are values of a field bounded low..high.
+
+    Inside the range, or outside it by no more than
+    :data:`SOURCE_ROUNDOFF_FRACTION` of it (packing roundoff at a bound).
     """
-    ny, nx = field.shape
-    out = np.full(yy.shape, np.nan, dtype=np.float64)
-    if not np.any(todo):
-        return out
-    if sixteen:
-        fx = np.floor(xx).astype(np.int64)
-        fy = np.floor(yy).astype(np.int64)
-        inside = (fx >= 1) & (fx <= nx - 3) & (fy >= 1) & (fy <= ny - 3)
-        num = np.zeros(yy.shape, dtype=np.float64)
-        den = np.zeros(yy.shape, dtype=np.float64)
-        fx_c = np.clip(fx, 1, max(nx - 3, 1))
-        fy_c = np.clip(fy, 1, max(ny - 3, 1))
-        for dx in (-1, 0, 1, 2):
-            for dy in (-1, 0, 1, 2):
-                ii = fx_c + dx
-                jj = fy_c + dy
-                w = np.maximum(
-                    0.0, 2.0 - np.sqrt((xx - ii) ** 2 + (yy - jj) ** 2))
-                w = np.where(valid[jj, ii], w, 0.0)
-                num += w * field[jj, ii]
-                den += w
-        with np.errstate(invalid="ignore", divide="ignore"):
-            value = np.where(den > 0.0, num / np.where(den > 0.0, den, 1.0),
-                             np.nan)
-        out[todo] = np.where(inside, value, np.nan)[todo]
-        return out
-    fx = np.clip(np.floor(xx).astype(np.int64), 0, nx - 1)
-    cx = np.clip(np.ceil(xx).astype(np.int64), 0, nx - 1)
-    fy = np.clip(np.floor(yy).astype(np.int64), 0, ny - 1)
-    cy = np.clip(np.ceil(yy).astype(np.int64), 0, ny - 1)
-    num = np.zeros(yy.shape, dtype=np.float64)
-    den = np.zeros(yy.shape, dtype=np.float64)
-    for ii, jj in ((fx, fy), (fx, cy), (cx, fy), (cx, cy)):
-        w = np.maximum(0.0, 1.0 - np.sqrt((xx - ii) ** 2 + (yy - jj) ** 2))
-        w = np.where(valid[jj, ii], w, 0.0)
-        num += w * field[jj, ii]
-        den += w
-    with np.errstate(invalid="ignore", divide="ignore"):
-        value = np.where(den > 0.0, num / np.where(den > 0.0, den, 1.0),
-                         np.nan)
-    out[todo] = value[todo]
-    return out
+    values = np.asarray(values, dtype=np.float64)
+    slack = SOURCE_ROUNDOFF_FRACTION * (float(high) - float(low))
+    with np.errstate(invalid="ignore"):
+        return (np.isfinite(values) & (values >= float(low) - slack)
+                & (values <= float(high) + slack))
 
 
-def _wps_search_single(field, valid, yy, xx, visited, stamp):
-    """One-target transcription of metgrid ``search_extrap``.
+def parabolic_reach(low, high):
+    """The widest range WPS ``sixteen_pt`` can map a field bounded low..high to.
 
-    Four-connected FIFO breadth-first search from ``NINT(xx), NINT(yy)``
-    (interp_module.F:484-563): expansion stops once the first usable point
-    is DEQUEUED (that iteration still enqueues its neighbours, exactly like
-    the Fortran loop body), then only points remaining IN THE QUEUE compete
-    on squared Euclidean distance with a strict ``<`` (:565-607), so the
-    first-found point wins ties and never-enqueued points never win even if
-    globally nearer.  Neighbour order is x-1, x+1, y-1, y+1, and the depth
-    counter reproduces WRF's in-place ``qdata%depth`` mutation (:521-559),
-    capped by ``interp_opts`` (default 1200, :267).  Distances are float64
-    here versus WPS REAL; the substitution is bounded by the FP32 final
-    cast and can only differ inside FP32 rounding of a distance tie.
-    Returns NaN when no usable point is reachable.
+    The operator's weights sum to one and its negative weights to no less
+    than ``-9/32`` (:data:`WPS_PARABOLIC_NEGATIVE_WEIGHT`), so from donors
+    inside ``[a, b]`` it makes nothing outside
+    ``[a - 9/32 (b - a), b + 9/32 (b - a)]``.  The donors are the range
+    widened by :data:`SOURCE_ROUNDOFF_FRACTION` (a source value at a bound
+    carries packing roundoff), and the reach by the FP32 evaluation slack.
+    Every other operator in metgrid's chains is a weighted mean and stays
+    inside ``[a, b]``.  A value outside the returned range was therefore
+    not made by interpolating this field: it is a fill value, or the field
+    in another unit.  Returns ``(lowest, highest)``.
     """
-    ny, nx = field.shape
-    # Fortran NINT for non-negative arguments.
-    ix = int(np.floor(xx + 0.5))
-    jy = int(np.floor(yy + 0.5))
-    if ix < 0 or ix >= nx or jy < 0 or jy >= ny:
-        return np.nan
-    from collections import deque
-    queue = deque()
-    queue.append((ix, jy, 0))
-    visited[jy, ix] = stamp
-    found = None
-    while queue and found is None:
-        i, j, depth = queue.popleft()
-        if valid[j, i]:
-            found = (i, j)
-        dd = depth
-        for ni, nj in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
-            if 0 <= ni < nx and 0 <= nj < ny and visited[nj, ni] != stamp:
-                if dd < _WPS_SEARCH_DEPTH:
-                    dd += 1
-                    queue.append((ni, nj, dd))
-                    visited[nj, ni] = stamp
-    if found is None:
-        return np.nan
-    fi, fj = found
-    best_d2 = (float(fi) - xx) ** 2 + (float(fj) - yy) ** 2
-    best = field[fj, fi]
-    while queue:
-        i, j, _ = queue.popleft()
-        if valid[j, i]:
-            d2 = (float(i) - xx) ** 2 + (float(j) - yy) ** 2
-            if d2 < best_d2:
-                best_d2 = d2
-                best = field[j, i]
-    return best
-
-
-def _wps_search(field, valid, yy, xx, todo):
-    """Metgrid ``search_extrap`` over the active cells; NaN falls through.
-
-    Per-cell FIFO/queue-limited semantics (see :func:`_wps_search_single`);
-    a global-nearest shortcut is NOT equivalent -- WPS only compares points
-    already enqueued when the first usable point is dequeued.  The visited
-    bitarray is generation-stamped so the scratch allocation is shared
-    across target cells.
-    """
-    out = np.full(yy.shape, np.nan, dtype=np.float64)
-    if not np.any(todo) or not np.any(valid):
-        return out
-    visited = np.zeros(field.shape, dtype=np.int64)
-    stamp = 0
-    indices = np.nonzero(todo)
-    for flat, (jj, ii) in enumerate(zip(*indices)):
-        stamp += 1
-        out[jj, ii] = _wps_search_single(
-            field, valid, float(yy[jj, ii]), float(xx[jj, ii]),
-            visited, stamp)
-    return out
+    low, high = float(low), float(high)
+    if not low < high:
+        raise ValueError("parabolic_reach needs low < high")
+    slack = SOURCE_ROUNDOFF_FRACTION * (high - low)
+    donors_low, donors_high = low - slack, high + slack
+    swing = (WPS_PARABOLIC_NEGATIVE_WEIGHT * (donors_high - donors_low)
+             * (1.0 + _WPS_PARABOLIC_ENVELOPE_SLACK))
+    return donors_low - swing, donors_high + swing
 
 
 def wps_masked_field_interpolate(field, latitude, longitude, target_lat,
                                  target_lon, *, source_valid, target_active,
-                                 chain, fill_value):
-    """WPS metgrid masked-field interpolation chain on the host in float64.
+                                 chain, fill_value, physical_range=None,
+                                 tally=None, native=None, workers=None):
+    """WPS metgrid masked-field interpolation chain in float64.
+
+    The chain runs in the Rust preprocessing library
+    (``gpuwm_wps_masked_chain_f64``), parallel across target cells on
+    ``workers`` threads (every CPU the process may use by default) with a
+    result that does not depend on that count, and byte-identical, values
+    and counts, to the NumPy transcription kept as its test oracle
+    (:mod:`gpuwm.verify.wps_masked_oracle`).  ``native`` is the loaded
+    library to use (the resolution ladder's when omitted).
 
     Transcribes metgrid's ``interp_sequence`` fall-through semantics
     (interp_module.F:304-367): each operator either produces a value or
@@ -1232,6 +1189,47 @@ def wps_masked_field_interpolate(field, latitude, longitude, target_lat,
     processing -- receive ``fill_value`` (process_domain fill_missing).
     ``source_valid`` folds the field's interp_mask and missing-value
     exclusions into one usable-source predicate.
+
+    ``physical_range`` is ``(low, high)`` for a field that cannot leave
+    that range, such as volumetric soil moisture (0..1).  It changes only
+    values outside the range, so a field whose source and WPS result both
+    stay inside it is byte-identical to WPS:
+
+    * A source value outside the range by more than packing roundoff
+      (:func:`source_value_in_range`) is not a value of the field (a fill
+      value, a decode slip), so it is treated the way metgrid treats a
+      missing value: it is not a donor, and every operator that would
+      have used it falls through.  A value within the roundoff stays a
+      donor, unchanged.
+    * ``sixteen_pt`` is the one operator in metgrid's chains that is not
+      a weighted mean of its donors: its overlapping parabolas swing past
+      the donors on a sharp step.  On HRRR's 1.6 m soil moisture, where a
+      block of dry land cells near 0.002 sits among cells near 0.30, they
+      put a 1 km grid's land cells at -0.055.  A ``sixteen_pt`` value
+      outside the range and outside the span of its own donors is treated
+      as not produced and the target falls through to ``four_pt``,
+      exactly as it does when a stencil point is masked, so it takes a
+      weighted mean of the same usable source.  Every other operator is
+      such a mean and cannot leave the range its donors span.
+    * Donors admitted with packing roundoff past a bound (a saturated ice
+      sheet stored at 1.0003) hand that roundoff on; every answer outside
+      the range is left only by it, and goes on the bound.
+
+    A deliberate divergence from metgrid, confined to those values.
+
+    ``tally``, when given, is a mutable mapping that accumulates what the
+    chain did, as counts of target cells unless named otherwise:
+    ``sixteen_pt_outside_range`` (answered by a later operator instead),
+    ``search`` (no source cell of the target's surface within two source
+    cells, so the WPS search supplied the nearest usable one: a land-sea
+    mask disagreement between the source and the target when the field
+    is masked), ``search_past_unusable`` (the WPS search supplied it
+    because every source cell of the surface within two source cells was
+    missing its value or outside the range), ``fill`` (no operator
+    answered, so ``fill_value`` stands), ``source_outside_range``
+    (SOURCE values under the target's footprint that the range kept from
+    being donors), and ``source_roundoff_at_bound`` (answers past a bound
+    only by the packing roundoff their donors carry, put on the bound).
 
     Arithmetic is float64 where metgrid computes in REAL: a known
     non-bitwise substitution, bounded by the FP32 final cast -- it can
@@ -1246,33 +1244,14 @@ def wps_masked_field_interpolate(field, latitude, longitude, target_lat,
     target_active = np.asarray(target_active, dtype=bool)
     if target_active.shape != yy.shape:
         raise ValueError("target_active shape does not match target grid")
-    # Missing source values must never enter a stencil product even at zero
-    # weight (0*NaN pollutes); neutralize them outside the usable set.
-    safe = np.where(source_valid & np.isfinite(field), field, 0.0)
-    usable = source_valid & np.isfinite(field)
-    result = np.full(yy.shape, np.float64(fill_value), dtype=np.float64)
-    todo = target_active.copy()
-    for op in chain:
-        if not np.any(todo):
-            break
-        if op == "sixteen_pt":
-            got = _wps_sixteen_pt(safe, usable, yy, xx, todo)
-        elif op == "four_pt":
-            got = _wps_four_pt(safe, usable, yy, xx, todo, average=False)
-        elif op == "average_4pt":
-            got = _wps_four_pt(safe, usable, yy, xx, todo, average=True)
-        elif op == "wt_average_4pt":
-            got = _wps_wt_average(safe, usable, yy, xx, todo, sixteen=False)
-        elif op == "wt_average_16pt":
-            got = _wps_wt_average(safe, usable, yy, xx, todo, sixteen=True)
-        elif op == "search":
-            got = _wps_search(safe, usable, yy, xx, todo)
-        else:
-            raise ValueError(f"unknown WPS interpolation operator {op!r}")
-        produced = todo & np.isfinite(got)
-        result[produced] = got[produced]
-        todo &= ~produced
-    return result
+    bounds = _physical_bounds(physical_range)
+    native, workers = _masked_chain_engine(native, workers)
+    values, counts = native.wps_masked_chain(
+        field[None], source_valid, None, yy, xx, target_active, chain,
+        mode="plain", fill_value=fill_value, physical_range=bounds,
+        workers=workers)
+    _merge_counts(tally, counts[0], _CHAIN_COUNT_KEYS)
+    return values[0].reshape(yy.shape)
 
 
 def rotate_earth_to_grid_gpu(u_earth, v_earth, sinalpha, cosalpha):
@@ -1389,6 +1368,47 @@ _LAND_FIELDS = {
 }
 _MASKED_SEARCH_RADIUS = 8
 _SNOW_FAMILY = {"SNOW", "SNOWH", "SNOW_EC"}
+#: Volumetric soil moisture, a fraction of the soil volume, under every
+#: spelling a source reaches this pass with.
+_SOIL_MOISTURE_FIELDS = frozenset({
+    "SM000007", "SM007028", "SM028100", "SM100289",
+    "GFS_SM000010", "GFS_SM010040", "GFS_SM040100", "GFS_SM100200",
+    MAPPED_SOIL_MOISTURE,
+})
+#: Soil temperature under every spelling a source reaches this pass with.
+_SOIL_TEMPERATURE_FIELDS = frozenset({
+    "ST000007", "ST007028", "ST028100", "ST100289",
+    "GFS_ST000010", "GFS_ST010040", "GFS_ST040100", "GFS_ST100200",
+    MAPPED_SOIL_TEMPERATURE,
+})
+#: The soil column: what an island the source holds no land for takes from
+#: the soil initializer instead (:data:`HorizontalSnapshot.soil_no_source_land`).
+_SOIL_FAMILY_FIELDS = _SOIL_MOISTURE_FIELDS | _SOIL_TEMPERATURE_FIELDS
+#: The physical range of every bounded masked surface field, which its
+#: masked chain runs with as ``physical_range`` (see
+#: :func:`wps_masked_field_interpolate`): no target cell is handed a value
+#: outside it by ``sixteen_pt`` overshoot or by a source fill value, only
+#: the packing roundoff a source value at a bound already carries.  The
+#: temperature bounds are the ones the soil initializer admits
+#: (gpuwm/ingest/soil.py).  The snow family takes no range: its chain,
+#: ``four_pt+average_4pt``, is two weighted means and cannot overshoot,
+#: and ``_admitted_snow_field``'s ceiling exists to catch a unit error in
+#: what the source sent and must keep seeing one.
+_MASKED_PHYSICAL_RANGES = {
+    **{name: (0.0, 1.0) for name in _SOIL_MOISTURE_FIELDS},
+    **{name: (170.0, 400.0) for name in _SOIL_TEMPERATURE_FIELDS},
+    "SKINTEMP": (170.0, 400.0),
+    "SEAICE": (0.0, 1.0),
+    "XICE": (0.0, 1.0),
+}
+#: What the refusal calls a bounded land field the source does not carry.
+_LAND_QUANTITY = {
+    **{name: "soil moisture" for name in _SOIL_MOISTURE_FIELDS},
+    **{name: "soil temperature" for name in _SOIL_TEMPERATURE_FIELDS},
+}
+#: Mapping receipts already announced, so a domain mapped twice from the
+#: same snapshot says it once.
+_REPORTED_MASKED_REPAIRS: set = set()
 #: Second-chance recoveries already announced, so the receipt appears once
 #: per domain instead of once per forcing time.
 _REPORTED_FRACTIONAL_RECOVERY: set = set()
@@ -1412,7 +1432,8 @@ def _as_host_float64(value):
 
 def _land_pass_with_fractional_second_chance(
         slab, latitude, longitude, target_lat, target_lon, *,
-        land_donors, partial_land_donors, target_active, chain, fill_value):
+        land_donors, partial_land_donors, target_active, chain, fill_value,
+        physical_range=None, tally=None, native=None, workers=None):
     """The WPS land pass, then the fraction ungrib discarded, then the fill.
 
     Pass one is byte-for-byte WPS: ``ungrib`` binarizes an ECMWF land-sea
@@ -1444,26 +1465,83 @@ def _land_pass_with_fractional_second_chance(
     chain has no ``search`` and legitimately leaves cells for the fill
     even where donors are plentiful.)
 
+    ``physical_range`` reaches both passes unchanged, and ``tally``
+    accumulates both passes' counts with ``fill`` counted once, after
+    pass two (see :func:`wps_masked_field_interpolate`).
+
     Returns ``(values, recovered)``; ``recovered`` counts what pass two
-    supplied, and is zero on every WPS-identical call.
+    supplied, and is zero on every WPS-identical call.  Both passes run in
+    the Rust preprocessing library in one call
+    (:func:`wps_masked_field_interpolate`).
     """
-    active = np.asarray(target_active, dtype=bool)
-    values = wps_masked_field_interpolate(
+    slab = np.asarray(slab, dtype=np.float64)
+    yy, xx = _land_call_coordinates(
         slab, latitude, longitude, target_lat, target_lon,
-        source_valid=land_donors, target_active=active,
-        chain=chain, fill_value=np.nan)
-    recovered = 0
-    if (not np.any(land_donors) and np.any(active)
-            and np.any(partial_land_donors)):
-        starved = active & ~np.isfinite(values)
-        second = wps_masked_field_interpolate(
-            slab, latitude, longitude, target_lat, target_lon,
-            source_valid=partial_land_donors, target_active=starved,
-            chain=chain, fill_value=np.nan)
-        supplied = starved & np.isfinite(second)
-        values[supplied] = second[supplied]
-        recovered = int(supplied.sum())
-    return np.where(np.isfinite(values), values, fill_value), recovered
+        land_donors, partial_land_donors, target_active)
+    bounds = _physical_bounds(physical_range)
+    native, workers = _masked_chain_engine(native, workers)
+    values, counts = native.wps_masked_chain(
+        slab[None], land_donors, partial_land_donors, yy, xx,
+        target_active, chain, mode="land", fill_value=fill_value,
+        physical_range=bounds, workers=workers)
+    _merge_counts(tally, counts[0], _CHAIN_COUNT_KEYS)
+    return values[0].reshape(yy.shape), int(counts[0][_RECOVERED_SLOT])
+
+
+def _land_call_coordinates(slab, latitude, longitude, target_lat, target_lon,
+                           land_donors, partial_land_donors, target_active):
+    """Validate a land-pass call as the chain does and pair its targets."""
+    for donors in (land_donors, partial_land_donors):
+        if np.shape(donors) != slab.shape:
+            raise ValueError("field and source_valid shapes differ")
+    yy, xx = _regular_coordinates(latitude, longitude, target_lat, target_lon)
+    if np.shape(target_active) != yy.shape:
+        raise ValueError("target_active shape does not match target grid")
+    return yy, xx
+
+
+def _skin_temperature_on_both_surfaces(
+        slab, latitude, longitude, target_lat, target_lon, *,
+        land_donors, partial_land_donors, target_land, fill_value,
+        physical_range=None, tally=None, native=None, workers=None):
+    """METGRID.TBL ``masked=both`` skin temperature, with no 0 K on a surface.
+
+    Land targets take the land pass (with its second chance) and water
+    targets the source's water, each through the full chain, exactly as
+    before.  The chain ends in the WPS search, which reaches the whole
+    source array, so a target is left without a value only when the
+    source holds no usable cell of the target's own surface at all: a
+    regional crop of a coarse source over an inland domain holds no water
+    for its lakes, one over open ocean no land for its islands.  WPS
+    writes fill_missing there, 0 K, and the water-temperature assembly
+    refused every such lake while the soil initializer refused every such
+    island.
+
+    Skin temperature is a field of the whole surface, so such a target
+    takes the source's skin temperature of the other surface at the same
+    place, through the same chain: a lake the source has as land takes
+    that land's skin, an island it has as sea takes the sea's.  That is
+    the source model's own surface state where the target lies, never
+    another basin's.  Every such value is counted as ``other_surface`` in
+    ``tally``, and ``fill`` counts only the land targets that still have
+    nothing, which needs a source with no usable skin temperature on
+    either surface.
+
+    Returns ``(values, recovered)`` as the land pass does.  Every pass
+    runs in the Rust preprocessing library in one call.
+    """
+    slab = np.asarray(slab, dtype=np.float64)
+    yy, xx = _land_call_coordinates(
+        slab, latitude, longitude, target_lat, target_lon,
+        land_donors, partial_land_donors, target_land)
+    bounds = _physical_bounds(physical_range)
+    native, workers = _masked_chain_engine(native, workers)
+    values, counts = native.wps_masked_chain(
+        slab[None], land_donors, partial_land_donors, yy, xx, target_land,
+        _WPS_FULL_CHAIN, mode="skin", fill_value=fill_value,
+        physical_range=bounds, workers=workers)
+    _merge_counts(tally, counts[0], _SKIN_COUNT_KEYS)
+    return values[0].reshape(yy.shape), int(counts[0][_RECOVERED_SLOT])
 
 
 def _wps_soil_fill(name: str) -> float:
@@ -1473,6 +1551,179 @@ def _wps_soil_fill(name: str) -> float:
     if name == MAPPED_SOIL_TEMPERATURE or "ST" in name[:6] or name == "SOILT":
         return 285.0
     raise ValueError(f"no METGRID.TBL fill is registered for {name!r}")
+
+
+#: The share of the values a source carries on its land that must lie
+#: inside a bounded soil field's range for the field to be in the unit its
+#: name states.  A real soil field is inside its range on essentially
+#: every land cell, a fill value or a decode slip touching a handful; a
+#: field in another unit is outside it on nearly every one, however many
+#: of its driest cells happen to fall inside 0..1 in percent.  Half sits
+#: far from both, so the refusal below refuses no real field.
+_LAND_FIELD_IN_RANGE_SHARE = 0.5
+
+
+def _refuse_land_field_not_in_its_unit(
+        slab, *, name, layer, bounds, fill, land_donors, partial_land_donors,
+        target_active, native=None, workers=None):
+    """Refuse a source whose soil field is missing or not in its unit.
+
+    A source land cell with no value, or one outside the physical range,
+    is simply not a donor, and the target land near it takes the WPS
+    chain's answer from the land around it.  That answers a fill value or
+    a decode slip on a few cells.  It cannot answer a field that is not
+    in its unit at all, soil moisture in percent or soil temperature in
+    Celsius: a few of its values still lie inside the range (percent soil
+    moisture on land drier than 1%), and they would be the only donors,
+    so the WPS search would hand them to the whole domain's land and
+    blame the land-sea mask.  So the source is judged on the share of the
+    values it carries on its land that lie inside the range, and refused
+    under :data:`_LAND_FIELD_IN_RANGE_SHARE`.  A source that carries the
+    field on none of its land is a missing field, and WPS would write
+    METGRID.TBL fill_missing on every land cell (saturated soil at 1.0, a
+    285 K column): refused the same way.  A source with no land at all is
+    not this case: an island the source cannot resolve keeps the
+    second-chance pass and WPS's fill, as before.
+
+    Nor is a source whose only land here is cells it calls under half
+    land and which carries nothing on them.  A source that keeps a soil
+    state only on the cells it calls land (a native mesh remapped to a
+    regular window does, leaving the rest missing) has no land to give a
+    window of small islands; that is the unresolved island above, not a
+    missing field.  Named breakage: every such window was refused as
+    "the source carries no soil temperature on any of its N land cell(s)"
+    though the field is present wherever the source has land.  When any
+    of those part-land cells carries a value, the share test still judges
+    its unit.
+    """
+    _refuse_land_layers_not_in_their_unit(
+        np.asarray(slab, dtype=np.float64)[None], name=name,
+        layer_numbers=(layer,), bounds=bounds, fill=fill,
+        land_donors=land_donors, partial_land_donors=partial_land_donors,
+        target_active=target_active, native=native, workers=workers)
+
+
+def _refuse_land_layers_not_in_their_unit(
+        layers, *, name, layer_numbers, bounds, fill, land_donors,
+        partial_land_donors, target_active, native=None, workers=None):
+    """:func:`_refuse_land_field_not_in_its_unit` for every layer at once.
+
+    ``layers`` is ``(layer, y, x)`` and ``layer_numbers`` names each one
+    as the refusal does (None for a two-dimensional field).  The counts
+    come from the Rust preprocessing library; the first layer that fails
+    is refused, with the words it always had.
+    """
+    target_active = np.asarray(target_active, dtype=bool)
+    if not np.any(target_active):
+        return
+    native, workers = _masked_chain_engine(native, workers)
+    counts, spans = native.land_unit_scan(
+        layers, land_donors, partial_land_donors, bounds, workers=workers)
+    low, high = bounds
+    part_land_only = not np.any(land_donors)
+    quantity = _LAND_QUANTITY[name]
+    for index, layer in enumerate(layer_numbers):
+        land_cells, carried, inside = (int(value) for value in counts[index])
+        if land_cells == 0:
+            return
+        if carried and inside >= _LAND_FIELD_IN_RANGE_SHARE * carried:
+            continue
+        if not carried and part_land_only:
+            continue
+        where = "" if layer is None else f" in source layer {int(layer) + 1}"
+        if not carried:
+            raise ValueError(
+                f"the source carries no {quantity} on any of its {land_cells} "
+                f"land cell(s){where}, so there is no {quantity} to initialize "
+                "this domain's land from; the field is missing, and WPS would "
+                f"write METGRID.TBL fill_missing ({fill:g}) on every land cell "
+                "of the domain")
+        least, greatest = (float(value) for value in spans[index])
+        raise ValueError(
+            f"only {inside} of the {carried} {quantity} value(s) the source "
+            f"carries on its land{where} lie inside {low:g}..{high:g} (its land "
+            f"values span {least:.6g}..{greatest:.6g}), so the field "
+            "is not in the unit its name states; mapped anyway, those "
+            f"{inside} value(s) would be the only donors and the WPS search "
+            "would hand them to this domain's land")
+
+
+#: What each masked-chain count means, in the order the receipt reads them.
+_MASKED_REPAIR_WORDING = (
+    ("sixteen_pt_outside_range",
+     "value(s) where WPS sixteen_pt left {range} took four_pt's weighted "
+     "mean of the same source cells"),
+    ("source_outside_range",
+     "source value(s) outside {range} by more than packing roundoff kept "
+     "from being donors"),
+    ("search",
+     "value(s) with no source cell of their surface within two source "
+     "cells (the source and target land-sea masks disagree there) took the "
+     "nearest usable one (WPS search)"),
+    ("search_past_unusable",
+     "value(s) whose source cells of their surface within two source "
+     "cells were all missing a value or outside {range} took the nearest "
+     "usable one (WPS search)"),
+    ("other_surface",
+     "value(s) on a surface the source holds no usable cell of took the "
+     "source's value on the other surface there (a lake where the source "
+     "has only land takes that land's skin temperature, an island where "
+     "it has only sea the sea's), where WPS writes METGRID.TBL "
+     "fill_missing"),
+    ("fill",
+     "value(s) no usable source value reached kept METGRID.TBL "
+     "fill_missing"),
+    ("no_source_land",
+     "value(s) on land the source holds no land for within the search's "
+     "reach (an island in a source area of open sea) take the soil column "
+     "the soil initializer builds at their skin temperature and their "
+     "soil's field capacity, where WPS writes METGRID.TBL fill_missing"),
+    ("source_roundoff_at_bound",
+     "value(s) past {range} only by their source values' packing roundoff "
+     "put on the bound"),
+)
+
+
+def _announce_masked_repairs(repairs, *, shape, valid_time, operators):
+    """Say what the masked chain did to the bounded surface fields, once.
+
+    The receipt :func:`interpolate_era5_to_lambert` publishes as
+    ``masked_field_repairs``, in words, for every field with a nonzero
+    count; silent when every count is zero.  A chain without ``search``
+    (sea ice) leaves a cell with no usable corner at fill_missing (no
+    ice) as WPS's ordinary answer, so its fill count is published but not
+    announced.  A domain mapped again from the same
+    snapshot (a hierarchy re-reading its root) says it once.
+    """
+    parts = []
+    for field_name in sorted(repairs):
+        counts = dict(repairs[field_name])
+        if "search" not in str(operators.get(field_name, "")).split("+"):
+            counts.pop("fill", None)
+        bounds = _MASKED_PHYSICAL_RANGES.get(field_name)
+        if bounds is None:
+            for source_name, output in _RENAMES.items():
+                if output == field_name:
+                    bounds = _MASKED_PHYSICAL_RANGES.get(source_name)
+        span = ("its range" if bounds is None
+                else f"{bounds[0]:g}..{bounds[1]:g}")
+        said = [f"{counts[key]} " + wording.format(range=span)
+                for key, wording in _MASKED_REPAIR_WORDING
+                if counts.get(key, 0)]
+        if said:
+            parts.append(f"{field_name}: " + ", ".join(said))
+    if not parts:
+        return
+    when = (valid_time.isoformat() if hasattr(valid_time, "isoformat")
+            else str(valid_time))
+    signature = (tuple(shape), when, tuple(parts))
+    if signature in _REPORTED_MASKED_REPAIRS:
+        return
+    _REPORTED_MASKED_REPAIRS.add(signature)
+    print(
+        f"land-surface mapping on the {shape[0]}x{shape[1]} mass grid at "
+        f"{when}: " + "; ".join(parts),
+        file=sys.stderr)
 
 
 def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
@@ -1583,6 +1834,21 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     if masked_names.intersection(source_fields) and "LANDSEA" not in source_fields:
         raise ValueError("LANDSEA is required to interpolate masked fields")
 
+    # The masked chain's library is bound here, before any field is
+    # mapped, so a library that cannot run it is refused at the front of
+    # the work with its remedy (both backends run the same Rust chain).
+    masked_chain = (_masked_chain_for_backend(engine)
+                    if masked_names.intersection(source_fields) else None)
+    mass_coordinates: list = []
+
+    def masked_target_coordinates():
+        # One pairing per snapshot: every masked field maps onto the same
+        # mass points, so the same arrays serve every call.
+        if not mass_coordinates:
+            mass_coordinates.extend(_regular_coordinates(
+                snapshot.latitude, snapshot.longitude, mass_ty, mass_tx))
+        return mass_coordinates
+
     source_land = None
     source_partial_land = None
     if "LANDSEA" in source_fields:
@@ -1613,6 +1879,12 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     # land the source rounded away reaches the second-chance pass, and when
     # one does the reader is told which fields and how many cells.
     fractional_recovery: dict[str, int] = {}
+    # What the masked chain did to each bounded surface field, keyed by
+    # output name: the receipt published on the snapshot and announced
+    # below (see wps_masked_field_interpolate for each count).
+    masked_repairs: dict[str, dict[str, int]] = {}
+    # The land cells no soil field could reach any source land from.
+    soil_no_source_land = np.zeros(mass_lat.shape, dtype=bool)
 
     def wind_pair(u_name, v_name, u_output, v_output):
         if u_name not in source_fields or v_name not in source_fields:
@@ -1729,53 +2001,18 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                         chain = _WPS_FULL_CHAIN
                         fill = _wps_soil_fill(name)
 
-            def interpolate_masked_slab(slab):
-                slab_host = _as_host_float64(slab)
-                if name in _MATCH_SURFACE_FIELDS:
-                    # METGRID.TBL masked=both: land targets from land-only
-                    # sources, water targets from water-only sources, each
-                    # through the full chain.
-                    land_part, recovered = (
-                        _land_pass_with_fractional_second_chance(
-                            slab_host, snapshot.latitude, snapshot.longitude,
-                            mass_ty, mass_tx,
-                            land_donors=source_land_host,
-                            partial_land_donors=partial_land_host,
-                            target_active=target_land_host,
-                            chain=_WPS_FULL_CHAIN, fill_value=fill))
-                    water_part = wps_masked_field_interpolate(
-                        slab_host, snapshot.latitude, snapshot.longitude,
-                        mass_ty, mass_tx,
-                        source_valid=~source_land_host,
-                        target_active=~target_land_host,
-                        chain=_WPS_FULL_CHAIN, fill_value=fill)
-                    combined = np.where(
-                        target_land_host, land_part, water_part)
-                elif name in _LAND_FIELDS:
-                    combined, recovered = (
-                        _land_pass_with_fractional_second_chance(
-                            slab_host, snapshot.latitude, snapshot.longitude,
-                            mass_ty, mass_tx,
-                            land_donors=source_land_host,
-                            partial_land_donors=partial_land_host,
-                            target_active=target_active_host,
-                            chain=chain, fill_value=fill))
-                else:
-                    recovered = 0
-                    combined = wps_masked_field_interpolate(
-                        slab_host, snapshot.latitude, snapshot.longitude,
-                        mass_ty, mass_tx,
-                        source_valid=source_valid_host,
-                        target_active=target_active_host,
-                        chain=chain, fill_value=fill)
-                if recovered:
-                    fractional_recovery[name] = (
-                        fractional_recovery.get(name, 0) + recovered)
-                return engine.float32(combined.astype(np.float32))
+            bounds = _MASKED_PHYSICAL_RANGES.get(name)
+            # SST keeps WPS's own chain and fill and takes no range: the
+            # forecast's water temperature is assembled below from the
+            # source analysis, not read from this field.
+            if name == "SST":
+                bounds = None
+            tally = (masked_repairs.setdefault(output_name, {})
+                     if bounds is not None else None)
 
             try:
                 if field.ndim == 2:
-                    interpolated = interpolate_masked_slab(field)
+                    layered = False
                 elif field.ndim == 3:
                     source_shape = (
                         len(snapshot.latitude), len(snapshot.longitude)
@@ -1784,18 +2021,77 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                         raise ValueError(
                             "layered field shape does not match source axes"
                         )
-                    interpolated = xp.stack(
-                        tuple(
-                            interpolate_masked_slab(field[layer])
-                            for layer in range(field.shape[0])
-                        ),
-                        axis=0,
-                    )
+                    layered = True
                 else:
                     raise ValueError(
                         "masked field must be two-dimensional or a layered "
                         "three-dimensional array"
                     )
+                layers = _as_host_float64(field)
+                if not layered:
+                    layers = layers[None]
+                layer_numbers = (tuple(range(layers.shape[0])) if layered
+                                 else (None,))
+                target_y, target_x = masked_target_coordinates()
+                native, chain_workers = masked_chain
+                if name in _MATCH_SURFACE_FIELDS:
+                    # METGRID.TBL masked=both: land targets from land-only
+                    # sources, water targets from water-only sources, each
+                    # through the full chain, and a surface the source has
+                    # no cell of takes the other surface's skin there.
+                    mode, donors, targets = (
+                        "skin", source_land_host, target_land_host)
+                    count_keys = _SKIN_COUNT_KEYS
+                elif name in _LAND_FIELDS:
+                    if name in _LAND_QUANTITY:
+                        _refuse_land_layers_not_in_their_unit(
+                            layers, name=name, layer_numbers=layer_numbers,
+                            bounds=bounds, fill=fill,
+                            land_donors=source_land_host,
+                            partial_land_donors=partial_land_host,
+                            target_active=target_active_host,
+                            native=native, workers=chain_workers)
+                    mode, donors, targets = (
+                        "land", source_land_host, target_active_host)
+                    count_keys = _CHAIN_COUNT_KEYS
+                else:
+                    mode, donors, targets = (
+                        "plain", source_valid_host, target_active_host)
+                    count_keys = _CHAIN_COUNT_KEYS
+                # A soil value the land pass leaves missing is land the
+                # source holds no land for within the search's reach: the
+                # soil initializer builds its column, so it is marked and
+                # counted as no_source_land, not as fill.
+                soil = mode == "land" and name in _SOIL_FAMILY_FIELDS
+                values, counts = native.wps_masked_chain(
+                    layers, donors,
+                    None if mode == "plain" else partial_land_host,
+                    target_y, target_x, targets, chain, mode=mode,
+                    fill_value=np.nan if soil else fill,
+                    physical_range=bounds, workers=chain_workers)
+                mapped = []
+                for layer in range(layers.shape[0]):
+                    row = values[layer].reshape(mass_lat.shape)
+                    passes = {key: int(counts[layer][_COUNT_SLOT[key]])
+                              for key in count_keys}
+                    if soil:
+                        answered = np.isfinite(row)
+                        starved = targets & ~answered
+                        soil_no_source_land[starved] = True
+                        moved = int(np.count_nonzero(starved))
+                        passes["fill"] -= moved
+                        passes["no_source_land"] = moved
+                        row = np.where(answered, row, fill)
+                    if tally is not None:
+                        for key, value in passes.items():
+                            tally[key] = tally.get(key, 0) + value
+                    recovered = int(counts[layer][_RECOVERED_SLOT])
+                    if recovered:
+                        fractional_recovery[name] = (
+                            fractional_recovery.get(name, 0) + recovered)
+                    mapped.append(engine.float32(row.astype(np.float32)))
+                interpolated = (xp.stack(tuple(mapped), axis=0) if layered
+                                else mapped[0])
             except ValueError as error:
                 raise ValueError(
                     f"masked interpolation failed for {name}: {error}") from error
@@ -1846,9 +2142,14 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 "(rrpr.F:869-876)",
                 file=sys.stderr)
 
+    _announce_masked_repairs(masked_repairs, shape=mass_lat.shape,
+                             valid_time=snapshot.valid_time,
+                             operators=operators)
+
     water_temperature = water_temperature_source = None
     water_temperature_receipt = None
     if water_temperature_statics is not None:
+        from gpuwm.ingest.cpu_backend import host_step_workers
         from gpuwm.ingest.water_temperature import (
             announce_water_temperature, assemble_for_route)
 
@@ -1877,7 +2178,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 f"valid_time={snapshot.valid_time.isoformat()} UTC; "
                 f"domain dx={grid.dx:g} m, dy={grid.dy:g} m, "
                 f"center=({grid.cen_lat:.6f}, {grid.cen_lon:.6f})"),
-            diagnostic_latlon=(mass_lat, mass_lon))
+            diagnostic_latlon=(mass_lat, mass_lon),
+            workers=(masked_chain[1] if masked_chain is not None
+                     else host_step_workers(engine)))
         water_temperature = assembly.values
         water_temperature_source = assembly.provider
         water_temperature_receipt = assembly.receipt
@@ -1903,6 +2206,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
         analyzed_species=getattr(snapshot, "analyzed_species", None),
         specific_humidity_undershoot_floor=specific_humidity_undershoot_floor,
         horizontal_operators=operators,
+        masked_field_repairs=masked_repairs,
+        soil_no_source_land=(soil_no_source_land
+                             if np.any(soil_no_source_land) else None),
     )
 
 
@@ -1913,6 +2219,7 @@ __all__ = [
     "global_longitude_period_columns",
     "interpolate_era5_to_lambert",
     "interpolate_lake_skin_temperature",
+    "unrolled_source_ring",
     "interpolate_regular_gpu",
     "lambert_rotation",
     "masked_nearest_gpu",

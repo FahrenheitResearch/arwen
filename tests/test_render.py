@@ -142,16 +142,29 @@ def test_a_field_the_file_does_not_carry_skips_that_product_at_rc_0(
     # actionable -- and says which of the two things this is.
     assert "refl" in err
     assert "not a failure" in err
-    assert "REFL_10CM" not in err, "the field detail belongs behind --explain"
+    # And the FIELD the product lacked, which is what a reader needs to
+    # act on; the file it was recorded against is not on the line.  This
+    # pin used to be the reverse ("REFL_10CM" not in err): the note now
+    # gives each product its own first reason, and keeps the file and
+    # the per-item rows behind --explain.
+    note = [line for line in err.splitlines()
+            if line.startswith("note: render skipped")]
+    assert len(note) == 1, err
+    assert "refl: the file carries no REFL_10CM" in note[0], note[0]
+    # (The --explain hint below the note repeats the command line, file
+    # included; that is the way in, not the reason.)
+    assert path.name not in note[0], "the file belongs behind --explain"
+    assert "skipped refl:" not in err, "per-item rows belong behind --explain"
 
-    # --explain restores the per-item evidence: which file, which field.
+    # --explain restores the per-item evidence: which file, which frame,
+    # which field.
     rc = cli.main(["render", "--engine", "matplotlib", str(path),
                    "--products", "refl,t2", "--out", str(tmp_path / "png2"),
                    "--explain"])
     assert rc == 0
     explained = capsys.readouterr().err
     assert "REFL_10CM" in explained
-    assert "skipped refl" in explained
+    assert f"skipped refl: {path}[0] carries no REFL_10CM" in explained
 
 
 def test_a_skip_still_exits_1_when_it_leaves_nothing_drawn(tmp_path):
@@ -352,6 +365,9 @@ def test_parse_products():
         parse_products("refl,uh25")
     with pytest.raises(ValueError, match="no products"):
         parse_products(",")
+    # A section term is named whole, level list and closing term included.
+    with pytest.raises(ValueError, match=r"'xsec:QCLOUD=0\.01,0\.1/wa'"):
+        parse_products("refl,xsec:QCLOUD=0.01,0.1/wa")
 
 
 def test_parse_timeidx():
@@ -531,7 +547,7 @@ def test_the_matplotlib_engine_announces_itself_as_a_workaround(
     It is a WORKAROUND rather than a fallback since the render law's
     one-fallback clause was enforced (audit F7): nothing degrades into
     it, it is reachable only by typing ``--engine matplotlib``, and
-    "Fixed means default" (Drew 2026-08-10) requires an opt-in remedy to
+    "Fixed means default" (project ruling, 2026-08-10) requires an opt-in remedy to
     be REPORTED as a workaround on every run -- so the explicit request
     is exactly the case that must not be silent.  It used to be.
     """

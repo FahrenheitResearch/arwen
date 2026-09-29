@@ -122,29 +122,30 @@ fn parse_kib_line(text: &str, key: &str) -> Option<u64> {
     })
 }
 
-#[cfg(target_os = "linux")]
-fn read_u64_file(path: &str) -> Option<u64> {
-    let s = fs::read_to_string(path).ok()?;
-    let s = s.trim();
-    if s == "max" {
-        return None;
-    }
-    s.parse().ok()
+/// The usage and the limit of the memory cgroup whose limit binds this
+/// process: the smallest limit on the path from the process's own cgroup
+/// (`proc_self_cgroup`) up to its mount under `cgroup_root`, the walk the
+/// renderer's reader makes (`rw_host_memory::cgroup_memory_limits`).
+/// `(None, None)` when no limit binds it.
+///
+/// THE BREAKAGE: this read only the mount root's `memory.current` and
+/// `memory.max`.  Inside a systemd scope with `MemoryMax=2G` on a 30 GiB
+/// worker the root carries neither, so `rw_mpas_static` read no limit,
+/// admitted its build and sized its tile workers against none, and the
+/// kernel killed it at the scope's limit.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn cgroup_values_within(proc_self_cgroup: &Path, cgroup_root: &Path) -> (Option<u64>, Option<u64>) {
+    rw_host_memory::cgroup_memory_limits(proc_self_cgroup, cgroup_root)
+        .into_iter()
+        .min_by_key(|found| found.limit)
+        .map_or((None, None), |found| (found.usage, Some(found.limit)))
 }
 
 #[cfg(target_os = "linux")]
 fn cgroup_values() -> (Option<u64>, Option<u64>) {
-    // cgroup v2
-    if Path::new("/sys/fs/cgroup/memory.current").exists() {
-        return (
-            read_u64_file("/sys/fs/cgroup/memory.current"),
-            read_u64_file("/sys/fs/cgroup/memory.max"),
-        );
-    }
-    // cgroup v1
-    (
-        read_u64_file("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
-        read_u64_file("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    cgroup_values_within(
+        Path::new(rw_host_memory::PROC_SELF_CGROUP),
+        Path::new(rw_host_memory::CGROUP_ROOT),
     )
 }
 
@@ -598,6 +599,54 @@ mod tests {
                 snap.source
             );
         }
+    }
+
+    /// THE BREAKAGE: the builder read only the cgroup mount root's limit, so
+    /// inside a systemd scope with `MemoryMax=2G` it read none and admitted
+    /// a build the scope's limit then killed.  Its limit is the smallest on
+    /// the path from its own cgroup up to the mount, in every case of the
+    /// table the renderer's and the planner's readers answer, and the usage
+    /// beside it is that binding cgroup's own.
+    #[test]
+    fn the_builder_reads_the_smallest_limit_on_its_own_cgroup_path() {
+        let table: serde_json::Value = serde_json::from_str(include_str!(
+            "../../rw-host-memory/src/host_memory_cgroup_cases.json"
+        ))
+        .unwrap();
+        let cases = table["cases"].as_array().unwrap();
+        assert!(cases.len() >= 10, "the shared table lost its cases");
+        let mut split_case_seen = false;
+        for (index, case) in cases.iter().enumerate() {
+            let name = case["name"].as_str().unwrap();
+            assert!(case.get("limit").is_some(), "{name}: the case names no limit");
+            let dir = std::env::temp_dir().join(format!(
+                "rw-mpas-static-cgroup-{}-{index}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            let root = dir.join("cgroup");
+            std::fs::create_dir_all(&root).unwrap();
+            if let Some(text) = case["proc_self_cgroup"].as_str() {
+                std::fs::write(dir.join("proc-self-cgroup"), text).unwrap();
+            }
+            for (relative, text) in case["cgroup"].as_object().unwrap() {
+                let path = root.join(relative);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text.as_str().unwrap()).unwrap();
+            }
+            let (current, limit) = cgroup_values_within(&dir.join("proc-self-cgroup"), &root);
+            assert_eq!(limit, case["limit"].as_u64(), "{name}: limit");
+            if limit.is_none() {
+                assert_eq!(current, None, "{name}: a usage with no limit beside it");
+            }
+            if name == "the smallest limit and the least room sit on different cgroups" {
+                // The 2 GiB scope binds, not the fuller 4 GiB slice above it.
+                assert_eq!(current, Some(268_435_456), "{name}: usage");
+                split_case_seen = true;
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        assert!(split_case_seen, "the shared table lost its split-limit case");
     }
 
     // -- parallel tile admission -------------------------------------------

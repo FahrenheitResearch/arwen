@@ -3,7 +3,8 @@
 The atmosphere-only AIGFS profile proved a solo init impossible and refused
 by name.  This file pins the shape finishing that story must take: the
 source becomes runnable through a CROSS-SOURCE packaged profile -- a hybrid
-mapping whose seven missing canonicals are ``composition_bound``, a
+mapping whose six missing land-surface canonicals are ``composition_bound``
+and whose surface pressure is derived from its own mean-sea-level pressure, a
 composition whose ``field_sources`` binding pins the same-cycle GDAS
 analysis donor's own mapping by SHA-256, and a profile row that carries the
 donor mapping as a fourth pinned authority so the front door can pass it as
@@ -40,15 +41,16 @@ MAPPING_ROLE = "physical_analysis_surface_mapping"
 DATA_ROLE = "physical_analysis_surface_data"
 PROVENANCE_ROLE = "physical_analysis_surface_provenance"
 
-#: The canonical state the operational AIGFS product does not publish;
-#: every one of these is composition_bound in the hybrid mapping and
-#: bound to the GDAS analysis donor in the composition.
+#: The land-surface state the operational AIGFS product does not
+#: publish; every one of these is composition_bound in the hybrid mapping
+#: and bound to the GDAS analysis donor in the composition.  Surface
+#: pressure is not among them: borrowed, it held every lead at the
+#: analysis column mass, so it is derived from each lead's own PRMSL.
 BORROWED = [
     "land_fraction",
     "skin_temperature",
     "soil_temperature",
     "specific_humidity_2m",
-    "surface_pressure",
     "terrain_height",
     "volumetric_soil_moisture",
 ]
@@ -135,11 +137,22 @@ def test_the_hybrid_mapping_keeps_the_operational_identity_pins():
             assert selector["local_table_version"] == 1
     assert bound == len(BORROWED)
     assert selected, "the hybrid must still select the atmosphere"
+    surface = mapping["fields"]["surface_pressure"]
+    assert surface["derivation"] == "surface-pressure-from-sea-level"
+    assert not surface["selectors"]
+    derivation = {item["name"]: item for item in mapping["derivations"]}[
+        "surface-pressure-from-sea-level"]
+    assert derivation["operation"] == "surface_pressure_from_sea_level"
+    assert derivation["sea_level_pressure"] == "air_pressure_at_mean_sea_level"
+    assert derivation["surface_height"] == "terrain_height"
+    mslp = mapping["fields"]["air_pressure_at_mean_sea_level"]["selectors"]
+    assert [(item["category"], item["parameter"], item["level_type"])
+            for item in mslp] == [(3, 1, 101)]
     target = mapping["target"]
     assert "pending_composition_requirements" not in target
     assert target["soil_layer_count"] == 4
     required = {item["name"] for item in target["required_fields"]}
-    assert set(BORROWED) <= required
+    assert set(BORROWED) | {"surface_pressure"} <= required
 
 
 def test_the_aigfs_row_is_runnable_through_the_hybrid_profile():

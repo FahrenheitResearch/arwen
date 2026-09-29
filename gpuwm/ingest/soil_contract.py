@@ -1203,7 +1203,11 @@ def validate_soil_layer_contract(
         # disagrees with their land-cover field on a handful of coastal
         # cells (ECMWF's fractional land mask against its soil tile
         # mask): the nearest fully defined soil column inside the stated
-        # radius answers, and a land cell beyond it still refuses.
+        # radius answers.  A land cell beyond it stays missing, exactly as
+        # under "reject": it is not a donor to the masked horizontal
+        # mapping, which fills the target land near it from the source
+        # land around it (gpuwm/mapped_source.py:
+        # _admit_source_land_soil_gaps).
         land = _object(
             land_policy,
             "composition.soil_layers.missing.land",

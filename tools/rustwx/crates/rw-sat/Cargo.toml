@@ -1,4 +1,4 @@
-# Vendored from Drew's rusty-weather workspace @ d3264700 (crates/rw-sat)
+# Vendored from the project's rusty-weather workspace @ d3264700 (crates/rw-sat)
 # with the four rw-sat cloud-product patches from
 # evidence/upstream/rw-sat-cloud-products/ applied (0002/0004 clean,
 # 0001/0003 hand-merged where only surrounding context had drifted; the

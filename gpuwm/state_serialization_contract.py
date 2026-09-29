@@ -170,6 +170,45 @@ def _update_setup_core(digest, state, *, error_type: type[Exception]) -> bool:
     return False
 
 
+def _lateral_fingerprint_header(digest, *, spec_bdy_width, spec_zone,
+                                relax_zone, count: int) -> None:
+    """The LBC header line of the setup digest, before any interval."""
+
+    digest.update(
+        f"lbc:width={spec_bdy_width};"
+        f"spec={spec_zone};relax={relax_zone};"
+        f"intervals={count};".encode())
+
+
+def _lateral_fingerprint_interval(digest, interval) -> None:
+    """One interval's contribution to the setup digest, in stream order.
+
+    Split from :func:`_update_lateral_fingerprint` so a chained preparation
+    can feed each boundary segment into the same digest as it is written,
+    without holding the start state or every interval: the bytes and their
+    order are exactly the ones the whole-set walk feeds.
+    """
+
+    digest.update(
+        f"[{interval.start_seconds!r},"
+        f"{interval.end_seconds!r}]".encode())
+    for name in sorted(interval.fields):
+        boundary = interval.fields[name]
+        for side_name in ("west", "east", "south", "north"):
+            side = getattr(boundary, side_name)
+            _digest_array(
+                digest, f"{name}/{side_name}/value", side.value)
+            _digest_array(
+                digest, f"{name}/{side_name}/tendency", side.tendency)
+            law = getattr(side, "time_law", None)
+            if law is not None:
+                digest.update(b"rational-time-v1;")
+                _digest_array(digest, f"{name}/{side_name}/quadratic",
+                              law.quadratic)
+                _digest_array(digest, f"{name}/{side_name}/denominator_rate",
+                              law.denominator_rate)
+
+
 def _update_lateral_fingerprint(digest, state) -> None:
     """Append the exact historical LBC portion of the setup digest."""
 
@@ -177,29 +216,12 @@ def _update_lateral_fingerprint(digest, state) -> None:
     if boundaries is None:
         digest.update(b"lateral_boundaries=None;")
         return
-    digest.update(
-        f"lbc:width={boundaries.spec_bdy_width};"
-        f"spec={boundaries.spec_zone};relax={boundaries.relax_zone};"
-        f"intervals={len(boundaries.intervals)};".encode())
+    _lateral_fingerprint_header(
+        digest, spec_bdy_width=boundaries.spec_bdy_width,
+        spec_zone=boundaries.spec_zone, relax_zone=boundaries.relax_zone,
+        count=len(boundaries.intervals))
     for interval in boundaries.intervals:
-        digest.update(
-            f"[{interval.start_seconds!r},"
-            f"{interval.end_seconds!r}]".encode())
-        for name in sorted(interval.fields):
-            boundary = interval.fields[name]
-            for side_name in ("west", "east", "south", "north"):
-                side = getattr(boundary, side_name)
-                _digest_array(
-                    digest, f"{name}/{side_name}/value", side.value)
-                _digest_array(
-                    digest, f"{name}/{side_name}/tendency", side.tendency)
-                law = getattr(side, "time_law", None)
-                if law is not None:
-                    digest.update(b"rational-time-v1;")
-                    _digest_array(digest, f"{name}/{side_name}/quadratic",
-                                  law.quadratic)
-                    _digest_array(digest, f"{name}/{side_name}/denominator_rate",
-                                  law.denominator_rate)
+        _lateral_fingerprint_interval(digest, interval)
 
 
 def setup_core_fingerprint(
@@ -235,74 +257,101 @@ def lateral_boundary_prefix_identity(
     boundaries = getattr(state, "lateral_boundaries", None)
     if boundaries is None:
         return None
-    intervals = []
-    for interval in boundaries.intervals:
-        digest = hashlib.sha256()
-        start_frame = hashlib.sha256()
-        end_frame = hashlib.sha256()
-        digest.update(
-            f"[{interval.start_seconds!r},"
-            f"{interval.end_seconds!r}]".encode())
-        duration = float(interval.end_seconds - interval.start_seconds)
-        fields = []
-        for name in sorted(interval.fields):
-            fields.append(name)
-            boundary = interval.fields[name]
-            for side_name in ("west", "east", "south", "north"):
-                side = getattr(boundary, side_name)
-                _digest_array(
-                    digest, f"{name}/{side_name}/value", side.value)
-                _digest_array(
-                    digest, f"{name}/{side_name}/tendency", side.tendency)
-                law = getattr(side, "time_law", None)
-                if law is not None:
-                    digest.update(b"rational-time-v1;")
-                    _digest_array(digest, f"{name}/{side_name}/quadratic",
-                                  law.quadratic)
-                    _digest_array(digest, f"{name}/{side_name}/denominator_rate",
-                                  law.denominator_rate)
-                # The forcing consumer rounds host tables to FP32 before
-                # use.  Seal both endpoint frames in that exact numerical
-                # representation so an appended interval cannot replace the
-                # shared restart-boundary frame while preserving the older
-                # interval row.
-                start = np.asarray(_host(side.value), dtype=np.float32)
-                end = np.asarray(
-                    _host(side.value) + _host(side.tendency) * duration,
-                    dtype=np.float32)
-                if law is not None:
-                    from gpuwm.ingest.lateral_bc import (
-                        RationalTimeLaw, SideBoundary, evaluate_boundary_side)
-                    rounded = SideBoundary(start,
-                        np.asarray(_host(side.tendency), dtype=np.float32),
-                        RationalTimeLaw(
-                            np.asarray(_host(law.quadratic), dtype=np.float32),
-                            np.asarray(_host(law.denominator_rate), dtype=np.float32)))
-                    end = np.asarray(evaluate_boundary_side(
-                        rounded, np.float32(duration))[0], dtype=np.float32)
-                _digest_array(
-                    start_frame, f"{name}/{side_name}/value", start)
-                _digest_array(
-                    end_frame, f"{name}/{side_name}/value", end)
-        intervals.append({
-            "start_seconds": interval.start_seconds,
-            "end_seconds": interval.end_seconds,
-            "fields": fields,
-            "sha256": digest.hexdigest(),
-            "start_frame_sha256": start_frame.hexdigest(),
-            "end_frame_sha256": end_frame.hexdigest(),
-        })
-    return {
-        "schema": ("gpuwm-lateral-boundary-prefix-v3" if any(
+    return lateral_boundary_prefix_document(
+        spec_bdy_width=boundaries.spec_bdy_width,
+        spec_zone=boundaries.spec_zone, relax_zone=boundaries.relax_zone,
+        rows=[lateral_boundary_prefix_row(interval)
+              for interval in boundaries.intervals],
+        rational=any(
             getattr(getattr(field, side), "time_law", None) is not None
             for interval in boundaries.intervals
             for field in interval.fields.values()
-            for side in ("west", "east", "south", "north"))
-            else LATERAL_BOUNDARY_PREFIX_SCHEMA),
-        "spec_bdy_width": boundaries.spec_bdy_width,
-        "spec_zone": boundaries.spec_zone,
-        "relax_zone": boundaries.relax_zone,
-        "intervals": intervals,
+            for side in ("west", "east", "south", "north")))
+
+
+def lateral_boundary_prefix_row(interval) -> dict:
+    """One interval's row of :func:`lateral_boundary_prefix_identity`.
+
+    Split out so a chained preparation can seal each boundary segment's
+    row as the segment is written; the whole-set identity is these rows
+    in order, unchanged.
+    """
+
+    digest = hashlib.sha256()
+    start_frame = hashlib.sha256()
+    end_frame = hashlib.sha256()
+    digest.update(
+        f"[{interval.start_seconds!r},"
+        f"{interval.end_seconds!r}]".encode())
+    duration = float(interval.end_seconds - interval.start_seconds)
+    fields = []
+    for name in sorted(interval.fields):
+        fields.append(name)
+        boundary = interval.fields[name]
+        for side_name in ("west", "east", "south", "north"):
+            side = getattr(boundary, side_name)
+            _digest_array(
+                digest, f"{name}/{side_name}/value", side.value)
+            _digest_array(
+                digest, f"{name}/{side_name}/tendency", side.tendency)
+            law = getattr(side, "time_law", None)
+            if law is not None:
+                digest.update(b"rational-time-v1;")
+                _digest_array(digest, f"{name}/{side_name}/quadratic",
+                              law.quadratic)
+                _digest_array(digest, f"{name}/{side_name}/denominator_rate",
+                              law.denominator_rate)
+            # The forcing consumer rounds host tables to FP32 before
+            # use.  Seal both endpoint frames in that exact numerical
+            # representation so an appended interval cannot replace the
+            # shared restart-boundary frame while preserving the older
+            # interval row.
+            start = np.asarray(_host(side.value), dtype=np.float32)
+            end = np.asarray(
+                _host(side.value) + _host(side.tendency) * duration,
+                dtype=np.float32)
+            if law is not None:
+                from gpuwm.ingest.lateral_bc import (
+                    RationalTimeLaw, SideBoundary, evaluate_boundary_side)
+                rounded = SideBoundary(start,
+                    np.asarray(_host(side.tendency), dtype=np.float32),
+                    RationalTimeLaw(
+                        np.asarray(_host(law.quadratic), dtype=np.float32),
+                        np.asarray(_host(law.denominator_rate), dtype=np.float32)))
+                end = np.asarray(evaluate_boundary_side(
+                    rounded, np.float32(duration))[0], dtype=np.float32)
+            _digest_array(
+                start_frame, f"{name}/{side_name}/value", start)
+            _digest_array(
+                end_frame, f"{name}/{side_name}/value", end)
+    return {
+        "start_seconds": interval.start_seconds,
+        "end_seconds": interval.end_seconds,
+        "fields": fields,
+        "sha256": digest.hexdigest(),
+        "start_frame_sha256": start_frame.hexdigest(),
+        "end_frame_sha256": end_frame.hexdigest(),
+    }
+
+
+def interval_has_time_law(interval) -> bool:
+    return any(
+        getattr(getattr(field, side), "time_law", None) is not None
+        for field in interval.fields.values()
+        for side in ("west", "east", "south", "north"))
+
+
+def lateral_boundary_prefix_document(*, spec_bdy_width, spec_zone,
+                                     relax_zone, rows, rational: bool):
+    """Assemble the prefix identity from its per-interval rows."""
+
+    return {
+        "schema": ("gpuwm-lateral-boundary-prefix-v3" if rational
+                   else LATERAL_BOUNDARY_PREFIX_SCHEMA),
+        "spec_bdy_width": spec_bdy_width,
+        "spec_zone": spec_zone,
+        "relax_zone": relax_zone,
+        "intervals": list(rows),
     }
 
 

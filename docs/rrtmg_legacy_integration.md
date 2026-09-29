@@ -230,6 +230,25 @@ variant. numpy>=2 is a hard dependency of the FP32 contract.
 4. **t8w**: transcribed from phy_prep, but gpuwm's geopotential/z
    carry gpuwm's own dynamics history — matched semantics, not proven
    byte-parity (same status as every other model-state seam).
+5. **Radii of MYNN's subgrid cloud** (`icloud_bl = 1`): WRF's wrappers
+   resize a cloudy layer only when its radius sits at or below 2.5 um
+   liquid or 5 um ice. That test misses NSSL's no-cloud radius (2.51 um
+   liquid, 10.01 um ice), a trace of Thompson liquid below the merge's
+   1e-6 kg/kg, which Thompson sizes at its 2.51 um floor, and a trace of
+   Thompson ice below 1e-8 sized above 5 um, so WRF radiates MYNN's
+   water in those layers at the trace's size: as 2.51 um droplets, about
+   three times the optical depth of the 7.5 um it gives the same water
+   elsewhere. On a 750 m product nest the ice case reached more than 80
+   percent of land columns from mid-morning, and sizing it moved the
+   land-mean surface shortwave at solar noon from 701 to 726 W m-2
+   (GOES-18 ABI 654) and the ASOS 2 m temperature error over 16-21 UTC
+   from 1.44 to 1.37 C. The adapter marks the layers the MYNN merge gives water
+   (`gpuwm.core.mynn_radiation.mynn_bl_cloud_supplied`) and hands them
+   to the same rule with no scheme radius
+   (`gpuwm.core.rrtmg_legacy.unsized_mynn_radii`): 7.5 um over land,
+   10.5 um over water and the ice temperature table, as RTE+RRTMGP gives
+   them. Resolved cloud and every layer MYNN did not supply are
+   unchanged, and without MYNN's merge the adapter is WRF's.
 
 ## 10. Booby-trap boundary (the wiring proof)
 

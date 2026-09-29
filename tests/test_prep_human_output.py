@@ -137,6 +137,29 @@ def test_next_command_uses_existing_sim_with_copied_authorities(tmp_path, tree):
     assert not root.with_name(root.name + "-forecast").exists()
 
 
+@pytest.mark.parametrize("tree", [False, True])
+def test_the_printed_forecast_line_draws_each_frame_as_it_lands(tmp_path, tree):
+    """Named breakage: the printed `gpuwm sim` line ran the forecast and
+    drew nothing, although both runners draw each output frame as it
+    lands when asked.  It asks for the same default set `gpuwm go` draws,
+    in the spelling `gpuwm sim` parses."""
+
+    import os
+    import shlex
+    from gpuwm.cli import build_parser
+    from gpuwm.first_products import DEFAULT_RENDER_PRODUCTS
+
+    root = tmp_path / "prepared"
+    (_tree_bundle if tree else _single_domain_bundle)(root)
+    _authority(root)
+    args = SimpleNamespace(output_root=root, experiment_config=None, wps_namelist=None)
+    command = prep_output.forecast_command(args)
+    words = (shlex.split(command) if os.name != "nt"
+             else command.replace("'", "").split())
+    parsed = build_parser().parse_args(words[1:])
+    assert parsed.render_products == DEFAULT_RENDER_PRODUCTS
+
+
 def test_successful_prep_prints_handoff_without_receipt_wall(tmp_path, capsys):
     root = tmp_path / "prepared"
     args = SimpleNamespace(output_root=root, explain=False)

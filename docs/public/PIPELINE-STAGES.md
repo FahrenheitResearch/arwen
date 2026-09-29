@@ -63,6 +63,72 @@ recomputes every one of them and still refuses on any difference.**
 Nothing is weakened by the relay; what you no longer have to be is a
 checksum courier.
 
+### A preparation the forecast can start before it finishes
+
+Boundary interval k needs only forcing times k and k+1, so a
+single-domain preparation (GFS, ERA5 and ARCO, and every mapped source,
+HRRR-on-mapped and 20CRv3 included) is written start first and
+published in three parts:
+
+- **the head**: everything the start time makes -- the static fields,
+  the receipts, the start state in `prepared-cache/` -- published with
+  the route's usual single rename, plus `boundary-stream/head.json`,
+  which carries the full interval schedule and the proof without its
+  seal keys. Its `head_sha256` is what a forecast binds with
+  `--prepared-head-sha256`;
+- **one segment per interval**: the interval's arrays written into
+  `prepared-cache/` under the file numbers a finished cache gives them,
+  then `boundary-stream/segments/NNNNN.json` last. The marker is the only
+  ready signal, so the rule holds across processes and machines: copy
+  the arrays first and the marker last;
+- **the seal**: the same `prepared-cache/header.json` a one-shot
+  preparation writes (so `content_sha256` is unchanged), the companion
+  WRF files, then `proof.json` last. `proof.json` gains one field,
+  `boundary_stream.head_sha256`.
+
+`gpuwm go` (the GFS chain) and `gpuwm run-plan` (the staged mapped chain)
+start the forecast as soon as the head exists, and `gpuwm sim` pointed at
+a preparation that is still being produced binds its head the same way.
+A chain binds only a head its own preparation wrote, so a retry never
+starts on the head a failed attempt left in the same output root. The forecast waits at an
+interval seam only when that interval is not prepared yet, and says so in
+`progress.json` every 5 s (`waiting.reason`, "boundary interval k (...)
+is not prepared yet"). At the end of the run it waits for the seal,
+checks the sealed cache against the head and every segment it read, runs
+the complete preflight on the sealed tree, and only then writes its
+report; `report.json` gains `input.boundary_stream`. A producer that
+fails ends the forecast with the producer's reason (`failed.json`), and a
+producer on a thread of the same process that ends without writing it
+(a full disk) ends it too; a producer in another process that stops
+refreshing `producer.json` ends it by name. A forecast that fails leaves
+the producer running to its seal, so a retry reuses the complete
+preparation; only an interrupt of the chain writes `stop.json`, and the
+producer then exits unsealed. The next preparation into the same output
+root removes such an unfinished tree and builds it again.
+
+The head is published early only when the forecast and the producer fit
+on one machine. Host RAM is checked for every preparation: the forecast
+process holds the head's arrays, every boundary interval it loads (the
+whole series, by the end of the run) and its own working set of about
+2 GiB (the interpreter, the CUDA context and the physics tables) while
+the producer keeps building, so those three plus what the producer's
+builds took above what it keeps must fit the available RAM with 10%
+headroom. A GPU preparation must also fit the card: the forecast's
+estimate plus the memory the start time's build took, with 10%
+headroom. Otherwise the preparation prints the numbers and publishes at
+the seal, and the run starts after it, as before. A domain tree, the
+native HRRR route, met_em, the `gpuwm run` experiment route, the
+downscale route and an ERA5 preparation with a water-temperature overlay
+(its receipt covers every forcing time and is part of the cache
+identity) prepare sealed. Each of them but the downscale route, whose
+forcing is its parent run's history, says so in one `prepare:` line on
+stderr as it starts building its forcing.
+
+Chained preparation is on by default. A chained forecast writes the same
+history files as one started after a sealed preparation. For diagnosis,
+`GPUWM_CHAINED_PREP=0` turns it off: the same writer then publishes the
+whole tree at the seal and the forecast starts after preparation.
+
 To see exactly what would be run, without running it:
 
 ```
@@ -172,29 +238,46 @@ explicit values exist so a caller who believes they know better gets
 refused precisely when they do not.
 
 `--print-command` prints the exact runner line and exits, running
-nothing and requiring no GPU.
+nothing and requiring no GPU. The line is quoted for the shell it is
+printed in: PowerShell on Windows (it starts with the call operator `&`
+when the interpreter path needs quotes) and a POSIX shell elsewhere.
 
-### Continuing a prepared hierarchy
+### Continuing a prepared forecast
 
-Pass any member of the earlier tree's checkpoint set and a fresh output folder:
+Both prepared runners write canonical checkpoints and restore them. Pass a
+checkpoint the earlier run wrote and a fresh output folder. A single-domain
+bundle also takes its exact `--wps-namelist`, as a fresh run of it does:
+
+```sh
+gpuwm sim PREPARED_ROOT --experiment-config experiment.toml \
+  --wps-namelist namelist.wps \
+  --restart previous/run/gpuwmrst_d01_TIME.npz --outdir continued
+```
+
+For a hierarchy, pass any member of the earlier tree's checkpoint set and
+leave out `--wps-namelist`:
 
 ```sh
 gpuwm sim PREPARED_ROOT --experiment-config experiment.toml \
   --restart previous/run/gpuwmrst_d01_TIME.npz --outdir continued
 ```
 
-The same tree runner validates the preparation, scientific configuration and
-complete checkpoint set. Its existing permitted changes to forecast length,
-output/restart cadence and adaptive-controller targets still apply. Use
-`--sealed-forcing-extension` when writing or restoring under the existing
-append-only forcing-prefix contract. `--print-command` includes both operands.
-The original run directory remains protected from output mixing.
+Each runner validates the preparation, the scientific configuration and the
+checkpoint's identity before it restores anything. A single-domain bundle binds
+its complete configuration and stop time, so its continuation finishes the same
+forecast. The tree runner's existing permitted changes to forecast length,
+output/restart cadence and adaptive-controller targets still apply to a
+hierarchy, and `--sealed-forcing-extension` writes or restores under its
+append-only forcing-prefix contract; a single bundle refuses that flag.
+Selecting `--runner tree` does not turn a single-domain bundle into a
+hierarchy. `--print-command` includes every operand. The original run
+directory remains protected from output mixing.
 
-This exposes the existing hierarchy checkpoint format. The single prepared
-bundle runner does not yet have a checkpoint writer/restore adapter for that
-format; selecting `--runner tree` does not create the missing hierarchy
-receipts. Ordinary `gpuwm run --restart` and `gpuwm resume` retain their own
-shared checkpoint path. `gpuwm go` has no checkpoint operand yet.
+`gpuwm go CONFIG.toml --prepared-root PREPARED_ROOT --restart CHECKPOINT`
+reaches the same runners without fetching or preparing again; add
+`--wps-namelist` for a single-domain bundle and `--dry-run` to review the
+plan first. Ordinary `gpuwm run --restart` and `gpuwm resume` keep their own
+direct-run checkpoint path.
 
 ### Output contract
 
@@ -303,12 +386,29 @@ What is in it:
 - one `stage_started`/`stage_finished` pair per stage, named `boot`,
   `authority`, `fetch`, `manifest`, `prepare`, `forecast`, `render`.
   `boot` is the CLI's own start-up plus the memory and geography gates.
+  On a chained preparation `prepare` and `forecast` overlap: a
+  `prepare_head_ready` event (`head_sha256`, `ready_unix_ms`) marks the
+  moment the forecast started, and
+  `prepare` finishes at the seal. A chain hosted by `gpuwm run-plan`
+  (the staged route `gpuwm go` takes for a mapped source) keeps one
+  stage open at a time, so there `prepare` finishes at the head and
+  `prepare_sealed` (`prepared_root`, `prepared`) is recorded when the
+  preparation seals, while the forecast runs. That chain also records,
+  for each seam where the forecast waited, `boundary_wait_started`
+  (`interval`, `reason`) and `boundary_wait_finished` (`interval`,
+  `seconds`).
 - on `fetch`: `bytes`, and `bytes_per_second` **when this run actually
   downloaded something**. A re-run against an existing `--data-dir`
   verifies rather than transfers, and reports `verified_bytes` with a
   null bandwidth instead of dividing hash time into bytes.
 - `first_products_ready` with `seconds_from_launch` -- time to first
   plot, measured by the process that published the pictures.
+- `live_products_ready` for each later frame the forecast draws as it
+  lands, while the `forecast` stage runs: `domain`, `valid_time`,
+  `frame`, `pictures`, `render_seconds`, `complete`,
+  `published_unix_ms` and `seconds_from_launch`, read from the
+  runner's own `live-products.json` within about a second of the
+  pictures being published.
 - one terminal `completed` (or `failed`), carrying every stage's wall,
   the process wall, how much of it the stages account for, and the
   forecast's own internals read back out of its `progress.jsonl`:
@@ -352,8 +452,8 @@ Run an existing prepared bundle directly, keeping the original preparation intac
 gpuwm go CONFIG.toml --prepared-root PREPARED --outdir NEW_OUTPUT --products none
 ```
 
-For a prepared hierarchy checkpoint, add `--restart CHECKPOINT`. Use a fresh output
-folder beside the earlier run. The command verifies the existing bundle and restores
+To continue a prepared checkpoint, hierarchy or single-domain, add
+`--restart CHECKPOINT`. Use a fresh output folder beside the earlier run. The command verifies the existing bundle and restores
 through the same runner as `gpuwm sim`; it does not fetch inputs or repeat preparation.
 If your usual command also supplies `--data-dir` or `--geog-root`, those paths
 remain in the plan and are reported unused; the existing bundle is the input.
@@ -361,8 +461,8 @@ All checkpoint siblings must remain together. The configuration and prepared inp
 must satisfy the runner's existing identity checks.
 
 A single-domain portable bundle additionally needs `--wps-namelist ORIGINAL.wps`,
-its exact prepared WPS authority. Fresh simulation works; that bundle format's runner
-currently has no checkpoint writer or restore adapter. Configs with `[case_data]`
+its exact prepared WPS authority, for a fresh run and a continuation alike; its runner
+writes checkpoints at the configuration's restart interval. Configs with `[case_data]`
 can use `gpuwm go CONFIG.toml --restart CHECKPOINT` through the ordinary experiment
 runtime without a prepared-root operand.
 

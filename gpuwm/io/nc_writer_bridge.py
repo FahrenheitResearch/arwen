@@ -167,6 +167,26 @@ def library_candidates() -> tuple[Path, ...]:
     return tuple(candidates)
 
 
+def checkout_build_command() -> str:
+    """The checkout build of this library, spelled for the reader's shell.
+
+    The not-found refusal below and the observation-product writer's
+    refusal (:mod:`gpuwm.obs.grid_product`) both print it, from here, so
+    the two cannot drift apart.  The separator comes from
+    :data:`gpuwm.bridges.WINDOWS_SHELL`, the one shell rule every remedy
+    reads, because Windows PowerShell 5.1 rejects ``&&`` with a parser
+    error: the product writer's refusal hard-coded ``&&``, so on Windows
+    its build line could not be pasted.  It ends with the ``cd`` back so
+    a pasted block leaves the shell where it started.
+    """
+
+    from gpuwm import bridges
+
+    separator = ";" if bridges.WINDOWS_SHELL else " &&"
+    return (f"cd {bridges.RUSTWX_CRATE_RELATIVE}{separator} cargo build "
+            f"--release --offline{separator} cd ../..")
+
+
 def resolve_ncwrite_bridge() -> Path:
     """The first existing candidate, or a refusal listing every path.
 
@@ -186,13 +206,11 @@ def resolve_ncwrite_bridge() -> Path:
             raise FileNotFoundError(
                 f"{NCWRITE_BRIDGE_ENV} names a missing file: {candidate}")
     rendered = "\n  ".join(str(candidate) for candidate in library_candidates())
-    separator = ";" if os.name == "nt" else " &&"
     raise FileNotFoundError(
         "the Rust NetCDF writer library was not found; searched:\n  "
         + rendered
-        + "\n  # build it from a checkout:\n"
-        f"  cd tools/rustwx{separator} cargo build --release --offline"
-        f"{separator} cd ../..")
+        + "\n  # build it from a checkout:\n  "
+        + checkout_build_command())
 
 
 _LIBRARY: ctypes.CDLL | None = None
@@ -541,6 +559,7 @@ __all__ = [
     "NCWRITE_ABI",
     "NCWRITE_BRIDGE_ENV",
     "NcWriteError",
+    "checkout_build_command",
     "library_candidates",
     "load",
     "nc_type_of",

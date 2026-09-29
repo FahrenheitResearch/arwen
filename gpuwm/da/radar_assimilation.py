@@ -113,6 +113,9 @@ from gpuwm.da.obsop import (CLEAR_AIR_FLOOR_DBZ, clear_air_floor_dbz,
                             destagger_w, earth_relative_winds,
                             precipitating_activity_mask,
                             reflectivity_fall_speed)
+from gpuwm.da.velocity_dispersion import (
+    DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO, DEFAULT_VELOCITY_DISPERSION_RATIO,
+    DispersionGateError, check_ratio, velocity_dispersion, withhold)
 from gpuwm.da.positivity import (NON_NEGATIVE_FIELDS, POLICIES,
                                  apply_positivity, constrained_fields,
                                  verify_non_negative)
@@ -389,6 +392,19 @@ class RadarAssimilationConfig:
     eigensolver: str = "auto"
     memory_budget_mib: float = 512.0
     chunk_points: int | None = None
+    #: The radial-velocity dispersion gate
+    #: (:mod:`gpuwm.da.velocity_dispersion`): a Vr batch is withheld from
+    #: theta and vapour in the columns where its innovation variance
+    #: exceeds this many times its ensemble plus observation error
+    #: variance, inside a batch gated by the batch ratio below.  ``None``
+    #: switches the gate off (Vr updates theta and vapour everywhere); the
+    #: ratios are recorded in every analysis's receipt either way.
+    velocity_dispersion_ratio: float | None = DEFAULT_VELOCITY_DISPERSION_RATIO
+    #: The gate's batch condition: a Vr batch is gated at all only when its
+    #: ratio over all its gates exceeds this.  ``None`` gates every batch on
+    #: its columns alone.
+    velocity_dispersion_batch_ratio: float | None = (
+        DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO)
 
     def __post_init__(self) -> None:
         if not self.analysis_fields:
@@ -442,6 +458,14 @@ class RadarAssimilationConfig:
             raise RadarAssimilationError(
                 f"relaxation must be one of {RELAXATION_MODES}, got "
                 f"{self.relaxation!r}")
+        for label, value in (
+                ("velocity_dispersion_ratio", self.velocity_dispersion_ratio),
+                ("velocity_dispersion_batch_ratio",
+                 self.velocity_dispersion_batch_ratio)):
+            try:
+                check_ratio(value, label)
+            except DispersionGateError as exc:
+                raise RadarAssimilationError(str(exc)) from None
         if self.moment_policy not in MOMENT_POLICIES:
             raise RadarAssimilationError(
                 f"moment_policy must be one of {MOMENT_POLICIES}, got "
@@ -791,6 +815,36 @@ def mass_to_w_faces(increment: np.ndarray) -> np.ndarray:
 _RESTAGGER = {"u": mass_to_u_faces, "v": mass_to_v_faces,
               "w": mass_to_w_faces}
 _DESTAGGER = {"u": destagger_u, "v": destagger_v, "w": destagger_w}
+
+
+def _saturation_bound(prior, increments, states, indices):
+    """``(increments, receipt)`` with the analysed vapour held under each
+    member's saturation limit and the ensemble mean kept
+    (:func:`gpuwm.ensemble.increments.mean_preserving_saturation_bound`).
+    The limit reads each member's full pressure and inverse dry density; a
+    background without them is left to the applier's cap, which refuses to
+    evaluate the same way, and the receipt says so."""
+    from gpuwm.ensemble.increments import (SATURATION_BOUND_SCHEMA,
+                                           mean_preserving_saturation_bound)
+
+    missing = sorted({name for index in indices for name in ("p", "alt")
+                      if name not in states[index]})
+    if missing or len(indices) < 2:
+        return increments, {
+            "schema": SATURATION_BOUND_SCHEMA, "evaluated": False,
+            "reason": (f"the members carry no {missing}; the applier's cap "
+                       "is the only saturation bound" if missing else
+                       "one member has no ensemble mean to keep")}
+    pressure = np.stack([np.asarray(states[index]["p"]) for index in indices])
+    inverse_density = np.stack([np.asarray(states[index]["alt"])
+                                for index in indices])
+    theta = (np.asarray(increments["thp"]) if "thp" in increments else None)
+    bounded, receipt = mean_preserving_saturation_bound(
+        np.asarray(prior["qv"]), np.asarray(increments["qv"]), pressure,
+        inverse_density, theta)
+    out = dict(increments)
+    out["qv"] = bounded
+    return out, {**receipt, "evaluated": True}
 
 
 def _mass_field(name: str, state: Mapping[str, np.ndarray],
@@ -1664,6 +1718,24 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
 
     innovations = innovation_summary(batches)
 
+    # -- the radial-velocity dispersion gate ---------------------------------
+    # Where a Vr batch's innovations outrun its ensemble and error, as a
+    # whole and in a column, it is withheld from theta and vapour there
+    # (gpuwm.da.velocity_dispersion names the breakage and the measurement
+    # behind both thresholds).  The ratios are recorded for every analysis,
+    # gate on or off.
+    dispersion_geometry = letkf_grid_geometry(grid)
+    dispersion_gates, dispersion_receipt = velocity_dispersion(
+        batches, dx_m=float(dispersion_geometry.dx_m),
+        dy_m=float(dispersion_geometry.dy_m),
+        localization=cfg.localization, shape=shape,
+        ratio=cfg.velocity_dispersion_ratio,
+        prior_inflation=float(cfg.prior_inflation),
+        batch_ratio=cfg.velocity_dispersion_batch_ratio)
+    dispersion_gates = tuple(
+        gate for gate in dispersion_gates
+        if set(gate.fields) & set(cfg.analysis_fields))
+
     # -- the filter ----------------------------------------------------------
     if diagnostics is None:
         diagnostics = LetkfDiagnostics()
@@ -1690,6 +1762,20 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     # Failed attempts never contaminate the caller's success diagnostics.
     vars(diagnostics).update(vars(completed_diagnostics))
 
+    def _gated_solve(gated_prior, gated_batches, fields, gated_geometry):
+        gated_cfg = replace(letkf_cfg, analysis_fields=tuple(fields))
+        solved, *_ = _execute_analysis(
+            solver, gated_prior, gated_batches, gated_geometry,
+            gated_cfg, namespace=namespace, device=solve_device,
+            progress=None, diagnostics=LetkfDiagnostics())
+        return solved
+
+    increments, dispersion_solves = withhold(
+        _gated_solve, prior, batches, increments, dispersion_gates,
+        tuple(cfg.analysis_fields), geometry=dispersion_geometry,
+        localization=cfg.localization)
+    dispersion_receipt["withheld"] = dispersion_solves
+
     # -- positivity ----------------------------------------------------------
     # On the MASS-POINT increments, before restaggering, because the
     # constraint is "prior + increment >= 0" and the prior it must be
@@ -1709,7 +1795,20 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             verify_non_negative(prior, increments,
                                 fields=tuple(cfg.analysis_fields))
 
-    # -- back to the checkpoint vocabulary -----------------------------------
+    # -- vapour at or below saturation, the ensemble mean kept ---------------
+    # On the same whole-ensemble mass-point arrays, after positivity: the
+    # applier's per-member saturation cap alone cuts the upper tail of the
+    # members' analysed vapour at every analysis and keeps the lower one,
+    # a one-signed sink of 30 to 44 g m-2 per member per analysis on a
+    # storm-scale child (gpuwm.ensemble.increments
+    # .mean_preserving_saturation_bound).  It never makes vapour negative:
+    # a member over its limit ends at it, and a member under its limit
+    # keeps a share of its headroom, so it only gains vapour.
+    saturation_bound_receipt = None
+    if "qv" in increments:
+        increments, saturation_bound_receipt = _saturation_bound(
+            prior, increments, states, indices)
+
     increments_by_member: dict[int, dict[str, np.ndarray]] = {}
     for slot, index in enumerate(indices):
         member: dict[str, np.ndarray] = {}
@@ -1771,6 +1870,8 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         "cwp_observations": cwp_provenance,
         "moment_policy": moment_receipt,
         "positivity": positivity_receipt,
+        "saturation_bound": saturation_bound_receipt,
+        "velocity_dispersion": dispersion_receipt,
         # What was ASKED for, and what RAN.  The two differ whenever the
         # default "auto" is in effect, and a receipt that recorded only
         # the request could not tell a cycle that used the card from one

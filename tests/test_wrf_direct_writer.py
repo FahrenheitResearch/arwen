@@ -1,6 +1,6 @@
 """The wrfinput/wrfbdy export writes on the Rust NetCDF writer BY DEFAULT.
 
-2.5.0's law is that NetCDF read and write are Drew's Rust.  The
+2.5.0's law is that NetCDF read and write are the project's Rust.  The
 WPS-to-WRF handoff pair is the largest NetCDF write in the tree -- every
 gridded field of every domain, on the bare default of ``gpuwm prep``,
 ``gpuwm go``, ``gpuwm-wrf-init``, ``rw-wps`` and ``gpuwm

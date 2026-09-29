@@ -241,6 +241,67 @@ def test_the_delayed_child_is_coupled_with_the_experiments_settings(
     assert coupler.smooth_option == 2
 
 
+def test_the_startup_build_is_released_before_the_activation_build(
+        monkeypatch):
+    """A delayed child is built at t = 0 and built again at activation.
+
+    Nothing may still own the first build when the second one allocates:
+    not the node's state, not the prepared-case map and not the domain's
+    health validator.  While any of them held it, both builds were on the
+    card together for the whole rebuild, so a tree that fit its steady
+    state ran out of device memory at the child's activation.
+    """
+    import gc
+    import weakref
+
+    class _StartupCase:
+        """The startup build's prepared case; weak-referenceable."""
+
+    _activate_in_place(monkeypatch)
+    _exp, model = _tree(delay_s=DELAY_SECONDS)
+    child = model.node(2)
+    model._prepared_by_grid_id = {2: _StartupCase()}
+    startup = {
+        "state arrays": weakref.ref(child.state.qv),
+        "physics driver": weakref.ref(child.state.physics),
+        "prepared case": weakref.ref(model._prepared_by_grid_id[2]),
+    }
+    # The validator double holds the state exactly as StateHealthValidator
+    # does, so a validator left armed on the startup build keeps it alive.
+    monkeypatch.setattr(
+        "gpuwm.core.health.health_validator_for_domain",
+        lambda _model, node: SimpleNamespace(
+            state=node.state, qv=node.state.qv,
+            require_healthy=lambda *, phase: None))
+    monkeypatch.setattr(
+        "gpuwm.core.streaming.step_health",
+        lambda *_args, **_kwargs: {"nan": False, "cfl": None})
+    alive_at_rebuild = []
+
+    def initialize_child(cfg, parent, *args, **kwargs):
+        gc.collect()
+        alive_at_rebuild.append(sorted(
+            name for name, ref in startup.items() if ref() is not None))
+        return SimpleNamespace(grid=parent.grid, state=_HistoryState())
+
+    monkeypatch.setattr("gpuwm.ingest.nest_init.initialize_child",
+                        initialize_child)
+    writers = _Writers()
+    model._io_manager = writers
+    monkeypatch.setattr("gpuwm.core.dycore.step", _stashing_step)
+    from gpuwm.runtime import _submit_tree_history_frame
+    execute_experiment(
+        model, validate_state=True,
+        history_handler=lambda _tree, node, ticks: _submit_tree_history_frame(
+            writers, node, ticks))
+
+    assert alive_at_rebuild == [[]]
+    # The rebuilt child is the one that runs, and it runs to the end.
+    assert model.node(2).state.qv is not None
+    assert [ticks for gid, ticks, _refl in writers.frames if gid == 2] == [
+        120, 180, 240, 300]
+
+
 def test_all_domains_at_the_experiment_start_are_untouched(monkeypatch):
     """The non-delayed path is the one that must not move: both domains
     publish a stashless tick-0 frame and a stashed frame at every later

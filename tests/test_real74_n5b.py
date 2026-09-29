@@ -8,8 +8,16 @@ import netCDF4
 import numpy as np
 import pytest
 
+from conftest import requires_case_inputs
+
 from gpuwm.case_data import PerDomainSourceOrography, SourceOrography
 from gpuwm.verify.cases import real74_chain, real74_d02, real74_n5b
+
+#: These tests load configs/real74_4dom.toml with its declared inputs
+#: required, so they run only where the WRF 1974 reference bundle its
+#: [case_data] names is on disk, and skip naming the absent file elsewhere.
+requires_4dom_inputs = requires_case_inputs(
+    Path(__file__).resolve().parents[1] / "configs" / "real74_4dom.toml")
 
 
 def _plan(tmp_path: Path) -> Path:
@@ -36,6 +44,7 @@ def test_n5b_geometry_matches_f22_amendment():
     )
 
 
+@requires_4dom_inputs
 def test_shrink_is_exact_plan_replacement_with_common_core_coordinates(tmp_path):
     plan = _plan(tmp_path)
     production, _, geometry = real74_n5b.construct_variant(
@@ -61,6 +70,7 @@ def test_shrink_is_exact_plan_replacement_with_common_core_coordinates(tmp_path)
     ) == "1e90893f2c259a3b10a9461ade81847c955f3de0fa3e03983c0f4de676312601"
 
 
+@requires_4dom_inputs
 def test_controller_crop_builds_consistent_shrink_and_rejects_uncropped(
         tmp_path, monkeypatch):
     plan = _plan(tmp_path)
@@ -240,6 +250,7 @@ def test_resolved_tke_ratio_and_discrepancy_mapping():
     assert discrepancies["tke_upper_excursion"] == 3.0
 
 
+@requires_4dom_inputs
 def test_evaluator_manifest_pins_commit_masks_and_cadence(tmp_path):
     exp, _, _ = real74_n5b.construct_variant(
         "production", plan_path=_plan(tmp_path))
@@ -266,6 +277,7 @@ def test_evaluator_manifest_pins_commit_masks_and_cadence(tmp_path):
     }
 
 
+@requires_4dom_inputs
 def test_evaluator_manifest_rejects_999_in_every_ratified_value(tmp_path):
     exp, _, _ = real74_n5b.construct_variant(
         "production", plan_path=_plan(tmp_path))
@@ -362,6 +374,7 @@ def _evaluator_path(tmp_path: Path) -> Path:
     return path
 
 
+@requires_4dom_inputs
 def test_member_manifest_round_trip_and_freeze_rejections(tmp_path, monkeypatch):
     monkeypatch.setattr(
         real74_n5b, "_evaluate_same_geometry_snapshot_pair", _zero_pair)
@@ -460,6 +473,7 @@ def test_member_manifest_round_trip_and_freeze_rejections(tmp_path, monkeypatch)
     frozen_path.write_bytes(frozen_bytes)
 
 
+@requires_4dom_inputs
 def test_manifest_emitter_rejects_wrong_duration(tmp_path):
     members = [_member_record(tmp_path, f"m{i:02d}", perturbed=True,
                               duration=(4499.0 if i == 2 else 4500.0))

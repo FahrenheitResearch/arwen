@@ -577,7 +577,8 @@ def test_captured_config_is_only_byte_authority_through_route_check_supervisor(
 
     monkeypatch.setattr(
         ingest_preflight, "preflight_report",
-        lambda *_args: SimpleNamespace(ok=True, format=lambda: "PASS"))
+        lambda *_args: SimpleNamespace(ok=True, format=lambda: "PASS",
+                                       catalog=None))
     assert ingest_preflight._check_command(
         Namespace(config=config, json=False)) == 0
     assert core_preflight._load_experiment_any(config) is fake_exp
@@ -1351,7 +1352,11 @@ def test_resolved_lock_root_is_passed_exactly_despite_child_temp_isolation(
 
 
 def test_default_tmp_lock_root_cannot_nest_under_scratch(tmp_path):
-    lock_root = multi_run._parent_lock_root({"TMPDIR": "/tmp"})
+    # The default rule, TMPDIR/gpuwm/locks, rooted in this test's own
+    # folder.  The machine's /tmp/gpuwm exists wherever gpuwm has run
+    # with the default lock root, and load_plan refuses an existing
+    # scratch before the isolation check this test is about.
+    lock_root = multi_run._parent_lock_root({"TMPDIR": str(tmp_path / "tmp")})
     scratch = lock_root.parent
     plan_path = _write_plan(tmp_path, devices=(0,))
     plan_path.write_text(

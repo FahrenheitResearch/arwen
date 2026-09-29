@@ -160,14 +160,119 @@ def test_more_levels_are_priced_before_the_point_fit(declared_machine):
 
 
 def test_streaming_does_not_remove_the_ingest_admission_term(declared_machine):
+    # The ingest term is the ITEMIZED preparation price (A65: model state,
+    # forcing analysis, vertical setup, their temporaries, allocator
+    # headroom and the context), not a multiple of the forecast state.
+    # Itemized, a 600x600x76 GFS preparation prices at 10.75 GB, under this
+    # 12 GiB card's 11.54 GB budget; 700x700x76 prices at 14.3 GB, over it,
+    # so the term still binds here and the assertions below keep their
+    # meaning.
     exp = wizard.experiment_from_text(
-        config(nz=76, tiles="auto", dims=[(600, 600)]), source="<large>")
-    phases = wizard._sizing_phases(exp, free_bytes=FREE, source="gfs", vram_gib=12.)
+        config(nz=76, tiles="auto", dims=[(700, 700)]), source="<large>")
     budget = wizard.sizing_budget_bytes(exp, free_bytes=FREE, vram_gib=12.,
                                           forcing_interval_seconds=10800.)
+    # Prepared on the card: the device ingest term stays and binds.
+    phases = wizard._sizing_phases(exp, free_bytes=FREE, source="gfs", vram_gib=12.,
+                                   preprocess_backend="cuda")
     assert phases.streamed is not None
     assert phases.forecast_envelope_bytes < phases.ingest_envelope_bytes
     assert phases.peak_envelope_bytes == phases.ingest_envelope_bytes > budget
+    # Prepared on the host, which a [tiles] declaration selects for this
+    # source: the card holds nothing in that phase, and the same working
+    # set is host RAM, still priced and still an admission term.
+    phases = wizard._sizing_phases(exp, free_bytes=FREE, source="gfs", vram_gib=12.)
+    assert phases.streamed is not None
+    assert phases.preprocess_backend == "cpu"
+    assert phases.ingest_envelope_bytes == 0
+    assert phases.host_preparation_bytes == phases.ingest.host_preprocess_bytes
+    assert phases.host_preparation_bytes > phases.streamed.host_bytes
+    # Refused on what it certainly holds, never on the estimate above it.
+    floor = phases.host_preparation_floor_bytes
+    assert 0 < floor < phases.host_preparation_bytes
+    assert phases.host_preparation_refusal(floor) is None
+    assert "host RAM" in phases.host_preparation_refusal(floor - 1)
+
+
+@pytest.fixture
+def small_host(monkeypatch):
+    # A large card on a host with less RAM than the card: the planner keeps
+    # the domain resident, so the CPU preparation is the only host cost.
+    host = {"bytes": 16 * wizard.GIB}
+    def machine(**kwargs):
+        return Machine(vram_bytes=kwargs["vram_bytes"], host_bytes=host["bytes"],
+                       name=kwargs["name"])
+    monkeypatch.setattr(streaming, "planner_machine", machine)
+    def detect(*args, **kwargs):
+        pytest.fail("a declared wizard card must never probe the local GPU")
+    monkeypatch.setattr(Machine, "detect", detect)
+    return host
+
+
+def test_cpu_preparation_larger_than_host_ram_is_refused(small_host):
+    free = int(wizard.card_assumed_free_gib(48.) * wizard.GIB)
+    exp = wizard.experiment_from_text(
+        config(nz=76, tiles="auto", dims=[(902, 720)]), source="<resident>")
+    small_host["bytes"] = 8 * wizard.GIB
+    with pytest.raises(wizard.DomainFitError, match="host RAM") as refused:
+        wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=48.)
+    assert refused.value.resource == "host"
+    phases = refused.value.phases
+    assert phases.streamed is None and phases.preprocess_backend == "cpu"
+    assert phases.ingest_envelope_bytes == 0
+    assert phases.host_preparation_floor_bytes > small_host["bytes"]
+    # A host that holds the floor is not refused, even where the estimated
+    # peak is over its RAM: that preparation may complete.
+    small_host["bytes"] = phases.host_preparation_floor_bytes
+    assert phases.host_preparation_bytes > small_host["bytes"]
+    wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=48.)
+    small_host["bytes"] = 128 * wizard.GIB
+    admitted = wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=48.)
+    assert admitted.host_preparation_bytes == phases.host_preparation_bytes
+    line = wizard.sizing_summary(exp, admitted.forecast, free, 48., admitted)
+    assert (f"preparation on the CPU holds about "
+            f"{admitted.host_preparation_bytes / wizard.GIB:.2f} GiB of the "
+            "host's 128.00 GiB of RAM") in line
+
+
+def test_fit_never_admits_a_preparation_the_host_cannot_hold(small_host):
+    free = int(wizard.card_assumed_free_gib(48.) * wizard.GIB)
+    kwargs = dict(ratios=(), free_bytes=free, hours=6, start_time=START,
+                  projection=wizard._projection_entries(35.3, -97.5, "auto"),
+                  source="gfs", name="point", root_dx_m=3000., nz=76,
+                  vram_gib=48., point_extent_km=20000.)
+    small_host["bytes"] = 12 * wizard.GIB
+    dims, exp = wizard.fit_ladder(**kwargs, tiles="auto")
+    phases = wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=48.)
+    budget = wizard.sizing_budget_bytes(exp, free_bytes=free, vram_gib=48.,
+                                          forcing_interval_seconds=10800.)
+    host_target = small_host["bytes"] - wizard.fit_headroom_bytes(small_host["bytes"])
+    assert phases.preprocess_backend == "cpu"
+    # Steered on the estimated peak, which is above the refusal's floor.
+    assert 0 < phases.host_preparation_floor_bytes < phases.host_preparation_bytes
+    assert phases.host_preparation_bytes <= host_target
+    assert phases.host_ram_bytes == small_host["bytes"]
+    assert 0 < phases.peak_envelope_bytes <= budget
+    # The same card on a host with room for more: RAM is what bound it.
+    small_host["bytes"] = 128 * wizard.GIB
+    roomy, _ = wizard.fit_ladder(**kwargs, tiles="auto")
+    assert dims[0][0] * dims[0][1] < roomy[0][0] * roomy[0][1]
+
+
+def test_fit_keeps_a_domain_whose_preparation_fits_the_host(small_host):
+    # A 902x720x76 root over 6 h peaks at 15.32e9 bytes in a real CPU
+    # preparation (tests/test_cpu_preparation_host_ram.py), which a 16 GiB
+    # host holds: sizing on the preparation's estimated peak keeps it.
+    free = int(wizard.card_assumed_free_gib(48.) * wizard.GIB)
+    kwargs = dict(ratios=(), free_bytes=free, hours=6, start_time=START,
+                  projection=wizard._projection_entries(35.3, -97.5, "auto"),
+                  source="gfs", name="point", root_dx_m=3000., nz=76,
+                  vram_gib=48., point_extent_km=20000.)
+    assert small_host["bytes"] == 16 * wizard.GIB
+    dims, exp = wizard.fit_ladder(**kwargs, tiles="auto")
+    assert dims[0][0] * dims[0][1] >= 902 * 720
+    phases = wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=48.)
+    host_target = small_host["bytes"] - wizard.fit_headroom_bytes(small_host["bytes"])
+    assert 15_315_107_840 <= phases.host_preparation_bytes <= host_target
 
 
 def test_auto_accepts_a_tree_whose_actual_plan_is_all_resident(declared_machine):

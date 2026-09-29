@@ -57,6 +57,14 @@ the number. `tools/relocation_ledger_audit.py` reads `overlap_fraction`
 off every executed move and every slide and checks it against the
 declared floor, which the refusal used to make unnecessary.
 
+`reach_speed_m_s` bounds the whole run rather than one move: at model time
+`t` the nest may be at most `reach_speed_m_s * t` plus one move from where it
+was declared, along each grid axis. It defaults to 40 m/s, faster than any
+tropical cyclone or supercell on record, and a prepared run's statics corridor is
+sized to it, so a smaller value for a storm known to move slowly buys a
+smaller preparation. A move past it is clamped and `clamped_by` names
+`reach_speed_m_s`.
+
 `retire` takes the same trigger vocabulary `spawn` does -- `"uh"`,
 `"reflectivity"`, `"pressure"`, `"time"`. A field trigger retires a nest
 when the signal under its live footprint stays QUIET continuously for
@@ -103,6 +111,11 @@ useless as evidence.
 Retirement is evaluated only at completed spawn-leg boundaries. It therefore
 changes the domain set used to build the next schedule; it never skips an op in
 an already-running schedule. Retiring a parent removes its live subtree.
+
+A retired slot re-arms only while its parent is a domain the model is
+integrating: the root or a permanent intermediate domain always is, and a
+spawned parent is during its own episode. A nest below a spawned parent that
+retired waits for that parent's next episode, even once its own cooldown is over.
 
 A re-armed slot is a new episode. History is written under `dNN/episode-NNN/`
 for a domain that DECLARES `retire` and/or `rearm`, from its first episode, so

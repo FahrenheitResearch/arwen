@@ -11,7 +11,9 @@ use std::io::{Read, Write};
 pub const CONTRACT: &str = "arwen.gdt101-regional-remap.v1";
 pub const MAX_TARGET: usize = 2_000_000;
 pub const MAX_SOURCE: usize = 20_000_000;
-const PLAN_MAGIC: &[u8; 8] = b"GDT101P2";
+// P3 adds the unpublished-cell inventory after the stencils; a P2 plan has
+// no such list and is refused rather than read as a mesh with none.
+const PLAN_MAGIC: &[u8; 8] = b"GDT101P3";
 const EARTH_RADIUS_M: f64 = 6_371_229.;
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -136,6 +138,14 @@ pub struct Plan {
     pub source_grid: Vec<u8>,
     pub target: Target,
     pub stencils: Vec<Stencil>,
+    /// Cells the land-fraction record leaves missing, ascending.  A
+    /// limited-area mesh publishes its lateral boundary strip as missing in
+    /// every record (DWD's regional ICON masks 16,968 of 542,040 cells), so
+    /// those cells have no land/water class and no values: they are never
+    /// donors, and a field that publishes a value at one of them is refused
+    /// in `apply`, because the plan could not classify that cell.  Empty for
+    /// a mesh whose land fraction is complete, which is every global mesh.
+    pub unpublished: Vec<u32>,
 }
 impl Plan {
     pub fn validate(&self) -> Result<()> {
@@ -150,6 +160,12 @@ impl Plan {
         {
             return Err("invalid plan source grid, count or stencil inventory".into());
         }
+        if self.unpublished.len() + 4 > self.source_count
+            || self.unpublished.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.unpublished.last().map_or(false, |&id| id as usize >= self.source_count)
+        {
+            return Err("invalid unpublished-cell inventory".into());
+        }
         for s in &self.stencils {
             if s.land_bits > 15 || s.ids.iter().any(|&id| id as usize >= self.source_count)
                 || s.weights.iter().any(|&w| !w.is_finite() || w < 0. || w > 1.)
@@ -161,6 +177,9 @@ impl Plan {
                 for j in i + 1..4 {
                     if s.ids[i] == s.ids[j] { return Err("duplicate donor in plan".into()); }
                 }
+            }
+            if s.ids.iter().any(|id| self.unpublished.binary_search(id).is_ok()) {
+                return Err("an unpublished cell is a donor in the plan".into());
             }
         }
         Ok(())
@@ -182,6 +201,8 @@ impl Plan {
             for x in s.weights { w.write_all(&x.to_le_bytes()).map_err(|e| e.to_string())?; }
             w.write_all(&[s.land_bits]).map_err(|e| e.to_string())?;
         }
+        put_u32(&mut w, self.unpublished.len() as u32)?;
+        for &id in &self.unpublished { put_u32(&mut w, id)?; }
         w.flush().map_err(|e| e.to_string())
     }
     pub fn read<R: Read>(mut r: R) -> Result<Self> {
@@ -213,11 +234,15 @@ impl Plan {
             r.read_exact(&mut flag).map_err(|e| e.to_string())?;
             stencils.push(Stencil { ids, weights, land_bits: flag[0] });
         }
+        let count = get_u32(&mut r)? as usize;
+        if count + 4 > source_count { return Err("invalid unpublished-cell count".into()); }
+        let mut unpublished = Vec::with_capacity(count);
+        for _ in 0..count { unpublished.push(get_u32(&mut r)?); }
         let mut extra = [0];
         if r.read(&mut extra).map_err(|e| e.to_string())? != 0 {
             return Err("trailing bytes after the remap plan".into());
         }
-        let plan = Self { source_count, centre, source_grid, target, stencils };
+        let plan = Self { source_count, centre, source_grid, target, stencils, unpublished };
         plan.validate()?;
         Ok(plan)
     }
@@ -243,12 +268,24 @@ pub fn build_plan(lat: &[f64], lon: &[f64], land: &[f64], source_grid: Vec<u8>,
     {
         return Err("invalid source array lengths or search radius".into());
     }
-    if land.iter().any(|&x| !x.is_finite() || !(0.0..=1.0).contains(&x)) {
-        return Err("native land fractions are missing or outside [0,1]".into());
+    if land.iter().any(|&x| x.is_infinite() || (x.is_finite() && !(0.0..=1.0).contains(&x))) {
+        return Err("native land fractions are outside [0,1]".into());
     }
+    // A cell whose land fraction is missing is a cell the producer does not
+    // publish (a limited-area mesh's lateral boundary strip).  It has no
+    // land/water class for the class-aware methods to read, so it is left
+    // out of the donor search entirely and recorded, and `apply` refuses a
+    // field that publishes a value there.  The coordinates are still read
+    // for every cell: they travel complete in their own records.
     let mut points = Vec::with_capacity(lat.len());
+    let mut unpublished = Vec::new();
     for i in 0..lat.len() {
-        points.push(Point { xyz: xyz(lat[i], lon[i])?, id: i as u32 });
+        let position = xyz(lat[i], lon[i])?;
+        if land[i].is_nan() { unpublished.push(i as u32); continue; }
+        points.push(Point { xyz: position, id: i as u32 });
+    }
+    if points.len() < 4 {
+        return Err("fewer than four native cells carry a land fraction".into());
     }
     partition(&mut points, 0);
     let max_d2 = (2. * (max_distance_m / EARTH_RADIUS_M / 2.).sin()).powi(2);
@@ -276,7 +313,7 @@ pub fn build_plan(lat: &[f64], lon: &[f64], land: &[f64], source_grid: Vec<u8>,
             stencils.push(Stencil { ids, weights, land_bits });
         }
     }
-    let plan = Plan { source_count: lat.len(), centre, source_grid, target, stencils };
+    let plan = Plan { source_count: lat.len(), centre, source_grid, target, stencils, unpublished };
     plan.validate()?;
     Ok(plan)
 }
@@ -296,6 +333,11 @@ impl Method {
 pub fn apply(plan: &Plan, field: &[f64], method: Method) -> Result<Vec<f64>> {
     plan.validate()?;
     if field.len() != plan.source_count { return Err("field/plan point-count mismatch".into()); }
+    if let Some(&id) = plan.unpublished.iter().find(|&&id| field[id as usize].is_finite()) {
+        return Err(format!(
+            "field publishes native cell {id}, which the land-fraction record leaves missing; \
+             the plan has no land/water class for it"));
+    }
     let mut out = Vec::with_capacity(plan.target.len());
     for (index, s) in plan.stencils.iter().enumerate() {
         let target_land = s.land_bits & 1 != 0;
@@ -522,6 +564,42 @@ mod tests {
     }
     #[test] fn damaged_weights_are_rejected() {let mut p=plan();p.stencils[0].weights[0]=f64::NAN;assert!(p.validate().is_err());}
     #[test] fn source_grid_count_cannot_drift() {let mut p=plan();p.source_count=5;assert!(p.validate().is_err());}
+    /// A limited-area mesh: cell 0 sits exactly on a target point but is
+    /// missing from the land-fraction record, the way a lateral boundary
+    /// strip is published.
+    fn masked_mesh() -> Plan {
+        build_plan(&[0.,0.,0.125,0.125,0.0625,0.25], &[0.,0.125,0.,0.125,0.0625,0.25],
+                   &[f64::NAN,1.,0.,1.,0.,1.], native_grid(6),78,target(),80_000.).unwrap()
+    }
+    #[test] fn unpublished_cells_are_recorded_and_never_donors() {
+        let p=masked_mesh();
+        assert_eq!(p.unpublished, vec![0]);
+        assert!(p.stencils.iter().all(|s| !s.ids.contains(&0)));
+        let mut bytes=Vec::new(); p.write(&mut bytes).unwrap();
+        assert_eq!(Plan::read(&bytes[..]).unwrap().unpublished, vec![0]);
+    }
+    #[test] fn a_field_masked_where_the_land_fraction_is_masked_remaps() {
+        let out=apply(&masked_mesh(),&[f64::NAN,1.,2.,3.,4.,5.],Method::Idw4).unwrap();
+        assert!(out.iter().all(|x| x.is_finite() && (1.0..=5.0).contains(x)));
+    }
+    #[test] fn a_field_that_publishes_an_unpublished_cell_is_refused() {
+        assert!(apply(&masked_mesh(),&[9.,1.,2.,3.,4.,5.],Method::Idw4).is_err());
+    }
+    #[test] fn a_plan_naming_an_unpublished_donor_is_invalid() {
+        let mut p=masked_mesh(); p.unpublished=vec![p.stencils[0].ids[0]];
+        assert!(p.validate().is_err());
+    }
+    #[test] fn fewer_than_four_published_cells_or_a_bad_fraction_are_refused() {
+        let (lat,lon)=([0.,0.,0.125,0.125],[0.,0.125,0.,0.125]);
+        assert!(build_plan(&lat,&lon,&[f64::NAN,1.,1.,1.],native_grid(4),78,target(),80_000.).is_err());
+        assert!(build_plan(&lat,&lon,&[1.5,1.,1.,1.],native_grid(4),78,target(),80_000.).is_err());
+        assert!(build_plan(&lat,&lon,&[f64::INFINITY,1.,1.,1.],native_grid(4),78,target(),80_000.).is_err());
+    }
+    #[test] fn a_previous_plan_version_is_refused() {
+        let mut bytes=Vec::new(); plan().write(&mut bytes).unwrap();
+        bytes[..8].copy_from_slice(b"GDT101P2");
+        assert!(Plan::read(&bytes[..]).is_err());
+    }
     #[test] fn holes_in_geometry_are_not_extrapolated() {
         assert!(build_plan(&[30.,30.,30.125,30.125], &[0.,0.125,0.,0.125],&[1.;4],native_grid(4),78,target(),80_000.).is_err());
     }

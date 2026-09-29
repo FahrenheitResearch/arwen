@@ -56,13 +56,20 @@ If a WPS_GEOG tree already exists on the machine, skip this and pass
 
 ```bash
 gpuwm domain --point 35.3,-97.5 --card 12gb \
-  --source gfs --cycle latest --hours 3 --out configs/cpuwalk.toml
+  --source gfs --cycle latest --hours 3 --out configs/cpuwalk.toml \
+  --data-dir data/cpuwalk --explain
 ```
 
 **`--card` is what makes this work.** Declaring a tier tells the wizard
 to size for a machine that need not be this one, so it never probes for
 a local device. Omit it and the wizard measures the local card — and on
 a box with none, refuses and names the choice.
+
+**`--explain` is what prints step 2.** Without it the wizard ends with
+the one `gpuwm go` line that fetches, prepares and forecasts in a
+single run, which needs a card. With it, the wizard prints the separate
+`gpuwm fetch` line this page runs next. `--data-dir data/cpuwalk` makes
+that line download into the folder the later steps read.
 
 Measured: 2.2 s. It writes `cpuwalk.toml` and `cpuwalk.namelist.wps`,
 runs the memory preflight against the declared 12 GiB, and prints the
@@ -72,11 +79,16 @@ next commands with the area and cycle already filled in.
 
 ```bash
 gpuwm fetch --source gfs --cycle 2026-08-18T18 --hours 3 \
-  --area 7.89,-132.71,61.63,-62.29 --out data/cpuwalk
+  --area 7.89,-132.71,61.63,-62.29 --p-top-pa 5000 --out data/cpuwalk
 ```
 
-Paste the line step 1 printed — the area and the resolved cycle are its
-own. Measured: 2 files, 21.3 MB, 7.5 s.
+Paste the `gpuwm fetch` line step 1 printed as step 1 of its `next:`
+list: the area, the resolved cycle and the model top are its own, and
+its `--out` is the `data/cpuwalk` folder, spelled as a full path. `--p-top-pa 5000` is the config's 50 hPa top:
+without it the fetch stops at 100 hPa and step 3 refuses the folder.
+Measured: 2 files, 21.3 MB, 7.5 s on the 100 hPa ladder this walk first
+ran with. The same box on the 2026-09-27 12Z cycle took 21.0 MB without
+the flag and 22.7 MB with it, in 9.5 s.
 
 Then bind those bytes to the config, which is what the front door reads:
 

@@ -771,7 +771,11 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # of the generator from this one.
     # The terminal, Zarr reader and NetCDF reader have their own source
     # build ladders. The NetCDF contract includes fixed-width characters.
+    # The CPU preprocessing library resolves through its own ladder
+    # (gpuwm.ingest.cpu_backend) and declares the masked surface chain,
+    # which a build predating it loads without and cannot map land with.
     assert extra == {"region_global_dealias", "netcdf_writer",
+                     "gpuwm_preprocess_cpu",
                      "gpuwm_mapped_engine", "static_fields", "obs_regrid",
                      "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
                      "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui", "rw_zarr", "rw_netcdf"}
@@ -1005,23 +1009,13 @@ _PLACEHOLDER_WORD = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 #: On a Linux runner that branch is the one under test.
 _POWERSHELL_ONLY = ("New-Item", "Copy-Item", "-ItemType", "$env:")
 
-def _frozen_shell_constants():
-    """(module, name, value) for every module-level build hint.
+def _package_modules():
+    """Every importable module of the package, found by walking it.
 
-    Found by importing every module in the package and searching it, not
-    by naming modules: the trap is a build hint frozen at import, and a
-    hand-written list is exactly what does not mention a new one.
-
-    This used to search a three-name tuple, which closed half the trap.
-    A new CONSTANT inside `gpuwm.bridges` would have been caught; a new
-    MODULE was invisible, and that is the half that fired.  The 1.6 radar
-    wave added `gpuwm.obs.nexrad` and `gpuwm.obs.frontdoor`, both of
-    which freeze a `tools/rustwx` hint at import.  Neither was re-derived
-    when a test forced the other platform's shell, so on Windows the
-    frozen `;` spelling passed both directions and on the ubuntu publish
-    runner the frozen `&&` spelling was measured against "PowerShell
-    cannot parse '&&'" -- eight reds in the first CI job, after the tag.
-    Walking the package is what makes a sixth module impossible to miss.
+    Walked, not named: a hand-written list is exactly what does not
+    mention a new module.  The 1.6 radar wave added `gpuwm.obs.nexrad`
+    and `gpuwm.obs.frontdoor` beside a three-name list, and neither was
+    looked at.
     """
 
     import importlib
@@ -1029,49 +1023,52 @@ def _frozen_shell_constants():
 
     import gpuwm
 
-    found = []
     for info in pkgutil.walk_packages(gpuwm.__path__, prefix="gpuwm."):
         try:
-            module = importlib.import_module(info.name)
+            yield info.name, importlib.import_module(info.name)
         except Exception:      # optional deps (cupy, wrf-rust) may be absent
             continue
+
+
+def _frozen_shell_constants():
+    """(module, name, value) for every build hint stored at import.
+
+    A module-level string carrying `cargo build ` was spelled by the
+    shell rule of the moment its module was imported, and nothing that
+    forces the rule later can move it.
+    """
+
+    found = []
+    for module_name, module in _package_modules():
         for name, value in vars(module).items():
             if (name.isupper() and isinstance(value, str)
                     and "cargo build " in value):
-                found.append((info.name, name, value))
+                found.append((module_name, name, value))
+    return found
+
+
+def _served_build_hints():
+    """(module, value) for every module that answers `CARGO_BUILD_HINT`."""
+
+    found = []
+    for module_name, module in _package_modules():
+        value = getattr(module, "CARGO_BUILD_HINT", None)
+        if isinstance(value, str):
+            found.append((module_name, value))
     return found
 
 
 def _force_shell(monkeypatch, windows):
-    """Put the remedy generators on ``windows``'s shell, completely.
+    """Put the remedy generators on ``windows``'s shell.
 
-    ``bridges.WINDOWS_SHELL`` alone is not the whole dimension.  Three
-    modules compute a build hint from it *at import*, so a test that
-    flips the flag and then reaches one of those constants is judging a
-    remedy generated for the host against the rules of the other
-    platform.  On a Windows box that mistake is invisible -- the frozen
-    hint already spells `;` -- and on the ubuntu publish runner it
-    failed the cut: `cd tools/grib1_bridge && cargo build ... && cd
-    ../..` measured against "PowerShell cannot parse '&&'".
-
-    One helper, so a forcing site cannot do half the job.
+    The flag is the whole dimension: every build hint is spelled when it
+    is read (`gpuwm.bridges.lazy_build_hints`), and
+    `test_no_module_stores_a_build_hint_at_import` keeps it that way.
     """
-
-    import importlib
 
     from gpuwm import bridges
 
     monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
-
-    # Re-derive EVERY frozen hint the package actually carries, found by
-    # walking it, so a module added later is forced too rather than being
-    # judged in the host's spelling against the other platform's rules.
-    # Naming the modules here is what let 1.6's two new ones through.
-    for module_name, name, value in _frozen_shell_constants():
-        crate = (bridges.RUSTWX_CRATE_RELATIVE if "rustwx" in value
-                 else bridges.CRATE_RELATIVE)
-        monkeypatch.setattr(importlib.import_module(module_name), name,
-                            bridges.cargo_build_one_liner(crate))
 
 
 def _force_bare_estate(monkeypatch):
@@ -1100,31 +1097,50 @@ def _force_bare_estate(monkeypatch):
     monkeypatch.setattr(cpu_backend, "CpuPreprocessBackend", _no_library)
 
 
-@pytest.mark.parametrize("windows", (False, True))
-def test_the_shell_forcing_helper_re_derives_every_frozen_hint(
-        monkeypatch, windows):
-    """Forcing the shell must move EVERY constant built from it.
+def test_no_module_stores_a_build_hint_at_import():
+    """THE BREAKAGE: a build hint computed at import keeps the host's
+    spelling, so a test forcing the other shell judged the host's line
+    against the other shell's rules.  On a Windows box the frozen `;`
+    passed both directions, and on the ubuntu publish runner the frozen
+    `&&` was measured against "PowerShell cannot parse '&&'": eight reds
+    in the first CI job, after the tag.  Eight modules still stored one
+    until each was served through `bridges.lazy_build_hints`."""
 
-    The failure this pins is not hypothetical: it is the one that ended
-    three release cuts' worth of CI on `&&`.  Both arms run here, so
-    whichever platform the suite runs on, the other one is exercised.
+    assert _frozen_shell_constants() == []
+
+
+#: The modules that print a cargo build line.  A floor, so the search
+#: below cannot pass by finding nothing; the walk finds any new one.
+_BUILD_HINT_MODULES = frozenset({
+    "gpuwm.bridges", "gpuwm.rustwx", "gpuwm.rustwx_fetch",
+    "gpuwm.rustwx_lanes", "gpuwm.rustwx_static", "gpuwm.obs.nexrad",
+    "gpuwm.obs.frontdoor", "gpuwm.mpas_mesh",
+})
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_every_build_hint_follows_the_forced_shell(monkeypatch, windows):
+    """Forcing the shell must move EVERY build hint the package prints.
+
+    Both arms run here, so whichever platform the suite runs on, the
+    other one is exercised.
     """
 
-    before = _frozen_shell_constants()
-    assert before, (
-        "the search found no build hints at all; it has stopped looking "
-        "where they live, and this guard is now vacuous")
-
     _force_shell(monkeypatch, windows)
+    served = _served_build_hints()
+    missing = _BUILD_HINT_MODULES - {name for name, _ in served}
+    assert not missing, (
+        f"the search did not reach {sorted(missing)}; it has stopped "
+        "looking where the build hints live")
 
     separator = ";" if windows else "&&"
     stale = "&&" if windows else ";"
-    for module_name, name, value in _frozen_shell_constants():
+    for module_name, value in served:
         assert separator in value, (
-            f"{module_name}.{name} was not re-derived for "
+            f"{module_name}.CARGO_BUILD_HINT is not spelled for "
             f"{'windows' if windows else 'posix'}: {value!r}")
         assert stale not in value, (
-            f"{module_name}.{name} still carries the other shell's "
+            f"{module_name}.CARGO_BUILD_HINT carries the other shell's "
             f"separator: {value!r}")
 
 
@@ -1652,8 +1668,7 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
             (root / "tools" / crate / "Cargo.toml").write_text(
                 "[package]\n", encoding="utf-8")
 
-    # The shell under test -- flag and the three hints frozen from it at
-    # import, which is one indivisible move (_force_shell).
+    # The shell under test (_force_shell).
     _force_shell(monkeypatch, windows)
     monkeypatch.setattr(bridges, "cargo_is_installed", lambda: False)
 
@@ -1784,7 +1799,7 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
     # remedies this can print are real: with a major in hand doctor
     # names the ONE matching extra, without one it prints both and
     # defaults to neither.  Until this parameter existed the arrangement
-    # was whatever the HOST happened to be -- a driver on Drew's box, no
+    # was whatever the HOST happened to be -- a driver on the development workstation, no
     # driver on the runner -- so the battery and CI were testing
     # different code and could disagree, which they did.  Both now run
     # everywhere, and the suppression env var cannot decide the outcome.
@@ -2295,6 +2310,7 @@ def test_the_provenance_check_reports_the_path_a_run_will_take():
     assert check.status == "verified"
     assert any(source in check.detail
                for source in ("git", "installed-wheel-record",
+                              "installed-source-content",
                               "gpuwm-native-distribution-manifest"))
 
 

@@ -101,14 +101,17 @@ def test_policy_accounts_for_every_native_test_and_exact_functional_controls(pol
     actual = set(re.findall(r"#\[test\]\s*fn\s+(\w+)\s*\(", source))
     functional = set(policy["rust_functional_tests"])
     qualification = set(policy["rust_qualification_tests"])
-    assert functional == {"grid_refusals_name_the_breakage", "corridor_crop_bit_equal_and_refuses_off_corridor"}
-    assert len(actual) == 14 and len(qualification) == 12
+    assert functional == {"grid_refusals_name_the_breakage", "corridor_crop_bit_equal_and_refuses_off_corridor",
+        "wps32_twin_states_bit_equal", "translated_twin_delegates_bit_equal",
+        "portable_sampling_surfaces_bit_equal", "sampling_surfaces_bit_equal",
+        "portable_arrays_remain_bounded_by_numpy"}
+    assert len(actual) == 16 and len(qualification) == 9
     assert not functional & qualification
     assert actual == functional | qualification
-    assert len(policy["rust_functional_tests"] + policy["rust_qualification_tests"]) == 14
+    assert len(policy["rust_functional_tests"] + policy["rust_qualification_tests"]) == 16
 
 
-def test_only_three_exact_python_checks_receive_the_qualification_marker(policy):
+def test_only_three_declared_python_checks_receive_the_qualification_marker(policy):
     tree = ast.parse(PYTHON_SOURCE.read_text(encoding="utf-8"))
     marker = "static_platform_qualification"
     def marked(nodes):
@@ -126,15 +129,26 @@ def test_only_three_exact_python_checks_receive_the_qualification_marker(policy)
                 observed.add(f"tests/test_static_rust_parity.py::{cls.name}::{method.name}")
     assert observed == set(policy["python_tests"])
     assert len(observed) == 3
+    full_build = ("tests/test_static_rust_parity.py::TestLane2BuildParity::"
+                  "test_build_static_matches_numpy_with_measured_bounds")
+    assert full_build in observed
     assert policy["python_allowed_skips"] == {
-        "tests/test_static_rust_parity.py::TestLane2BuildParity::test_build_static_bytes_equal":
-        "WPS_GEOG reference tree not present"}
+        full_build: "WPS_GEOG reference tree not present"}
 
 
 def test_complete_native_success_is_passed(runner, policy):
     report = runner.classify_native(_native_log(policy), 0, policy, _rust_source(policy))
     assert report["status"] == "passed"
     assert not report["operational_errors"]
+
+
+@pytest.mark.parametrize("name", ["wps32_twin_states_bit_equal",
+    "translated_twin_delegates_bit_equal", "portable_sampling_surfaces_bit_equal"])
+def test_portable_assertions_cannot_be_downgraded_to_platform_mismatch(runner, policy, name):
+    source = _rust_source(policy)
+    line = _rust_line(source, "assert_f64_bits", "assert!(")
+    output = _native_log(policy, failures={name: (line, "assertion failed: portable bytes differ")})
+    assert runner.classify_native(output, 101, policy, source)["status"] == "operational_failure"
 
 
 @pytest.mark.parametrize("windows_path", [False, True])
@@ -179,7 +193,7 @@ def test_native_run_completeness_and_exit_status_remain_strict(runner, policy, k
     if kind == "ignored": options["ignored"] = [names[-1]]
     output = _native_log(policy, **options)
     if kind == "zero": output = "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
-    if kind == "summary": output = output.replace("14 passed;", "13 passed;")
+    if kind == "summary": output = output.replace("16 passed;", "15 passed;")
     if kind == "exit": code = 1
     if kind == "build": output, code = "error: could not compile `static-fields` due to previous error", 101
     assert runner.classify_native(output, code, policy, _rust_source(policy))["status"] == "operational_failure"
@@ -223,13 +237,23 @@ def test_python_harness_failures_are_not_qualification_differences(runner, polic
     assert runner.classify_python(path, code, policy)["status"] == "operational_failure"
 
 
-def test_only_the_named_missing_wps_tree_skip_is_allowed(runner, policy, tmp_path):
-    allowed = next(iter(policy["python_allowed_skips"]))
-    reason = policy["python_allowed_skips"][allowed]
-    path = _junit(tmp_path, policy, skips={allowed:reason + " at /fixtures/WPS_GEOG"})
-    report = runner.classify_python(path, 0, policy)
-    assert report["status"] != "operational_failure"
-    assert report["skipped"]
-    for name, message in [(allowed, "bridge is missing"), (policy["python_tests"][0], reason)]:
-        path = _junit(tmp_path, policy, skips={name:message})
-        assert runner.classify_python(path, 0, policy)["status"] == "operational_failure"
+def test_grid_qualification_skip_is_refused(runner, policy, tmp_path):
+    name = policy["python_tests"][0]
+    path = _junit(tmp_path, policy, skips={name: "reference is missing"})
+    assert runner.classify_python(path, 0, policy)["status"] == "operational_failure"
+
+
+def test_only_the_named_full_build_missing_geography_skip_is_accepted(runner, policy, tmp_path):
+    name, = policy["python_allowed_skips"]
+    reason = policy["python_allowed_skips"][name]
+    path = _junit(tmp_path, policy, skips={name: reason + " at fixture"})
+    assert runner.classify_python(path, 0, policy)["status"] == "passed"
+    path = _junit(tmp_path, policy, skips={name: "Rust bridge unavailable"})
+    assert runner.classify_python(path, 0, policy)["status"] == "operational_failure"
+    # The declared reason belongs to its one test name.  A grid check
+    # skipped with that same reason is still a qualification that did not
+    # run, and a runner that matched the reason alone would pass it.
+    grid = policy["python_tests"][0]
+    assert grid != name
+    path = _junit(tmp_path, policy, skips={grid: reason})
+    assert runner.classify_python(path, 0, policy)["status"] == "operational_failure"

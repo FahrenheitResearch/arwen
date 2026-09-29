@@ -1,27 +1,28 @@
 """A land column carrying the water soil category, end to end.
 
-The reopening battery prepared native HRRR RUC cleanly and then died on the
-very first surface call with ``ValueError: mavail must be finite``, zero model
-time advanced.  All 31 non-finite columns of 30,720 carried ``SOILTYP = 14``
-(water) while packed into the land execution mask -- the Lake Erie shoreline,
-where a land ``LU_INDEX`` meets a water ``SCT_DOM``.
+Native HRRR RUC once prepared cleanly and then died on the very first surface
+call with ``ValueError: mavail must be finite``, zero model time advanced.
+All 31 non-finite columns of 30,720 carried ``SOILTYP = 14`` (water) while
+packed into the land execution mask -- the Lake Erie shoreline, where a land
+``LU_INDEX`` meets a water ``SCT_DOM``.
 
-WRF never lets that column reach the solver.  ``real.exe``'s final
-landmask/category reconciliation
-(``dyn_em/module_initialize_real.F:3608-3650``) rewrites it -- to land
-(``IVGTYP 5``, ``ISLTYP 8``) when it has a soil temperature, to water when it
-has an SST, and aborts with ``mismatch_landmask_ivgtyp`` when it has neither.
-RUC LSM assumes that and never re-verifies it: ``soilvegin``
-(``phys/module_sf_ruclsm.F:6973-6984``) has no ``else`` for ``isltyp == 14``,
-so the column keeps the zeroed ``intent(out)`` parameters of
-``:6917-6926`` -- ``ref == qmin == 0`` -- and ``:913`` evaluates ``0./0.``
-into ``MAVAIL``.  The gpuwm transcription reaches the same arithmetic at
-``gpuwm/core/ruc.py:9231-9240``.
+WRF never lets that column reach the solver.  real.exe matches the soil
+category to the land mask (``dyn_em/module_initialize_real.F:3108-3131``,
+``surface_input_source = 3``): a land column whose soil is water takes silty
+clay loam (``ISLTYP 8``) and keeps its land-use category as ``IVGTYP``.  Its
+final consistency pass (``:3608-3650``) then finds nothing to change; that
+pass's own arms (land ``IVGTYP 5``/``ISLTYP 8`` from a soil temperature, water
+from an SST, ``mismatch_landmask_ivgtyp`` with neither) are transcribed and
+tested directly here.  RUC LSM assumes the categories match and never
+re-verifies it: ``soilvegin`` (``phys/module_sf_ruclsm.F:6973-6984``) has no
+``else`` for ``isltyp == 14``, so the column keeps the zeroed ``intent(out)``
+parameters of ``:6917-6926`` -- ``ref == qmin == 0`` -- and ``:913``
+evaluates ``0./0.`` into ``MAVAIL``.  The gpuwm transcription reaches the same
+arithmetic at ``gpuwm/core/ruc.py:9231-9240``.
 
 So the fix belongs where WRF puts it, at initialization, and this file proves
-both halves: the reconciled column runs a finite first surface step, and the
-UNreconciled column -- the battery's exact input -- still kills it.  A gate
-nobody has seen fail is not evidence.
+both halves: the matched column runs a finite first surface step, and the
+unmatched column still kills it.
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from gpuwm.core.landuse import initialize_landuse
+from gpuwm.core.landuse import (_reconcile_landmask_soil_category,
+                                initialize_landuse)
 from gpuwm.core.ruc import ruc_land_surface_step
 from gpuwm.core.ruc_runtime import (C1SN, C2SN, DEFINED_ILNB, ISNCOVR_OPT,
                                     RucRuntimeParameters)
@@ -121,24 +123,24 @@ def _shoreline_domain(**overrides):
     return initialize_landuse(**inputs)
 
 
-def test_real_reconciles_a_land_column_carrying_the_water_soil_category():
-    """dyn_em/module_initialize_real.F:3615-3624, the warm-soil arm."""
+def test_real_matches_a_land_column_carrying_the_water_soil_category():
+    """dyn_em/module_initialize_real.F:3108-3131, before the final pass."""
 
     landuse = _shoreline_domain(
         soil_temperature=np.full((_NSOIL, 1, 5), 291.0, np.float32))
 
-    # The mismatched column becomes WRF's artificial silty clay loam under
-    # cropland/grassland mosaic, and stays land.
+    # The mismatched column takes WRF's artificial silty clay loam, stays
+    # land, and keeps its own land-use category as its vegetation.
     np.testing.assert_array_equal(landuse.isltyp, [[8, 14, 4, 6, 11]])
     np.testing.assert_array_equal(
         landuse.ivgtyp,
-        [[5, _ISWATER, _SHORELINE_VEGETATION, _SHORELINE_VEGETATION,
-          _SHORELINE_VEGETATION]])
+        [[_SHORELINE_VEGETATION, _ISWATER, _SHORELINE_VEGETATION,
+          _SHORELINE_VEGETATION, _SHORELINE_VEGETATION]])
     np.testing.assert_array_equal(landuse.xland, [[1.0, 2.0, 1.0, 1.0, 1.0]])
     np.testing.assert_array_equal(landuse.landmask, [[1.0, 0.0, 1.0, 1.0, 1.0]])
 
     # Pure water and the three ordinary land categories are untouched: the
-    # reconciliation is not a blanket rewrite.
+    # match is not a blanket rewrite.
     assert landuse.isltyp[0, 1] == _WATER_SOIL
     assert landuse.ivgtyp[0, 1] == _ISWATER
 
@@ -157,37 +159,72 @@ def test_a_water_column_keeps_the_water_soil_category():
     np.testing.assert_array_equal(landuse.xland, [[2.0, 2.0]])
 
 
-def test_a_mismatched_column_with_only_an_sst_becomes_water():
-    """dyn_em/module_initialize_real.F:3625-3630, the SST arm."""
+@pytest.mark.parametrize("evidence", [
+    dict(soil_temperature=np.zeros((_NSOIL, 1, 2), np.float32),
+         sst=np.array([[290.0, 290.0]])),
+    dict(soil_temperature=np.zeros((_NSOIL, 1, 2), np.float32)),
+    dict(),
+], ids=["cold-soil-warm-sea", "cold-soil", "no-evidence"])
+def test_the_match_needs_no_evidence_and_never_turns_land_to_water(evidence):
+    """The land column is decided by its land mask alone, as real.exe does.
+
+    Neither a cold soil, nor a warm sea, nor the absence of both reaches
+    the final pass: the match has already given the column a land soil.
+    """
 
     landuse = _shoreline_domain(
         lu_index=np.array([[_SHORELINE_VEGETATION, _SHORELINE_VEGETATION]],
                           np.int32),
         soil_type=np.array([[_WATER_SOIL, 6]], np.int32),
-        landmask=np.array([[1.0, 1.0]]),
-        soil_temperature=np.zeros((_NSOIL, 1, 2), np.float32),
-        sst=np.array([[290.0, 290.0]]))
+        landmask=np.array([[1.0, 1.0]]), **evidence)
 
     np.testing.assert_array_equal(
-        landuse.ivgtyp, [[_ISWATER, _SHORELINE_VEGETATION]])
-    np.testing.assert_array_equal(landuse.isltyp, [[14, 6]])
-    np.testing.assert_array_equal(landuse.xland, [[2.0, 1.0]])
+        landuse.ivgtyp, [[_SHORELINE_VEGETATION, _SHORELINE_VEGETATION]])
+    np.testing.assert_array_equal(landuse.isltyp, [[8, 6]])
+    np.testing.assert_array_equal(landuse.xland, [[1.0, 1.0]])
 
 
-def test_a_mismatched_column_with_no_evidence_is_refused_like_wrf():
-    """dyn_em/module_initialize_real.F:3631-3641, ``wrf_error_fatal``.
+def _final_pass(*, soil_temperature=None, sst=None):
+    """real.exe's final pass on one land column still holding water soil."""
 
-    WRF aborts rather than guessing, and so does this.  No clamp is invented
-    for a column the source refuses to run.
-    """
+    ivgtyp = np.array([[_SHORELINE_VEGETATION, _SHORELINE_VEGETATION]],
+                      np.int32)
+    soil = np.array([[_WATER_SOIL, 6]], np.int32)
+    land = _reconcile_landmask_soil_category(
+        ivgtyp, soil, ivgtyp != _ISWATER, iswater=_ISWATER, isoilwater=14,
+        soil_temperature=soil_temperature, sst=sst, shape=(1, 2))
+    return ivgtyp, soil, land
+
+
+def test_the_final_pass_makes_a_warm_soil_column_land():
+    """dyn_em/module_initialize_real.F:3615-3624, the warm-soil arm."""
+
+    ivgtyp, soil, land = _final_pass(
+        soil_temperature=np.full((_NSOIL, 1, 2), 291.0, np.float32))
+    np.testing.assert_array_equal(ivgtyp, [[5, _SHORELINE_VEGETATION]])
+    np.testing.assert_array_equal(soil, [[8, 6]])
+    np.testing.assert_array_equal(land, [[True, True]])
+
+
+def test_the_final_pass_makes_a_column_with_only_an_sst_water():
+    """dyn_em/module_initialize_real.F:3625-3630, the SST arm."""
+
+    ivgtyp, soil, land = _final_pass(
+        soil_temperature=np.zeros((_NSOIL, 1, 2), np.float32),
+        sst=np.array([[290.0, 290.0]]))
+    np.testing.assert_array_equal(
+        ivgtyp, [[_ISWATER, _SHORELINE_VEGETATION]])
+    np.testing.assert_array_equal(soil, [[14, 6]])
+    np.testing.assert_array_equal(land, [[False, True]])
+
+
+def test_the_final_pass_refuses_a_column_with_no_evidence_like_wrf():
+    """dyn_em/module_initialize_real.F:3631-3641, ``wrf_error_fatal``."""
 
     with pytest.raises(ValueError, match="mismatch_landmask_ivgtyp"):
-        _shoreline_domain(
-            soil_temperature=np.zeros((_NSOIL, 1, 5), np.float32))
-
-    # Omitting the evidence entirely is the same answer, not a silent pass.
+        _final_pass(soil_temperature=np.zeros((_NSOIL, 1, 2), np.float32))
     with pytest.raises(ValueError, match="mismatch_landmask_ivgtyp"):
-        _shoreline_domain()
+        _final_pass()
 
 
 def test_the_reconciled_shoreline_column_runs_a_finite_first_surface_step():
@@ -195,8 +232,8 @@ def test_the_reconciled_shoreline_column_runs_a_finite_first_surface_step():
 
     ``mavail must be finite`` was raised out of
     ``ruc_surface_temperature_step`` before any model time advanced.  The
-    reconciled categories run that same call to completion; the raw ones the
-    battery fed it still do not.
+    matched categories run that same call to completion; the raw ones still
+    do not.
     """
 
     landuse = _shoreline_domain(
@@ -213,9 +250,8 @@ def test_the_reconciled_shoreline_column_runs_a_finite_first_surface_step():
     availability = np.asarray(reconciled.mavail, dtype=np.float64)
     assert np.all((availability >= 0.0) & (availability <= 1.0))
 
-    # Control: the unreconciled shoreline column, exactly as the battery's
-    # HRRR preparation handed it over -- a land XLAND with SOILTYP 14 and an
-    # ordinary incoming MAVAIL.  The NaN is manufactured inside the driver by
+    # Control: the unmatched shoreline column -- a land XLAND with SOILTYP 14
+    # and an ordinary incoming MAVAIL.  The NaN is manufactured inside the driver by
     # ``ref - qmin == 0``, not supplied.
     with pytest.raises(ValueError, match="mavail must be finite"):
         _first_surface_step(

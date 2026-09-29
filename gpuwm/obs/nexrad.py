@@ -27,7 +27,8 @@ from pathlib import Path
 import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           cargo_build_one_liner, default_bridge_dir,
+                           default_bridge_dir, lazy_build_hints,
+                           rustwx_build_hint,
                            accept_resolved, executable_name,
                            packaged_bridge_dir)
 
@@ -101,7 +102,10 @@ LIVE_DEFAULT_BUCKET = "unidata-nexrad-level2-chunks"
 
 _PROBE_TIMEOUT_S = 20
 
-CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+#: ``CARGO_BUILD_HINT``: the one-liner that builds the decoder, from a
+#: checkout root, spelled for the shell rule when it is read.
+__getattr__ = lazy_build_hints(
+    __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
 
 def crate_dir() -> Path:
@@ -151,7 +155,7 @@ def nexrad_remedy() -> str:
     return artifact_remedy(
         env_var=NEXRAD_ENV, filename=executable_name(NEXRAD_NAME),
         subject="the NEXRAD Level-II front door",
-        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=CARGO_BUILD_HINT)
+        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=rustwx_build_hint())
 
 
 def probe_nexrad_bin(path: Path) -> tuple[bool, str]:
@@ -175,7 +179,7 @@ def probe_nexrad_bin(path: Path) -> tuple[bool, str]:
     if abi.returncode != 0 or (abi.stdout or "").strip() != NEXRAD_ABI_MARKER:
         return False, (f"{transcript} -- --abi does not match the record "
                        "contract this gpuwm expects; rebuild it: "
-                       f"{CARGO_BUILD_HINT}")
+                       f"{rustwx_build_hint()}")
     return True, f"{transcript} -- --abi matches the record contract"
 
 

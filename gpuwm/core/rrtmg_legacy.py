@@ -124,6 +124,7 @@ import numpy as np
 from gpuwm.core.mynn_radiation import (
     merge_mynn_bl_clouds,
     mynn_bl_cloud_active,
+    mynn_bl_cloud_supplied,
     wrf_itimestep,
 )
 
@@ -544,6 +545,35 @@ def legacy_radius_meters(effective_radius_microns):
     """Apply the RRTMG wrapper's micron-to-meter conversion exactly once."""
 
     return (effective_radius_microns * F(1.0e-6)).astype(np.float32)
+
+
+def unsized_mynn_radii(re_cloud, re_ice, supplied_liquid, supplied_ice, *,
+                       ice_rule):
+    """Hand WRF's cloudy-layer rule the layers MYNN gave water as unsized.
+
+    ``supplied_*`` come from
+    :func:`gpuwm.core.mynn_radiation.mynn_bl_cloud_supplied`.  There the
+    scheme's radius is its no-cloud background or the size of a trace of its
+    own condensate, not a size for MYNN's water, and WRF's radius tests (2.5
+    um liquid, 5 um ice) miss NSSL's background (2.51 um, 10.01 um),
+    Thompson's 2.51 um liquid floor and trace Thompson ice sized above 5 um.  A zero radius is what the
+    rule sizes: ``max(2.5, 0)`` sits on its liquid bound and ``max(5, 0)``
+    on its ice one, so these layers take 7.5 um over land, 10.5 um over
+    water and the ice temperature table, exactly as RTE+RRTMGP gives them
+    (gpuwm.core.rrtmgp.cloudy_background_radii).  ``ice_rule`` is False for
+    P3, whose ice WRF radiates as snow at P3's own radius.  Radii are metres
+    or ``None`` (a scheme that declares none); new arrays are returned.
+    """
+
+    if supplied_liquid is None:
+        return re_cloud, re_ice
+    zero = F(0.0)
+    if re_cloud is not None:
+        re_cloud = np.where(supplied_liquid, zero, re_cloud).astype(
+            np.float32)
+    if re_ice is not None and ice_rule:
+        re_ice = np.where(supplied_ice, zero, re_ice).astype(np.float32)
+    return re_cloud, re_ice
 
 
 def _r512(nbytes):
@@ -1267,6 +1297,12 @@ class RRTMGLegacyRadiation:
         qi_bl = self._cols(fields["qi_bl"], nz) if active_bl else None
         cldfra_bl = (
             self._cols(fields["cldfra_bl"], nz) if active_bl else None)
+        # Read before the merge, which writes qc/qi in place.
+        supplied_liquid, supplied_ice = mynn_bl_cloud_supplied(
+            moist["qc"], moist["qi"],
+            qc_bl=qc_bl, qi_bl=qi_bl, cldfra_bl=cldfra_bl,
+            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
+            icloud_bl=getattr(cfg, "icloud_bl", 0))
         moist["qc"], moist["qi"], cldfra = merge_mynn_bl_clouds(
             moist["qc"], moist["qi"], cldfra,
             qc_bl=qc_bl, qi_bl=qi_bl, cldfra_bl=cldfra_bl,
@@ -1275,6 +1311,9 @@ class RRTMGLegacyRadiation:
             itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
                        if active_bl else 1),
         )
+        radii["re_cloud"], radii["re_ice"] = unsized_mynn_radii(
+            radii["re_cloud"], radii["re_ice"], supplied_liquid,
+            supplied_ice, ice_rule=bool(has_req["effs"]))
 
         # ---- calendar / solar (dossier sections 4, 9.1) ---------------
         valid_time = (self.start_time

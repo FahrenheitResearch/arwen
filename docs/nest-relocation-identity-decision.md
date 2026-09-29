@@ -15,7 +15,7 @@ This is the first leg of the moving-nest program: **the mechanism**, built
 and proven.
 
 **Status: closed, and one answer has since moved.** The one open question
-— what a restart across a move guarantees — was ruled by Drew on
+— what a restart across a move guarantees — was ruled on
 2026-08-06: *nothing*. See §3. That answer removed work rather than
 adding it: no identity site had to change, and Stage 6 turned out not to
 be blocked by Stage 2 after all.
@@ -178,7 +178,7 @@ side effect of a re-grid is exactly the quiet relaxation that should not
 happen. I asked instead what a resume across a move should *guarantee*,
 and offered three options.
 
-### RULED — 2026-08-06, Drew
+### RULED — 2026-08-06
 
 > *"a restart across a move promises nothing imo its a pure efficiency
 > experiment"*
@@ -292,7 +292,7 @@ not an implementation detail.
 
 ## 6. Statics on relocation (2026-08-06 requirement) — NAMED FOLLOW-UP
 
-Drew's requirement via the WRF moving-nest discussion: a relocated
+the requirement via the WRF moving-nest discussion: a relocated
 nest's STATIC fields (terrain, landuse, soil categories) must be
 REBUILT for the new footprint from the nest's own static source at nest
 resolution (30s baseline or [static.highres], both footprint-parametric
@@ -337,7 +337,7 @@ The §6 follow-up, built complete:
   whose float32 WPS sampling twin delegates likewise,
   `gpuwm/static/build.py:_TranslatedWps32`) -- which is what makes
   "identical source + identical cells = identical bytes" hold
-  unconditionally rather than modulo pole re-rounding.  Drew's design
+  unconditionally rather than modulo pole re-rounding.  The design
   ruling is asserted twice: the route preparer refuses any move whose
   rebuilt statics differ bitwise from the outgoing child's on shared
   ground, and `test_overlap_statics_equality_on_the_real_static_source`
@@ -399,7 +399,9 @@ hand, and keeps the run fully sealed (`gpuwm/static/corridor.py`):
   preparation (`rw-wps --source gfs`, `python -m gpuwm.gfs_direct`;
   bare flag = every child domain, or comma-separated child grid ids)
   builds child-resolution statics over each child's WHOLE parent extent
-  -- the chase cannot leave the parent -- through the same
+  -- the chase cannot leave the parent (2.8 narrows this to the ground
+  the nest can reach over the run; see docs/prepared-followers.md) --
+  through the same
   `build_static` the domain statics use, on the child reference grid
   `translated` and re-extented on the SAME lattice.  Sealed as
   `hierarchy-artifacts/statics-corridor/dNN.npz` (byte-deterministic

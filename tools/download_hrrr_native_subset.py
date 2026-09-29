@@ -59,8 +59,17 @@ HYBRID_LEVEL = re.compile(r"([1-9]|[1-4][0-9]|50) hybrid level")
 #: spelling satisfies it.  A change in the record *count* remains the
 #: loud ``--accept-inventory-change`` gate -- alias tolerance never
 #: silently absorbs a field appearing or disappearing.
+#:
+#: Cloud ice is the other row.  HRRRv1 and v2 wrfnat files, published
+#: before July 2018, index their hybrid cloud ice as ``CICE`` (GRIB2
+#: 0/6/0) on the same 50 levels and carry no ``CIMIXR`` (0/1/82); the
+#: archive's 2017-01-19 00Z wrfnatf00 and f01 indexes hold CICE 50 times
+#: and CIMIXR never, the 2026-09-27 00Z wrfnatf00 index the reverse.  The
+#: bridge reads 0/6/0 only from a file that publishes no 0/1/82, and
+#: refuses a file that mixes the two.
 FIELD_ALIASES = {
     "CLMR": ("CLMR", "CLWMR"),
+    "CIMIXR": ("CIMIXR", "CICE"),
 }
 
 
@@ -330,12 +339,47 @@ def _coalesce(
     return tuple(result)
 
 
+def _range_retry_delay(error: BaseException, attempt: int) -> float | None:
+    """Seconds before the next attempt, or None when asking again cannot help.
+
+    The network faults are the tree's shared classification
+    (:func:`gpuwm.fetch_endpoints.retry_delay`), so a 404 or another
+    status that will not change is not asked again.  A ``ValueError`` is
+    this transport's own: a range answer that did not verify (not 206,
+    the wrong Content-Range, short), which a fresh request can repair.
+    """
+
+    from gpuwm import fetch_endpoints
+
+    if isinstance(error, ValueError):
+        return 2.0 ** attempt
+    return fetch_endpoints.retry_delay(
+        error, attempt, wait_limit_s=fetch_endpoints.TRANSIENT_WAIT_LIMIT_S)
+
+
 def _download_range(
     url: str, byte_range: ByteRange, path: Path, retries: int,
 ) -> None:
+    """One byte range, retried on the tree's shared discipline.
+
+    ``retries`` is the caller's attempt budget, held to the shared
+    :data:`gpuwm.fetch_endpoints.TRANSIENT_ATTEMPTS`; each wait is
+    :func:`_range_retry_delay`'s.  Once another file has failed the
+    fetch request this range belongs to, it stops at its next block
+    instead of finishing (see :func:`gpuwm.fetch_pool.raise_if_stopped`;
+    the caller carries the pool job onto this thread with
+    :func:`gpuwm.fetch_pool.working_for`).
+    """
+
+    from gpuwm import fetch_endpoints
+    from gpuwm.fetch_pool import (TransferCancelled, raise_if_stopped,
+                                  sleep_unless_stopped)
+
+    attempts = max(1, min(int(retries), fetch_endpoints.TRANSIENT_ATTEMPTS))
     expected_content_range = f"bytes {byte_range.start}-{byte_range.end}/"
-    for attempt in range(1, retries + 1):
+    for attempt in range(1, attempts + 1):
         try:
+            raise_if_stopped()
             request = Request(url, headers={
                 "User-Agent": "rw-wps-hrrr-range/1",
                 "Range": f"bytes={byte_range.start}-{byte_range.end}",
@@ -352,14 +396,18 @@ def _download_range(
                 while block := response.read(1024 * 1024):
                     output.write(block)
                     copied += len(block)
+                    raise_if_stopped()
             if copied != byte_range.size:
                 raise ValueError(f"short range response: {copied} != {byte_range.size}")
             return
-        except Exception:
+        except Exception as error:
             path.unlink(missing_ok=True)
-            if attempt == retries:
+            if attempt == attempts or isinstance(error, TransferCancelled):
                 raise
-            time.sleep(attempt * 2)
+            delay = _range_retry_delay(error, attempt)
+            if delay is None:
+                raise
+            sleep_unless_stopped(delay, sleep=time.sleep)
 
 
 def _download_subset(
@@ -384,6 +432,15 @@ def _download_subset(
         else _soil_selection(rows, expected_count=expected_count)
     )
     ranges = _coalesce(rows, selected, object_bytes)
+    # Taken HERE, on the fetch pool's thread: the ranges below run on
+    # threads of their own, which do not carry the pool job.
+    from gpuwm.fetch_pool import current_job, working_for
+    job = current_job()
+
+    def fetch_range(pair):
+        with working_for(job):
+            _download_range(url, pair[0], pair[1], retries)
+
     staging = Path(tempfile.mkdtemp(
         prefix=f".{destination.name}.ranges-", dir=destination.parent))
     try:
@@ -396,7 +453,7 @@ def _download_subset(
         with ThreadPoolExecutor(
                 max_workers=governed_workers(url, workers)) as pool:
             list(pool.map(
-                lambda pair: _download_range(url, pair[0], pair[1], retries),
+                fetch_range,
                 zip(ranges, chunks),
             ))
         # Assembly happens INSIDE the unique staging directory, never at
@@ -484,8 +541,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cycle = _cycle(args.cycle)
     hours = _hours(args.forecast_hours, cycle=cycle)
-    if args.workers not in range(1, 33) or args.retries not in range(1, 11):
-        raise ValueError("workers must be 1..32 and retries must be 1..10")
+    from gpuwm.fetch_endpoints import TRANSIENT_ATTEMPTS
+
+    # A range is asked at most TRANSIENT_ATTEMPTS times (the tree's one
+    # budget), so a larger --retries is refused rather than quietly held
+    # to it: 6..10 used to be accepted and are no longer honoured.
+    if (args.workers not in range(1, 33)
+            or args.retries not in range(1, TRANSIENT_ATTEMPTS + 1)):
+        raise ValueError(
+            "workers must be 1..32 and retries must be "
+            f"1..{TRANSIENT_ATTEMPTS} (the shared attempt budget, "
+            "gpuwm.fetch_endpoints.TRANSIENT_ATTEMPTS)")
     if args.file_workers not in range(1, 17):
         raise ValueError("file-workers must be 1..16")
     if args.workers * args.file_workers > 64:

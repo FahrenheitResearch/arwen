@@ -97,9 +97,11 @@ import sys
 import tempfile
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           cargo_build_one_liner, default_bridge_dir,
+                           default_bridge_dir, lazy_build_hints,
+                           rustwx_build_hint,
                            accept_resolved, executable_name,
                            packaged_bridge_dir)
+from gpuwm.cli_numbers import positive_float, positive_int
 
 #: Schema of the sizing table this module reads.
 SIZING_SCHEMA = "gpuwm-mpas-mesh-sizing-v1"
@@ -155,7 +157,10 @@ LBC_ABI_MARKER = (
     "rw_mpas_lbc --grid INIT.nc --out-dir DIR "
     "--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS")
 
-CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+#: ``CARGO_BUILD_HINT``: the one-liner that builds the mesh tools, from a
+#: checkout root, spelled for the shell rule when it is read.
+__getattr__ = lazy_build_hints(
+    __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
 _PROBE_TIMEOUT_S = 60
 
@@ -254,7 +259,7 @@ class MpasBridge:
         return artifact_remedy(
             env_var=self.env_var, filename=executable_name(self.name),
             subject=self.subject, crate_relative=RUSTWX_CRATE_RELATIVE,
-            one_liner=CARGO_BUILD_HINT, artifact=self.name)
+            one_liner=rustwx_build_hint(), artifact=self.name)
 
     def probe(self, path: Path) -> tuple[bool, str]:
         """``--abi``: is this the binary this wrapper was written against?
@@ -279,7 +284,7 @@ class MpasBridge:
         if self.abi_marker not in (result.stdout or ""):
             return False, (
                 "--abi does not carry the argument vector this gpuwm "
-                f"drives; rebuild it: {CARGO_BUILD_HINT}")
+                f"drives; rebuild it: {rustwx_build_hint()}")
         return True, "--abi matches this release's argument vector"
 
 
@@ -832,11 +837,13 @@ def build_spec(*, background_km: float, refine: list[str] | None = None,
     seventh) field states it in kilometres instead.
     """
 
-    if not (background_km > 0):
+    # `> 0` alone let infinity through, and an infinite spacing has no
+    # cell count either.
+    if not (background_km > 0 and background_km != float("inf")):
         raise MeshRequestError(
             f"--background-km is {background_km}; the background spacing "
             "sets the cell size over most of the sphere, and a "
-            "non-positive one has no cell count")
+            "non-positive or infinite one has no cell count")
     ramp = (load_sizing().transition_cells if transition_cells is None
             else transition_cells)
     regions: list[dict] = []
@@ -926,7 +933,7 @@ def _json_tail(stdout: str, *, what: str) -> dict:
                     f"record and is not one: {error}") from None
     raise MeshRequestError(
         f"{what} printed no JSON record.  This is not the binary this "
-        f"release drives; rebuild it: {CARGO_BUILD_HINT}")
+        f"release drives; rebuild it: {rustwx_build_hint()}")
 
 
 def _run_mesh(arguments: list[str], *, progress=None) -> dict:
@@ -1336,12 +1343,12 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         help="size the mesh to this card's measured device footprint; "
              "--list-cards prints the ones that have been measured")
     parser.add_argument(
-        "--vram-gib", type=float, default=None, metavar="X",
+        "--vram-gib", type=positive_float, default=None, metavar="X",
         help="device budget in GiB, instead of the named card's total "
              "memory (for a card that is shared with something else); "
              "needs --card, because the fixed term is per card")
     parser.add_argument(
-        "--cells", type=int, default=None, metavar="N",
+        "--cells", type=positive_int, default=None, metavar="N",
         help="exact cell count, skipping the device model entirely")
     parser.add_argument(
         "--name", default=None, metavar="TEXT",
@@ -1350,10 +1357,10 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "--receipt", type=Path, default=None, metavar="JSON",
         help="write the measured receipt here as well as to stdout")
     parser.add_argument(
-        "--sweeps", type=int, default=None, metavar="N",
+        "--sweeps", type=positive_int, default=None, metavar="N",
         help="relaxation budget passed to the generator")
     parser.add_argument(
-        "--tolerance", type=float, default=None, metavar="X",
+        "--tolerance", type=positive_float, default=None, metavar="X",
         help="relaxation convergence tolerance passed to the generator")
     parser.add_argument(
         "--triangulation", choices=TRIANGULATION_ARMS, default=None,
@@ -1391,7 +1398,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
              "green-ness and albedo come from.  Defaults to "
              "$GPUWM_WPS_GEOG, then ~/.local/share/gpuwm/WPS_GEOG")
     parser.add_argument(
-        "--nominal-dx-m", type=float, default=None, metavar="M",
+        "--nominal-dx-m", type=positive_float, default=None, metavar="M",
         help="the nominal spacing the static DECLARES, in metres.  "
              "Defaults to the grid's own implied value.  This scalar is "
              "compared FP32-bit-exactly by the mesh registry, so a "
@@ -1450,6 +1457,16 @@ def _print_cards(sizing: Sizing) -> int:
 def _resolve_cells(args, sizing: Sizing) -> tuple[int, str]:
     """The cell count and the sentence that says where it came from."""
 
+    # Before the --cells branch, not after it: with an explicit count
+    # and no card, a stated budget used to be dropped without a word,
+    # although it is exactly as unusable there as it is here.
+    if args.vram_gib is not None and not args.card:
+        raise MeshRequestError(
+            "--vram-gib is a budget, not a model: the fixed part of the "
+            "footprint is a property of the CARD (it is the CUDA "
+            "local-memory backing store, sized from resident-thread "
+            "capacity), so a budget alone cannot say how many cells fit.  "
+            "Name the card as well: --card NAME --vram-gib X.")
     if args.cells is not None:
         if args.card:
             budget = (None if args.vram_gib is None
@@ -1460,13 +1477,6 @@ def _resolve_cells(args, sizing: Sizing) -> tuple[int, str]:
                 f"{args.cells:,} cells, stated with --cells; "
                 f"{footprint:,.0f} MiB on {args.card}")
         return args.cells, f"{args.cells:,} cells, stated with --cells"
-    if args.vram_gib is not None and not args.card:
-        raise MeshRequestError(
-            "--vram-gib is a budget, not a model: the fixed part of the "
-            "footprint is a property of the CARD (it is the CUDA "
-            "local-memory backing store, sized from resident-thread "
-            "capacity), so a budget alone cannot say how many cells fit.  "
-            "Name the card as well: --card NAME --vram-gib X.")
     if args.card:
         budget = None if args.vram_gib is None else args.vram_gib * 1024.0
         cells = sizing.cells_that_fit(args.card, budget)

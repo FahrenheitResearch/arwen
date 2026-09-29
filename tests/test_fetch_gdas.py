@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 
 import pytest
@@ -20,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gpuwm import cli
 from gpuwm import fetch
+from gpuwm import fetch_routes
 from tools import download_gfs_native_subset as gfs_transport
 
 
@@ -86,7 +88,7 @@ def test_the_gdas_ladder_stops_at_the_published_horizon():
     assert fetch.GDAS_MAX_FORECAST_HOUR == 9
     assert fetch.GDAS_PUBLISHED_HOURS == tuple(range(10))
     assert fetch.gdas_forecast_hours(0) == (0,)
-    assert fetch.gdas_forecast_hours(6) == (0, 3, 6)
+    assert fetch.gdas_forecast_hours(6, 3) == (0, 3, 6)
     assert fetch.gdas_forecast_hours(9, 3) == (0, 3, 6, 9)
     for beyond in (10, 12, 24, 384):
         with pytest.raises(ValueError, match="publishes"):
@@ -142,6 +144,59 @@ def test_fetch_help_cannot_drift_from_the_registry_gdas_span(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help-all"])
     assert "native GDAS uses its mapped preparation" in " ".join(capsys.readouterr().out.split())
+
+
+def test_a_gdas_fetch_prints_the_prep_line_it_published(tmp_path,
+                                                        monkeypatch, capsys):
+    """The GDAS handoff is a command, and it is the published argv.
+
+    What this printed was a sentence with no command in it: fetch with
+    --all-levels (which the default ladder already takes for this
+    container) and bind the in-band supplement by hand, while the fetch
+    had already written the whole bound argv beside the files.
+    """
+
+    def fetched(*, cycle, hours, out, source, **_):
+        out.mkdir(parents=True, exist_ok=True)
+        files = []
+        for hour in hours:
+            name = f"{source}.t{cycle:%H}z.pgrb2.0p25.f{hour:03d}.subset.grib2"
+            (out / name).write_bytes(b"GRIB fixture 7777")
+            files.append({"name": name, "role": f"{source}-subset",
+                          "forecast_hour": hour, "bytes": 17,
+                          "sha256": fetch.sha256_file(out / name),
+                          "url": None})
+        series = out / f"{source}-series.tsv"
+        series.write_text("".join(
+            f"{item['forecast_hour']}\t{item['name']}\t96\n"
+            for item in files))
+        fetch._write_gfs_front_door_files(
+            out, source=source, cycle=cycle, files=files, series=series)
+        manifest = out / fetch.FETCH_MANIFEST_NAME
+        manifest.write_text("{}\n")
+        return manifest
+
+    monkeypatch.setattr(fetch, "fetch_gfs", fetched)
+    monkeypatch.setattr(fetch, "require_published_cycle",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(fetch, "archive_only_cycle",
+                        lambda *args, **kwargs: False)
+    out = tmp_path / "gdas"
+    assert cli.main(["fetch", "--source", "gdas", "--cycle", "2026-07-29T12",
+                     "--hours", "3", "--area", "30,-100,40,-90",
+                     "--out", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    document = json.loads(
+        (out / fetch_routes.PREP_ARGUMENTS_NAME).read_text())
+    commands = [line.strip() for line in lines
+                if line.strip().startswith("gpuwm prep ")]
+    assert len(commands) == 1, lines
+    assert shlex.split(commands[0]) == ["gpuwm", "prep", *document["argv"]]
+    comments = " ".join(line for line in lines
+                        if line.strip().startswith("#"))
+    for flag in document["caller_supplies"]:
+        assert flag in comments, flag
+    assert "--all-levels" not in " ".join(lines)
 
 
 def test_a_gdas_request_past_the_published_span_refuses_up_front(tmp_path,

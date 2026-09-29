@@ -10,7 +10,8 @@ from gpuwm.ingest.lake_temperature import (
 )
 from gpuwm.ingest.water_temperature import (
     SOURCE_ANALYSIS, SOURCE_COMPONENT_SKIN, SOURCE_LAKE_WATER,
-    assemble_water_temperature, water_temperature_advisory,
+    SOURCE_NEAREST_WATER, assemble_water_temperature,
+    water_temperature_advisory,
 )
 
 
@@ -151,12 +152,15 @@ def test_lake_provider_is_component_wide_and_does_not_change_land_or_ocean():
         {**receipt, "policy": "era5_class_coherent"})
     assert "1 lake cell(s) had no ice-free lake-model water" in advisory
     assert "(0, 1)" in advisory
-    # A declined cell whose skin is itself inadmissible still refuses, by
-    # name: nothing invents a temperature.
+    # A declined cell whose skin is itself inadmissible takes its own
+    # lake's water, and the receipt says so.
     skin[0, 1] = 0.0
-    with pytest.raises(ValueError, match="no admissible water temperature"):
-        assemble_water_temperature(mapped_sst=None, mapped_skin=skin,
-            target_land=land, target_lake=lake, mapped_lake_water=mapped)
+    values, provider, receipt = assemble_water_temperature(
+        mapped_sst=None, mapped_skin=skin, target_land=land,
+        target_lake=lake, mapped_lake_water=mapped)
+    assert values[0, 1] == 280.0
+    assert provider[0, 1] == SOURCE_NEAREST_WATER
+    assert receipt["water_fill"]["own_body"] == 1
 
 
 def test_existing_same_component_sst_keeps_precedence_over_optional_lake_state():
@@ -190,11 +194,14 @@ def test_a_wholly_frozen_lake_prepares_and_announces_every_fallback_cell():
     advisory = water_temperature_advisory(receipt)
     assert "9 lake cell(s) had no ice-free lake-model water" in advisory
     assert "(2, 2)" in advisory
+    # A frozen lake cell with no skin either takes the lake's other cells.
     skin[1, 1] = 0.0
-    with pytest.raises(ValueError, match="no admissible water temperature"):
-        assemble_water_temperature(
-            mapped_sst=None, mapped_skin=skin, target_land=land,
-            target_lake=~land, mapped_lake_water=mapped.values)
+    values, provider, receipt = assemble_water_temperature(
+        mapped_sst=None, mapped_skin=skin, target_land=land,
+        target_lake=~land, mapped_lake_water=mapped.values)
+    assert values[1, 1] == 265.0
+    assert provider[1, 1] == SOURCE_NEAREST_WATER
+    assert receipt["water_fill"]["cells"] == 1
 
 
 @pytest.mark.parametrize("partial", [False, True])

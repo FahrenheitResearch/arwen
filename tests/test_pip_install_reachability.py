@@ -124,6 +124,24 @@ def wheel_venv(tmp_path_factory):
     subprocess.run([sys.executable, "-m", "venv", "--system-site-packages",
                     str(venv)], check=True, timeout=600)
     python = _venv_python(venv)
+    if sys.prefix != sys.base_prefix:
+        # The tests themselves run in a virtual environment (install.sh
+        # makes one in the checkout), and --system-site-packages reaches
+        # the BASE interpreter's packages, not this environment's, so
+        # numpy and the rest were invisible.  A path file hands the new
+        # venv this environment's package directories, after its own.
+        # Path lines add directories only; the .pth files inside them
+        # (the checkout's editable install) are not processed.
+        import sysconfig
+        paths = sysconfig.get_paths()
+        outer = sorted({paths["purelib"], paths["platlib"]})
+        inner = subprocess.run(
+            [str(python), "-c",
+             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            check=True, capture_output=True, text=True,
+            timeout=120).stdout.strip()
+        (Path(inner) / "_outer_environment.pth").write_text(
+            "".join(line + "\n" for line in outer), encoding="utf-8")
     subprocess.run(
         [str(python), "-m", "pip", "install", "--no-deps", "--no-index",
          str(wheels[-1])],

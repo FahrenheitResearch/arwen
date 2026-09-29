@@ -22,6 +22,16 @@ every declared domain including the ones that spawn later, and for a
 following nest the whole statics corridor it may traverse -- a
 relocation must never be the first place the coordinate fails.
 
+Order is not enough.  A column the coordinate only just orders keeps one
+layer a sliver of its flat-ground depth: a generated 1 km forecast under
+the highest central Andes was ordered at etac 0.2 with layer 20 at 1.2%
+of its flat depth, and it stopped at model second 350 with that layer
+running away over the peak, on six acoustic substeps and on the adaptive
+clock alike.  So the derived ``etac`` is the largest one that keeps the
+thinnest layer of every column at least :data:`MIN_LAYER_FRACTION` of
+its flat-column depth, and where no ``etac`` reaches that, the one that
+leaves that layer thickest.
+
 What this is NOT.  It is not a change to the base state or to the
 coefficient formulas: both stay transcribed from WRF.  It does not touch
 ``p_top``: ``etac`` is WRF's own named remedy and it keeps the model top
@@ -37,13 +47,41 @@ from typing import Sequence
 
 import numpy as np
 
-from gpuwm.core.grid import (analytic_base_pressure_field,
+from gpuwm.core.grid import (SMALLEST_SEARCHED_ETAC,
+                             analytic_base_pressure_field,
                              analytic_base_terrain_height,
+                             hybrid_layer_depth_fractions,
                              hybrid_surface_pressure_floor,
                              largest_supported_etac)
 
-#: Receipt schema for the derivation this module performs.
-ADAPTATION_SCHEMA = "gpuwm-vertical-coordinate-adaptation-v1"
+#: Receipt schema for the derivation this module performs.  v2 adds the
+#: layer-depth margin: v1 derived the largest etac that merely ordered
+#: the governing column.
+ADAPTATION_SCHEMA = "gpuwm-vertical-coordinate-adaptation-v2"
+
+#: The share of its flat-column dry-pressure depth the thinnest layer of
+#: every surveyed column keeps (:func:`gpuwm.core.grid.
+#: hybrid_layer_depth_fractions`).
+#:
+#: MEASURED.  A 6456 m bell ridge in a uniform cross wind, through the
+#: production ``step()`` with the generated dynamics and 49-level ladder,
+#: at etac values that leave the layer over the crest from 2% to 20% of
+#: its flat depth.  The run stops with that layer running away below a
+#: share that grows with the square of the cross wind and barely with
+#: anything else:
+#:
+#: * 40 m/s: stops at 3.6%, holds at 4.9% (1 km), 3.8% / 5.0% (3 km);
+#: * 60 m/s: 7.6% / 8.9% (500 m), 8.5% / 10.8% (1 km), 8.6% / 10.9%
+#:   (3 km), and the same 8.5% / 10.8% on an 80-level ladder;
+#: * 70 m/s: 13.0% / 15.0% (1 km);
+#: * 10.8% held three hours at 60 m/s, 6.1% three hours at 40 m/s.
+#:
+#: The generated central-Andes forecast itself stopped at 1.2% and 2.5%
+#: and ran its hour at 3.7%.  15% holds the measured 70 m/s crest wind.
+#: At 80 m/s the 6456 m ridge stopped at every etac measured, up to 19%,
+#: on six substeps, while 3000 m and 4500 m ridges held half an hour at
+#: etac 0.2: there the ridge, not the layer, is the limit.
+MIN_LAYER_FRACTION = 0.15
 
 #: WRF's analytic base-state surface pressure over a terrain field:
 #: ``module_initialize_real.F:3787-3803``,
@@ -86,9 +124,18 @@ class VerticalAdaptation:
     ``etac`` is ``None`` for the one case the refusal still owns: no
     positive ``etac`` orders the governing column, and only a lower model
     top could.  ``adapted`` is False when the configured coordinate
-    already ordered everything, and the record is kept anyway -- a
-    receipt that only appears when something changed cannot be used to
-    show that nothing did.
+    already kept every layer deep enough, and the record is kept anyway
+    -- a receipt that only appears when something changed cannot be used
+    to show that nothing did.
+
+    The governing column is the one with the lowest base surface
+    pressure: every column shares one coordinate, and a layer's share of
+    its flat-column depth only falls as the surface pressure does, so the
+    column that is thinnest anywhere is thinnest everywhere.
+    ``thinnest_layer`` is that column's thinnest layer under the
+    configured coordinate, ``configured_layer_fraction`` its depth there
+    and ``layer_fraction`` its depth under the one the run uses, both as
+    shares of the same layer over flat ground.
     """
 
     configured_etac: float
@@ -101,6 +148,10 @@ class VerticalAdaptation:
     column: tuple[int, ...]
     label: str
     surveyed: tuple[tuple[str, int, float], ...] = ()
+    min_layer_fraction: float = MIN_LAYER_FRACTION
+    thinnest_layer: int | None = None
+    configured_layer_fraction: float | None = None
+    layer_fraction: float | None = None
 
     @property
     def adapted(self) -> bool:
@@ -110,19 +161,51 @@ class VerticalAdaptation:
     def representable(self) -> bool:
         return self.etac is not None
 
+    @property
+    def configured_ordered(self) -> bool:
+        """Whether the configured coordinate orders the governing column."""
+
+        return self.surface_pressure_pa > self.configured_floor_pa
+
+    @property
+    def margin_met(self) -> bool:
+        """Whether the run's coordinate keeps the thinnest layer deep enough."""
+
+        return (self.layer_fraction is not None
+                and self.layer_fraction >= self.min_layer_fraction)
+
     def sentence(self) -> str:
         """The one plain line a run prints when the coordinate changed."""
 
-        ceiling = analytic_base_terrain_height(self.configured_floor_pa)
+        column = f"{self.label} mass point {self.column}"
+        ground = (f"{self.terrain_height_m:.0f} m "
+                  f"({self.surface_pressure_pa:.0f} Pa)")
+        if self.configured_ordered:
+            why = (
+                f"etac {self.configured_etac:g} leaves layer "
+                f"{self.thinnest_layer} over {column}, at {ground}, only "
+                f"{self.configured_layer_fraction:.1%} as deep as over flat "
+                f"ground, under the {self.min_layer_fraction:.0%} every layer "
+                "keeps")
+        else:
+            ceiling = analytic_base_terrain_height(self.configured_floor_pa)
+            why = (
+                f"etac {self.configured_etac:g} orders only columns above "
+                f"{self.configured_floor_pa:.0f} Pa (about {ceiling:.0f} m "
+                f"of terrain), and {column} is at {ground}")
+        if self.margin_met:
+            how = (f"the largest that keeps every layer of that column at "
+                   f"least {self.min_layer_fraction:.0%} as deep as over "
+                   "flat ground")
+        else:
+            how = (f"the smallest etac searched, which leaves that column's "
+                   f"thinnest layer {self.layer_fraction:.1%} as deep as over "
+                   "flat ground, the most the WRF cubic allows (no etac "
+                   f"reaches {self.min_layer_fraction:.0%})")
         return (
-            f"vertical coordinate: etac {self.configured_etac:g} orders only "
-            f"columns above {self.configured_floor_pa:.0f} Pa (about "
-            f"{ceiling:.0f} m of terrain), and {self.label} mass point "
-            f"{self.column} is at {self.terrain_height_m:.0f} m "
-            f"({self.surface_pressure_pa:.0f} Pa), so this run uses etac "
-            f"{self.etac:.3f} -- the largest the WRF cubic supports for that "
-            f"column at the model top the configuration asked for "
-            f"({self.p_top:g} Pa)")
+            f"vertical coordinate: {why}, so this run uses etac "
+            f"{self.etac:.3f} at the model top the configuration asked for "
+            f"({self.p_top:g} Pa) -- {how}")
 
     def receipt(self) -> dict:
         """The derivation, for the prepared receipt and the run document."""
@@ -144,6 +227,17 @@ class VerticalAdaptation:
                 "terrain_height_m": float(self.terrain_height_m),
                 "surface_pressure_pa": float(self.surface_pressure_pa),
             },
+            "thinnest_layer": {
+                "min_layer_fraction": float(self.min_layer_fraction),
+                "index": (None if self.thinnest_layer is None
+                          else int(self.thinnest_layer)),
+                "configured_fraction": (
+                    None if self.configured_layer_fraction is None
+                    else float(self.configured_layer_fraction)),
+                "fraction": (None if self.layer_fraction is None
+                             else float(self.layer_fraction)),
+                "margin_met": bool(self.margin_met),
+            },
             "surveyed_terrain": [
                 {"field": label, "cells": int(cells),
                  "max_terrain_m": float(peak)}
@@ -157,7 +251,9 @@ class VerticalAdaptation:
 
 def survey_vertical_coordinate(
         znw, hybrid_opt: int, etac: float, p_top: float,
-        fields: Sequence[TerrainField]) -> VerticalAdaptation | None:
+        fields: Sequence[TerrainField], *,
+        min_layer_fraction: float = MIN_LAYER_FRACTION
+        ) -> VerticalAdaptation | None:
     """The derivation itself: pure arrays in, one coordinate decision out.
 
     ``None`` means there is nothing to decide -- ``B = eta`` exactly
@@ -165,6 +261,13 @@ def survey_vertical_coordinate(
     coordinate whose floor is already at zero pressure.  Otherwise the
     record always comes back, adapted or not, naming the column that
     governs the answer.
+
+    The configured ``etac`` stands when the governing column keeps every
+    layer at least ``min_layer_fraction`` of its flat-column depth.
+    Otherwise the run takes the largest ``etac`` that does; where none
+    does, the smallest ``etac`` searched, which leaves that layer as deep
+    as the WRF cubic allows, provided it still orders the column.  The
+    derived value never rises above the configured one.
     """
 
     hybrid_opt = int(hybrid_opt)
@@ -208,20 +311,42 @@ def survey_vertical_coordinate(
             worst_column = tuple(int(value) for value in index)
             worst_label = field.label
 
-    if worst_pressure > floor:
+    found = dict(
+        configured_etac=etac, hybrid_opt=hybrid_opt, p_top=p_top,
+        configured_floor_pa=floor, surface_pressure_pa=worst_pressure,
+        terrain_height_m=worst_height, column=worst_column,
+        label=worst_label, surveyed=tuple(surveyed),
+        min_layer_fraction=float(min_layer_fraction))
+    if not np.isfinite(worst_pressure):
+        return VerticalAdaptation(etac=None, **found)
+
+    def thinnest(candidate: float) -> np.ndarray:
+        return hybrid_layer_depth_fractions(
+            znw, hybrid_opt, candidate, p_top, worst_pressure)
+
+    configured = thinnest(etac)
+    found.update(thinnest_layer=int(np.argmin(configured)),
+                 configured_layer_fraction=float(configured.min()))
+    margin_floor = hybrid_surface_pressure_floor(
+        znw, hybrid_opt, etac, p_top, min_layer_fraction=min_layer_fraction)
+    if worst_pressure > margin_floor:
         return VerticalAdaptation(
-            configured_etac=etac, etac=etac, hybrid_opt=hybrid_opt,
-            p_top=p_top, configured_floor_pa=floor,
-            surface_pressure_pa=worst_pressure,
-            terrain_height_m=worst_height, column=worst_column,
-            label=worst_label, surveyed=tuple(surveyed))
-    remedy = (None if not np.isfinite(worst_pressure)
-              else largest_supported_etac(znw, p_top, worst_pressure))
+            etac=etac, layer_fraction=float(configured.min()), **found)
+    remedy = largest_supported_etac(
+        znw, p_top, worst_pressure, min_layer_fraction=min_layer_fraction)
+    if remedy is None:
+        # The margin is out of the cubic's reach.  A layer's share only
+        # grows as etac falls, so the thickest the thinnest layer can be
+        # is at the smallest etac searched -- if that still orders the
+        # column at all.  A configured etac already below it stands.
+        ordered = largest_supported_etac(znw, p_top, worst_pressure)
+        remedy = (None if ordered is None
+                  else min(etac, SMALLEST_SEARCHED_ETAC))
     return VerticalAdaptation(
-        configured_etac=etac, etac=remedy, hybrid_opt=hybrid_opt,
-        p_top=p_top, configured_floor_pa=floor,
-        surface_pressure_pa=worst_pressure, terrain_height_m=worst_height,
-        column=worst_column, label=worst_label, surveyed=tuple(surveyed))
+        etac=remedy,
+        layer_fraction=(None if remedy is None
+                        else float(thinnest(remedy).min())),
+        **found)
 
 
 def adapt_experiment_vertical(exp, fields: Sequence[TerrainField], *,
@@ -283,9 +408,10 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
     -- including one that only spawns later, because a dormant nest is
     declared at prepare time and shares this one coordinate -- is built at
     its own resolution.  A following nest additionally contributes its
-    statics corridor: child-resolution ground over the whole frame extent
-    it may traverse, which is the only terrain that can answer "where
-    could this nest be in six hours" before the run starts.
+    statics corridor: child-resolution ground over everything it can
+    reach (:func:`gpuwm.static.corridor.planned_corridor`, the window the
+    corridor is built on), which is the only terrain that can answer
+    "where could this nest be in six hours" before the run starts.
 
     Terrain alone is built, not the whole field set
     (:func:`gpuwm.static.build.build_terrain`), except where a
@@ -297,9 +423,8 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
 
     from gpuwm.static.build import (build_static_for_domain, build_terrain,
                                     geog_selection_from_catalog)
-    from gpuwm.static.corridor import (corridor_frame_kwargs,
-                                       corridor_geometry, corridor_grid,
-                                       moving_grid_ids)
+    from gpuwm.static.corridor import (corridor_grid, moving_grid_ids,
+                                       planned_corridor)
 
     highres_on = bool(static_highres is not None
                       and getattr(static_highres, "enabled", False))
@@ -345,19 +470,27 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
         if dc is None or int(dc.parent_id) == 0:
             continue
         parent = by_id[int(dc.parent_id)]
-        frame_kwargs = corridor_frame_kwargs(exp, dc)
-        geometry = corridor_geometry(dc, parent.run, **frame_kwargs)
-        frame_grid = grid_by_id[int(geometry["frame_grid_id"])]
+        # The ground the corridor itself covers: the same frame and reach
+        # window the emission builds, on the CHILD's own lattice.  The
+        # reference is the child's grid -- the corridor is that grid
+        # translated -- and not the frame's: handed the frame grid, the
+        # translation and extent (both in child cells) were applied to a
+        # parent-resolution grid, and the survey read parent-resolution
+        # terrain over ratio times the frame's extent on each axis, offset
+        # from it.
+        plan = planned_corridor(exp, dc)
+        reference = grid_by_id[gid]
         selection = geog_selection_from_catalog(static_catalog, gid)
         if highres_on:
             from gpuwm.static.corridor import build_child_statics_corridor
             built = build_child_statics_corridor(
                 child_dc=dc, parent_run=parent.run,
-                reference_grid=frame_grid, static_catalog=static_catalog,
-                frame_kwargs=frame_kwargs, static_highres=static_highres)
+                reference_grid=reference, static_catalog=static_catalog,
+                frame_kwargs=plan.frame_kwargs, window=plan.window,
+                static_highres=static_highres)
             terrain = built.fields["HGT_M"]
         else:
-            terrain = build_terrain(corridor_grid(frame_grid, geometry),
+            terrain = build_terrain(corridor_grid(reference, plan.geometry),
                                     selection.root, selection=selection)
         fields.append(TerrainField(
             f"d{gid:02d} statics corridor",

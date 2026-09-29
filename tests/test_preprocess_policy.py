@@ -1,5 +1,6 @@
 """The memory estimate and executable preparation policy describe one road."""
 from dataclasses import asdict, replace
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -15,8 +16,10 @@ from tilestream.autoplan import GIB, Machine
 
 @pytest.mark.parametrize("source,mode,store,expected", [
     ("gfs", "auto", "host", "cpu"), ("gfs", "on", "host", "cpu"),
-    ("gfs", "off", "host", "cuda"), ("gfs", "auto", "device", "cuda"),
-    ("hrrr", "auto", "host", "cuda"), ("era5", "auto", "host", "cuda"),
+    # Unrequested and not host-tiled the road is auto: the door prices its
+    # preparation and prepares on the card only when that fits (A65).
+    ("gfs", "off", "host", "auto"), ("gfs", "auto", "device", "auto"),
+    ("hrrr", "auto", "host", "auto"), ("era5", "auto", "host", "auto"),
 ])
 def test_raw_and_validated_effective_policy_agree(source, mode, store, expected):
     exp = experiment(874, 574, mode=mode, store=store)
@@ -34,9 +37,9 @@ def test_explicit_backend_is_preserved(backend):
 def test_per_domain_replacement_semantics_match_the_streaming_owner():
     tables = {"tiles": {"mode": "auto", "store": "host"},
               "domain": [{"grid_id": 1, "tiles": {"mode": "off"}}]}
-    assert resolve_preprocess_backend(source="gfs", tables=tables) == "cuda"
+    assert resolve_preprocess_backend(source="gfs", tables=tables) == "auto"
     tables["domain"].append({"grid_id": 2, "tiles": {"mode": "auto", "store": "device"}})
-    assert resolve_preprocess_backend(source="gfs", tables=tables) == "cuda"
+    assert resolve_preprocess_backend(source="gfs", tables=tables) == "auto"
     tables["domain"].append({"grid_id": 3})
     assert resolve_preprocess_backend(source="gfs", tables=tables) == "cpu"
 
@@ -62,17 +65,30 @@ def test_actual_874_by_574_geometry_keeps_science_and_moves_only_ingest_off_gpu(
     assert cpu.preprocess_backend == cpu.ingest.preprocess_backend == "cpu"
     assert cpu.ingest_envelope_bytes == cpu.ingest.peak_envelope_bytes == 0
     assert cpu.ingest.context_bytes == cpu.ingest.device_overhead_bytes == 0
-    # 12 GiB was read on Windows, where the ingest envelope carries the
-    # 1.39 GiB probe overhead platform_projection_constants adds on that
-    # platform alone; the itemized envelope beneath it is 11.55 GiB on
-    # both (proof/node-reds-276), and that is the figure this holds.
-    assert cuda.ingest_envelope_bytes - cuda.ingest.device_overhead_bytes > 11.5 * GIB
+    # The itemized envelope beneath the Windows probe overhead: 11.55 GiB
+    # under the retired 0.65-of-one-time transient (proof/node-reds-276),
+    # 8.87 GiB with the setup itemized and measured (A65).  Either way
+    # over this 6.2 GiB card, which is what moves the ingest off it.
+    assert cuda.ingest_envelope_bytes - cuda.ingest.device_overhead_bytes > 8.8 * GIB
     assert cuda.ingest_envelope_bytes > machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
     assert cpu.forecast_envelope_bytes == cuda.forecast_envelope_bytes
     assert cpu.forecast_envelope_bytes <= machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
     assert cpu.peak_envelope_bytes == cpu.forecast_envelope_bytes
     assert cpu.ingest.items == cuda.ingest.items
-    assert cpu.ingest.host_preprocess_bytes == cpu.ingest.alloc_estimate_bytes + cpu.ingest.boundary_frame_bytes > 0
+    # Host RAM is priced with the host's own terms: the arrays held at once
+    # plus calibrated multiples of the analysis they are built around,
+    # never the CUDA pool's transient and allocator headroom.
+    floor = cpu.ingest.host_preprocess_floor_bytes
+    assert 0 < floor < cpu.ingest.host_preprocess_bytes
+    analysis = cpu.ingest.category_bytes("analysis")
+    assert cpu.ingest.tree_analysis_bytes == analysis > 0
+    assert cpu.ingest.host_preprocess_bytes == floor + math.ceil(
+        pf.CPU_PREPARATION_ANALYSIS_MULTIPLE * analysis
+        + pf.CPU_PREPARATION_ANALYSIS_MULTIPLE_PER_INTERVAL
+        * (cpu.ingest.n_forcing_times - 1) * analysis)
+    assert cpu.ingest.host_preprocess_bytes < (
+        cpu.ingest.alloc_estimate_bytes + cpu.ingest.boundary_frame_bytes)
+    assert cuda.ingest.host_preprocess_bytes == cuda.ingest.host_preprocess_floor_bytes == 0
     # Native GFS decoder retention has no measured row; unknown RAM cannot
     # become zero merely because its interpolation runs on the CPU.
     assert cpu.ingest.host_forcing_bytes is None
@@ -121,13 +137,13 @@ def test_the_met_em_preparation_road_follows_the_tiles_declaration():
 
     assert "met_em" in CPU_PREPARED_SOURCES
     # Controls in the same test: nothing became cpu wholesale.
-    assert resolve_preprocess_backend(source="era5", experiment=tiled) == "cuda"
-    assert resolve_preprocess_backend(source="hrrr", experiment=tiled) == "cuda"
+    assert resolve_preprocess_backend(source="era5", experiment=tiled) == "auto"
+    assert resolve_preprocess_backend(source="hrrr", experiment=tiled) == "auto"
     assert resolve_preprocess_backend(
-        source="met_em", experiment=experiment(874, 574, mode="off")) == "cuda"
+        source="met_em", experiment=experiment(874, 574, mode="off")) == "auto"
     assert resolve_preprocess_backend(
         source="met_em",
-        experiment=experiment(874, 574, mode="on", store="device")) == "cuda"
+        experiment=experiment(874, 574, mode="on", store="device")) == "auto"
     # An explicit request still wins on this source, as on every other.
     assert resolve_preprocess_backend(
         source="met_em", experiment=tiled, requested="cuda") == "cuda"

@@ -25,6 +25,13 @@ reaching every call site are the same bytes at the same relative path,
 and a directory that moves later needs one entry in
 ``gpuwm.data_assets.COMPANION_TREES`` and no other edit.
 
+One directory never lived under ``gpuwm/data``: ``gpuwm_data/data/basemap``
+holds the Natural Earth and US Census shapefiles the renderer draws
+coastlines, borders, state lines and counties from.  A platform ``gpuwm``
+wheel carries the renderer but has no room for them, and this
+distribution arrives with every install, so ``gpuwm.rustwx`` hands this
+directory to the renderer (``gpuwm.data_assets.companion_basemap_dir``).
+
 Nothing in here imports ``gpuwm``.  A data package that needed its
 consumer installed to answer where its own files are would be a cycle
 with no purpose.

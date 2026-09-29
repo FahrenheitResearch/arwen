@@ -28,9 +28,15 @@ from gpuwm.core import preflight as pf
 from gpuwm.case_data import load_experiment_case
 from gpuwm.experiment import build_experiment, experiment_from_run_config
 from gpuwm.io import restart
-from conftest import requires_grib1_bridge
+from conftest import requires_grib1_bridge, requires_case_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: These tests load configs/real74_4dom.toml with its declared inputs
+#: required, so they run only where the WRF 1974 reference bundle its
+#: [case_data] names is on disk, and skip naming the absent file elsewhere.
+requires_4dom_inputs = requires_case_inputs(
+    Path(__file__).resolve().parents[1] / "configs" / "real74_4dom.toml")
 CONFIG_4DOM = ROOT / "configs" / "real74_4dom.toml"
 CONFIG_D01 = ROOT / "configs" / "real74_d01.toml"
 
@@ -205,6 +211,7 @@ def test_state_shape_formulas_staggering():
     assert "qv" in kessler and "qi" not in kessler and "nc" not in kessler
 
 
+@requires_4dom_inputs
 def test_shared_dycore_state_symbols_are_restart_rebuilt_source(exp4):
     """The sharing registry is exactly the restart REBUILT authority."""
     assert pf.shared_dycore_state_symbols() == restart.STATE_REBUILT_ATTRS
@@ -290,6 +297,7 @@ def test_shared_dycore_state_workspace_rejects_concurrent_owners(
 # (b) PhysicsDriver persistents
 # ---------------------------------------------------------------------------
 
+@requires_4dom_inputs
 def test_physics_shapes_scheme_selection(d01_cfg, exp4):
     full = pf.physics_array_shapes(d01_cfg)
     nzs = (d01_cfg.nz, d01_cfg.ny, d01_cfg.nx)
@@ -527,6 +535,7 @@ def test_scratch_registry_classifiable_by_restart_manifest(d01_cfg):
         assert restart.classify_scratch_slot(slot) in ("serialize", "rebuild")
 
 
+@requires_4dom_inputs
 def test_scratch_lifetime_audit_covers_registry_and_manifest(d01_cfg, exp4):
     """Architecture-E lever-2 admission is closed-world and reviewed.
 
@@ -803,6 +812,7 @@ def _scratch_call_sites():
     return sites
 
 
+@requires_4dom_inputs
 def test_every_scratch_call_site_is_classified(d01_cfg):
     """The plan's completeness gate: every ``scratch(...)`` call site in
     gpuwm/ resolves against the static registry -- literal slots must be
@@ -2404,6 +2414,7 @@ def test_lbc_interval_values_hand_check(d01_cfg):
     assert pf.lbc_intervals(43201.0, 21600.0) == 3
 
 
+@requires_4dom_inputs
 def test_nest_field_kinds_by_scheme(exp4):
     dry = RunConfig(**_TINY)
     assert pf.nest_field_kinds(dry) == ("u", "v", "w", "t", "ph", "mu")
@@ -2417,6 +2428,7 @@ def test_nest_field_kinds_by_scheme(exp4):
         "qi", "qs", "qg", "nr", "ni", "ns", "ng")
 
 
+@requires_4dom_inputs
 def test_p3_nest_forcing_excludes_snow_and_graupel(exp4):
     """mp=50 is OUT of the qi/qs/qg block, and the exclusion is the answer.
 
@@ -2464,6 +2476,7 @@ def test_p3_nest_forcing_excludes_snow_and_graupel(exp4):
     assert len(slots) == 14 * 4 * 2 + 3 * 6 + 2 == 132
 
 
+@requires_4dom_inputs
 def test_nest_allocation_manifest_inventory(exp4):
     manifest = pf.nest_allocation_manifest(exp4)
     assert sorted(manifest) == [2, 3, 4]  # root never registers nest slots
@@ -2538,6 +2551,7 @@ def test_gas_table_meta_and_default_chunk():
     assert pf._workspace_total_bytes(49, default) == 354375000
 
 
+@requires_4dom_inputs
 def test_estimate_uses_experiment_column_chunk(exp4):
     configured = dataclasses.replace(exp4, column_chunk=6250)
     estimate = pf.estimate_experiment(configured)
@@ -2802,6 +2816,7 @@ def test_estimate_domain_itemization_pins(exp1):
     assert d01.transient_bytes == 441262500
 
 
+@requires_4dom_inputs
 def test_estimate_experiment_shared_counting(est4, exp4):
     # k-distribution tables counted ONCE (lru_cache-shared,
     # rrtmgp.py:324/:436), while audited scratch is one per-slot maximum.
@@ -2837,6 +2852,7 @@ def test_estimate_experiment_shared_counting(est4, exp4):
         49, exp4.column_chunk, exp4.vertical.p_top)
 
 
+@requires_4dom_inputs
 def test_estimate_4dom_golden_pins(exp4, est4):
     per_domain = {d.grid_id: d.resident_bytes for d in est4.domains}
     # The production MP18 authority enables moist-CQ on every domain. Direct
@@ -3039,6 +3055,7 @@ def test_reserve_policy_split_proposals():
         0, pf.CAL_D01_POOL_HELD_BYTES - basis) == 2932339314
 
 
+@requires_4dom_inputs
 def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
         exp4, est4):
     """Project retained bytes explicitly; never relabel them a fresh probe.
@@ -3123,6 +3140,7 @@ def test_gate_leg_names_match_the_n0_ledger():
         assert nest_gates.gate("N0", metric).kind == "measured_bound"
 
 
+@requires_4dom_inputs
 def test_recommend_column_chunk_lever(exp4, est4):
     # Comfortably large budget: the CONFIGURED chunk already fits, so the
     # lever recommends it unchanged.
@@ -3159,6 +3177,7 @@ def _run_check(argv):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_check_cli_estimator_json(capsys):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "100",
                      "--json"])
@@ -3222,27 +3241,37 @@ def test_check_cli_estimator_json(capsys):
     # columns actually in flight: 443,555,840 B for KF (170 SMs x 8 blocks
     # x 32 lanes x 52 slots x 49 levels x 4 B) and 313,344,000 B for YSU.
     # EOS/USTM growth adds 5,940,961 B to the 3% retention term.
+    # 2026-09-28, -8,355,840 B: `rrtmgp_rte`'s 5,152 B was a reading of
+    # the source before the RRTMGP optimisation; every compile platform
+    # re-read compiles it to 3,600 B, so the widest frame this
+    # configuration launches is Morrison's 5,120 B and the backing store
+    # is (5,120 - 1,024) x 1,536 x 170 = 1,069,547,520 B.
     # Difference of the two rounded 3% retention terms, not a rounded delta.
-    assert payload["reserve_bytes"] == 3813259666 + (
+    assert payload["reserve_bytes"] == 3804903826 + (
         math.ceil(0.03 * 21403179598) - math.ceil(0.03 * 21287949368))
     reference = pf.card_local_memory_profile(None)
     exp_4dom = load_experiment_case(CONFIG_4DOM)[0]
     assert payload["reserve_components"]["device_overhead_bytes"] == (
-        reference.cuda_context_bytes + 1077903360
+        reference.cuda_context_bytes + 1069547520
         + 443555840 + 313344000)
-    assert payload["kernel_local_memory_bytes"] == 1077903360
+    assert payload["kernel_local_memory_bytes"] == 1069547520
+    frames_4dom = pf.kernel_local_frame_bytes(exp_4dom)
+    assert frames_4dom["rrtmgp_rte"] == 3600
+    assert frames_4dom["morrison"] == max(frames_4dom.values()) == 5120
     assert "kf" in payload["kernel_modules"]
-    assert pf.kernel_local_frame_bytes(exp_4dom)["kf"] == 512
+    assert frames_4dom["kf"] == 512
     assert pf.kf_column_workspace_bytes(
         exp_4dom, profile=reference) == 443555840
-    # Same +349,962,240 B context shift as ``reserve_bytes`` above, and the
-    # same -308,469,760 B net from the two workspaces.
-    assert payload["run_time_reserve_bytes"] == 6106960498
+    # Same +349,962,240 B context shift as ``reserve_bytes`` above, the
+    # same -308,469,760 B net from the two workspaces and the same
+    # -8,355,840 B from the re-read `rrtmgp_rte` frame.
+    assert payload["run_time_reserve_bytes"] == 6098604658
     assert payload["reserve_components"]["retention_residual_bytes"] == (
         math.ceil(0.03 * payload["alloc_estimate_bytes"]))
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     rc = _run_check(["check", str(CONFIG_4DOM), "--budget-gib", "19.5"])
     out = capsys.readouterr().out
@@ -3261,6 +3290,7 @@ def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
     """B-1: the report said "exceeds the WDDM budget" and exited 0.
 
@@ -3300,6 +3330,7 @@ def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
     """B-2: `--card 16gb` declared 16.68 GiB free on a 16 GB card.
 
@@ -3362,6 +3393,7 @@ def test_declared_free_is_capped_at_the_cards_physical_total(capsys):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_check_cli_reports_observed_peak_envelope(capsys, monkeypatch):
     """The empirical envelope line: accurate, informational, budget-aware.
 
@@ -3554,6 +3586,7 @@ def test_the_projection_constants_are_platform_conditional_too():
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_check_cli_prints_the_linux_envelope_factor_when_on_linux(
         capsys, monkeypatch):
     """`gpuwm check` must say which platform factor it applied."""
@@ -3809,6 +3842,7 @@ def test_alloc_preflight_d01_measured_le_estimate(exp1):
 
 
 @pytest.mark.gpu
+@requires_4dom_inputs
 def test_alloc_preflight_n0_four_domain():
     """N0 (gates all wave-2 ARC-B merges): the full manifest-driven
     allocation.  The budget legs are recorded for the controller's ledger
@@ -3891,7 +3925,7 @@ def test_legacy_rrtmg_variant_prices_the_call_peak_envelope():
 
 
 def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
-    """Variant-aware kernel-module selection (codex step-1 audit, major 1).
+    """Variant-aware kernel-module selection (step-1 audit, major 1).
 
     ``ra_physics = 4`` is two implementations behind one selector value.
     Under ``ra_rrtmg_variant = 'rrtmg_legacy'`` the modern ``rrtmgp_*``
@@ -3934,13 +3968,16 @@ def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
     assert (pf.kernel_local_memory_bytes(bare)
             == profile.reservation_bytes(2048) == 267386880)
     # The modern twin of the same bare selector set prices rrtmgp_rte's
-    # 5,152 B module bound, as before this fix.
+    # module bound: 3,600 B on every compile platform read, so
+    # (3600 - 1024) x 1536 x 170 = 672,645,120 B.  The ceiling carried
+    # 5,152 B (a reading of the pre-optimisation source) until the sm_120
+    # recordings were re-read, 405,258,240 B more for this same selection.
     modern_run = dataclasses.replace(
         bare_run, ra_rrtmg_variant="rte-rrtmgp",
         wrf_rrtmg_compatibility="none")
     assert (pf.kernel_local_memory_bytes(
                 experiment_from_run_config(modern_run, start))
-            == profile.reservation_bytes(5152))
+            == profile.reservation_bytes(3600) == 672645120)
 
     # Composite bookkeeping: the measured TU frames cover exactly the
     # fragments that cannot compile standalone, so selecting a fragment
@@ -4151,7 +4188,7 @@ def test_the_run_door_prices_wdm6_instead_of_refusing_mp_16():
     assert "wdm6" in modules and "wsm6" not in modules
     frames = pf.kernel_local_frame_bytes(exp)
     # nz = 4 compiles the 64 tier, which is the recorded row.
-    assert frames["wdm6"] == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"] == 9776
+    assert frames["wdm6"] == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"] == 9264
     assert pf.kernel_local_memory_bytes(exp) > 0
     estimate = pf.estimate_experiment(exp)
     assert estimate.alloc_estimate_bytes > 0
@@ -4162,8 +4199,8 @@ def test_wdm6_is_priced_at_the_tier_its_launcher_compiles_not_at_nz():
 
     ``gpuwm/core/wdm6.py`` compiles ``WDM6_KMAX`` at 64 or 80, never at
     ``nz``, so a 49-level WDM6 run launches the 64-tier kernel and holds
-    its 9,776 B frame.  Pricing 152 x 49 = 7,488 B there would under-price
-    the reservation by 2,288 B/thread -- 570 MiB of device memory the pool
+    its 9,264 B frame.  Pricing 144 x 49 = 7,056 B there would under-price
+    the reservation by 2,208 B/thread -- about 550 MiB of device memory the pool
     never reports -- which is the direction the header at the top of
     preflight.py says put a run 1,630 MiB over.
     """
@@ -4175,10 +4212,10 @@ def test_wdm6_is_priced_at_the_tier_its_launcher_compiles_not_at_nz():
         return pf.kernel_local_frame_bytes(
             experiment_from_run_config(cfg, start)).get("wdm6")
 
-    assert frame(4) == frame(49) == frame(64) == 9776
-    assert frame(65) == frame(80) == 12208
+    assert frame(4) == frame(49) == frame(64) == 9264
+    assert frame(65) == frame(80) == 11568
     profile = pf.MEASURED_LOCAL_MEMORY_PROFILE
-    assert (profile.reservation_bytes(9776) - profile.reservation_bytes(7488)
+    assert (profile.reservation_bytes(9264) - profile.reservation_bytes(7056)
             ) > 500 * 1024 ** 2
     # Deeper than the deepest compiled tier is a refusal, not a guess.
     with pytest.raises(ValueError, match="WDM6 requires 2 <= nz <= 80"):
@@ -4204,7 +4241,7 @@ def test_the_tiered_frame_model_agrees_with_the_wdm6_measurements():
 
     assert pf.WDM6_TIER_FRAME.define == "WDM6_KMAX"
     assert WDM6_KERNEL_LEVEL_TIERS == (64, 80)
-    for tier, measured in ((64, 9776), (80, 12208)):
+    for tier, measured in ((64, 9264), (80, 11568)):
         assert pf.WDM6_TIER_FRAME.frame_bytes(tier) == measured, tier
     assert (pf.WDM6_TIER_FRAME.frame_bytes(pf.WDM6_TIER_FRAME.shipped_tier)
             == pf.KERNEL_MAX_LOCAL_SIZE_BYTES["wdm6"])
@@ -5298,6 +5335,7 @@ def test_the_absent_card_profile_is_the_conservative_measured_reference():
                 is pf.MEASURED_LOCAL_MEMORY_PROFILE), gib
 
 
+@requires_4dom_inputs
 def test_absent_card_sizing_is_never_more_optimistic_than_a_present_card(
         exp4):
     """THE stress-run inequality: for the same config, the absent-card
@@ -5325,6 +5363,7 @@ def test_absent_card_sizing_is_never_more_optimistic_than_a_present_card(
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_declared_budget_sizing_says_it_is_an_estimate_for_absent_hardware(
         capsys):
     """--budget-gib is the sizing-for-a-card-you-intend-to-buy path; its
@@ -5343,6 +5382,7 @@ def test_declared_budget_sizing_says_it_is_an_estimate_for_absent_hardware(
         pf.MEASURED_LOCAL_MEMORY_PROFILE.name)
 
 
+@requires_4dom_inputs
 def test_ingest_prices_every_domain_in_the_tree(exp1, exp4):
     """v1.4.0 priced this phase on the ROOT alone.
 
@@ -5372,12 +5412,13 @@ def test_ingest_prices_every_domain_in_the_tree(exp1, exp4):
     assert four.transient_basis_bytes >= four.per_time_bytes
 
     # THE DEFECT, as an inequality: the tree's ingest estimate must not
-    # be reachable by pricing the root alone.
-    root_only = (math.ceil(one.headroom * (
+    # be reachable by pricing the root alone.  The setup term is the
+    # tree's itemized one (A65), the widest build's, which bounds the
+    # root's own from above, so this is the stronger form of the check.
+    root_only = (math.ceil(four.headroom * (
         four.resident_times * four.per_time_bytes
         + four.forcing_table_bytes
-        + math.ceil(pf.INGEST_TRANSIENT_PER_TIME_FRACTION
-                    * four.per_time_bytes)))
+        + four.transient_bytes))
         + four.context_bytes + four.device_overhead_bytes)
     assert four.peak_envelope_bytes > root_only
 
@@ -5414,6 +5455,7 @@ def test_adding_a_nest_never_lowers_the_ingest_estimate():
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_a_negative_budget_is_clamped_and_explained(capsys):
     """A reserve larger than free VRAM leaves NO budget.
 
@@ -5437,6 +5479,7 @@ def test_a_negative_budget_is_clamped_and_explained(capsys):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_the_over_budget_remedy_is_an_action_not_a_design_pointer(capsys):
     """It used to end "staged residency (DESIGN REOPEN) per section E".
 
@@ -5459,6 +5502,7 @@ def test_the_over_budget_remedy_is_an_action_not_a_design_pointer(capsys):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_the_printed_exit_code_is_the_one_the_process_returns(capsys):
     """The WARNING used to assert "(exit code 4: gates passed)" even when
     a gate had just failed and the process therefore exited 1."""
@@ -5484,6 +5528,7 @@ def test_the_printed_exit_code_is_the_one_the_process_returns(capsys):
 
 
 @requires_grib1_bridge
+@requires_4dom_inputs
 def test_the_budget_word_follows_the_platform(capsys, monkeypatch):
     """"WDDM budget" on a Linux box, in the same report that has just
     finished explaining there is no WDDM here."""
@@ -5502,6 +5547,7 @@ def test_the_budget_word_follows_the_platform(capsys, monkeypatch):
     assert "exceeds the WDDM budget" in out
 
 
+@requires_4dom_inputs
 def test_the_small_windows_tier_is_retired_into_the_measured_model():
     """The experimental tier's own advisory asked for exactly one thing:
     a measured peak from a small Windows card.  The 2026-08-19 3080
@@ -5663,3 +5709,89 @@ def test_a_probe_that_cannot_answer_reads_as_no_device():
     assert pf.profile_from_device_probe({"profile": "a 5090"}) is None
     assert pf.profile_from_device_probe(
         {"profile": {"name": "half a card"}}) is None
+
+
+#: The stand-in cgroup, meminfo and membership files every host-memory
+#: reader is held to: these and ``rw_host_memory`` (the renderer's
+#: ``rusty_weather::host_memory`` and the MPAS static builder's limit).
+_HOST_MEMORY_CASES = json.loads(
+    (ROOT / "tools" / "rustwx" / "crates" / "rw-host-memory" / "src"
+     / "host_memory_cgroup_cases.json").read_text(encoding="utf-8"))["cases"]
+
+
+@pytest.mark.parametrize("case", _HOST_MEMORY_CASES,
+                         ids=[case["name"] for case in _HOST_MEMORY_CASES])
+def test_host_available_bytes_is_capped_by_the_memory_cgroup_it_runs_in(
+        tmp_path, monkeypatch, case):
+    """THE BREAKAGE: MemAvailable inside a container is the host's, and the
+    cap read only the mount root's limit, never what the process had used
+    under it nor a limit on its own scope or slice.  A render planned
+    against that figure ran past the limit and was killed.  The renderer's
+    reader answers the same table (cargo test -p rusty-weather)."""
+    import sys
+
+    from tilestream import autoplan
+
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    for relative, text in case["cgroup"].items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text.encode("ascii"))
+    meminfo = tmp_path / "meminfo"
+    if case["meminfo"] is not None:
+        meminfo.write_bytes(case["meminfo"].encode("ascii"))
+    membership = tmp_path / "proc-self-cgroup"
+    if case["proc_self_cgroup"] is not None:
+        membership.write_bytes(case["proc_self_cgroup"].encode("ascii"))
+    monkeypatch.setattr(autoplan, "_CGROUP_ROOT", str(root))
+    monkeypatch.setattr(autoplan, "_PROC_SELF_CGROUP", str(membership))
+    monkeypatch.setattr(autoplan, "_PROC_MEMINFO", str(meminfo))
+    # The procfs route, which is the one a container has.
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    assert autoplan._cgroup_memory_headroom() == case["headroom"]
+    assert pf.host_available_bytes() == case["available"]
+
+
+@pytest.mark.parametrize("case", _HOST_MEMORY_CASES,
+                         ids=[case["name"] for case in _HOST_MEMORY_CASES])
+def test_the_host_total_is_the_smallest_limit_on_the_process_cgroup_path(
+        tmp_path, monkeypatch, case):
+    """THE BREAKAGE: the planner's limit read only the cgroup mount root's
+    ``memory.max``.  In a systemd scope with ``MemoryMax=2G`` on a 30 GiB
+    worker the root carries no limit, so ``Machine.detect``'s host RAM and
+    ``streaming._host_total_bytes`` read the whole host's 32.8 GB, the
+    pinned host store was sized to it, and the kernel killed the run.  The
+    limit is the smallest on the path from the process's own cgroup up to
+    the mount, the table the renderer's and the MPAS builder's readers
+    answer (cargo test -p rw-host-memory, -p rw-mpas)."""
+    import re
+    import sys
+
+    from gpuwm.core import streaming
+    from tilestream import autoplan
+
+    assert "limit" in case, "the shared table's case names no limit"
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    for relative, text in case["cgroup"].items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(text.encode("ascii"))
+    meminfo = tmp_path / "meminfo"
+    if case["meminfo"] is not None:
+        meminfo.write_bytes(case["meminfo"].encode("ascii"))
+    membership = tmp_path / "proc-self-cgroup"
+    if case["proc_self_cgroup"] is not None:
+        membership.write_bytes(case["proc_self_cgroup"].encode("ascii"))
+    monkeypatch.setattr(autoplan, "_CGROUP_ROOT", str(root))
+    monkeypatch.setattr(autoplan, "_PROC_SELF_CGROUP", str(membership))
+    monkeypatch.setattr(autoplan, "_PROC_MEMINFO", str(meminfo))
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    assert autoplan._cgroup_memory_limit() == case["limit"]
+    memtotal = int(re.search(r"^MemTotal:\s+(\d+) kB$", case["meminfo"],
+                             re.MULTILINE).group(1)) * 1024
+    expected = memtotal if case["limit"] is None else min(case["limit"], memtotal)
+    assert streaming._host_total_bytes() == expected

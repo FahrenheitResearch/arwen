@@ -120,7 +120,6 @@ def test_off_and_pinned_options_need_no_card():
     assert downscale_pricing.needs_machine(streaming.StreamingOptions(mode="on"))
     assert not downscale_pricing.needs_machine(
         streaming.StreamingOptions(mode="on", tile_nx=64, tile_ny=64))
-    assert downscale_pricing.cold_machine(streaming.OFF) is None
     pricing = downscale_pricing.price_child(
         cfg, None, machine=None, basis=downscale_pricing.DECLARED_BASIS,
         vram_gib=24.0)
@@ -267,8 +266,12 @@ def _stub_cupy(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "cupy", fake)
 
 
-def _runnable_child(tmp_path: Path) -> Path:
-    """A 12x10 child on its own four-level ladder over the two-level fixture."""
+def _runnable_child(tmp_path: Path, *, tiles_mode: str | None = "auto") -> Path:
+    """A 12x10 child on its own four-level ladder over the two-level fixture.
+
+    ``tiles_mode=None`` writes no ``[tiles]`` block at all, which is what a
+    run with no ``--tiles`` gets: the TUI and CLI default path.
+    """
     parent = {"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0}
     merged = _derive_child_run_config(
         _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12, child_ny=10,
@@ -276,7 +279,7 @@ def _runnable_child(tmp_path: Path) -> Path:
         child_eta_levels=build_child_eta_levels(4, stretch=2.5))
     merged["restart_interval_s"] = 300.0
     path = tmp_path / "child.toml"
-    path.write_text(_render_child_toml(merged, tiles_mode="auto"),
+    path.write_text(_render_child_toml(merged, tiles_mode=tiles_mode),
                     encoding="utf-8", newline="\n")
     return path
 
@@ -325,7 +328,7 @@ def test_the_runner_decides_before_it_reads_a_parent_frame(tmp_path, monkeypatch
     def detect(cls, **kwargs):
         # The cold measurement itself, standing in for cudaMemGetInfo:
         # the first and only device touch before the decision.  The
-        # real ``cold_machine`` runs and reaches this.
+        # real ``cold_card`` runs and reaches this.
         order.append("detect")
         measured.append(kwargs)
         return _fake_machine(6.0)
@@ -364,11 +367,190 @@ def test_the_runner_decides_before_it_reads_a_parent_frame(tmp_path, monkeypatch
     with pytest.raises(_Sentinel):
         child_run._run(args, child_run._ChildProgress())
     assert order == ["detect", "decide", "interpolate"]
-    # ``cold_machine`` handed the child's own host budget to the reader.
+    # ``cold_card`` handed the child's own host budget to the reader.
     assert measured and "host_bytes" in measured[0]
     if watched:
         assert touched == [], (
             f"the device runtime was consulted before the decision: {touched}")
+
+
+# ---------------------------------------------------------------------------
+# one price on every [tiles] setting
+# ---------------------------------------------------------------------------
+
+#: The 250 m child the 2026-09-26 user sweep ran on a 15.47 GiB RTX 5070 Ti:
+#: 552x552x49 at ratio 12 under a 3 km parent, WSM6 with RTE+RRTMGP, Noah,
+#: MYNN surface layer and YSU.  Only the keys that differ from the RunConfig
+#: defaults are spelled out; they are the derived child config's own.
+_TWO_FIFTY_METRE_CHILD = dict(
+    nx=552, ny=552, nz=49, dx=250.0, dy=250.0, ztop=20000.0, dt=1.25,
+    run_seconds=39600.0, output_interval_s=3600.0,
+    restart_interval_s=3600.0, grid_id=2, specified=True, map_proj=1,
+    mp_physics=8, ra_lw_physics=4, ra_sw_physics=4, radt=12.0,
+    wrf_rrtmg_compatibility="wrf-rrtmg-4-4-to-rte-rrtmgp-v2",
+    bl_pbl_physics=1, sf_sfclay_physics=91, sf_surface_physics=2,
+    cudt_minutes=0.0, hybrid_opt=2, hypsometric_opt=2, terrain_opt=1,
+    moist=True, moist_cq=True, top_lid=False, epssm=0.5, emdiv=0.01,
+    damp_opt=3, w_damping=1, diff_6th_opt=2, diff_6th_slopeopt=1, km_opt=4,
+    h_sca_adv_order=5, nwp_diagnostics=1,
+)
+
+#: The card that child ran on, as its own probe and ``Machine.detect``
+#: read it.
+_CARD_PROFILE_FIELDS = ("NVIDIA GeForce RTX 5070 Ti", 70, 1536, 1024)
+_CARD_FREE_BYTES = 16_368_795_648
+_CARD_TOTAL_GIB = 15.470458984375
+
+
+def _drive_the_runner_to_its_decision(run_dir: Path, *, tiles_mode) -> None:
+    """Run the child runner on the fixture parent until it has decided.
+
+    Stops at ``interpolate_parent_initial_state``, which the caller has
+    replaced with a sentinel raise.
+    """
+    import gpuwm.offline_child_run as child_run
+
+    run_dir.mkdir()
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        _history(run_dir / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+                 start + timedelta(hours=index), ny=18, nx=20)
+    namelist = run_dir / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    args = Namespace(
+        parent_history=sorted(run_dir.glob("wrfout_d03_*")),
+        parent_restart=None, parent_namelist=namelist, parent_domain_id=3,
+        child_config=_runnable_child(run_dir, tiles_mode=tiles_mode),
+        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4,
+        max_boundary_interval_seconds=3600.0, accepted_parent_cadence=True,
+        child_surface_from=None, preprocess_backend="cpu",
+        health_interval_seconds=60.0, outdir=run_dir / "child-run")
+    with pytest.raises(_Sentinel):
+        child_run._run(args, child_run._ChildProgress())
+
+
+def test_the_runner_prices_the_child_on_the_card_whatever_the_tiles_setting(
+        tmp_path, monkeypatch):
+    """One child, one card, one price, with ``[tiles]`` off or auto.
+
+    The failure this pins: with no ``[tiles]`` block the runner priced the
+    child on NO card, so the estimator fell back to the 170-SM reference
+    profile.  The 250 m child's run with no ``--tiles`` recorded
+    17,033,346,128 B in its child_streaming_decision event and report.json,
+    more than the 15.47 GiB card it then ran on, while the review and a
+    ``--tiles=auto`` run both said 14,922,267,728 B.  The pool peaked at
+    12,428,445,696 B.
+
+    Both settings are driven through the runner itself; the price the
+    runner took is then applied to the 250 m child, and it must be the
+    review's price on both.
+    """
+    import gpuwm.offline_child_run as child_run
+    from gpuwm.core.preflight import DeviceLocalMemoryProfile
+    from tilestream import autoplan
+
+    _stub_cupy(monkeypatch)
+    profile = DeviceLocalMemoryProfile(*_CARD_PROFILE_FIELDS)
+    card = autoplan.Machine(
+        vram_bytes=_CARD_FREE_BYTES, host_bytes=64 * GIB, name=profile.name,
+        host_source="explicit", device_profile=profile)
+    detected = []
+
+    def detect(cls, **kwargs):
+        detected.append(kwargs)
+        return card
+
+    real_price = downscale_pricing.price_child
+    decisions = []
+
+    def price(cfg, options, **kwargs):
+        pricing = real_price(cfg, options, **kwargs)
+        decisions.append((options, kwargs, pricing))
+        return pricing
+
+    def interpolate(*args, **kwargs):
+        raise _Sentinel()
+
+    monkeypatch.setattr(autoplan.Machine, "detect", classmethod(detect))
+    monkeypatch.setattr(downscale_pricing, "price_child", price)
+    monkeypatch.setattr(child_run, "interpolate_parent_initial_state",
+                        interpolate)
+    for tiles_mode in (None, "auto"):
+        _drive_the_runner_to_its_decision(
+            tmp_path / str(tiles_mode), tiles_mode=tiles_mode)
+    assert [options.mode for options, _, _ in decisions] == ["off", "auto"]
+
+    # The price each setting's runner took, applied to the 250 m child.
+    # Before the fix this read 17,033,346,128 B off and 14,922,267,728 B
+    # auto.
+    child = RunConfig(**_TWO_FIFTY_METRE_CHILD)
+    off, auto = (real_price(child, options, **kwargs).peak_envelope_bytes
+                 for options, kwargs, _ in decisions)
+    assert off == auto
+    # The review's call for the same child on the same card: the probe's
+    # measured capacity and its profile (the probe also reads the compile
+    # platform, which a non-Noah-MP child is not priced on).
+    review = real_price(
+        child, streaming.OFF, machine=None,
+        basis=downscale_pricing.MEASURED_BASIS, vram_gib=_CARD_TOTAL_GIB,
+        profile=replace(profile, compile_platform=("120", "13.4.92")))
+    assert off == review.peak_envelope_bytes
+    assert review.peak_envelope_bytes < _CARD_TOTAL_GIB * GIB
+
+    # The card was read on both settings, before the decision, and the
+    # runner's record names it, off included: this block is what
+    # report.json carries under "streaming".
+    assert len(detected) == 2
+    for _, kwargs, pricing in decisions:
+        assert kwargs["machine"] is card
+        entry = pricing.plan_entry()
+        assert entry["machine"] == profile.name
+        assert entry["machine_free_bytes"] == _CARD_FREE_BYTES
+    # And the old runner's price, on no card, is the one that disagreed.
+    unpriced = real_price(child, streaming.OFF, machine=None,
+                          basis=downscale_pricing.MEASURED_BASIS)
+    assert unpriced.peak_envelope_bytes > _CARD_TOTAL_GIB * GIB
+
+
+def test_a_host_that_cannot_be_read_refuses_only_the_settings_that_decide_on_it(
+        monkeypatch):
+    """Reading the card on every setting must not add a refusal.
+
+    ``Machine.detect`` raises when no host RAM figure can be read (a
+    container with no cgroup limit).  Off and a pinned tiling never consult
+    the host, so they still run, priced on the card's own profile; auto and
+    an unpinned ``on`` plan a host store and keep refusing.
+    """
+    from gpuwm.core import preflight
+    from gpuwm.core.preflight import DeviceLocalMemoryProfile
+    from tilestream import autoplan
+
+    profile = DeviceLocalMemoryProfile(*_CARD_PROFILE_FIELDS)
+
+    def no_host(cls, **kwargs):
+        raise autoplan.CannotPlan("no host-memory source", "host")
+
+    monkeypatch.setattr(autoplan.Machine, "detect", classmethod(no_host))
+    monkeypatch.setattr(preflight, "live_device_local_memory_profile",
+                        lambda: profile)
+    for options in (None, streaming.OFF,
+                    streaming.StreamingOptions(mode="on", tile_nx=64,
+                                               tile_ny=64)):
+        card = downscale_pricing.cold_card(options)
+        assert card.machine is None and card.profile is profile
+    for options in (streaming.StreamingOptions(mode="auto"),
+                    streaming.StreamingOptions(mode="on")):
+        with pytest.raises(autoplan.CannotPlan) as refused:
+            downscale_pricing.cold_card(options)
+        assert refused.value.resource == "host"
+
+    # A card that cannot be read is not swallowed on any setting.
+    def no_card(cls, **kwargs):
+        raise autoplan.CannotPlan("no card", "vram")
+
+    monkeypatch.setattr(autoplan.Machine, "detect", classmethod(no_card))
+    with pytest.raises(autoplan.CannotPlan):
+        downscale_pricing.cold_card(streaming.OFF)
 
 
 # ---------------------------------------------------------------------------

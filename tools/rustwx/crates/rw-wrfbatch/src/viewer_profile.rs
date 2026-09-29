@@ -52,6 +52,9 @@ pub struct ProductAvailability {
 enum Requirement {
     Selector(FieldSelector),
     Derived(String),
+    /// A stored 2-D field named by `var:<name>`: the renderer's generic
+    /// lane draws any stored 2-D field under a request-safe name.
+    Stored(String),
     Unsupported(String),
 }
 
@@ -74,9 +77,17 @@ impl ViewerProfile {
                 .map(|slug| (*slug).to_owned())
                 .collect()
         } else {
+            // A stored field's name is spelled exactly as the store spells
+            // it; only a catalog slug is case-folded.
             requested
                 .iter()
-                .map(|slug| slug.trim().to_ascii_lowercase())
+                .map(|slug| {
+                    let slug = slug.trim();
+                    match slug.strip_prefix("var:") {
+                        Some(name) => format!("var:{name}"),
+                        None => slug.to_ascii_lowercase(),
+                    }
+                })
                 .collect()
         };
         products.sort();
@@ -86,11 +97,26 @@ impl ViewerProfile {
         let mut only = BTreeSet::new();
         let mut chart_selectors = Vec::new();
         let mut windowed = HashSet::new();
+        let mut stored_fields = false;
         for slug in &products {
             if slug.is_empty() || slug.len() > 128 {
                 return Err("Viewer product slugs must contain 1 to 128 characters".into());
             }
-            let required = if let Ok(fields) = plot_recipe_store_requirements(slug) {
+            let required = if let Some(name) = slug.strip_prefix("var:") {
+                // The renderer's own parser decides what a `var:` request
+                // may name, so the viewer takes exactly the stored-field
+                // requests the renderer draws and refuses the spellings it
+                // would refuse.
+                let parsed = rusty_weather::render_all::partition_products(slug)
+                    .map_err(|error| format!("Viewer product {slug:?}: {error}"))?;
+                if parsed.generic.len() != 1 || parsed.generic[0] != name {
+                    return Err(format!(
+                        "Viewer product {slug:?} must name exactly one stored 2-D field"
+                    ));
+                }
+                stored_fields = true;
+                vec![Requirement::Stored(name.to_owned())]
+            } else if let Ok(fields) = plot_recipe_store_requirements(slug) {
                 fields
                     .into_iter()
                     .map(|field| match field.selector {
@@ -126,6 +152,18 @@ impl ViewerProfile {
                     Requirement::Derived(name) => {
                         only.insert(name.clone());
                     }
+                    Requirement::Stored(name) => {
+                        only.insert(name.clone());
+                        // A chart-level plane is built only for the
+                        // selectors the viewer hands the processor.
+                        if let Some(selector) =
+                            crate::wrf_process::isobaric_recipe_selector_for_key(name)
+                        {
+                            if !chart_selectors.contains(&selector) {
+                                chart_selectors.push(selector);
+                            }
+                        }
+                    }
                     Requirement::Unsupported(_) => {}
                 }
             }
@@ -135,16 +173,21 @@ impl ViewerProfile {
         // a valid frame can still publish its unavailable-product catalog.
         // An empty filter would mean "all" to the full-science processor.
         only.insert("orography".into());
+        // A `var:` request may name a raw WRF field or one a user added to
+        // their own Registry, which only the raw-extras and stored-plane
+        // passes store. The `only` filter above keeps both passes to the
+        // named fields, and a selection without `var:` pays for neither.
         let options = WrfProcessOptions {
             core_fields: true,
             diagnostics: true,
             heavy_ecape: false,
-            raw_extras: false,
-            stored_planes: false,
+            raw_extras: stored_fields,
+            stored_planes: stored_fields,
             only: only.into_iter().collect(),
             skip: Vec::new(),
             viewer_2d: true,
             chart_selectors,
+            named_products_only: false,
         }
         .normalized();
         Ok(Self {
@@ -189,6 +232,16 @@ impl ViewerProfile {
                                 None
                             }
                         }
+                        Requirement::Stored(name) => {
+                            if store.surface_variable(name).is_some() {
+                                Some(name.clone())
+                            } else {
+                                missing_reasons.push(format!(
+                                    "This frame stores no 2-D field named {name}"
+                                ));
+                                None
+                            }
+                        }
                         Requirement::Unsupported(reason) => {
                             missing_reasons.push(reason.clone());
                             None
@@ -206,7 +259,12 @@ impl ViewerProfile {
                             .into(),
                     );
                 }
-                let listed = catalog.products.iter().any(|product| product.slug == *slug);
+                // The catalog leaves out `var:` spellings of a plane a named
+                // product already draws, so an "all" request does not draw
+                // one grid twice. An explicit `var:` request is drawn by
+                // the generic lane whenever the field is stored.
+                let listed = matches!(required.as_slice(), [Requirement::Stored(_)])
+                    || catalog.products.iter().any(|product| product.slug == *slug);
                 if !listed && missing_reasons.is_empty() {
                     missing_reasons.push(
                         "The production renderer has no available recipe for these stored fields"
@@ -294,5 +352,29 @@ mod tests {
         assert_eq!(profile.options.only, ["apcp", "orography"]);
         assert!(profile.windowed.contains("qpf_1h"));
         assert!(ViewerProfile::new(&["not_a_product".into()]).is_err());
+    }
+    #[test]
+    fn a_stored_field_selection_is_accepted_and_processes_only_that_field() {
+        let profile = ViewerProfile::new(&["var:temperature_2m".into()]).unwrap();
+        assert_eq!(profile.products, ["var:temperature_2m"]);
+        assert_eq!(profile.options.only, ["orography", "temperature_2m"]);
+        assert!(profile.options.viewer_2d);
+        assert!(profile.options.raw_extras && profile.options.stored_planes);
+        assert!(profile.options.chart_selectors.is_empty());
+        let chart = ViewerProfile::new(&["var:geopotential_height_850hpa".into()]).unwrap();
+        assert_eq!(
+            chart.options.chart_selectors,
+            [FieldSelector::isobaric(F::GeopotentialHeight, 850)]
+        );
+        assert_eq!(
+            chart.options.only,
+            ["geopotential_height_850hpa", "orography"]
+        );
+    }
+    #[test]
+    fn a_stored_field_selection_keeps_the_renderers_spelling_rules() {
+        for slug in ["var:", "var:temperature_2m,dewpoint_2m", "var: temperature_2m"] {
+            assert!(ViewerProfile::new(&[slug.into()]).is_err(), "{slug}");
+        }
     }
 }

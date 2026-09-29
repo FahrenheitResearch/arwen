@@ -17,6 +17,7 @@ from gpuwm.static.lambert import LambertGrid
 import test_mapped_source as source_fixture
 import test_mapped_frameset_streaming as bundle_fixture
 from test_atmospheric_window import assert_horizontal_exact
+from conftest import requires_wps_masked_chain_bridge
 
 
 def target(lat=32., lon=-99.5):
@@ -63,6 +64,7 @@ def pair(source, engine, tmp_path):
     return full, small, result
 
 
+@requires_wps_masked_chain_bridge
 def test_writer_retains_only_atmosphere_and_original_identity(pair, source):
     full, small, result = pair
     assert "--atmospheric-window" in result["command"]

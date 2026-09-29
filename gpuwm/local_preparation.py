@@ -23,6 +23,132 @@ def _identity(document: Mapping) -> str:
     ).encode("utf-8")).hexdigest()
 
 
+#: The input manifest a folder's own preparation authors beside the bytes
+#: it seals: the same name the table routes' handoff gives it.
+SOURCE_ROOT_MANIFEST_NAME = "inputs.json"
+
+
+def _fetch_hint(fetch, folder: Path, *, cycle=None, hours=None,
+                cadence=None) -> str:
+    """The `gpuwm fetch` line that writes a row's supplement into ``folder``."""
+    from gpuwm import fetch_routes
+
+    parts = [f"gpuwm fetch --source {fetch['source']}",
+             f"--cycle {cycle.strftime('%Y-%m-%dT%H') if cycle else 'CYCLE'}",
+             f"--hours {hours if hours is not None else 'HOURS'}"]
+    if cadence is not None:
+        parts.append(f"--cadence {cadence}")
+    parts.append("--area AREA")
+    if fetch_routes.supplement_fetch_retrieves(fetch):
+        parts.append("--retrieve")
+    parts.append(f"--out {folder}")
+    return " ".join(parts)
+
+
+def bind_source_root(source: str, source_root, *, cycle=None, hours=None,
+                     cadence=None) -> dict:
+    """Bind a hand-staged folder's files to the roles its source row declares.
+
+    The source's refusal row in the acquisition-route table states the
+    folder's layout (:func:`gpuwm.fetch_routes.source_root_layout`):
+    which files are the ordered inputs, and which file is each
+    supplement role.  Nothing here names a model.  Inputs are every file
+    the row's patterns match whose leading bytes carry the declared
+    format, in name order; a supplement file is excluded from them unless
+    its row says it is an input as well.
+
+    Returns ``{"source", "source_root", "inputs", "supplements"}`` with
+    ``supplements`` as ``(role, path)`` pairs.  Refuses, naming the file
+    and how to get it, when a declared role has no file or the folder
+    holds no input.
+    """
+
+    from fnmatch import fnmatchcase
+
+    from gpuwm import fetch_routes
+    from gpuwm.source_adapters import get_source_adapter
+
+    source_id = get_source_adapter(source).source_id
+    layout = fetch_routes.source_root_layout(source_id)
+    if layout is None:
+        raise ValueError(
+            f"{source_id} declares no folder layout, so the files in a "
+            "folder cannot be bound to its preparation roles. Name them "
+            "with --input (or --input-list) and --supplement ROLE=PATH.")
+    root = Path(source_root).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Local source directory {root} does not exist. "
+                         "Supply the directory containing the input files.")
+    names = sorted(entry.name for entry in root.iterdir() if entry.is_file())
+
+    def matching(patterns):
+        return [name for name in names
+                if any(fnmatchcase(name, pattern) for pattern in patterns)]
+
+    supplements: list[tuple[str, Path]] = []
+    claimed: set[str] = set()
+    for row in layout["supplements"]:
+        found = matching(row["match"])
+        if not found:
+            remedy = ""
+            if row["fetch"] is not None:
+                remedy = (" Write it into this folder with `"
+                          + _fetch_hint(row["fetch"], root, cycle=cycle,
+                                        hours=hours, cadence=cadence)
+                          + "`.")
+            raise ValueError(
+                f"{root} holds no {row['role']} file "
+                f"({', '.join(row['match'])}): {row['why']}{remedy}")
+        for name in found:
+            declared = fetch_routes.sniff_format(root / name)
+            if declared != row["format"]:
+                raise ValueError(
+                    f"{root / name} is this folder's {row['role']} file by "
+                    f"name but its bytes are {declared or 'no format this door reads'}, "
+                    f"not {row['format']}: the composition would refuse it "
+                    "after the inputs were decoded. Replace it with the "
+                    f"{row['format']} file the row names.")
+            supplements.append((row["role"], root / name))
+            if not row["input"]:
+                claimed.add(name)
+    wanted = layout["inputs"]
+    inputs = [root / name for name in matching(wanted["match"])
+              if name not in claimed
+              and not any(fnmatchcase(name, pattern)
+                          for pattern in wanted["exclude"])
+              and fetch_routes.sniff_format(root / name) == wanted["format"]]
+    if not inputs:
+        raise ValueError(
+            f"{root} holds no {wanted['format']} input file for {source_id} "
+            f"({', '.join(wanted['match'])}). Expected: {layout['why']}")
+    return {"source": source_id, "source_root": str(root),
+            "inputs": inputs, "supplements": supplements}
+
+
+def source_root_handoff(binding: Mapping, *, cycle: str) -> dict:
+    """The preparation handoff a bound folder stands for.
+
+    The same document a table route's fetch writes as
+    ``prep-arguments.json``: the ordered input list, each supplement
+    binding and the manifest the preparation authors.  Its input-list
+    token names the list file a published handoff writes; the ordered
+    inputs themselves travel beside it.
+    """
+
+    from gpuwm import fetch_routes
+
+    root = Path(binding["source_root"])
+    argv = ["--source", str(binding["source"]),
+            "--input-list", str(root / fetch_routes.INPUT_LIST_NAME)]
+    for role, path in binding["supplements"]:
+        argv += ["--supplement", f"{role}={path}"]
+    argv += ["--author-input-manifest", str(root / SOURCE_ROOT_MANIFEST_NAME)]
+    return {"schema": fetch_routes.PREP_ARGUMENTS_SCHEMA,
+            "source": str(binding["source"]),
+            "prep_source": str(binding["source"]), "cycle": cycle,
+            "argv": argv, "unbound_supplement_roles": []}
+
+
 def resolve_source_root(hints, *, data_dir=None, base_dir=None) -> Path:
     """Use the explicit run override, otherwise the config's local root."""
     value = data_dir if data_dir is not None else hints.get("source_root")
@@ -113,12 +239,31 @@ def inspect_local_inputs(source: str, source_root: Path, *, cycle: datetime,
     elif runner is not None and runner.local_kind == "prep_handoff":
         # Reuse the established handoff, not a guessed variable-to-role map.
         path = source_root / fetch_routes.PREP_ARGUMENTS_NAME
-        if not path.is_file():
+        bound_inputs = None
+        if path.is_file():
+            handoff = json.loads(path.read_text(encoding="utf-8"))
+        elif fetch_routes.source_root_layout(adapter.source_id) is not None:
+            # A hand-staged folder: the source's row says which file is
+            # which, so the handoff a fetch would have written is derived
+            # from the folder here, in memory.  `gpuwm go` then publishes
+            # it into the run (publish_local_handoff) like any other.
+            try:
+                binding = bind_source_root(
+                    adapter.source_id, source_root, cycle=cycle,
+                    hours=hours, cadence=cadence)
+            except ValueError as error:
+                raise ValueError(
+                    f"Local input at {source_root} has no "
+                    f"{fetch_routes.PREP_ARGUMENTS_NAME}, and its files do "
+                    f"not bind by {adapter.source_id}'s folder layout: "
+                    f"{error}") from None
+            handoff = source_root_handoff(binding, cycle=result["cycle"])
+            bound_inputs = list(binding["inputs"])
+        else:
             raise ValueError(
                 f"Local input at {source_root} has no {fetch_routes.PREP_ARGUMENTS_NAME}. "
                 "Bind its ordered inputs and required supplements with the "
                 "source's preparation handoff, or supply a prepared bundle.")
-        handoff = json.loads(path.read_text(encoding="utf-8"))
         if (handoff.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA
                 or handoff.get("source") != adapter.source_id
                 or handoff.get("prep_source") != adapter.source_id
@@ -164,7 +309,8 @@ def inspect_local_inputs(source: str, source_root: Path, *, cycle: datetime,
         listing = Path(dict(pairs)["--input-list"])
         if not listing.is_absolute():
             listing = source_root / listing
-        paths = list(read_input_list(listing))
+        paths = (list(bound_inputs) if bound_inputs is not None
+                 else list(read_input_list(listing)))
         ordered_inputs = [str(file.resolve()) for file in paths]
         if any(not file.is_absolute() for file in paths):
             raise ValueError("The local handoff's input list contains relative paths. "

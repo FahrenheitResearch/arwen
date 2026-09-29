@@ -29,8 +29,8 @@ independent hard blockers, both already measured elsewhere in this tree:
    snapshot; every other advected scalar — including `nc`, `nwfa`, `nifa` —
    takes WRF's `flow_dep_bdy` treatment, which is *zero on inflow*. Stock WRF
    forces `qnwfa`/`qnifa` at the boundary from the metgrid WIF stream.
-   The measured consequence is a depletion front advancing at **0.993 of the
-   wind speed**: a 100 km nest is at WRF's aerosol floor everywhere within
+   The measured consequence is a depletion front advancing at **1.005 of the
+   wind speed**: a 100 km nest has lost its initial aerosol everywhere within
    83 minutes. Comparing that against WRF would be comparing two different
    problems and reporting the difference as a port error.
 

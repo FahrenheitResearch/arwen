@@ -8,7 +8,7 @@
       "message": "mapped lateral-boundary forcing requires at least two times",
       "type": "ForcingSeriesRefusal"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "gdas-pgrb2-donor",
     "verdict": "REFUSED"
   },
@@ -461,7 +461,7 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "gdas-pgrb2-donor",
     "verdict": "INSPECTED"
   },
@@ -469,6 +469,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "gdas-pgrb2-donor"
 }

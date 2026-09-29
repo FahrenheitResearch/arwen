@@ -1,8 +1,8 @@
 # Decode-vendor design: the mapped engine moves to Rust
 
 Status: skeleton landed on `lane/decode-vendor`; three port lanes branch
-from it.  Ruling served: the Python boundary (Drew, 2026-08-16) — all
-data-path processing is Drew's Rust or seeded from it; Python survives as
+from it.  Ruling served: the Python boundary (project ruling, 2026-08-16) — all
+data-path processing is the project's Rust or seeded from it; Python survives as
 orchestration/CLI and CUDA driver code.
 
 Donor: a private working checkout of `rusty-weather-consolidated` @
@@ -261,7 +261,8 @@ still verifiable either way.
 Enumerated in `gpuwm.mapped_engine_bridge.REFUSAL_CLASSES` (usage,
 not_implemented [skeleton only], missing_input, mapping_invalid,
 manifest_mismatch, selector_unmatched, grid_mismatch, decode_failed,
-frame_invalid, forcing_series, authority_moved), each mapped to the
+frame_invalid, forcing_series, authority_moved, disk_full,
+write_failed, requester_closed), each mapped to the
 exception type the Python engine raises for the same condition today.
 An engine refusal with an unlisted class is itself a defect and
 re-raises as `RuntimeError` naming the unknown class.  Growing the
@@ -270,7 +271,19 @@ list at the 2.5.0 release-candidate wave: the preparation front door
 promoted the too-short-forcing-series `ValueError` to its own
 `ForcingSeriesRefusal` (a `ValueError` subclass), and the 1:1 class
 mapping had to follow -- the frameset schema is unchanged, so the ABI
-marker does not move.
+marker does not move.  `disk_full` and `write_failed` keep the
+engine's own output failures apart from a missing input, whose remedy
+(supply the file) is wrong for them: `disk_full` (a full disk or quota
+met mid-write, or a stream sized from its first frame and found bigger
+than the output disk's free space before a byte is written) maps to
+`ScratchDiskRefusal`, a `PreparationRefusal` whose remedy names
+`GPUWM_COMPOSE_SCRATCH`, and `write_failed` maps to `OSError`.  The
+frameset schema is unchanged by both, so the marker does not move.
+`requester_closed` is the atmospheric window pipe closed by the process
+that started the engine (it stopped reading the request, or closed before
+replying); it maps to `BrokenPipeError`, and its remedy names no disk and
+no output directory, because neither is at fault.  `write_failed` stays
+for a request written to a real file.
 
 ### 3.4 ABI marker and resolution
 
@@ -492,7 +505,7 @@ would answer from a staged copy while a fresh checkout build sat unused).
 
 MEASURED seam cost, so the exe-versus-dll choice stays accurate: a
 two-frame 0.25-degree GDAS frameset is 3.55 GB; writing it takes 4.6 s
-and reading it back 6.0 s on Drew's box, on top of a 26 s decode.  The
+and reading it back 6.0 s on the development workstation, on top of a 26 s decode.  The
 reader streams its hash and memory-maps the arrays rather than reading
 the stream whole, so peak footprint does not double.
 
@@ -855,8 +868,8 @@ commit:
   missing input, corrupt GRIB, the NOMADS/S3 selector-identity twin).
   Measured result: 15 PASS + 2 ROUTED-PYTHON (the era5 rows, by
   declared gap), zero FAIL; all four refusal cases agree in class and
-  sentence.  Full record in the DECODE-VENDOR report in Drew's
-  Downloads and `sweep-record.json` beside the evidence charts.
+  sentence.  Full record in the DECODE-VENDOR report in the
+  project's records and `sweep-record.json` beside the evidence charts.
 
 Two refusal-parity defects the driven battery exposed, both fixed here:
 
@@ -984,7 +997,73 @@ header would have to carry `<basename>:<record index>`, in
 `gpuwm.mapped_source` and in the engine's `frames.json` writer together
 or the two stop agreeing, and all sixteen goldens re-measured behind it.
 The goldens were deliberately left untouched here rather than moved
-under `--force` by a lane that was measuring one row.
+under `--force` by a lane that was measuring one row.  2.8 retired this
+in the battery instead: the decode and compose goldens carry the portable
+header digest (see below), so the product still records both forms.
+
+**The compose goldens no longer carry it (2.8).**  Two compose goldens
+were stamped with the staging override pointing at a folder that was
+later deleted, and failed on every other box and at every other path
+while every array, input hash and receipt matched.  The compose digest
+(`gpuwm-mapped-compose-parity-digest-v2`) now hashes each frame's header
+in the portable form of section 8.5 (`portable_header_sha256`, rule
+`gpuwm-portable-frame-header-v1`), which the battery can apply without
+the product change above: every input the row hands the engines, as
+handed and as resolved (a junction or symlinked root is quoted by its
+target), is reduced to its file name, and each libm-dependent field of
+the primary or a donor mapping is named instead of hashed.  Nothing
+leaves the comparison: every field's array digest, the libm-dependent
+ones included, is still compared exactly in the frame's `fields` table.
+A compose golden now reproduces, on its measuring platform, wherever
+its bytes are staged.
+
+The nine composed goldens measured on Windows kept their platform and
+every measured value; only the header digest was replaced, and only after
+it was proven (the tenth is a refusal, which carries no header, and moved
+only its schema).  Each frame's header was produced on Linux from the same
+bytes, the staging root respelled as the measuring box spelled it, and
+the golden's own digest put back into each libm-dependent field; hashed
+the v1 way, that rebuilt header reproduced every committed raw digest
+exactly, so the portable form of the measuring box's header is known
+rather than assumed.  Two of them (`gefs`, `icon-eu`) reproduced only
+with their references in the order the reference sort used before it
+began walking records in level order: their raw digests had gone stale
+on the box that measured them, and the portable digests now carry the
+order the code writes.
+
+`era5-l137` has since left that set.  Its donor was fetched again with
+the lake state the era5 fetch has requested since 2.7.0, and the golden
+was re-measured on Linux over the donor mapping that binds the water
+state (sea surface temperature, sea ice, lake water and ice) and the
+snow, so its portable header digest, like every other value in it, is
+a Linux measurement of those bytes.
+
+**The decode goldens use the same portable header rule (2.8).** The decode
+digest (`gpuwm-mapped-parity-digest-v2`) records `header_rule` and each
+frame's `portable_header_sha256`. Inspection parity retains its existing
+portable header list and rule, checks that every materialized frame has
+one, and drops the raw header list from the comparison. The product still
+records both forms. Handed and resolved input paths are reduced before
+hashing, including paths reached through directory links. Every field
+array hash remains in the exact comparison, including libm-derived fields.
+
+The six materialized decode goldens retain their Windows platform stamp
+and every field, axis and input value. Their original raw headers were
+rebuilt on Linux using the same procedure above before replacing them.
+For libm-dependent inspected fields, the Windows array hashes and extrema
+remain as measured.
+The `gefs-ensemble-control` raw headers required the previous reference tie
+order to reproduce; its replacement headers and inspection references now
+use the current order. The `icon-eu-regular` inspection reference lists
+were refreshed against that order too, with their contents unchanged.
+The remaining ten decode documents change only their shared digest schema.
+
+The cut's Windows step must run the decode and inspection parity rows
+against these committed goldens at two distinct staging roots, using a
+mapped engine built from the cut tip. It must confirm every Windows field
+hash, including the libm-derived arrays, the portable headers, and the
+current reference order. Linux live dual-engine parity and reconstruction
+of the old Windows headers do not replace that platform check.
 
 **A compose golden for this route cannot be committed yet, and the
 reason is not the bytes.**  `--source 20crv3` runs

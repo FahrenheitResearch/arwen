@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 /// default cannot read a Python constant; the README's `launch_downscale`
 /// paragraph carries that as a contract sentence, and the two are
 /// changed together.
+///
+/// `all` is every NAMED product the run's frames can draw: the renderer
+/// leaves out the stored variables (asked for as `variables`) and every
+/// window the run's last frame does not close.
 pub const DEFAULT_RENDER_PRODUCTS: &str = "all";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -187,7 +191,7 @@ impl Guide {
     q("Action: plan or run", "@downscale-mode", "plan invokes --dry-run to validate and write the derived plan without a forecast. run starts the offline child only after you review and confirm the exact command.", "plan", true),
     q("Parent namelist domain column", "--parent-namelist-domain", "Optional column of the stock-WRF namelist corresponding to this parent (native default 1). This is distinct from selecting a wrfout domain ID.", "", false),
     q("Measure local GPU free memory: true/false", "@auto-vram", "true measures actual total and free memory: it fits a point child when no size is given, and prices an explicit child size or a supplied child configuration on the measured card otherwise. Entering a capacity turns this off. false uses explicit capacity or the native 24 GiB default when none is supplied.", "true", false),
-    q("Requested plots", "--render-products", "Comma-separated canonical products drawn into png beside the child's frames when it finishes, or all, or none to keep only the frames. The same spelling the forecast door takes.", DEFAULT_RENDER_PRODUCTS, false),
+    q("Requested plots", "--render-products", "Comma-separated canonical products drawn into png beside the child's frames as each one is written, or all, or none to keep only the frames. The same spelling the forecast door takes.", DEFAULT_RENDER_PRODUCTS, false),
    ],
    Kind::Wrf|Kind::MetEm=>vec![q("Existing input directory", if kind==Kind::Wrf {"--wrfinput"}else{"--met-em"}, if kind==Kind::Wrf {"Folder containing wrfinput_d0*, wrfbdy_d01 and the producing namelist.input. Its physics stays authoritative."}else{"Folder containing met_em.d0*.nc and the producing namelist.input. Its settings stay authoritative."}, "", true), q("Shorten duration (seconds, optional)","--run-seconds","Empty preserves the producing namelist duration.","",false),q("Forecast output directory","--outdir","Run output will be written here. Review the exact command before starting.",out,true)],
    Kind::Resume=>vec![q("Original configuration file","","The same ArWen TOML used by the interrupted run. Checkpoint identity is checked by the existing engine.","",true),q("Checkpoint file or latest","--from","Use an actual gpuwmrst checkpoint, or latest to let the engine locate a valid set in the output directory.","latest",true),q("Existing forecast output directory","--outdir","The interrupted run's wrfout/checkpoint directory. A log folder alone is not a checkpoint.",out,true)],
@@ -404,6 +408,13 @@ impl Guide {
         }
         let mut created = None;
         let mut history = Vec::new();
+        if self.kind == Kind::Downscale {
+            if let Some(field) = self.questions.iter().find(|field| field.flag == "--render-products") {
+                if !field.value.trim().is_empty() {
+                    crate::plotsettings::for_section(&field.value, false)?;
+                }
+            }
+        }
         for field in &self.questions {
             let value = field.value.trim();
             if value.is_empty() {
@@ -541,7 +552,7 @@ impl Guide {
                 cwd.join(config)
             };
             let plots = crate::plotsettings::load(&config)?;
-            args.extend(["--render-products".into(), plots.spec]);
+            args.extend(["--render-products".into(), crate::plotsettings::for_section(&plots.spec, false)?]);
         }
         if self.kind == Kind::Render {
             args.push("--series".into());
@@ -905,6 +916,15 @@ mod tests {
         assert_eq!(r.command, "resume");
         assert!(r.args.contains(&"--from=latest".into()));
         assert!(r.args.contains(&"--outdir=prior-run".into()));
+    }
+    #[test]
+    fn downscale_cannot_request_a_cross_section_without_a_line_channel() {
+        let mut guide = Guide::new(Kind::Downscale, Path::new("."), Path::new("runs"));
+        guide.questions[0].value = "parent-history".into();
+        guide.questions[1].value = "35,-100".into();
+        guide.questions.iter_mut().find(|field| field.flag == "--render-products").unwrap().value = "xsec:wa".into();
+        let error = guide.request(Path::new(".")).err().unwrap();
+        assert!(error.contains("xsec:wa") && error.contains("cannot locate the slice"), "{error}");
     }
     #[test]
     fn research_downscale_keeps_parent_cadence_independent_of_child_output() {

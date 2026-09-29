@@ -14,6 +14,7 @@ reader, whose stages account for the process.
 from __future__ import annotations
 
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -64,6 +65,65 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
                            "profile": None})
 
 
+#: The renderer's product listing as this file's chains see it: two
+#: products a wrfout carries, in the shape ``render_catalog`` returns.
+_STAND_IN_CATALOG = {
+    "engine": "rust",
+    "products": [{"name": "composite_reflectivity"},
+                 {"name": "2m_temperature"}],
+    "group_keywords": ["all", "direct", "derived", "windowed"],
+    "local_run": {"products": [
+        {"name": "composite_reflectivity", "kind": "direct", "minimum_hour": 0},
+        {"name": "2m_temperature", "kind": "direct", "minimum_hour": 0}]},
+}
+
+
+@pytest.fixture(autouse=True)
+def _a_renderer_catalog_this_file_decides(monkeypatch):
+    """Stand in for the renderer's own listing, as the chains stand in for every process.
+
+    Disk admission prices the pictures a run will draw from the
+    renderer's catalog (``runplan.render_catalog``), asked before the
+    download.  Every chain here replaces ``subprocess.Popen`` with a
+    double that answers stages, so without this the admission would ask
+    the real ``rw_wrfbatch`` through that double: on a box where a
+    renderer resolves, ``subprocess.run`` needs a context manager the
+    double is not, and the chain dies at admission with a TypeError;
+    on a box with none, admission prices from the measured table.  The
+    same seam and the same shape ``test_go_chain`` uses, so the result
+    no longer depends on which box runs the file.
+    """
+
+    from gpuwm import runplan
+
+    monkeypatch.setattr(runplan, "render_catalog",
+                        lambda: json.loads(json.dumps(_STAND_IN_CATALOG)))
+
+
+@pytest.fixture(autouse=True)
+def _a_gpu_runtime_this_file_decides(monkeypatch):
+    """Stand in for whether CuPy is installed, the one install fact the door reads.
+
+    `gpuwm go` refuses before its fetch stage when CuPy does not resolve
+    (``capabilities.require_for_command("go")``), with rc 2 and no events
+    file.  Every chain here doubles the forecast process, the only stage
+    that runs CuPy, so its presence decides nothing these tests measure:
+    without this, the chain tests failed on every box without CuPy and
+    passed on every box with it, at every commit.  The refusal itself is
+    held in ``test_cli_capability_refusals``.  Every other module still
+    resolves for real.
+    """
+
+    from gpuwm import capabilities
+
+    resolves = capabilities.is_installed
+    runtime = capabilities.GPU_RUNTIME.module
+    monkeypatch.setattr(
+        capabilities, "is_installed",
+        lambda module: (str(module).split(".")[0] == runtime
+                        or resolves(module)))
+
+
 @pytest.fixture(scope="module")
 def gfs_config(tmp_path_factory):
     out = tmp_path_factory.mktemp("gfs") / "myarea.toml"
@@ -100,8 +160,9 @@ def staged_geog(tmp_path_factory):
 
 class _FakePopen:
     """The same ``Popen`` double ``test_go_chain`` uses, for one reason:
-    ``_run_stage`` spells ``subprocess.run`` out as Popen+communicate so
-    the interrupt path can name the child's pid."""
+    ``_run_stage`` spells ``subprocess.run`` out as Popen so the
+    interrupt path can name the child's pid, and reads the child's two
+    pipes as it writes them."""
 
     _pids = itertools.count(717171)
 
@@ -109,7 +170,14 @@ class _FakePopen:
         self._completed = completed
         self.pid = next(self._pids)
         self.returncode = None
+        self.stdout = io.StringIO(completed.stdout or "")
+        self.stderr = io.StringIO(completed.stderr or "")
 
+    def wait(self, timeout=None):
+        self.returncode = self._completed.returncode
+        return self.returncode
+
+    # The first-products render still waits through communicate.
     def communicate(self):
         self.returncode = self._completed.returncode
         return self._completed.stdout, self._completed.stderr
@@ -138,10 +206,9 @@ def _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog, *,
 
     def fake_run(command, **kwargs):
         if "--author-front-door-manifest" in command:
-            data = Path(command[command.index("--out") + 1])
-            data.mkdir(parents=True, exist_ok=True)
-            (data / "gfs-input-manifest.json").write_text(
-                "{}", encoding="utf-8")
+            manifest = Path(command[command.index("--manifest-out") + 1])
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("{}", encoding="utf-8")
         if "fetch" in command and "--out" in command:
             # The fetch manifest is where bytes and seconds live; the
             # chain reads bandwidth back out of it rather than timing
@@ -267,6 +334,9 @@ def _publish_early_render(render_dir: Path, frame: Path, *,
         "render_products": "all",
         "written": [{"name": "d01/analysis.png", "sha256": _sha256(picture)}],
         "render_seconds": 2.5,
+        # A finished render records its exit; a receipt without it is not
+        # trusted to show that every product was drawn.
+        "exit_code": 0, "complete": True, "products": ["analysis"],
     }), encoding="utf-8")
 
 
@@ -550,6 +620,84 @@ def test_without_an_early_render_the_pictures_own_mtimes_answer(
     assert summary["time_to_first_plot_seconds"] is not None
 
 
+def test_each_frame_the_runner_draws_reaches_the_stream_as_it_lands(
+        tmp_path, monkeypatch):
+    """The runner's every-frame record, carried while the forecast runs.
+
+    Fails before this fix: `go`'s runner drew every frame while its
+    forecast ran and recorded it in ``live-products.json``, but the
+    chain's own stream carried no ``live_products_ready`` at all, so a
+    reader of it saw no per-frame picture, unlike run-plan and the
+    downscaled child.
+    """
+
+    from gpuwm import live_products
+
+    monkeypatch.setattr(chain_events, "LIVE_RELAY_SECONDS", 0.05,
+                        raising=False)
+    render_dir = tmp_path / "png"
+    render_dir.mkdir()
+    record = render_dir / live_products.LIVE_PRODUCTS_RECEIPT
+    now_ms = int(time.time() * 1000)
+
+    def entry(hour, published):
+        return {"frame": str(tmp_path / f"wrfout_d01_2026-09-26_{hour:02d}"),
+                "domain": 1, "valid_time": f"2026-09-26T{hour:02d}:00:00",
+                "written": [{"name": f"d01/p/{hour}.png"}] * 3,
+                "render_seconds": 4.5, "published_unix_ms": published,
+                "complete": True}
+
+    def write(*entries):
+        live_products._write_receipt(record, {
+            "schema": live_products.LIVE_PRODUCTS_SCHEMA,
+            "render_products": "all", "frames": list(entries)})
+
+    def carried():
+        return [event for event in read_chain_events(
+            tmp_path / CHAIN_EVENTS_FILENAME)
+                if event["event"] == "live_products_ready"]
+
+    # A record an earlier run left in the same folder.
+    stale = entry(9, now_ms - 3_600_000)
+    write(stale)
+    observer = GoChainEvents(launch_monotonic=time.monotonic() - 60.0,
+                             launch_unix_ms=now_ms - 60_000)
+    observer.open(tmp_path / CHAIN_EVENTS_FILENAME,
+                  plan={"render": render_dir, "run": tmp_path / "run"})
+    observer.stage_begin(label="forecast", command=["runner"])
+    first = entry(13, int(time.time() * 1000) + 5)
+    write(stale, first)
+    deadline = time.monotonic() + 10.0
+    while not carried() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    (event,) = carried()
+    # While the stage is still running: this is the as-it-lands half.
+    # (Open stages are kept by label: a chained preparation's prepare
+    # stage is still open while its forecast runs.)
+    assert "forecast" in observer._open
+    assert event["frame"] == first["frame"]
+    assert event["pictures"] == 3 and event["domain"] == 1
+    assert event["complete"] is True
+    assert event["seconds_from_launch"] == pytest.approx(60.0, abs=5.0)
+
+    second = entry(14, int(time.time() * 1000) + 10)
+    write(stale, first, second)
+    observer.stage_end(label="forecast", exit_code=0, ok=True,
+                       elapsed_seconds=1.0, progress=None)
+    observer.finish(status="SUCCESS")
+
+    events = read_chain_events(tmp_path / CHAIN_EVENTS_FILENAME)
+    frames = [event["frame"] for event in events
+              if event["event"] == "live_products_ready"]
+    assert frames == [first["frame"], second["frame"]]
+    # Each before the forecast stage that drew it closes.
+    closed = next(index for index, event in enumerate(events)
+                  if event["event"] == "stage_finished"
+                  and event["stage"] == "forecast")
+    assert all(index < closed for index, event in enumerate(events)
+               if event["event"] == "live_products_ready")
+
+
 def test_the_early_render_receipt_stamps_when_it_published(tmp_path):
     """`go` does not host the render, so a duration measured from a
     start it cannot see is useless to it.  The receipt carries the
@@ -790,3 +938,103 @@ def test_the_coverage_rule_declines_to_judge_what_it_cannot():
     assert timing_coverage_shortfall({"decode": 1.0}, what="x") is None
     assert timing_coverage({"a": 0.5, "b": 0.45, "total": 1.0}) == \
         pytest.approx(0.95)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint retention reaches the forecast on the GFS chain too
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("extra,inherited,kept", [
+    ((), None, 1),
+    (("--keep-checkpoints", "2"), None, 2),
+    (("--keep-checkpoints", "0"), "1", 3),
+])
+def test_the_gfs_chain_forecast_keeps_the_checkpoint_sets_go_was_told(
+        tmp_path, monkeypatch, gfs_config, staged_geog, capsys,
+        extra, inherited, kept):
+    """`gpuwm go --keep-checkpoints` and its default of one reach the forecast.
+
+    The GFS chain enters no run plan, which is where every other `go`
+    route sets the retention, so the flag and the default were parsed and
+    dropped: the forecast kept every hourly checkpoint set, and an explicit
+    0 did nothing against a retention the shell already carried.  The
+    forecast stage here writes three sets and retires the superseded ones
+    exactly as the runner does, under the environment the stage process is
+    started with.
+    """
+
+    from gpuwm import resume
+
+    if inherited is None:
+        monkeypatch.delenv(resume.KEEP_CHECKPOINTS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(resume.KEEP_CHECKPOINTS_ENV, inherited)
+    seen = {}
+    real_stage = go_cli._run_stage
+
+    def stage(label, command, **kwargs):
+        if label == "forecast":
+            child = go_cli._stage_env()
+            seen["env"] = child.get(resume.KEEP_CHECKPOINTS_ENV)
+            run = Path(command[command.index("--outdir") + 1])
+            run.mkdir(parents=True, exist_ok=True)
+            with monkeypatch.context() as inside:
+                if seen["env"] is None:
+                    inside.delenv(resume.KEEP_CHECKPOINTS_ENV, raising=False)
+                else:
+                    inside.setenv(resume.KEEP_CHECKPOINTS_ENV, seen["env"])
+                for hour in (19, 20, 21):
+                    _one_checkpoint(run / f"gpuwmrst_d01_2026-07-29_{hour}_00_00.npz")
+                    resume.retire_superseded_checkpoints(run)
+            seen["kept"] = len(list(run.glob("gpuwmrst_d01_*.npz")))
+        return real_stage(label, command, **kwargs)
+
+    monkeypatch.setattr(go_cli, "_run_stage", stage)
+    rc, _root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog,
+                             early_render=False,
+                             extra_argv=("--products", "none", *extra))
+    capsys.readouterr()
+    assert rc == 0
+    assert seen["kept"] == kept, seen
+    # Scoped to the forecast: the shell's own setting is what it was.
+    assert os.environ.get(resume.KEEP_CHECKPOINTS_ENV) == inherited
+
+
+def test_a_hosting_caller_keeps_its_own_checkpoint_retention(
+        tmp_path, monkeypatch, gfs_config, staged_geog, capsys):
+    """`gpuwm run-plan` hosts this chain and has set its retention already;
+    with no flag on the chain, the host's policy is the one the forecast
+    reads."""
+
+    from types import SimpleNamespace
+
+    from gpuwm import resume
+
+    monkeypatch.setenv(resume.KEEP_CHECKPOINTS_ENV, "0")
+    seen = {}
+
+    def hosted_forecast(plan, digests, **kwargs):
+        seen["env"] = os.environ.get(resume.KEEP_CHECKPOINTS_ENV)
+        run = plan["run"]
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "report.json").write_text('{"status": "PASS"}', encoding="utf-8")
+
+    monkeypatch.setattr(go_cli, "_run_forecast", hosted_forecast)
+    real_go = go_cli.go_main
+    monkeypatch.setattr(go_cli, "go_main",
+                        lambda args: real_go(args, observer=SimpleNamespace()))
+    rc, _root = _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog,
+                             early_render=False, extra_argv=("--products", "none"))
+    capsys.readouterr()
+    assert rc == 0
+    assert seen["env"] == "0"
+    assert os.environ.get(resume.KEEP_CHECKPOINTS_ENV) == "0"
+
+
+def _one_checkpoint(path: Path) -> None:
+    """A complete single-domain checkpoint the retention sweep recognizes."""
+
+    from test_resume import _write_checkpoint
+
+    _write_checkpoint(path, grid_id=1)

@@ -174,6 +174,8 @@ def test_table_cli_resolves_latest_and_keeps_the_resolved_request(source, tmp_pa
         calls.append(("latest", name, last_hour, kwargs))
         return selected
     monkeypatch.setattr(fetch, "resolve_latest_cycle", latest)
+    monkeypatch.setattr(fetch, "require_published_cycle",
+                        lambda name, cycle, last_hour, **kw: calls.append(("published", name, cycle, last_hour)))
     monkeypatch.setattr(fetch_routes, "run_plan", lambda plan, **kw: calls.append(("download", plan)))
     monkeypatch.setattr(fetch_routes, "write_handoff", lambda *a, **kw: None)
     monkeypatch.setattr(fetch, "_fetch_route_donors", lambda *a: {})
@@ -182,7 +184,30 @@ def test_table_cli_resolves_latest_and_keeps_the_resolved_request(source, tmp_pa
                   "--out", str(tmp_path / source))
     assert fetch.fetch_main(parsed) == 0
     assert calls[0][:3] == ("latest", source, route.default_cadence)
-    assert calls[1][0] == "download" and calls[1][1].cycle == selected
+    # Resolving latest already asked about the primary; only a declared
+    # donor is asked again, and before the download.
+    donors = [("published", row.source, selected, max(row.leads)) for row in route.donors]
+    assert calls[1:-1] == donors
+    assert calls[-1][0] == "download" and calls[-1][1].cycle == selected
+
+
+def test_latest_route_checks_its_donor_publication_before_starting_download(tmp_path, monkeypatch):
+    route = fetch_routes.route_for("aigefs")
+    selected = datetime(2026, 8, 17, route.cycle_hours[0])
+    calls = []
+    monkeypatch.setattr(fetch, "resolve_latest_cycle", lambda name, last_hour, **kw: selected)
+    def published(name, cycle, last_hour, **kw):
+        calls.append((name, cycle, last_hour))
+        raise RuntimeError(f"{name.upper()} cycle {cycle:%Y-%m-%dT%H}Z is not published through f000 yet")
+    monkeypatch.setattr(fetch, "require_published_cycle", published)
+    monkeypatch.setattr(fetch_routes, "run_plan", lambda *a, **kw: pytest.fail("download before donor publication check"))
+    parsed = args("--source", "aigefs", "--cycle", "latest", "--hours", str(route.default_cadence),
+                  "--out", str(tmp_path))
+    with pytest.raises(RuntimeError, match=re.escape(
+            "--source aigefs takes part of its start from the GDAS analysis of its own "
+            f"cycle, and GDAS cycle {selected:%Y-%m-%dT%H}Z is not published")):
+        fetch.fetch_main(parsed)
+    assert calls == [("gdas", selected, 0)]
 
 
 def test_selected_ensemble_member_is_used_in_the_actual_publication_probe():
@@ -210,6 +235,31 @@ def test_named_route_checks_publication_before_starting_download(tmp_path, monke
     assert calls[0][0] == ("gefs", datetime(2026, 8, 17), 9)
     assert calls[0][1]["member"] == "p02"
     assert calls[0][1]["start_hour"] == 3
+
+
+def test_named_route_checks_its_donor_publication_before_starting_download(tmp_path, monkeypatch):
+    calls = []
+    def published(source, cycle, last_hour, **kw):
+        calls.append((source, cycle, last_hour))
+        if source == "gdas":
+            raise RuntimeError("fixture: donor analysis is not published")
+    monkeypatch.setattr(fetch, "require_published_cycle", published)
+    monkeypatch.setattr(fetch_routes, "run_plan", lambda *a, **kw: pytest.fail("download before donor publication check"))
+    route = fetch_routes.route_for("aigfs")
+    cycle = datetime(2026, 8, 17, route.cycle_hours[0])
+    parsed = args("--source", "aigfs", "--cycle", f"{cycle:%Y-%m-%dT%H}",
+                  "--hours", str(route.default_cadence), "--out", str(tmp_path))
+    with pytest.raises(RuntimeError, match="donor analysis"):
+        fetch.fetch_main(parsed)
+    assert calls == [("aigfs", cycle, route.default_cadence), ("gdas", cycle, 0)]
+
+
+def test_a_route_refuses_a_flag_it_does_not_take_before_reading_its_window(tmp_path):
+    parsed = args("--source", "gefs", "--cycle", "2026-08-17T00", "--hours", "7",
+                  "--cadence", "3", "--engine", "rust", "--out", str(tmp_path / "absent"))
+    with pytest.raises(ValueError, match="--engine: --source gefs is a table-driven route"):
+        fetch.fetch_main(parsed)
+    assert not (tmp_path / "absent").exists()
 
 
 @pytest.mark.parametrize("extra", [("--hours", "7", "--cadence", "3"),

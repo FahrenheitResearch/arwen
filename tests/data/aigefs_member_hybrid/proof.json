@@ -2,32 +2,27 @@
   "boundary_interval_seconds": 21600,
   "execution_inputs": {
     "decoders": {
-      "grib2_dump": {
-        "bytes": 621568,
-        "path": "${REPO_ROOT}\\tools\\grib1_bridge\\target\\release\\grib2_dump.exe",
-        "sha256": "544a9d8e8ff3f0a2ff0ef3d96899e6280ad2a5af6340d858fdd153d9958bfb13"
-      },
-      "grib2_inventory": {
-        "bytes": 619008,
-        "path": "${REPO_ROOT}\\tools\\grib1_bridge\\target\\release\\grib2_inventory.exe",
-        "sha256": "a98f5d75c07d1130ea9eccb237aa118b4c1df90eb9c2dce510455a34b99cb9b0"
+      "gpuwm_mapped_engine": {
+        "bytes": 5887944,
+        "path": "${REPO_ROOT}/tools/rw_wps/target/release/gpuwm_mapped_engine",
+        "sha256": "5ecfaeba806574f61fab39a63b1a5b4da9e58ad4cd9bb823310cdf3f31afa1e1"
       }
     },
     "experiment_config": {
       "bytes": 2108,
-      "path": "${REPO_ROOT}\\configs\\aigefs_member_demo.toml",
+      "path": "${REPO_ROOT}/tests/data/aigefs_member_hybrid/aigefs_member_demo.toml",
       "sha256": "2b8789917a37a17ebb674b22d0c48f8f16272870c4c21f28ac9eb8e62fafe39a"
     },
     "geog_datasets": {
-      "albedo": "${GEOG_ROOT}\\albedo_modis",
-      "greenfrac": "${GEOG_ROOT}\\greenfrac_fpar_modis",
-      "lai": "${GEOG_ROOT}\\lai_modis_10m",
-      "landuse": "${GEOG_ROOT}\\modis_landuse_20class_30s_with_lakes",
-      "snow_albedo": "${GEOG_ROOT}\\maxsnowalb_modis",
-      "soil_bottom": "${GEOG_ROOT}\\soiltype_bot_30s",
-      "soil_temperature": "${GEOG_ROOT}\\soiltemp_1deg",
-      "soil_top": "${GEOG_ROOT}\\soiltype_top_30s",
-      "terrain": "${GEOG_ROOT}\\topo_gmted2010_30s"
+      "albedo": "${GEOG_ROOT}/albedo_modis",
+      "greenfrac": "${GEOG_ROOT}/greenfrac_fpar_modis",
+      "lai": "${GEOG_ROOT}/lai_modis_10m",
+      "landuse": "${GEOG_ROOT}/modis_landuse_20class_30s_with_lakes",
+      "snow_albedo": "${GEOG_ROOT}/maxsnowalb_modis",
+      "soil_bottom": "${GEOG_ROOT}/soiltype_bot_30s",
+      "soil_temperature": "${GEOG_ROOT}/soiltemp_1deg",
+      "soil_top": "${GEOG_ROOT}/soiltype_top_30s",
+      "terrain": "${GEOG_ROOT}/topo_gmted2010_30s"
     },
     "geog_resolution_tokens": [
       "default"
@@ -38,7 +33,7 @@
     "root_static_receipt": null,
     "wps_namelist": {
       "bytes": 636,
-      "path": "${REPO_ROOT}\\configs\\aigefs_member_demo.namelist.wps",
+      "path": "${REPO_ROOT}/tests/data/aigefs_member_hybrid/aigefs_member_demo.namelist.wps",
       "sha256": "731cbf210ab359ed3636c69b263c593f174697bfac781f61583ec5c56458bada"
     }
   },
@@ -55,12 +50,12 @@
     },
     "files": {
       "wrfbdy_d01": {
-        "bytes": 2155697,
-        "sha256": "7c311c01a4a4e430a0815aaa4676c50f6f25f42b9b274f928d33f7583df816fb"
+        "bytes": 4387744,
+        "sha256": "95d07c93705d71e1426e4d347c5cf8fcb8943001da7735dd10b0a2f697e699c1"
       },
       "wrfinput_d01": {
-        "bytes": 5505742,
-        "sha256": "5156a1ce74c5753b5ed04562ffdc734fbf9b7076462d6ee5dc027cb1f59663ca"
+        "bytes": 11270504,
+        "sha256": "fb74b163def597a487f987de5f8f33a43375f946504d7074c69bb562255bdb04"
       }
     },
     "forcing_hours": [
@@ -69,7 +64,7 @@
     ],
     "limitations": [
       "single specified projected domain only (lambert stock-WRF-gated; mercator/polar exports oracle-gated, not yet stock-WRF-gated)",
-      "WSM6+YSU+classic-MM5+Noah initialized state contract",
+      "hash-bound experiment-config suite initialized state contract",
       "T_INIT is bound to final dry theta and is diagnostic-only",
       "hydrometeor/W/HT_SHAD/PC external LBC arrays are zero",
       "forcing must be uniformly spaced and begin at f00"
@@ -78,14 +73,50 @@
     "next_boundary_times": [
       "2026-08-17_06:00:00"
     ],
-    "schema": "gpuwm-native-direct-wrf-export-v2",
+    "physics": {
+      "acknowledgement_provenance": {},
+      "acknowledgements": [],
+      "domains": {
+        "1": {
+          "components": {
+            "cumulus": "off",
+            "land_surface": "noah",
+            "microphysics": "wsm6-mp6",
+            "pbl": "ysu",
+            "radiation": "rte-rrtmgp",
+            "surface_layer": "classic-mm5",
+            "turbulence": "smagorinsky-2d"
+          },
+          "governance": {
+            "acknowledged": true,
+            "required_acknowledgement": null,
+            "state": "registry-reachable"
+          },
+          "registry_blocker": null,
+          "selectors": {
+            "bl_pbl_physics": 1,
+            "cu_physics": 0,
+            "km_opt": 4,
+            "mp_physics": 6,
+            "ra_lw_physics": 4,
+            "ra_sw_physics": 4,
+            "sf_sfclay_physics": 91,
+            "sf_surface_physics": 2
+          }
+        }
+      },
+      "profile": null,
+      "registry_sha256": "cfa65270147f456d9bb40b409e994c475d245637c0becebe02bd0f748216a049",
+      "schema": "gpuwm-front-door-physics-selection-multi-domain-v1"
+    },
+    "schema": "gpuwm-native-direct-wrf-export-v3",
     "source": {
       "contract_sha256": "3dc8f753e09932971f253f29bce61e254235edd55342c2e89e74ce026ae9bd02",
-      "geometry_receipt_sha256": "554b38d14e942349881415b69f7981ccece4a6d90fa056fb35744e45544aa5d4",
-      "prepared_content_sha256": "02bf4a1ec53b521b85f0733cd66b57edd3fecce94b6aa7224fbea6de7c20a180",
-      "prepared_header_sha256": "2650a0a8104132e84d6baa65fd16e5d0d5de0180278ed1c03c94c89a658b28f5",
+      "geometry_receipt_sha256": "00822454c8ed3f6d74c7a6f66e220600fcbfbe3e501dadfbbee45f724e5f73fe",
+      "prepared_content_sha256": "2f0d758cf4a5aab9dc10357b1d36b1e0b9fd62b2da9c19148b388584a9bc8c7c",
+      "prepared_header_sha256": "8a85cae47355c1f43e06b9757233bab97b82c43d675cb82a5d6de406fa7a5aeb",
       "resolved_physics_contract_sha256": "f486395516ca9746d8b259f06ccb5913a23210515f3cd0328348f09695cb1366",
-      "static_cache_sha256": "b944146e5548bb804ae6567feca0191478d068739f82ca7287d9daf5e7ca5824"
+      "static_cache_sha256": "8633d5f7b50d72c9306b5d9e661dd6116c8dae1460731f08dc2d18dce8591a14"
     },
     "status": "READY",
     "valid_time": "2026-08-17_00:00:00"
@@ -102,13 +133,31 @@
     "cache": {
       "bytes": 2085978,
       "path": "native-static.npz",
-      "sha256": "b944146e5548bb804ae6567feca0191478d068739f82ca7287d9daf5e7ca5824"
+      "sha256": "8633d5f7b50d72c9306b5d9e661dd6116c8dae1460731f08dc2d18dce8591a14"
     },
     "geometry": {
       "center_lat": 40.0,
       "center_lon": -92.5,
+      "definition": {
+        "dx": 30000.0,
+        "dy": 30000.0,
+        "e_sn": 51,
+        "e_we": 51,
+        "known_x": 25.5,
+        "known_y": 25.5,
+        "map_proj": "lambert",
+        "moad_cen_lat": 40.0,
+        "moad_cen_lon": -92.5,
+        "ref_lat": 40.0,
+        "ref_lon": -92.5,
+        "stand_lon": -92.5,
+        "truelat1": 30.0,
+        "truelat2": 60.0
+      },
       "dx_m": 30000.0,
       "dy_m": 30000.0,
+      "known_x": 25.5,
+      "known_y": 25.5,
       "lat_range": [
         32.905139779512886,
         46.83683055413539
@@ -122,6 +171,8 @@
         50,
         50
       ],
+      "moad_cen_lat": 40.0,
+      "moad_cen_lon": -92.5,
       "nz": 49,
       "ref_lat": 40.0,
       "ref_lon": -92.5,
@@ -132,16 +183,35 @@
     "schema": "gpuwm-native-static-direct-v1",
     "status": "PASS"
   },
+  "moisture_floors": {
+    "fired": false,
+    "floors": {
+      "prognostic_moisture_floor": {
+        "fired": false
+      },
+      "surface_moisture_floor": {
+        "fired": false
+      }
+    },
+    "recorded": true,
+    "schema": "gpuwm-initialization-moisture-floors-v1"
+  },
   "prepared_cache": {
     "array_count": 106,
-    "content_sha256": "02bf4a1ec53b521b85f0733cd66b57edd3fecce94b6aa7224fbea6de7c20a180",
+    "content_sha256": "2f0d758cf4a5aab9dc10357b1d36b1e0b9fd62b2da9c19148b388584a9bc8c7c",
     "path": "prepared-cache",
     "payload_bytes": 17293992,
     "schema": "gpuwm-prepared-real-cache-v1",
     "status": "BUILT"
   },
   "preprocessing": {
-    "backend": "cuda",
+    "backend": "cpu",
+    "bridge": {
+      "abi_version": 1,
+      "name": "libgpuwm_preprocess_cpu.so",
+      "required_abi_version": 1,
+      "sha256": "186493dab9565fba8bc75224b4e73a524a3bceef66ffdfe02acf50a29a6c91f9"
+    },
     "contracts": {
       "surface_pressure_mapping": {
         "output_dtype": "float32",
@@ -153,38 +223,63 @@
         "zap_close_levels_pa": 500.0
       }
     },
-    "cupy_version": "14.0.1",
-    "implementation": "cupy-fp32",
+    "host_cpu_count": 64,
+    "implementation": "rust-scoped-threads-fp32-v1",
     "implementation_tree": {
       "files": {
-        "gpuwm/core/kernels/vert_interp.cu": {
-          "bytes": 9570,
-          "sha256": "ab608d651d99f882a42881f7b977b29d8879f474ea26404a79d06c77a86125d9"
+        "gpuwm/ingest/atmospheric_window.py": {
+          "bytes": 9830,
+          "sha256": "f2cea1498f7cdd77b79fbc7114ac6e0d36bc82c7c59e7bb2da2a4e2bc72f301a"
+        },
+        "gpuwm/ingest/cpu_backend.py": {
+          "bytes": 33759,
+          "sha256": "7af854b3c32aeeccf5a9881223946a33eb9df1760372b417b81dcfab471cf856"
         },
         "gpuwm/ingest/horiz.py": {
-          "bytes": 72565,
-          "sha256": "5d0b9a293900e62a1cb347bf1d23b3b8a14faae327ff7ce31c97d02990eddbec"
+          "bytes": 118190,
+          "sha256": "9c46c83952764ce85511d9a31960edfdafa02a6b64a990b071f4b312f001680d"
+        },
+        "gpuwm/ingest/interpolation_support.py": {
+          "bytes": 2555,
+          "sha256": "9be833136d3dc4fea8f40f4358fc7dd90225ffa0ca9936ae8bb09ba41fea9d87"
+        },
+        "gpuwm/ingest/lake_temperature.py": {
+          "bytes": 8908,
+          "sha256": "250a97b710e696c650f817be01cad3459495cc1ab20e7e509580c223f6c4a177"
         },
         "gpuwm/ingest/preprocess_backend.py": {
-          "bytes": 20508,
-          "sha256": "f67cc4291a8d7d7e6347d9bfeb263bb6fd2cacaa818cf9a984426badf0469ab0"
+          "bytes": 29482,
+          "sha256": "6192f153bcc8028833b94d1594f977401380035efef4c909ce16f1d165e2b45b"
         },
         "gpuwm/ingest/real.py": {
-          "bytes": 146198,
-          "sha256": "0fac7bd72d715bfcce876e1acd1f39817019343f07d315d5fcbcc2b9865a3da9"
+          "bytes": 230648,
+          "sha256": "03d44694cd0675d7097835b5e335ca145b5ccbdaeb8230b2a526f6b9a80426ac"
         },
         "gpuwm/ingest/vert.py": {
-          "bytes": 12330,
-          "sha256": "7b37ac786403b0c14179b0ee5c077fac77735bd57b525dcad3065209c96ac83c"
+          "bytes": 18000,
+          "sha256": "bf3d77e20d7e3a2ab4c5fdd651c38e06e26b6e057b4ac139e28bf859704c0c80"
+        },
+        "gpuwm/ingest/water_temperature.py": {
+          "bytes": 54200,
+          "sha256": "36ec49d56613dc53b43f5652fe2baf30ccc95253216f4dfcaa70c6cb92b7d52b"
         }
       },
       "schema": "gpuwm-preprocess-source-tree-v1",
-      "sha256": "4d9f52f4423bcf2fdd80d2c549ee9ac83e0e0502e5f9252f7fec075ffe3bef1f"
+      "sha256": "91b5791d5344bb9c97ec18dd20b96a2d670093b63efad4656a8d2e1f523aa471"
     },
     "schema": "gpuwm-preprocess-implementation-v2",
-    "workers": 1
+    "vertical_interpolation": [
+      {
+        "backend": "cpu",
+        "column_levels": 14,
+        "kernel_level_tier": null,
+        "reason": "the CPU preprocessing backend was selected",
+        "source_levels": 13
+      }
+    ],
+    "workers": "auto"
   },
-  "proof_content_sha256": "0df66fb45165dcc3e5e92fa01dc930199bcede870a94fdfe30873c719fbdf8d4",
+  "proof_content_sha256": "391d07157d285c492a4534f0e99ba38d3192db163269a8b9d61ec7d913135045",
   "schema": "gpuwm-mapped-direct-wrf-proof-v1",
   "soil_texture_downscale": {
     "advisory": false,
@@ -278,7 +373,7 @@
       "time_alignment": "source_cycle_analysis_broadcast"
     },
     "composition": {
-      "path": "${REPO_ROOT}\\gpuwm\\authorities\\rw-wps-aigefs-member-hybrid-grib2.composition.json",
+      "path": "${REPO_ROOT}/gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.composition.json",
       "sha256": "9965904c92f08cd71323e2565d7a663863c8ca061f3e991b813b52ad2a6a5d10"
     },
     "contributing_sources": [
@@ -341,7 +436,7 @@
         "binding": "physical_analysis_surface",
         "data": [
           {
-            "path": "${STAGING_ROOT}\\crosssource\\gdas.t00z.pgrb2.0p25.f000",
+            "path": "${STAGING_ROOT}/crosssource/gdas.t00z.pgrb2.0p25.f000",
             "sha256": "ac6c46956358af5fa7e525761c4f36cdce3524f98e825f335ccfc81c779b9f52"
           }
         ],
@@ -354,48 +449,44 @@
           "volumetric_soil_moisture"
         ],
         "mapping": {
-          "path": "${REPO_ROOT}\\gpuwm\\authorities\\rw-wps-gdas-analysis-donor-grib2.mapping.json",
+          "path": "${REPO_ROOT}/gpuwm/authorities/rw-wps-gdas-pgrb2-donor.mapping.json",
           "sha256": "35e0d4e2895b38a2702952fabc97fb9f53594b41dbb2d511e39a13458f72f8cf"
         },
         "provenance": {
-          "path": "${REPO_ROOT}\\gpuwm\\authorities\\rw-wps-aigefs-member-hybrid-grib2.provenance.json",
-          "sha256": "a0439034d605b6215c16445c3f2459d2f027b87ac4d7228d4f1118d3cbf15d23"
+          "path": "${REPO_ROOT}/gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.provenance.json",
+          "sha256": "4050afea573ffa3b590deb6ef0f0e2a86f2d6feca25423b38cd31f4e025b6bb2"
         },
         "source_id": "gdas-pgrb2-0p25-analysis-donor-grib2-native"
       }
     ],
     "decoders": {
-      "grib2_dump": {
-        "path": "${REPO_ROOT}\\tools\\grib1_bridge\\target\\release\\grib2_dump.exe",
-        "sha256": "544a9d8e8ff3f0a2ff0ef3d96899e6280ad2a5af6340d858fdd153d9958bfb13"
-      },
-      "grib2_inventory": {
-        "path": "${REPO_ROOT}\\tools\\grib1_bridge\\target\\release\\grib2_inventory.exe",
-        "sha256": "a98f5d75c07d1130ea9eccb237aa118b4c1df90eb9c2dce510455a34b99cb9b0"
+      "gpuwm_mapped_engine": {
+        "path": "${REPO_ROOT}/tools/rw_wps/target/release/gpuwm_mapped_engine",
+        "sha256": "5ecfaeba806574f61fab39a63b1a5b4da9e58ad4cd9bb823310cdf3f31afa1e1"
       }
     },
     "frame_count": 2,
     "frames": [
       {
-        "field_count": 16,
-        "header_sha256": "d098cb0b3b6317145746e2a6885f5d50d93ff24282070868e71ce45e2af97729",
+        "field_count": 17,
+        "header_sha256": "34d14af2029803a2509f53b1eba4f3c774dfb40b35b1e51d6b0387bb4f9ddfe5",
         "terrain_sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd"
       },
       {
-        "field_count": 16,
-        "header_sha256": "6c7bc3f0acfbf1b4cfa16dcd94274cb920dc5ce56c708d4835d3ddef18e5f43e",
+        "field_count": 17,
+        "header_sha256": "83a8eab007fc73c4b7cb3dd8cd22b7e3bbea468fcbe9dbc9c95c96c4eb54b4b5",
         "terrain_sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd"
       }
     ],
     "input_manifest": {
-      "path": "${TMPDIR}\\mem001-inputs.json",
-      "sha256": "53d4e781a841996a098851a695d1c9c4c9defaf4eff033741c6b650254ff040b"
+      "path": "${TMPDIR}/mem001-inputs.json",
+      "sha256": "d82de51e6ad39fdb262be8dd0d87a36e956ecddaeb5fbb5181bbb49b383b1010"
     },
     "mapping": {
-      "path": "${REPO_ROOT}\\gpuwm\\authorities\\rw-wps-aigefs-member-hybrid-grib2.mapping.json",
-      "sha256": "2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc"
+      "path": "${REPO_ROOT}/gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.mapping.json",
+      "sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7"
     },
-    "receipt_content_sha256": "c4341fc6cdd88b8f578fb79b8e4a427e65628c25e0483e13b2bfd8e4833077a1",
+    "receipt_content_sha256": "646b52eecaee56f49b28364a7279b565ed616d88f67f6ae617f36ee1c0c3afce",
     "schema": "gpuwm-mapped-composition-receipt-v1",
     "soil_layers": {
       "depth_units": "m",
@@ -559,13 +650,13 @@
     "status": "CANONICAL_FRAMES_COMPLETE_NOT_STOCK_WRF_CERTIFIED",
     "terrain_products": [
       {
-        "path": "${STAGING_ROOT}\\crosssource\\gdas.t00z.pgrb2.0p25.f000",
+        "path": "${STAGING_ROOT}/crosssource/gdas.t00z.pgrb2.0p25.f000",
         "sha256": "ac6c46956358af5fa7e525761c4f36cdce3524f98e825f335ccfc81c779b9f52"
       }
     ],
     "terrain_provenance": {
-      "provenance_path": "${REPO_ROOT}\\gpuwm\\authorities\\rw-wps-aigefs-member-hybrid-grib2.provenance.json",
-      "provenance_sha256": "a0439034d605b6215c16445c3f2459d2f027b87ac4d7228d4f1118d3cbf15d23"
+      "provenance_path": "${REPO_ROOT}/gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.provenance.json",
+      "provenance_sha256": "4050afea573ffa3b590deb6ef0f0e2a86f2d6feca25423b38cd31f4e025b6bb2"
     },
     "valid_times": [
       "2026-08-17T00:00:00",
@@ -598,15 +689,56 @@
       "TMN"
     ],
     "path": "native-static.npz",
-    "sha256": "b944146e5548bb804ae6567feca0191478d068739f82ca7287d9daf5e7ca5824"
+    "sha256": "8633d5f7b50d72c9306b5d9e661dd6116c8dae1460731f08dc2d18dce8591a14"
   },
   "status": "READY_NOT_YET_STOCK_WRF_GATED",
+  "stock_wrf_export": "optional",
   "timing_seconds": {
-    "decode_and_compose": 9.815344099988579,
-    "direct_wrf_export": 0.4161404000042239,
-    "initialize_all_times": 1.4557102999970084,
-    "static": 1.7600012000038987,
-    "total": 14.503032299995539,
-    "write_prepared_cache": 0.08283149999624584
+    "decode_and_compose": 58.62492066899995,
+    "direct_wrf_export": 6.688250505000269,
+    "initialize_all_times": 2.1729857539999102,
+    "static": 17.77880594899989,
+    "total": 92.13391883400027,
+    "write_prepared_cache": 0.7018553159996372
+  },
+  "vertical_coordinate": {
+    "derivation": {
+      "configured_etac": 0.2,
+      "configured_floor_pa": 46407.925999189145,
+      "configured_floor_terrain_m": 6082.261344564119,
+      "etac": 0.2,
+      "governing_column": {
+        "field": "d01 static terrain",
+        "index": [
+          33,
+          0
+        ],
+        "surface_pressure_pa": 87183.7832220757,
+        "terrain_height_m": 1149.8656234543598
+      },
+      "hybrid_opt": 2,
+      "p_top_pa": 10000.0,
+      "reference": "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182; doc/README.hybrid_vert_coord:65-74",
+      "schema": "gpuwm-vertical-coordinate-adaptation-v2",
+      "status": "AS_CONFIGURED",
+      "surveyed_terrain": [
+        {
+          "cells": 2500,
+          "field": "d01 static terrain",
+          "max_terrain_m": 1149.8656234543598
+        }
+      ],
+      "thinnest_layer": {
+        "configured_fraction": 0.7608561150715982,
+        "fraction": 0.7608561150715982,
+        "index": 20,
+        "margin_met": true,
+        "min_layer_fraction": 0.15
+      }
+    },
+    "etac": 0.2,
+    "hybrid_opt": 2,
+    "mass_levels": 49,
+    "p_top_pa": 10000.0
   }
 }

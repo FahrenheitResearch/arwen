@@ -28,6 +28,10 @@ LANDUSE_COLUMNS = (
     "albedo_percent", "mavail", "emiss", "z0_cm", "thermal_inertia",
     "snow_effect", "soil_heat_capacity")
 
+#: real.exe's soil category for a land column whose soil map says water:
+#: silty clay loam ("forcing artificial silty clay loam").
+_LAND_SOIL_FOR_WATER = 8
+
 
 @dataclass(frozen=True)
 class LanduseTable:
@@ -189,6 +193,29 @@ def _top_soil_level(value, shape: tuple[int, int], name: str):
     return _surface_field(array, shape, name, np.float64)
 
 
+def soil_category_matched_to_land(soil, land, *,
+                                  isoilwater: int = 14) -> np.ndarray:
+    """real.exe's soil-to-landmask match, ``module_initialize_real.F:3108-3131``.
+
+    For ``surface_input_source = 3`` (the Registry default, ``IVGTYP`` taken
+    from ``LU_INDEX``) real.exe matches the soil category to the land mask
+    before its final consistency pass: a land column whose dominant soil is
+    water takes silty clay loam (8) and keeps its land-use category, and a
+    water column takes the water soil.  The fractional branch
+    (``share/module_soil_pre.F:550-590``) ends the same way on land.
+
+    The soil and land-use maps are independent and disagree along coasts,
+    rivers and reclaimed land.  Left to the final pass, each such land
+    column would lose its vegetation to category 5.
+    """
+
+    soil = np.asarray(soil)
+    land = np.asarray(land, dtype=bool)
+    soil = np.where(land & (soil == int(isoilwater)), _LAND_SOIL_FOR_WATER,
+                    soil)
+    return np.where(~land, int(isoilwater), soil).astype(np.int32)
+
+
 def _reconcile_landmask_soil_category(
         ivgtyp: np.ndarray, soil: np.ndarray, land: np.ndarray, *,
         iswater: int, isoilwater: int,
@@ -199,21 +226,22 @@ def _reconcile_landmask_soil_category(
     veg/soil categories match" pass, which every ``surface_input_source``
     reaches.  A column whose land/water sense disagrees with its soil
     category is never run as it stands: with a real soil temperature it
-    becomes land (``IVGTYP 5``, ``ISLTYP 8`` -- the source's "forcing
-    artificial silty clay loam"), with a real SST it becomes water, and
-    with neither WRF calls ``wrf_error_fatal('mismatch_landmask_ivgtyp')``.
+    becomes land (``IVGTYP 5``, ``ISLTYP 8``), with a real SST it becomes
+    water, and with neither WRF calls
+    ``wrf_error_fatal('mismatch_landmask_ivgtyp')``.
 
-    RUC LSM relies on this and never re-verifies it.  ``soilvegin``
-    (``phys/module_sf_ruclsm.F:6973``) has no ``else`` for ``isltyp == 14``,
-    so a land column carrying water soil leaves it with ``ref == qmin == 0``
-    and ``:913`` evaluates ``0./0.`` into ``MAVAIL``.  Reconciling here --
-    where real.exe reconciles -- is what keeps that unreachable, rather
-    than clamping a NaN downstream where WRF has no such clamp.
+    The branches that start from geogrid's categories (1 and 3) have
+    already matched the soil category to the land mask by the time they
+    get here (:func:`soil_category_matched_to_land`), so on their
+    categories this pass finds nothing to change; in particular it never
+    replaces the vegetation of a land column whose soil map said water.
+    It is kept as real.exe keeps it: a derivation that let a disagreeing
+    column through would meet WRF's own answer for it.
 
-    Only the land-carrying-water-soil arm is reachable from this function:
-    ``land`` is derived from ``IVGTYP`` by the caller and water columns have
-    already had ``ISLTYP`` forced to ``isoilwater``.  The water arm is
-    transcribed anyway, because the source states both.
+    RUC LSM relies on the categories matching and never re-verifies it.
+    ``soilvegin`` (``phys/module_sf_ruclsm.F:6973``) has no ``else`` for
+    ``isltyp == 14``, so a land column carrying water soil leaves it with
+    ``ref == qmin == 0`` and ``:913`` evaluates ``0./0.`` into ``MAVAIL``.
 
     Returns the recomputed land mask; ``ivgtyp`` and ``soil`` are updated
     in place.
@@ -280,7 +308,7 @@ def _derive_categories(raw_lu, soil, xice, *, shape, iswater, islake, isice,
     seaice = xice >= threshold
     ivgtyp = np.where(seaice, int(isice), ivgtyp).astype(np.int32)
     land = ivgtyp != int(iswater)
-    soil = np.where(~land, int(isoilwater), soil).astype(np.int32)
+    soil = soil_category_matched_to_land(soil, land, isoilwater=isoilwater)
     # share/module_soil_pre.F:adjust_for_seaice_post assigns category 16
     # before physics_init.  The associated SMOIS/SH2O/TSLB rewrite remains
     # intentionally out of scope here.
@@ -300,7 +328,8 @@ def reconciled_soil_category(
 
     WRF builds the soil column in real.exe and only derives SH2O later, in
     ``LSMINIT`` (``phys/module_sf_noahdrv.F``) -- which runs AFTER
-    ``module_initialize_real.F:3608-3650`` has reconciled the categories.
+    ``module_initialize_real.F:3108-3131`` and ``:3608-3650`` have
+    reconciled the categories.
     So WRF's liquid-water initialization already reads the reconciled
     category; ours read the raw one, because the reconciliation lived
     inside :func:`initialize_landuse` and that call needs the ingest's own
@@ -355,9 +384,9 @@ def initialize_landuse(
     the one WRF reads) and ``sst`` are the evidence real.exe's final
     landmask/category reconciliation uses -- see
     :func:`_reconcile_landmask_soil_category`.  They are optional because
-    not every caller has them; a caller that omits them and then presents a
-    mismatched column gets WRF's third arm, the refusal, because there is
-    nothing left to decide the column with.
+    not every caller has them.  A land column whose soil category is water
+    needs neither: it is matched before that pass, keeping its land-use
+    category and taking silty clay loam, exactly as real.exe does.
 
     Timestep-one SMOIS/TSLB/SMCREL initialization over water and sea ice is
     intentionally outside this function and remains a separate porting
@@ -455,4 +484,4 @@ def initialize_landuse(
 
 __all__ = ["LANDUSE_COLUMNS", "LanduseInitialization", "LanduseTable",
            "initialize_landuse", "load_landuse_table",
-           "reconciled_soil_category"]
+           "reconciled_soil_category", "soil_category_matched_to_land"]

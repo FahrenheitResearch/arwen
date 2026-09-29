@@ -1,0 +1,773 @@
+{
+ "schema": "gpuwm.wiki.v1",
+ "origin": "recipes",
+ "built": "2026-09-25",
+ "sources": {
+  "rule-recipe-best-tornado": {
+   "kind": "rule",
+   "title": "Best simulation of a tornado's parent storm for each card size",
+   "method": "Start at the 00, 06, 12 or 18 UTC analysis at least 6 hours before the tornado, so storms form in the model from the morning environment, and run until 3 hours after it ends, at least 12 hours. Put a 1 km grid over the tornado path and 120 km back along it, where the parent storm forms, with a margin of 250, 200, 150, 110, 80 or 60 km, inside a 3 km grid that reaches 400 to 180 km beyond it. From HRRR, itself a 3 km analysis, the 3 km grid is the outer one. From ERA5 (about 31 km), a 12 km grid reaching 500 km beyond the 3 km one carries the large-scale flow, so the 3 km grid is not driven straight from 31 km boundaries; every row checks at least 400 km on the fitted grids. When no 1 km grid fits, the 3 km grid runs alone (inside the 12 km one for ERA5), 1100, 800 or 650 km wide, then a single 4 km grid. Each card takes the first rung the engine fits on it with at least 5% of its memory to spare and whose download, preparation, history, kept checkpoint and pictures fit the card's disk budget (40, 50, 60, 80 and 100 GiB for 8 to 32 GB) with the nests writing every 15, 20 or 30 minutes.",
+   "code": "tools/wiki_seed/design_recipes.py: tornado_plan",
+   "retrieved": "2026-09-25"
+  },
+  "computed-fit-tornado-2023-2303241857-01-8gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 8 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 8 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-2023-2303241857-01"
+   ],
+   "result": "3 km 224 by 220 points (669 by 657 km); 49 levels; priced at 6.28 GiB of a 6.75 GiB budget; cumulus per grid, outer to inner: 0"
+  },
+  "computed-fit-tornado-2023-2303241857-01-12gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 12 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 12 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-2023-2303241857-01"
+   ],
+   "result": "3 km 264 by 236 points (789 by 705 km); 1 km 354 by 270 points (353 by 269 km); 49 levels; priced at 8.89 GiB of a 10.75 GiB budget; cumulus per grid, outer to inner: 0, 0"
+  },
+  "computed-fit-tornado-2023-2303241857-01-16gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 16 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 16 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-2023-2303241857-01"
+   ],
+   "result": "3 km 304 by 276 points (909 by 825 km); 1 km 414 by 330 points (413 by 329 km); 49 levels; priced at 10.68 GiB of a 14.54 GiB budget; cumulus per grid, outer to inner: 0, 0"
+  },
+  "computed-fit-tornado-2023-2303241857-01-24gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 24 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 24 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-2023-2303241857-01"
+   ],
+   "result": "3 km 364 by 336 points (1089 by 1005 km); 1 km 492 by 408 points (491 by 407 km); 49 levels; priced at 13.53 GiB of a 22.06 GiB budget; cumulus per grid, outer to inner: 0, 0"
+  },
+  "computed-fit-tornado-2023-2303241857-01-32gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 32 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 32 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-2023-2303241857-01"
+   ],
+   "result": "3 km 432 by 402 points (1293 by 1203 km); 1 km 600 by 510 points (599 by 509 km); 49 levels; priced at 18.04 GiB of a 29.58 GiB budget; cumulus per grid, outer to inner: 0, 0"
+  },
+  "rule-recipe-time-estimate": {
+   "kind": "rule",
+   "id": "rule-recipe-time-estimate",
+   "title": "Run time of a recipe that has not been run",
+   "method": "A forecast's time grows with its grid points and its time steps: each grid's points (east by north by levels) divided by its spacing in km, summed over the grids, times the hours. The measured runs give the seconds per unit of that for each kind of storm, on the card they ran on; a recipe that has not run gets that rate times its own grids and hours. The time to all pictures adds the download and preparation and the pictures. The download is this layout's own, as the engine prices it, over the throughput measured on real downloads of the same source; the preparation is at the rate measured on real preparations of the same kind, per byte downloaded for HRRR, whose preparation decodes every file it downloads, and per grid cell and forcing time for ERA5; the pictures are the measured seconds per picture frame per grid point times this layout's frames (each grid's history files) and points.",
+   "code": "tools/wiki_seed/estimate_times.py",
+   "inputs": [
+    "computed-run-tc-2019063s18038-16gb",
+    "computed-run-tornado-1999-466-16gb",
+    "computed-run-tornado-2023-2303241857-01-16gb"
+   ],
+   "retrieved": "2026-09-25"
+  }
+ },
+ "recipes": [
+  {
+   "event": "tornado-2023-2303241857-01",
+   "title": "EF4 tornado, Mississippi, 24 March 2023",
+   "type": "tornado",
+   "key_hours": {
+    "start": "2023-03-25T00:57Z",
+    "end": "2023-03-25T02:08Z",
+    "text": "The tornado's own hours in the SPC table."
+   },
+   "ideal": {
+    "rung": "nest-3-1-688x606",
+    "finest_km": 1.0,
+    "text": "A 688 by 606 km grid at 1 km holds the tornado path and the ground 120 km back along it where the parent storm forms, so the supercell and its mesocyclone are resolved at 2023-03-25 00:57 UTC; the 3 km grid around it reaches 400 km further out for the inflow and the boundaries the storm feeds on."
+   },
+   "disk_budget_gib": {
+    "8": 40,
+    "12": 50,
+    "16": 60,
+    "24": 80,
+    "32": 100
+   },
+   "start": "2023-03-24T18:00Z",
+   "length_h": 12,
+   "source": "hrrr",
+   "cards": [
+    {
+     "card_gb": 8,
+     "rung": "single-3-650x650",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 3.0,
+       "nx": 224,
+       "ny": 220,
+       "nz": 49,
+       "width_km": 669.0,
+       "height_km": 657.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      }
+     ],
+     "start": "2023-03-24T18:00Z",
+     "length_h": 12,
+     "source": "hrrr",
+     "source_why": "HRRR analysis: the 3 km analysis with radar data assimilated, archived for dates from late 2014.",
+     "physics": {
+      "profile": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+      "why": "HRRR's own microphysics family (Thompson), so the storms and ice already in its analysis carry straight over, with full radiation for the evening and night hours; the engine's own default for HRRR. No cumulus scheme on any grid: every grid here resolves deep convection itself."
+     },
+     "fitted_grid": "3 km 224 by 220 points (669 by 657 km); 49 levels",
+     "memory": {
+      "need_gib": 6.28,
+      "budget_gib": 6.75
+     },
+     "disk_gib": 21.2,
+     "disk_budget_gib": 40,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 3600,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 14.1 GiB of HRRR files for 13 forcing times; the preparation, 2.5 GiB; the history files, 2.7 GiB, written every hour on the outer grid; the one checkpoint the run keeps (two while a new one is written), 1.1 GiB; the rendered pictures, 0.8 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
+     "download": {
+      "bytes": 15165800000,
+      "transfer_bytes": 15165800000,
+      "objects": 26,
+      "leads": 13,
+      "source": "hrrr",
+      "mode": "full-file",
+      "preparation_bytes": 2649430784,
+      "chain": "prepared:hrrr"
+     },
+     "est_minutes": 5,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (15.2 GB of HRRR files, about 7 minutes at the 39 MB/s measured on 4 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 4 preparations of the same kind) and the pictures, about 1 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 3 km grid, 650 by 650 km, lets storms form on their own; it shows where and when supercells form but not their inner structure.",
+     "what_is_given_up": "No 1 km grid: the storm runs at 3 km, which shows the supercell but not its rotation; the grid is 650 by 650 km.",
+     "finest_km": 3.0,
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 3,
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "history_interval_s": 3600,
+      "card": "8gb"
+     },
+     "box": {
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 650,
+      "height_km": 650
+     },
+     "recipe": {
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "card": "8gb",
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 650,
+      "height_km": 650,
+      "dx_km": 3.0
+     },
+     "cite": [
+      "computed-fit-tornado-2023-2303241857-01-8gb",
+      "rule-recipe-best-tornado",
+      "spc-2023-2303241857-01",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-3-1-688x606",
+       "need_gib": 23.35,
+       "reason": "needs 23.35 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-588x506",
+       "need_gib": 18.04,
+       "reason": "needs 18.04 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-488x406",
+       "need_gib": 13.53,
+       "reason": "needs 13.53 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-408x326",
+       "need_gib": 10.68,
+       "reason": "needs 10.68 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-348x266",
+       "need_gib": 8.89,
+       "reason": "needs 8.89 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-308x226",
+       "need_gib": 7.69,
+       "reason": "needs 7.69 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "single-3-1100x1100",
+       "need_gib": 10.01,
+       "reason": "needs 10.01 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "single-3-800x800",
+       "need_gib": 7.33,
+       "reason": "needs 7.33 GiB; this card's budget is 6.75 GiB"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 10
+    },
+    {
+     "card_gb": 12,
+     "rung": "nest-3-1-348x266",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 3.0,
+       "nx": 264,
+       "ny": 236,
+       "nz": 49,
+       "width_km": 789.0,
+       "height_km": 705.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 1.0,
+       "nx": 354,
+       "ny": 270,
+       "nz": 49,
+       "width_km": 353.0,
+       "height_km": 269.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      }
+     ],
+     "start": "2023-03-24T18:00Z",
+     "length_h": 12,
+     "source": "hrrr",
+     "source_why": "HRRR analysis: the 3 km analysis with radar data assimilated, archived for dates from late 2014.",
+     "physics": {
+      "profile": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+      "why": "HRRR's own microphysics family (Thompson), so the storms and ice already in its analysis carry straight over, with full radiation for the evening and night hours; the engine's own default for HRRR. No cumulus scheme on any grid: every grid here resolves deep convection itself."
+     },
+     "fitted_grid": "3 km 264 by 236 points (789 by 705 km); 1 km 354 by 270 points (353 by 269 km); 49 levels",
+     "memory": {
+      "need_gib": 8.89,
+      "budget_gib": 10.75
+     },
+     "disk_gib": 42.5,
+     "disk_budget_gib": 50,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 14.1 GiB of HRRR files for 13 forcing times; the preparation, 3.7 GiB; the history files, 18.5 GiB, written every hour on the outer grid and every 20 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 3.0 GiB; the rendered pictures, 3.1 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
+     "download": {
+      "bytes": 15165800000,
+      "transfer_bytes": 15165800000,
+      "objects": 26,
+      "leads": 13,
+      "source": "hrrr",
+      "mode": "full-file",
+      "preparation_bytes": 3932723281,
+      "chain": "prepared:hrrr"
+     },
+     "est_minutes": 20,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (15.2 GB of HRRR files, about 7 minutes at the 39 MB/s measured on 4 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 4 preparations of the same kind) and the pictures, about 5 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 348 by 266 km grid at 1 km holds the tornado path and the ground 120 km back along it where the parent storm forms, so the supercell and its mesocyclone are resolved at 2023-03-25 00:57 UTC; the 3 km grid around it reaches 220 km further out for the inflow and the boundaries the storm feeds on.",
+     "what_is_given_up": "The 1 km grid is 348 by 266 km instead of 688 by 606 km and the 3 km grid reaches 220 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 20 minutes instead of every 15 minutes, to keep the run within this card's 50 GiB disk budget.",
+     "finest_km": 1.0,
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 3,
+      "chain": "3",
+      "buffer_km": "220,0",
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "card": "12gb"
+     },
+     "box": {
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 348,
+      "height_km": 266
+     },
+     "recipe": {
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "card": "12gb",
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 348,
+      "height_km": 266,
+      "dx_km": 3.0,
+      "chain": "3",
+      "buffer_km": "220,0"
+     },
+     "cite": [
+      "computed-fit-tornado-2023-2303241857-01-12gb",
+      "rule-recipe-best-tornado",
+      "spc-2023-2303241857-01",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-3-1-688x606",
+       "need_gib": 23.35,
+       "reason": "needs 23.35 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-588x506",
+       "need_gib": 18.04,
+       "reason": "needs 18.04 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-488x406",
+       "need_gib": 13.53,
+       "reason": "needs 13.53 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "nest-3-1-408x326",
+       "need_gib": 10.68,
+       "reason": "priced at 10.68 GiB of a 10.75 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 35
+    },
+    {
+     "card_gb": 16,
+     "rung": "nest-3-1-408x326",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 3.0,
+       "nx": 304,
+       "ny": 276,
+       "nz": 49,
+       "width_km": 909.0,
+       "height_km": 825.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 1.0,
+       "nx": 414,
+       "ny": 330,
+       "nz": 49,
+       "width_km": 413.0,
+       "height_km": 329.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      }
+     ],
+     "start": "2023-03-24T18:00Z",
+     "length_h": 12,
+     "source": "hrrr",
+     "source_why": "HRRR analysis: the 3 km analysis with radar data assimilated, archived for dates from late 2014.",
+     "physics": {
+      "profile": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+      "why": "HRRR's own microphysics family (Thompson), so the storms and ice already in its analysis carry straight over, with full radiation for the evening and night hours; the engine's own default for HRRR. No cumulus scheme on any grid: every grid here resolves deep convection itself."
+     },
+     "fitted_grid": "3 km 304 by 276 points (909 by 825 km); 1 km 414 by 330 points (413 by 329 km); 49 levels",
+     "memory": {
+      "need_gib": 10.68,
+      "budget_gib": 14.54
+     },
+     "disk_gib": 52.6,
+     "disk_budget_gib": 60,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 14.1 GiB of HRRR files for 13 forcing times; the preparation, 5.0 GiB; the history files, 26.2 GiB, written every hour on the outer grid and every 20 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 4.2 GiB; the rendered pictures, 3.1 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "download": {
+      "bytes": 15165800000,
+      "transfer_bytes": 15165800000,
+      "objects": 26,
+      "leads": 13,
+      "source": "hrrr",
+      "mode": "full-file",
+      "preparation_bytes": 5344364281,
+      "chain": "prepared:hrrr"
+     },
+     "est_minutes": 30,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (15.2 GB of HRRR files, about 7 minutes at the 39 MB/s measured on 4 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 4 preparations of the same kind) and the pictures, about 7 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 408 by 326 km grid at 1 km holds the tornado path and the ground 120 km back along it where the parent storm forms, so the supercell and its mesocyclone are resolved at 2023-03-25 00:57 UTC; the 3 km grid around it reaches 250 km further out for the inflow and the boundaries the storm feeds on.",
+     "what_is_given_up": "The 1 km grid is 408 by 326 km instead of 688 by 606 km and the 3 km grid reaches 250 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 20 minutes instead of every 15 minutes, to keep the run within this card's 60 GiB disk budget.",
+     "finest_km": 1.0,
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 3,
+      "chain": "3",
+      "buffer_km": "250,0",
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "card": "16gb"
+     },
+     "box": {
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 408,
+      "height_km": 326
+     },
+     "recipe": {
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "card": "16gb",
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 408,
+      "height_km": 326,
+      "dx_km": 3.0,
+      "chain": "3",
+      "buffer_km": "250,0"
+     },
+     "cite": [
+      "computed-fit-tornado-2023-2303241857-01-16gb",
+      "rule-recipe-best-tornado",
+      "spc-2023-2303241857-01",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-3-1-688x606",
+       "need_gib": 23.35,
+       "reason": "needs 23.35 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "nest-3-1-588x506",
+       "need_gib": 18.04,
+       "reason": "needs 18.04 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "nest-3-1-488x406",
+       "need_gib": 13.53,
+       "reason": "writes 61 GiB even at the sparsest allowed output, over this card's 60 GiB disk budget"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 45
+    },
+    {
+     "card_gb": 24,
+     "rung": "nest-3-1-488x406",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 3.0,
+       "nx": 364,
+       "ny": 336,
+       "nz": 49,
+       "width_km": 1089.0,
+       "height_km": 1005.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 1.0,
+       "nx": 492,
+       "ny": 408,
+       "nz": 49,
+       "width_km": 491.0,
+       "height_km": 407.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      }
+     ],
+     "start": "2023-03-24T18:00Z",
+     "length_h": 12,
+     "source": "hrrr",
+     "source_why": "HRRR analysis: the 3 km analysis with radar data assimilated, archived for dates from late 2014.",
+     "physics": {
+      "profile": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+      "why": "HRRR's own microphysics family (Thompson), so the storms and ice already in its analysis carry straight over, with full radiation for the evening and night hours; the engine's own default for HRRR. No cumulus scheme on any grid: every grid here resolves deep convection itself."
+     },
+     "fitted_grid": "3 km 364 by 336 points (1089 by 1005 km); 1 km 492 by 408 points (491 by 407 km); 49 levels",
+     "memory": {
+      "need_gib": 13.53,
+      "budget_gib": 22.06
+     },
+     "disk_gib": 69.1,
+     "disk_budget_gib": 80,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 14.1 GiB of HRRR files for 13 forcing times; the preparation, 7.3 GiB; the history files, 38.5 GiB, written every hour on the outer grid and every 20 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 6.1 GiB; the rendered pictures, 3.1 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "download": {
+      "bytes": 15165800000,
+      "transfer_bytes": 15165800000,
+      "objects": 26,
+      "leads": 13,
+      "source": "hrrr",
+      "mode": "full-file",
+      "preparation_bytes": 7799995459,
+      "chain": "prepared:hrrr"
+     },
+     "est_minutes": 40,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (15.2 GB of HRRR files, about 7 minutes at the 39 MB/s measured on 4 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 4 preparations of the same kind) and the pictures, about 10 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 488 by 406 km grid at 1 km holds the tornado path and the ground 120 km back along it where the parent storm forms, so the supercell and its mesocyclone are resolved at 2023-03-25 00:57 UTC; the 3 km grid around it reaches 300 km further out for the inflow and the boundaries the storm feeds on.",
+     "what_is_given_up": "The 1 km grid is 488 by 406 km instead of 688 by 606 km and the 3 km grid reaches 300 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 20 minutes instead of every 15 minutes, to keep the run within this card's 80 GiB disk budget.",
+     "finest_km": 1.0,
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 3,
+      "chain": "3",
+      "buffer_km": "300,0",
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "card": "24gb"
+     },
+     "box": {
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 488,
+      "height_km": 406
+     },
+     "recipe": {
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "card": "24gb",
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 488,
+      "height_km": 406,
+      "dx_km": 3.0,
+      "chain": "3",
+      "buffer_km": "300,0"
+     },
+     "cite": [
+      "computed-fit-tornado-2023-2303241857-01-24gb",
+      "rule-recipe-best-tornado",
+      "spc-2023-2303241857-01",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-3-1-688x606",
+       "need_gib": 23.35,
+       "reason": "needs 23.35 GiB; this card's budget is 22.06 GiB"
+      },
+      {
+       "rung": "nest-3-1-588x506",
+       "need_gib": 18.04,
+       "reason": "writes 81.2 GiB even at the sparsest allowed output, over this card's 80 GiB disk budget"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 60
+    },
+    {
+     "card_gb": 32,
+     "rung": "nest-3-1-588x506",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 3.0,
+       "nx": 432,
+       "ny": 402,
+       "nz": 49,
+       "width_km": 1293.0,
+       "height_km": 1203.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 1.0,
+       "nx": 600,
+       "ny": 510,
+       "nz": 49,
+       "width_km": 599.0,
+       "height_km": 509.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 32.79,
+        "lon": -91.12
+       }
+      }
+     ],
+     "start": "2023-03-24T18:00Z",
+     "length_h": 12,
+     "source": "hrrr",
+     "source_why": "HRRR analysis: the 3 km analysis with radar data assimilated, archived for dates from late 2014.",
+     "physics": {
+      "profile": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+      "why": "HRRR's own microphysics family (Thompson), so the storms and ice already in its analysis carry straight over, with full radiation for the evening and night hours; the engine's own default for HRRR. No cumulus scheme on any grid: every grid here resolves deep convection itself."
+     },
+     "fitted_grid": "3 km 432 by 402 points (1293 by 1203 km); 1 km 600 by 510 points (599 by 509 km); 49 levels",
+     "memory": {
+      "need_gib": 18.04,
+      "budget_gib": 29.58
+     },
+     "disk_gib": 94.7,
+     "disk_budget_gib": 100,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 14.1 GiB of HRRR files for 13 forcing times; the preparation, 10.4 GiB; the history files, 57.9 GiB, written every hour on the outer grid and every 20 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 9.1 GiB; the rendered pictures, 3.1 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
+     "download": {
+      "bytes": 15165800000,
+      "transfer_bytes": 15165800000,
+      "objects": 26,
+      "leads": 13,
+      "source": "hrrr",
+      "mode": "full-file",
+      "preparation_bytes": 11203415899,
+      "chain": "prepared:hrrr"
+     },
+     "est_minutes": 60,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (15.2 GB of HRRR files, about 7 minutes at the 39 MB/s measured on 4 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 4 preparations of the same kind) and the pictures, about 16 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 588 by 506 km grid at 1 km holds the tornado path and the ground 120 km back along it where the parent storm forms, so the supercell and its mesocyclone are resolved at 2023-03-25 00:57 UTC; the 3 km grid around it reaches 350 km further out for the inflow and the boundaries the storm feeds on.",
+     "what_is_given_up": "The 1 km grid is 588 by 506 km instead of 688 by 606 km and the 3 km grid reaches 350 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 20 minutes instead of every 15 minutes, to keep the run within this card's 100 GiB disk budget.",
+     "finest_km": 1.0,
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 3,
+      "chain": "3",
+      "buffer_km": "350,0",
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "card": "32gb"
+     },
+     "box": {
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 588,
+      "height_km": 506
+     },
+     "recipe": {
+      "source": "hrrr",
+      "cycle": "2023-03-24T18",
+      "hours": 12,
+      "card": "32gb",
+      "lat": 32.79,
+      "lon": -91.12,
+      "width_km": 588,
+      "height_km": 506,
+      "dx_km": 3.0,
+      "chain": "3",
+      "buffer_km": "350,0"
+     },
+     "cite": [
+      "computed-fit-tornado-2023-2303241857-01-32gb",
+      "rule-recipe-best-tornado",
+      "spc-2023-2303241857-01",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-3-1-688x606",
+       "need_gib": 23.35,
+       "reason": "writes 105.1 GiB even at the sparsest allowed output, over this card's 100 GiB disk budget"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 85
+    }
+   ],
+   "cite": [
+    "rule-recipe-best-tornado",
+    "spc-2023-2303241857-01"
+   ]
+  }
+ ]
+}

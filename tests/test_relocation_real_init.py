@@ -1,6 +1,6 @@
 """Leg-3 contracts: real-data relocation (statics rebuild + adjustment).
 
-The essential claim (Drew's design ruling): overlap-region statics
+The essential claim (the design ruling): overlap-region statics
 rebuilt from the same source must equal the old ones -- identical source
 + identical cells = identical bytes -- so the bitwise overlap transplant
 survives.  This file proves the mechanism that delivers it (the
@@ -742,7 +742,7 @@ def test_preparer_refuses_on_a_statics_mismatch(monkeypatch):
     preparer, node, new_dc, initialized = _preparer_fixture(
         monkeypatch, corrupt_statics=True)
     preparer.capture_outgoing(node)
-    with pytest.raises(RelocationRefusal, match="identical bytes"):
+    with pytest.raises(RelocationRefusal, match="different land-surface statics"):
         preparer(initialized, new_dc, SimpleNamespace())
 
 
@@ -830,3 +830,98 @@ def test_corridor_statics_builder_is_a_drop_in_for_the_catalog_arm(
     assert receipt["static_source"].startswith("statics-corridor d02")
     assert receipt["highres_applied"] is False
     assert receipt["placement_translation_child_cells"] == [2, -1]
+
+
+def _framed_corridor_arm(monkeypatch, reference_dc, reference_grid, window,
+                         sha):
+    """The corridor arm addressed by the corridor module's OWN geometry:
+    the whole frame (``window`` None) or a reach window of it.
+
+    A window carries the whole-frame corridor's cells there, which is
+    the build's byte contract (``tests/test_statics_corridor.py`` holds
+    a real window build to it bit for bit); what this arm adds is the
+    crop through the window's origin, inside the real initializer.
+    """
+    from gpuwm.static.corridor import (ChildStaticsCorridor,
+                                       corridor_footprint_statics_builder,
+                                       corridor_geometry)
+
+    monkeypatch.setattr(ni, "DomainState", _TerrainCpuState)
+    monkeypatch.setattr(
+        ni, "sint",
+        lambda field, reg: np_sint(field, reg, dtype=np.float64).astype(F32))
+    monkeypatch.setattr(ni, "update_diagnostics", _fake_diagnostics)
+    x = np.arange(1, _PNX + 1)[None, :].astype(np.float64)
+    y = np.arange(1, _PNY + 1)[:, None].astype(np.float64)
+    fields = {"HGT_M": 150.0 + 90.0 * np.sin(0.9 * x) * np.sin(0.8 * y),
+              "LANDMASK": np.ones((_PNY, _PNX))}
+    if window is not None:
+        x0, y0, nx, ny = window
+        fields = {name: np.ascontiguousarray(value[y0:y0 + ny, x0:x0 + nx])
+                  for name, value in fields.items()}
+    corridor = ChildStaticsCorridor(
+        geometry=corridor_geometry(reference_dc,
+                                   SimpleNamespace(nx=_PNX, ny=_PNY),
+                                   window=window),
+        fields=fields, cache_sha256=sha * 64)
+    return ri.real_relocation_initializer(
+        vertical=_vertical(), child_config=reference_dc,
+        reference_grid=reference_grid,
+        reference_i_parent_start=reference_dc.i_parent_start,
+        reference_j_parent_start=reference_dc.j_parent_start,
+        statics_builder=corridor_footprint_statics_builder(corridor))
+
+
+def test_a_reach_window_corridor_rebuilds_every_move_as_the_whole_frame_does(
+        monkeypatch):
+    """A run whose nest stays inside its reach gets the same nest from the
+    reach-window corridor as from the whole-frame one.
+
+    Every placement of a track that stays inside the window, corners
+    included, is rebuilt through the real relocation initializer from
+    both corridors, and every rebuilt array is compared as bytes.  The
+    receipts differ only in which sealed corridor they name.  A placement
+    past the window refuses, naming the ground the corridor covers,
+    rather than rebuilding from statics that are not there.
+    """
+    from gpuwm.static.corridor import CorridorRefusal
+
+    parent_node, parent_grid = _terrain_parent()
+    ref_dc = _child_dc(4, 4)
+    ref_grid = parent_grid.nest(4, 4, 1, _CNX + 1, _CNY + 1)
+    # Child cells 2..11 x 2..10 of the 14x14 frame: with a 6x6 footprint
+    # the placements inside are ip 3..7, jp 3..6, and every placement
+    # one cell past it is still one the parent can hold.
+    window = (2, 2, 10, 9)
+    whole = _framed_corridor_arm(monkeypatch, ref_dc, ref_grid, None, "a")
+    part = _framed_corridor_arm(monkeypatch, ref_dc, ref_grid, window, "b")
+
+    track = ((4, 4), (5, 4), (6, 3), (7, 3), (7, 6), (5, 6), (3, 6), (3, 3))
+    for ip, jp in track:
+        moved = _child_dc(ip, jp)
+        a, b = whole(moved, parent_node), part(moved, parent_node)
+        assert sorted(a.static_fields) == sorted(b.static_fields)
+        for name in sorted(a.static_fields):
+            assert (np.asarray(a.static_fields[name]).tobytes()
+                    == np.asarray(b.static_fields[name]).tobytes()), (
+                name, ip, jp)
+        arrays = {name for name, value in vars(a.state).items()
+                  if isinstance(value, np.ndarray)}
+        assert arrays == {name for name, value in vars(b.state).items()
+                          if isinstance(value, np.ndarray)}
+        assert {"ht", "mub2d", "phb", "pb", "thb", "alb", "thp", "mup",
+                "u", "v", "qv"} <= arrays
+        for name in sorted(arrays):
+            left, right = getattr(a.state, name), getattr(b.state, name)
+            assert (left.dtype, left.shape) == (right.dtype, right.shape)
+            assert left.tobytes() == right.tobytes(), (name, ip, jp)
+        ra, rb = dict(a.preprocess_receipt), dict(b.preprocess_receipt)
+        assert ra.pop("static_source") != rb.pop("static_source")
+        # Wall-clock seconds are the only other thing that may differ.
+        assert set(ra.pop("timings_seconds")) == set(rb.pop("timings_seconds"))
+        assert ra == rb, (ip, jp)
+
+    for ip, jp in ((2, 4), (8, 4), (4, 2), (4, 7)):
+        with pytest.raises(CorridorRefusal,
+                           match=r"covers child cells 2\.\.11 x 2\.\.10"):
+            part(_child_dc(ip, jp), parent_node)

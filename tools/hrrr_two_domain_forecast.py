@@ -173,7 +173,7 @@ def _initialize_state(snapshot, dc, grid, static, eta, mapping_report):
         eta_levels=eta)
     result = initialize_real(
         met, dc.run, coord, static["HGT_M"], grid=grid, p_top=10000.0,
-        sfcp_to_sfcp=True)
+        landmask=static["LANDMASK"], sfcp_to_sfcp=True)
     result.state.set_map_coriolis(
         static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
         static["F"], static["E"], sina=static["SINALPHA"],
@@ -531,7 +531,7 @@ def run(args):
         execution = execute_experiment(
             model, history_handler=history_handler,
             progress_callback=progress_callback, validate_state=True,
-            skip_feedback_path=True, pool_trim_per_period=True)
+            skip_feedback_path=True)
         cp.cuda.Stream.null.synchronize()
     finally:
         dycore_module.step = original_step
@@ -592,6 +592,7 @@ def run(args):
         "downloaded_hrrr_to_first_gpu_step_seconds": (
             first_gpu_step_seconds_from_startup),
         "executor": {
+            "pool_trim": model._pool_trim_policy,
             "steps": int(execution.steps),
             "forces": int(execution.forces),
             "feedback_calls": int(execution.feedback_calls),

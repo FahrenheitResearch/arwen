@@ -2,8 +2,9 @@
 //! RUNNING the real Python implementation
 //! (`tools/static_rust_port/extract_lane1_goldens.py`; numpy version
 //! recorded in the manifest).  Equality is at the BIT for every float
-//! and at the BYTE for the sealed NPZ -- the WPS-path contract from
-//! docs/dev/static-rust-port.md section 3.
+//! and at the BYTE for the sealed NPZ. The WPS float32 sampling twins use
+//! the separately pinned portable libm authority, because platform NumPy
+//! libm rounding cannot identify a moving nest across machines (cross-machine moving nests).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -23,14 +24,25 @@ use static_fields::projection::{
 };
 use static_fields::types::{Field, FieldSet, Grid2, Stack3, Stagger};
 
-struct Goldens {
+pub(crate) struct Goldens {
     root: PathBuf,
     manifest: Value,
     native_authority: bool,
+    portable_root: PathBuf,
+    portable: Value,
 }
 
 impl Goldens {
     fn load() -> Self {
+        let mut g = Self::load_reference();
+        g.portable = serde_json::from_slice(&std::fs::read(
+            g.portable_root.join("manifest.json")).expect("portable WPS goldens present"))
+            .expect("portable WPS manifest parses");
+        assert_eq!(g.portable["arithmetic_backend"], "portable-libm-0.2.16");
+        g
+    }
+
+    pub(crate) fn load_reference() -> Self {
         let native = std::env::var_os("GPUWM_STATIC_LANE1_GOLDENS");
         let root = native.as_ref().map(PathBuf::from).unwrap_or_else(||
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -63,14 +75,26 @@ impl Goldens {
             assert!(cfg!(target_endian = "little"),
                     "lane1 has not qualified a big-endian Rust target");
         }
-        Goldens { root, manifest, native_authority: native.is_some() }
+        Goldens { root, manifest, native_authority: native.is_some(),
+            portable_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/goldens/wps32"), portable: Value::Null }
     }
 
-    fn case(&self, name: &str) -> &Value {
+    pub(crate) fn case(&self, name: &str) -> &Value {
         &self.manifest["cases"][name]
     }
 
-    fn entry<'a>(&'a self, case: &str, key: &str) -> &'a Value {
+    pub(crate) fn entry<'a>(&'a self, case: &str, key: &str) -> &'a Value {
+        let portable = &self.portable["cases"][case]["arrays"][key];
+        if !self.portable.is_null() && (key.starts_with("twin_")
+            || key.starts_with("surface_lat_")
+            || key == "surface_lon_boundary_band"
+            || key == "surface_lon_c"
+            || key == "surface_lon_e") {
+            assert!(!portable.is_null(), "portable WPS array {case}.{key} missing");
+            assert!(portable["sha256"].is_string(), "portable WPS array {case}.{key} needs a digest");
+        }
+        if !portable.is_null() { return portable; }
         let entry = &self.case(case)["arrays"][key];
         assert!(
             !entry.is_null(),
@@ -87,8 +111,11 @@ impl Goldens {
             .iter()
             .map(|v| v.as_u64().unwrap() as usize)
             .collect();
+        let root = if self.portable["cases"][case]["arrays"][key].is_null() {
+            &self.root
+        } else { &self.portable_root };
         let bytes = std::fs::read(
-            self.root.join(entry["file"].as_str().unwrap()),
+            root.join(entry["file"].as_str().unwrap()),
         )
         .unwrap();
         let expected_hash = entry["sha256"].as_str();
@@ -139,7 +166,7 @@ impl Goldens {
         !self.case(case)["scalars"][key].is_null()
     }
 
-    fn spec(&self, case: &str) -> GridSpec {
+    pub(crate) fn spec(&self, case: &str) -> GridSpec {
         serde_json::from_value(self.case(case)["spec"].clone())
             .unwrap_or_else(|e| panic!("{case} spec: {e}"))
     }
@@ -179,7 +206,7 @@ fn assert_scalar_bits(g: &Goldens, case: &str, key: &str, observed: f64) {
 
 /// Rebuild the harness Lambert chain: parent from its spec, d02/d03
 /// through the same nest arithmetic the extraction ran.
-fn lambert_chain(g: &Goldens) -> (ProjectedGrid, ProjectedGrid, ProjectedGrid) {
+pub(crate) fn lambert_chain(g: &Goldens) -> (ProjectedGrid, ProjectedGrid, ProjectedGrid) {
     let parent = ProjectedGrid::new(g.spec("lam_parent")).unwrap();
     let nest = |grid: &ProjectedGrid, case: &str| -> ProjectedGrid {
         let n = &g.case(case)["nest"];
@@ -491,7 +518,7 @@ fn npz_seal_bytes_equal_python() {
     }
 }
 
-fn twin_state_map(twin_kind: &str, grid: &ProjectedGrid)
+pub(crate) fn twin_state_map(twin_kind: &str, grid: &ProjectedGrid)
                   -> BTreeMap<&'static str, f32> {
     let mut out = BTreeMap::new();
     out.insert("rad", RAD32);
@@ -534,7 +561,7 @@ fn twin_state_map(twin_kind: &str, grid: &ProjectedGrid)
     out
 }
 
-fn adopted_state_map(twin_kind: &str, grid: &ProjectedGrid)
+pub(crate) fn adopted_state_map(twin_kind: &str, grid: &ProjectedGrid)
                      -> BTreeMap<&'static str, f32> {
     let mut out = twin_state_map(twin_kind, grid);
     match twin_kind {
@@ -565,7 +592,7 @@ fn adopted_state_map(twin_kind: &str, grid: &ProjectedGrid)
 
 fn check_twin_state(g: &Goldens, case: &str, key: &str,
                     observed: &BTreeMap<&'static str, f32>) {
-    let expected = g.case(case)[key].as_object().unwrap();
+    let expected = g.portable["cases"][case][key].as_object().unwrap();
     for (name, hex) in expected {
         let bits = u32::from_str_radix(hex.as_str().unwrap(), 16).unwrap();
         let value = observed
@@ -655,6 +682,59 @@ fn translated_twin_delegates_bit_equal() {
 
 #[test]
 fn sampling_surfaces_bit_equal() {
+    check_sampling_surfaces();
+}
+
+#[test]
+fn portable_sampling_surfaces_bit_equal() {
+    check_sampling_surfaces();
+}
+
+#[test]
+fn portable_arrays_remain_bounded_by_numpy() {
+    let portable = Goldens::load();
+    let reference = Goldens::load_reference();
+    let bounds: Value = serde_json::from_slice(&std::fs::read(
+        portable.portable_root.join("numpy-bounds.json")).unwrap()).unwrap();
+    for (case, row) in portable.portable["cases"].as_object().unwrap() {
+        for (key, entry) in row["arrays"].as_object().unwrap() {
+            let (shape, actual) = portable.raw(case, key);
+            let (reference_shape, expected) = reference.raw(case, key);
+            assert_eq!(shape, reference_shape);
+            let dtype = entry["dtype"].as_str().unwrap();
+            let width = match dtype { "f32" => 4, "f64" => 8, "u8" => 1, _ => panic!("unknown dtype") };
+            let decode = |bytes: &[u8]| -> (u64, f64) {
+                match dtype {
+                    "f32" => {
+                        let bits = u32::from_le_bytes(bytes.try_into().unwrap());
+                        let rank = if bits & (1 << 31) != 0 { !bits } else { bits | (1 << 31) };
+                        (rank as u64, f32::from_bits(bits) as f64)
+                    }
+                    "f64" => {
+                        let bits = u64::from_le_bytes(bytes.try_into().unwrap());
+                        let rank = if bits & (1 << 63) != 0 { !bits } else { bits | (1 << 63) };
+                        (rank, f64::from_bits(bits))
+                    }
+                    _ => (bytes[0] as u64, bytes[0] as f64),
+                }
+            };
+            let cap = &bounds["cases"][case][key];
+            let mut changed = 0_u64;
+            assert_eq!(actual.len(), expected.len());
+            for (a, b) in actual.chunks_exact(width).zip(expected.chunks_exact(width)) {
+                let (rank_a, value_a) = decode(a);
+                let (rank_b, value_b) = decode(b);
+                assert!(value_a.is_finite() && value_b.is_finite());
+                changed += u64::from(rank_a != rank_b);
+                assert!(rank_a.abs_diff(rank_b) <= cap["max_ulps"].as_u64().unwrap(), "{case}.{key} ULP bound");
+                assert!((value_a - value_b).abs() <= cap["max_abs"].as_f64().unwrap(), "{case}.{key} absolute bound");
+            }
+            assert!(changed <= cap["changed"].as_u64().unwrap(), "{case}.{key} changed-value bound");
+        }
+    }
+}
+
+fn check_sampling_surfaces() {
     let g = Goldens::load();
     let (_, _, d03) = lambert_chain(&g);
     let cases: Vec<(&str, ProjectedGrid)> = vec![
@@ -690,9 +770,11 @@ fn sampling_surfaces_bit_equal() {
             }
         } else {
             assert!(!surface.lon_e_is_f32);
-            let (_, expected_lon) = g.f64s(case, "surface_lon_e");
-            assert_f64_bits(&surface.lon_e, &expected_lon,
-                            &format!("{case}.surface_lon_e"));
+            {
+                let (_, expected_lon) = g.f64s(case, "surface_lon_e");
+                assert_f64_bits(&surface.lon_e, &expected_lon,
+                                &format!("{case}.surface_lon_e"));
+            }
         }
 
         let expected_lon_band = g.bools(case, "surface_lon_boundary_band");
@@ -705,9 +787,11 @@ fn sampling_surfaces_bit_equal() {
         let (_, expected_lat_c) = g.f32s(case, "surface_lat_c");
         assert_f32_bits(&surface.lat_c, &expected_lat_c,
                         &format!("{case}.surface_lat_c"));
-        let (_, expected_lon_c) = g.f64s(case, "surface_lon_c");
-        assert_f64_bits(&surface.lon_c, &expected_lon_c,
-                        &format!("{case}.surface_lon_c"));
+        {
+            let (_, expected_lon_c) = g.f64s(case, "surface_lon_c");
+            assert_f64_bits(&surface.lon_c, &expected_lon_c,
+                            &format!("{case}.surface_lon_c"));
+        }
     }
 }
 

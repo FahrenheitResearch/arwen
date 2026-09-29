@@ -20,8 +20,10 @@ from gpuwm.offline_child import (
     OfflineChildPlacement,
     bind_parent_physics_from_wrf_namelist,
     build_offline_child_domain_state,
+    build_offline_lateral_boundaries,
     interpolate_parent_boundary_snapshot,
     interpolate_parent_initial_state,
+    validate_parent_history,
 )
 from gpuwm.vertical_remap import column_integral, dry_mass_edges
 
@@ -549,3 +551,56 @@ def test_a_deeper_childs_geopotential_thickness_is_recovered(tmp_path):
     alb = np.asarray(state.alb, dtype=np.float64)
     assert np.isfinite(pb).all() and (pb > 0.0).all()
     assert np.isfinite(alb).all() and (alb > 0.0).all()
+
+
+def test_a_masked_value_written_without_a_fill_attribute_is_refused(tmp_path):
+    """A masked element with no ``_FillValue`` is stored as the default fill.
+
+    That is 9.97e36, a finite number, and it used to pass every check and
+    reach the child as a 9.97e36 K potential temperature.  It is missing
+    data: the refusal names the file, the variable and the cell.
+    """
+    path = tmp_path / "parent.nc"
+    _deep_history(path, datetime(1974, 4, 3, 12), nz=8)
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset.variables["T"][0, 0, 4, 4] = np.ma.masked
+        assert "_FillValue" not in dataset.variables["T"].ncattrs()
+    with pytest.raises(OfflineChildContractError) as excinfo:
+        interpolate_parent_initial_state(
+            path, _placement(), physics_binding=_physics_binding(tmp_path),
+            backend="cpu")
+    message = str(excinfo.value)
+    assert str(path) in message
+    assert "/T " in message
+    assert "south_north=4, west_east=4" in message
+    assert "missing" in message
+
+
+def test_a_masked_value_in_a_later_frame_is_refused_before_the_child_steps(
+        tmp_path):
+    """The series' shape is proven from metadata; a later frame's values when it is read.
+
+    ``validate_parent_history`` reads no 3-D field, so a later frame with a
+    value its writer never set passes it.  The runner builds every boundary
+    frame before it makes the stepper, and that build refuses the frame,
+    naming it, the variable and the cell.
+    """
+
+    first = tmp_path / "wrfout_d01_1974-04-03_12_00_00"
+    later = tmp_path / "wrfout_d01_1974-04-03_12_15_00"
+    _deep_history(first, datetime(1974, 4, 3, 12), nz=8)
+    _deep_history(later, datetime(1974, 4, 3, 12, 15), nz=8)
+    with netCDF4.Dataset(later, "a") as dataset:
+        dataset.variables["T"][0, 0, 4, 4] = np.ma.masked
+        assert "_FillValue" not in dataset.variables["T"].ncattrs()
+
+    contract = validate_parent_history(
+        [first, later], max_boundary_interval_seconds=900.0,
+        physics_binding=_physics_binding(tmp_path))
+    with pytest.raises(OfflineChildContractError) as caught:
+        build_offline_lateral_boundaries(contract, _placement(), backend="cpu")
+
+    message = str(caught.value)
+    assert message.startswith(f"{later}/T has 1 missing or non-finite value")
+    assert "south_north=4, west_east=4" in message
+    assert "restored or regenerated" in message

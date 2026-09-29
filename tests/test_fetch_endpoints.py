@@ -106,15 +106,26 @@ def test_a_pinned_transport_is_a_decision_and_does_not_fall_through():
 # Non-NCEP regression: untouched
 # --------------------------------------------------------------------------
 
-def test_non_ncep_sources_keep_the_single_endpoint_they_had():
+def test_non_ncep_sources_head_their_ladder_with_the_publisher_door():
+    """A fresh cycle asks the publisher's door; past its window the mirror, where there is one.
+
+    The ECMWF door keeps 72 h and the AWS mirror behind it keeps every
+    cycle, so a 400-day-old ECMWF cycle goes straight to the mirror.
+    The DWD and MSC doors have no archive behind them, so an old cycle
+    still asks the one door (retention is an optimisation, not a bar).
+    """
+
     now = _utc_now()
-    expected = {"icon-eu": "dwd", "gem-gdps": "msc",
-                "ecmwf-open-data": "ecmwf", "aifs": "ecmwf"}
+    fresh = {"icon-eu": ["dwd"], "gem-gdps": ["msc"],
+             "ecmwf-open-data": ["ecmwf", "aws"], "aifs": ["ecmwf", "aws"]}
+    old = {"icon-eu": ["dwd"], "gem-gdps": ["msc"],
+           "ecmwf-open-data": ["aws"], "aifs": ["aws"]}
     for source in OTHER_SOURCES:
-        for age in (timedelta(hours=2), timedelta(days=400)):
+        for age, expected in ((timedelta(hours=2), fresh),
+                              (timedelta(days=400), old)):
             serving = fetch_endpoints.serving_ladder(
                 source, cycle=now - age, now=now)
-            assert serving[0].name == expected[source], (source, age)
+            assert [rung.name for rung in serving] == expected[source], (source, age)
 
 
 def test_a_non_ncep_route_plans_byte_identical_urls():
@@ -259,7 +270,12 @@ def test_the_whole_ladder_failing_names_every_endpoint_and_why(tmp_path):
     assert "Retry-After" in message
 
 
-def test_a_pinned_transport_refuses_without_trying_the_other_host(tmp_path):
+def test_a_pinned_transport_refuses_without_trying_the_other_host(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    waits: list[float] = []
+    monkeypatch.setattr(fetch_routes, "time",
+                        SimpleNamespace(sleep=waits.append), raising=False)
     now = _utc_now()
     plan = fetch_routes.resolve_request(
         "rap", cycle=now - timedelta(hours=2), hours=0, now=now,
@@ -277,6 +293,9 @@ def test_a_pinned_transport_refuses_without_trying_the_other_host(tmp_path):
         fetch_routes.run_plan(plan, out=tmp_path, progress=lambda *_: None,
                               probe=explode, downloader=always_fails)
     assert all("nomads" in url for url in seen)
+    # The pinned host alone, asked on the shared schedule.
+    assert len(seen) == fetch_endpoints.TRANSIENT_ATTEMPTS
+    assert waits == [2, 4, 8, 16]
 
 
 # --------------------------------------------------------------------------

@@ -220,11 +220,35 @@ _SIGINT_SENDER = (
 #: each signal this module handles.
 _VERBS = {"SIGTERM": "stopped", "SIGINT": "interrupted"}
 
+#: A door whose runs ARE stopped with these two signals (``stoppable``):
+#: ``gpuwm downscale``.  Its own refusal tells a reader to send SIGTERM,
+#: the page and the terminal app stop a run with a SIGINT to its process
+#: group, and the page follows that with SIGTERM when the run is still
+#: going a minute later.  "Nothing in gpuwm sends a signal" would be
+#: false there, so the header says the stop is being recorded and the
+#: tail names those senders before the host's.
+_STOPPABLE_TAILS = {
+    "SIGTERM": (
+        b"  This is how a stop is asked for: `kill -TERM <pid>` at a\n"
+        b"  terminal, or gpuwm's page, which follows its Ctrl+C with SIGTERM\n"
+        b"  when a run is still going a minute later.  If nobody asked for a\n"
+        b"  stop, the host sent it: the kernel OOM killer escalating through\n"
+        b"  systemd (OOMPolicy=stop), systemd-oomd, earlyoom or nohang, a\n"
+        b"  scheduler's time limit, or a kill or pkill on the process group.\n"
+        b"  These name it:\n"
+        b"    journalctl -b | grep -i 'killed process'\n"
+        b"    free -g\n"),
+    "SIGINT": (
+        b"  SIGINT is a Ctrl-C at this terminal, a `kill -INT`, or the Stop\n"
+        b"  button of gpuwm's page or terminal app, which send it to the\n"
+        b"  run's whole process group.\n"),
+}
+
 
 @contextlib.contextmanager
 def report_on_signal(command: str, *, heartbeat: str | Path | None = None,
                      logs: tuple[str | Path, ...] = (),
-                     worker: bool = False):
+                     worker: bool = False, stoppable: bool = False):
     """Say what was happening here, for as long as this door owns the run.
 
     ``command`` is the front door as the reader typed it (``gpuwm run``).
@@ -237,6 +261,13 @@ def report_on_signal(command: str, *, heartbeat: str | Path | None = None,
     exception, because ``gpuwm.cli.main`` is called repeatedly in one
     interpreter by the test suite and by embedders -- the same reason
     ``gpuwm.explain.explain_scope`` exists.
+
+    ``stoppable`` is a door whose runs are stopped with exactly these
+    signals and which records the stop itself (``gpuwm downscale``):
+    the header says the stop is being recorded rather than that it came
+    from outside gpuwm, and the tail names the page, the terminal app
+    and ``kill -TERM`` before the host.  Delivery is unchanged: the
+    disposition this replaced still receives the signal.
     """
 
     heartbeat_path = None if heartbeat is None else str(heartbeat)
@@ -256,6 +287,12 @@ def report_on_signal(command: str, *, heartbeat: str | Path | None = None,
     headers = {}
     tails = {}
     previous = {}
+    # A door with no heartbeat (``gpuwm downscale``) keeps its stage in
+    # its event stream instead, and "not published yet" would read as a
+    # run that had not started.
+    unpublished = ("not published yet" if heartbeat_path is not None
+                   else "this door keeps no heartbeat; its events.jsonl "
+                        "names the stage")
 
     def _report(number: int) -> None:
         # Header first and tail last, each one pre-rendered: the reader
@@ -267,7 +304,7 @@ def report_on_signal(command: str, *, heartbeat: str | Path | None = None,
             device = _device_bytes()
             _write(b"".join((
                 b"  phase:  ",
-                (_phase(heartbeat_path) or "not published yet").encode(
+                (_phase(heartbeat_path) or unpublished).encode(
                     "ascii", errors="replace"),
                 b"\n  host:   ",
                 (b"RSS is not readable on this platform" if rss is None
@@ -337,9 +374,13 @@ def report_on_signal(command: str, *, heartbeat: str | Path | None = None,
                 continue
             headers[number] = (
                 f"\n{command}: {name} (signal {int(number)}) at pid {pid} "
-                f"-- {_VERBS[name]} from outside gpuwm.\n").encode(
+                + ("-- stopping; the run records the stop and ends.\n"
+                   if stoppable else
+                   f"-- {_VERBS[name]} from outside gpuwm.\n")).encode(
                     "utf-8", errors="replace")
-            if name == "SIGINT":
+            if stoppable:
+                tails[number] = _STOPPABLE_TAILS[name] + pointers
+            elif name == "SIGINT":
                 tails[number] = _SIGINT_SENDER + pointers
             else:
                 tails[number] = (_SIGTERM_SENDERS_WORKER if worker

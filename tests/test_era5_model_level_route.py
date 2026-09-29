@@ -246,3 +246,119 @@ def test_the_forecast_stage_accepts_the_new_source_by_name():
     # validation as a packaged one, checked against the bundle's own
     # certificate rather than a packaged profile.
     assert "mapped" in SUPPORTED_SOURCES
+
+
+# ------------------------------------------------------------------
+# The water state: the same donor fields, packed under the same names
+# ------------------------------------------------------------------
+
+#: Canonical name in the composition -> the name the direct pressure-level
+#: route decodes the same GRIB1 record under (gpuwm/ingest/grib.py), which
+#: is the name the water-temperature assembly reads.
+WATER_STATE = {
+    "sea_surface_temperature": "SST",
+    "sea_ice_fraction": "SEAICE",
+    "lake_water_temperature": "LAKE_WATER_TEMP",
+    "lake_ice_temperature": "LAKE_ICE_TEMP",
+    "lake_ice_depth": "LAKE_ICE_DEPTH",
+}
+
+
+def _direct_route_identity(name):
+    """``(center, table, parameter, level_type, level)`` the direct route
+    decodes ``name`` from."""
+
+    from gpuwm.ingest import grib
+
+    for identity, decoded in grib._NATIVE_LAKE_SPECS.items():
+        if decoded == name:
+            return identity
+    for (parameter, level_type), (_, decoded) in grib._CANONICAL_SPECS.items():
+        if decoded == name:
+            return (98, 128, parameter, level_type, 0)
+    raise AssertionError(f"the direct route decodes no {name}")
+
+
+def test_the_composition_borrows_the_water_state_the_direct_route_reads():
+    """Named breakage: from ONE donor file the model-level route gave
+    677 of 701 lake cells a skin temperature 4.4 K rms away from the
+    pressure-level route's, land identical, because its composition
+    borrowed no lake state.  The rows must name the same records the
+    direct route decodes, or the two routes answer differently over
+    water from the same bytes."""
+
+    import json
+
+    from gpuwm.source_authorities import (packaged_composition,
+                                          packaged_contributing_mappings)
+
+    composition = packaged_composition(PROFILE)
+    borrowed = {name for binding in composition["field_sources"].values()
+                for name in binding["fields"]}
+    assert set(WATER_STATE) <= borrowed
+    [donor_path] = packaged_contributing_mappings(PROFILE).values()
+    donor = json.loads(donor_path.read_text(encoding="utf-8"))
+    for canonical, decoded in WATER_STATE.items():
+        [selector] = donor["fields"][canonical]["selectors"]
+        assert (selector["center"], selector["table_version"],
+                selector["parameter"], selector["level_type"],
+                selector["level_value"]) == _direct_route_identity(decoded), (
+            canonical)
+
+
+def test_the_regular_join_packs_the_water_state_under_the_direct_routes_names():
+    """The join is the one place a canonical name becomes the name the
+    horizontal mapping reads; a borrowed field it has no name for would
+    be decoded and then dropped."""
+
+    from dataclasses import replace
+
+    import numpy as np
+
+    import test_mapped_frameset_streaming as fixture
+    from gpuwm.mapped_source import mapped_frames_to_regular_snapshots
+
+    frame = fixture._one_frame()
+    fields = dict(frame.fields)
+    template = fields["skin_temperature"]
+    for offset, canonical in enumerate(WATER_STATE):
+        fields[canonical] = replace(
+            template, name=canonical,
+            values=template.values + float(offset + 1))
+    snapshot = mapped_frames_to_regular_snapshots(
+        (replace(frame, fields=fields),),
+        initialize_absent_hydrometeors=True)[0]
+    for canonical, decoded in WATER_STATE.items():
+        assert np.array_equal(snapshot.fields[decoded],
+                              fields[canonical].values), canonical
+
+
+def test_the_composition_borrows_the_snow_the_direct_route_reads():
+    """Named breakage: from one donor file the model-level route started
+    every land cell with no snow where the pressure-level route had up
+    to 389 kg m-2 (rms 15 kg m-2 over a May domain whose mountains still
+    held snow), because its mapping left the donor's snow unbound.
+
+    The donor record is the one the direct route decodes as SNOW_EC,
+    metres of water equivalent, which its soil initializer multiplies by
+    1000 to reach kg m-2; the row carries the same factor as its unit
+    transform, and the join packs the result as SNOW."""
+
+    import json
+
+    from gpuwm.source_authorities import (packaged_composition,
+                                          packaged_contributing_mappings)
+
+    composition = packaged_composition(PROFILE)
+    borrowed = {name for binding in composition["field_sources"].values()
+                for name in binding["fields"]}
+    assert "snow_water_equivalent" in borrowed
+    [donor_path] = packaged_contributing_mappings(PROFILE).values()
+    field = json.loads(donor_path.read_text(encoding="utf-8"))[
+        "fields"]["snow_water_equivalent"]
+    [selector] = field["selectors"]
+    assert (selector["center"], selector["table_version"],
+            selector["parameter"], selector["level_type"],
+            selector["level_value"]) == _direct_route_identity("SNOW_EC")
+    assert field["units"] == {"source": "m", "target": "kg m-2",
+                              "scale": 1000.0}

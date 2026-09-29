@@ -349,14 +349,40 @@ _DOC_ROW = re.compile(
     r"^\|\s*`(aero-[a-z0-9-]+)`\s*\|\s*(PASS|MISS)\s*\|\s*"
     r"`?([A-Za-z0-9_.-]+)`?\s*\|\s*([0-9.eE+-]+)\s*\|", re.MULTILINE)
 
+#: A row of the document's per-card-class table: the same row led by the
+#: card class it was measured on (``| sm_89 | `aero-...` | PASS | ...``).
+_DOC_CARD_ROW = re.compile(
+    r"^\|\s*sm_([0-9]+)\s*\|\s*`(aero-[a-z0-9-]+)`\s*\|\s*(PASS|MISS)"
+    r"\s*\|\s*`?([A-Za-z0-9_.-]+)`?\s*\|\s*([0-9.eE+-]+)\s*\|",
+    re.MULTILINE)
 
-def _document_rows():
+#: THE DOCUMENT'S NUMBERS ARE PER CARD CLASS.  Its Class A table is the
+#: sm_120 measurement (an RTX 5090 and an RTX 5070 Ti read it alike); every
+#: other measured class publishes the rows that read differently on it, in
+#: the per-card table.  A card class in neither is held to the verdicts
+#: only, and the test says so.
+_DOCUMENT_CARD_CLASS = "12.0"
+_MEASURED_CARD_CLASSES = ("12.0", "8.9")
+
+
+def _document_rows(card_class: str | None = None):
+    """The document's Class A rows, as published for ``card_class``.
+
+    ``None`` or the document's own class returns the Class A table; another
+    measured class returns it with that class's per-card rows laid over it.
+    """
     assert EVIDENCE_DOC.exists(), (
         f"missing {EVIDENCE_DOC}; WP-12b owns it and the campaign is not "
         "evidenced without it")
     text = EVIDENCE_DOC.read_text(encoding="utf-8")
     rows = {m.group(1): (m.group(2), m.group(3), float(m.group(4)))
             for m in _DOC_ROW.finditer(text)}
+    if card_class is not None and card_class != _DOCUMENT_CARD_CLASS:
+        tag = card_class.replace(".", "")
+        for m in _DOC_CARD_ROW.finditer(text):
+            if m.group(1) == tag:
+                rows[m.group(2)] = (m.group(3), m.group(4),
+                                    float(m.group(5)))
     return text, rows
 
 
@@ -380,7 +406,13 @@ def test_the_evidence_document_publishes_all_nineteen_measured_fixtures():
     import cupy as cp
 
     matrix = _g3_matrix(cp)
-    _text, rows = _document_rows()
+    card = _adapter_module()._card_class(cp)
+    measured_class = card in _MEASURED_CARD_CLASSES
+    _text, rows = _document_rows(card if measured_class else None)
+    if not measured_class:
+        print(f"card class sm_{card.replace('.', '')} has no published row: "
+              "the document's verdicts are asserted, its numbers are not "
+              f"(measured classes: {list(_MEASURED_CARD_CLASSES)})")
 
     documented = set(matrix) - set(_FIXTURES_OUTSIDE_THE_DOCUMENT)
     assert documented == {name for name in matrix
@@ -402,6 +434,8 @@ def test_the_evidence_document_publishes_all_nineteen_measured_fixtures():
             problems.append(
                 f"{scenario}: document says {verdict}, measurement "
                 f"{'clears' if clears else 'misses'} {G3_GATE:.0e}")
+            continue
+        if not measured_class:
             continue
         worst_field = max(row, key=lambda name: row[name])
         worst = row[worst_field]

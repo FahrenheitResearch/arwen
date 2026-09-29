@@ -412,6 +412,36 @@ def test_shadow_shortfall_is_recorded_not_fatal():
     assert record["complete"] is False
 
 
+def test_the_operator_integrates_over_the_steps_actually_committed():
+    """An adaptive clock changes the step between commits.
+
+    The hook is built on the first commit's step; each call must
+    integrate the steps committed since the last cadence call instead.
+    """
+    seam = SpectralSeam(shadow_config(), "probe")
+    state = {"thp": np.random.default_rng(3).normal(size=(3, 20, 24))}
+    elapsed = 0.0
+    for step_count, dt in enumerate((15.0, 17.5, 12.25), start=1):
+        elapsed += dt
+        receipt = seam.after_step(
+            state, 1, _run_cfg(specified=True, dt=dt),
+            step_count=step_count, model_seconds=elapsed)
+        assert receipt["dt_s"] == dt
+
+    paired = SpectralSeam(shadow_config(cadence_steps=2), "probe")
+    elapsed = 0.0
+    receipts = []
+    for step_count, dt in enumerate((15.0, 17.0, 12.0, 12.0), start=1):
+        elapsed += dt
+        receipts.append(paired.after_step(
+            state, 1, _run_cfg(specified=True, dt=dt),
+            step_count=step_count, model_seconds=elapsed))
+    assert receipts[0] is None and receipts[2] is None
+    # dt_s * cadence_steps is the window that elapsed: 15 + 17, then 12 + 12.
+    assert receipts[1]["dt_s"] == 16.0
+    assert receipts[3]["dt_s"] == 12.0
+
+
 def test_a_streamed_late_joiner_refuses_at_its_first_commit():
     seam = SpectralSeam(shadow_config(), "probe")
     with pytest.raises(RuntimeError, match="t=0 attach snapshot"):

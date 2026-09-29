@@ -1,0 +1,43 @@
+# The ATMS front door: the Rust half of every read gpuwm does of a JPSS
+# ATMS Sensor Data Record (the IDPS HDF5 granules the NOAA open-data
+# buckets publish for NOAA-20 and NOAA-21).
+#
+# It exists because the microwave observation leg of the global
+# assimilation design needs the radiances and their geolocation out of
+# HDF5 files whose datasets live in groups (`/All_Data/ATMS-SDR_All/...`),
+# which `rw_netcdf`'s NetCDF-4 facade does not walk: netCDF-4 puts its
+# variables at the root and the IDPS files are bare HDF5 with a group
+# tree.  The decode is the same pure-Rust `hdf5-reader` netcrust rides,
+# addressed by dataset path, and the contract mirrors `rw_netcdf`: a
+# metadata pass on stdout (`inventory`) and a bulk pass writing flat
+# little-endian arrays plus a `metadata.json` receipt (`decode`).  The
+# third pass, `thin`, is the colocation the design assigns to Rust: every
+# valid beam falls into one cell of a caller-supplied latitude ring set
+# and one time bin, and the cell means are written with their counts and
+# spreads.
+#
+# Every dependency is already in this workspace's `cargo vendor`
+# closure, so the bin builds --locked --offline like every other bundled
+# artifact.
+
+[package]
+name = "rw-atms"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_atms"
+path = "src/main.rs"
+
+[dependencies]
+# Pure-Rust HDF5.  Resolves to the vendored tree through the workspace
+# root [patch.crates-io] pin, exactly as rw-sat's does.
+hdf5-reader = "0.3"
+ndarray = "0.17"
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"

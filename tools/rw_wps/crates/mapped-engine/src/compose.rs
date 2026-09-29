@@ -539,6 +539,147 @@ fn pending_composition_refusal(doc: &Node, path: &str) -> Result<String> {
     ))
 }
 
+/// The operations `fields.terrain_height.when_absent` may name.
+pub const WHEN_ABSENT_OPERATIONS: [&str; 1] = ["height_at_surface_pressure"];
+
+/// The fields `height_at_surface_pressure` reads, by declaration key: the
+/// three column fields first, then the three surface fields.
+pub const WHEN_ABSENT_FIELDS: [&str; 6] = [
+    "geopotential_height",
+    "temperature",
+    "specific_humidity",
+    "surface_pressure",
+    "surface_temperature",
+    "surface_dewpoint",
+];
+
+/// `mapped_composition._derive_absent_terrain`: terrain for a source whose
+/// terrain files carry none, from the primary's first valid time.
+///
+/// Terrain is one field per cycle (`cycle_invariant_broadcast`), so it
+/// is derived once, from the analysis the primary opens with, and the
+/// join broadcasts it to every valid time exactly as it broadcasts a
+/// published analysis terrain.  The fields it reads are named by the
+/// declaration and must be the primary's own decoded fields.
+pub fn derive_absent_terrain(
+    mapping: &Mapping,
+    operation: &Node,
+    stream: &crate::engine::DecodeStream<'_>,
+) -> Result<(crate::assemble::DecodedCollection, Value)> {
+    let kind = operation
+        .get("operation")
+        .and_then(Node::as_str)
+        .unwrap_or_default();
+    if !WHEN_ABSENT_OPERATIONS.contains(&kind) {
+        return Err(mapping_invalid(format!(
+            "fields.{EXTERNAL_FIELD}.when_absent.operation must be one of {}",
+            python_list_repr(&WHEN_ABSENT_OPERATIONS)
+        )));
+    }
+    let Some(first) = stream.first_slice() else {
+        return Err(crate::refusal::frame_invalid(
+            "terrain_height from surface pressure reads the primary's first \
+             valid time, which this decode no longer holds",
+        ));
+    };
+    let key = stream.keys()[0].clone();
+    let mut values: Vec<&crate::assemble::DirectValue> =
+        Vec::with_capacity(WHEN_ABSENT_FIELDS.len());
+    let mut names: Vec<String> = Vec::with_capacity(WHEN_ABSENT_FIELDS.len());
+    for (position, label) in WHEN_ABSENT_FIELDS.iter().enumerate() {
+        let name = operation.get(label).and_then(Node::as_str).ok_or_else(|| {
+            mapping_invalid(format!(
+                "fields.{EXTERNAL_FIELD}.when_absent.{label} must name a field"
+            ))
+        })?;
+        let value = first
+            .direct
+            .get(&(key.0, key.1.clone(), name.to_owned()))
+            .ok_or_else(|| {
+                crate::refusal::frame_invalid(format!(
+                    "terrain_height from surface pressure needs {}, which the \
+                     primary files do not carry at {}",
+                    python_repr(name),
+                    crate::frames::naive_isoformat(key.0)
+                ))
+            })?;
+        let expected: &[&str] = if position < 3 {
+            &["vertical", "y", "x"]
+        } else {
+            &["y", "x"]
+        };
+        if value.axes != expected {
+            return Err(crate::refusal::frame_invalid(format!(
+                "terrain_height from surface pressure needs {} on {expected:?} \
+                 axes; got {:?}",
+                python_repr(name),
+                value.axes
+            )));
+        }
+        values.push(value);
+        names.push(name.to_owned());
+    }
+    let factor = match mapping.vertical()?.get("units").and_then(Node::as_str) {
+        Some("Pa") => 1.0,
+        Some("hPa") => 100.0,
+        other => {
+            return Err(mapping_invalid(format!(
+                "terrain_height from surface pressure reads a pressure ladder \
+                 in Pa or hPa; vertical.units is {other:?}"
+            )))
+        }
+    };
+    let levels_pa: Vec<f64> = first.vertical_values.iter().map(|level| level * factor).collect();
+    let derived = crate::derive::height_at_surface_pressure(
+        &levels_pa,
+        &values[0].values,
+        &values[1].values,
+        &values[2].values,
+        &values[3].values,
+        &values[4].values,
+        &values[5].values,
+    )?;
+    let source_cycle = values[3].source_cycle;
+    let references: Vec<String> = values
+        .iter()
+        .flat_map(|value| value.references.iter().cloned())
+        .collect();
+    let terrain = crate::assemble::DirectValue {
+        name: EXTERNAL_FIELD.to_owned(),
+        valid_time: key.0,
+        member: key.1.clone(),
+        source_cycle,
+        axes: vec!["y".to_owned(), "x".to_owned()],
+        values: derived.values,
+        missing_count: 0,
+        references,
+    };
+    let collection = crate::assemble::DecodedCollection {
+        latitude: first.latitude.clone(),
+        longitude: first.longitude.clone(),
+        vertical_values: first.vertical_values.clone(),
+        direct: BTreeMap::from([(
+            (key.0, key.1.clone(), EXTERNAL_FIELD.to_owned()),
+            terrain,
+        )]),
+        source_cycles: BTreeMap::from([(key.clone(), source_cycle)]),
+        grid_fingerprint: first.grid_fingerprint.clone(),
+        hybrid_a: Vec::new(),
+        hybrid_b: Vec::new(),
+    };
+    let receipt = json!({
+        "operation": kind,
+        "why": "the terrain files carry no terrain_height record",
+        "valid_time": crate::frames::naive_isoformat(key.0),
+        "fields": names,
+        "cells": derived.cells,
+        "cells_below_lowest_level": derived.below_ladder,
+        "minimum_m": derived.minimum,
+        "maximum_m": derived.maximum,
+    });
+    Ok((collection, receipt))
+}
+
 /// `mapped_composition._partition_mapping`: a decoder-only view of one
 /// side of the composition.
 ///
@@ -653,7 +794,16 @@ pub fn union_mapping(
                     python_repr(name)
                 ))
             })?;
-            fields = fields.with_entry(name, spec.clone());
+            // The primary binds a borrowed field in order to publish it,
+            // so the donor's own `dependency_only` does not ride along:
+            // it would hold the field the composition exists to supply
+            // off the composed frame.
+            let spec = if spec.is_object() {
+                spec.object_filtered(|key, _| key != "dependency_only")
+            } else {
+                spec.clone()
+            };
+            fields = fields.with_entry(name, spec);
         }
     }
     Ok(Mapping {
@@ -847,6 +997,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     // what makes the composition resolvable before the series exists.
     let partitioned = partition_mapping(&mapping, false)?;
     let mut stream = crate::engine::DecodeStream::open(&partitioned, &primary, progress)?;
+    let aliased = stream.aliased().clone();
     progress(json!({
         "event": "composed_primary",
         "valid_times": stream.keys().len(),
@@ -859,12 +1010,32 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     let mut composed_names: BTreeSet<String> = stream.direct_names().clone();
     if let Some(terrain) = &composition.terrain {
         let files = &supplements[&terrain.data_role];
-        let supplement = crate::engine::decode_collection(
+        let mut derived: Option<Value> = None;
+        let supplement = match crate::engine::decode_collection_or_unmatched(
             &partition_mapping(&mapping, true)?,
             files,
             progress,
-        )?;
-        let (plan, receipt) = crate::join::plan_terrain(
+        )? {
+            Ok(collection) => collection,
+            Err(unmatched) => {
+                // The files carry no terrain record at all.  A mapping
+                // that declares how terrain is derived then has it
+                // derived from the primary's own first valid time;
+                // without that declaration the miss is refused by name,
+                // as it always was.
+                let Some(operation) = mapping.field(EXTERNAL_FIELD)?.when_absent() else {
+                    return Err(unmatched);
+                };
+                let (collection, receipt) = derive_absent_terrain(&mapping, operation, &stream)?;
+                progress(json!({
+                    "event": "derived_terrain",
+                    "cells": receipt.get("cells"),
+                }));
+                derived = Some(receipt);
+                collection
+            }
+        };
+        let (plan, mut receipt) = crate::join::plan_terrain(
             &crate::join::PrimaryHeader {
                 latitude: stream.latitude(),
                 longitude: stream.longitude(),
@@ -875,6 +1046,11 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             &supplement,
             &terrain.time_alignment,
         )?;
+        if let (Some(derived), Some(object)) = (derived, receipt.as_object_mut()) {
+            // Recorded only when terrain was derived, so every receipt of
+            // a source that carries its terrain is unchanged.
+            object.insert("derived".into(), derived);
+        }
         terrain_plan = Some(plan);
         composed_names.insert(EXTERNAL_FIELD.to_owned());
         alignment_receipt = Some(receipt);
@@ -1050,7 +1226,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             receipt.insert("member_identity".to_owned(), json!(identity));
         }
     }
-    let evidence = json!({
+    let mut evidence = json!({
         "schema": COMPOSITION_EVIDENCE_SCHEMA,
         "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
         "mapping": {"path": mapping.path, "sha256": mapping.sha256},
@@ -1058,13 +1234,23 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         "alignment_receipt": alignment_receipt,
         "contributing_sources": contributing_records,
     });
+    if !aliased.is_empty() {
+        // Present only when records were read through
+        // `mapping.record_aliases`, so every other evidence document is
+        // unchanged: the primary records each field read that way.
+        evidence["record_aliases"] = json!(aliased);
+    }
     let evidence_path = output.join("composition.json");
     std::fs::write(
         &evidence_path,
         serde_json::to_vec_pretty(&evidence).unwrap_or_default(),
     )
     .map_err(|error| {
-        missing_input(format!("cannot write {}: {error}", evidence_path.display()))
+        crate::refusal::write_error(
+            &format!("write the composition evidence {}", evidence_path.display()),
+            &error,
+            None,
+        )
     })?;
     Ok(json!({
         "event": "receipt",
@@ -1264,6 +1450,42 @@ mod tests {
             partition_mapping(&mapping, false).unwrap().field_names().unwrap(),
             vec!["surface_pressure".to_owned()]
         );
+    }
+
+    #[test]
+    fn a_borrowed_field_is_published_even_where_its_donor_only_reads_it() {
+        let primary = Mapping::load(&write(
+            "m8.json",
+            &mapping_document(r#", "soil_temperature": {"provider": "composition_bound"}"#),
+        ))
+        .unwrap();
+        let donor = Mapping::load(&write(
+            "m8-donor.json",
+            &mapping_document(
+                r#", "soil_temperature": {"selectors": [{"parameter": "TSOIL"}],
+                    "source_axes": ["soil", "y", "x"], "target_axes": ["soil", "y", "x"],
+                    "location": "soil", "units": {"target": "K"},
+                    "missing": {"kind": "reject"}, "dependency_only": true}"#,
+            ),
+        ))
+        .unwrap();
+        assert!(donor.field("soil_temperature").unwrap().dependency_only().unwrap());
+        let binding = Binding {
+            name: "donor".to_owned(),
+            source_id: "d".to_owned(),
+            mapping_role: "donor_mapping".to_owned(),
+            mapping_sha256: donor.sha256.clone(),
+            data_role: "donor_data".to_owned(),
+            provenance_role: "donor_provenance".to_owned(),
+            fields: vec!["soil_temperature".to_owned()],
+            grid_alignment: "exact_coordinate_subset".to_owned(),
+            time_alignment: "valid_time_exact".to_owned(),
+        };
+        let donors = BTreeMap::from([("donor".to_owned(), donor)]);
+        let union = union_mapping(&primary, &donors, &[binding]).unwrap();
+        let field = union.field("soil_temperature").unwrap();
+        assert_eq!(field.location().unwrap(), "soil");
+        assert!(!field.dependency_only().unwrap());
     }
 
     #[test]

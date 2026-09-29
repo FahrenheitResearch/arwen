@@ -12,22 +12,23 @@ NVRTC emitted for ONE target architecture at ONE compiler build, not a
 property of the ``.cu`` source.
 
 Measured the same NVRTC-plus-driver way on three compile platforms
-(``tools/vram_reserve_probe.py frames``), the rows that disagree:
+(``tools/vram_reserve_probe.py frames``), the rows that disagree (the
+sm_120 columns as re-read 2026-09-28, the sm_86 column as read
+2026-08-20/21 and re-read at the cut):
 
   ======================  ==========  ==========  ==========
   module                  sm_120      sm_120      sm_86
                           13.0.48     13.3.33     13.0.48
   ======================  ==========  ==========  ==========
-  gf                           88          72          88
+  gf                           72          72          88
   kf                          512         512         512
   noah                        176         176         224
   thompson_aerosol_warm         0           0         112
   ysu                           0           0           0
   nssl2_fused_gs              112         216         112
   rrtmgp_cloud                  0          40           0
-  shinhong                 14,040      17,160      14,040
+  shinhong                 13,000      17,160      14,040
   noahmp_leaves               272         208         208
-  rrtmgp_rte                5,152       5,152       3,600
   ======================  ==========  ==========  ==========
 
 ``gf``, ``ysu`` and ``kf`` are the three rows that went to ZERO-ish on
@@ -94,15 +95,24 @@ run with nz <= 64 launches only the ``_64`` variants (2,816 B measured).
 Pricing the row is the safe direction and is what preflight does; it is
 not what the driver charges.
 
-Four rows move with the ARCHITECTURE at a fixed compiler, four move with
-the COMPILER BUILD at a fixed architecture, and ``noahmp_leaves`` moves
-with both.  ``rrtmgp_rte`` is the one row that moves with neither: the
-sm_86 reading is post-RRTMGP-optimisation (2026-08-20) and the two sm_120
-readings are of the source as it stood before it, on boxes that are no
-longer reachable to re-read.  The ceiling therefore over-prices sm_120
-here until one of them is measured again, which is the safe direction and
-costs nothing -- the module is nowhere near the widest frame on any
-platform.  So the identity of a recording is the pair
+Rows move with the ARCHITECTURE at a fixed compiler, with the COMPILER
+BUILD at a fixed architecture, or with both (``noahmp_leaves``,
+``shinhong``).  A row also moves with the SOURCE, and that is what the
+2026-09-28 re-read found: every sm_120 recording was read again on an RTX
+5090 (weather-node-2) and an RTX 5070 Ti (weather-node-4), the two cards
+agreeing to the byte at every build, and three rows had gone stale.
+``rrtmgp_rte`` still carried 5,152 B on 13.0.48 and 13.3.33, a reading
+of the source before the RRTMGP optimisation (every build now compiles it
+to 3,600), and ``gf`` (88 -> 72) and ``shinhong`` (14,040 -> 13,000) had
+narrowed on 13.0.48 and 13.0.88 since those rows were read.  Stale-wide
+rows are the safe direction, but not free: ``rrtmgp_rte`` was the widest
+frame a Morrison, Kessler, P3 or microphysics-free configuration with
+RRTMGP radiation launched, so every such run reserved backing store for
+frame bytes no compiler emits (32 B per resident thread over Morrison's
+5,120, the whole 1,552 B where nothing else is wider than 3,600).  The
+sm_86 column predates the same source changes and is re-read at the cut,
+so ``gf`` keeps its 88 B ceiling from it until then.  So the identity of
+a recording is the pair
 ``(device_compute_capability, nvrtc_build)`` -- exactly two of the keys
 :func:`gpuwm.certify.compile_platform.compile_platform_fingerprint`
 already measures -- and neither the card's SM count nor its model name
@@ -177,7 +187,14 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'diffusion': 0,
         'dycore': 0,
         'ftz_probe': 0,
-        'gf': 88,
+        # RE-READ 2026-09-28 on an RTX 5090 (node-2) and an RTX 5070 Ti
+        # (node-4), NVRTC 13.0.48 build id CL-36260728 on both: gf 72,
+        # rrtmgp_rte 3,600 and shinhong 13,000 (the rows below), every
+        # other row here reproduced to the byte.  The old values (88,
+        # 5,152, 14,040) were readings of older source; 5,152 predates
+        # the RRTMGP optimisation that took rrtmgp_sw_2stream's three
+        # per-thread column arrays off the stack.
+        'gf': 72,
         'health': 0,
         'jacobi_eigh': 0,
         'kessler': 5120,
@@ -219,13 +236,13 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'rrtmgp_cloud': 0,
         'rrtmgp_gas': 512,
         'rrtmgp_mcica': 0,
-        'rrtmgp_rte': 5152,
+        'rrtmgp_rte': 3600,
         'rrtmgp_validation': 0,
         'ruc': 144,
         'sase': 6272,
         'saxpy': 0,
         'sfclay': 0,
-        'shinhong': 14040,
+        'shinhong': 13000,
         'shinhong_validation': 0,
         'smag2d': 0,
         'spec_bdy': 0,
@@ -239,7 +256,11 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'tke_budget': 0,
         'uh_diag': 0,
         'vert_interp': 768,
-        'wdm6': 9776,
+        # RE-READ 2026-09-28, RTX 5090 (node-2), NVRTC 13.0.48,
+        # after 308c2d39e (WDM6 rain mass and number conservation)
+        # took falk and falkn, two per-level arrays, off the stack:
+        # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
+        'wdm6': 9264,
         'wdm6_refl': 16128,
         'wsm6': 7216,
         'ysu': 0,
@@ -250,8 +271,12 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
 #: weather-node-1, RTX 5070 Ti / Linux, 2026-08-20.  Same target
 #: architecture as the recording above and a LATER NVRTC, which is what
 #: isolates the compiler half: ``nssl2_fused_gs`` 112 -> 216,
-#: ``rrtmgp_cloud`` 0 -> 40, ``shinhong`` 14,040 -> 17,160 and
-#: ``noahmp_leaves`` 272 -> 208 move with the build alone.
+#: ``rrtmgp_cloud`` 0 -> 40, ``shinhong`` 13,000 -> 17,160 (14,040 ->
+#: 17,160 at the source both were first read at) and ``noahmp_leaves``
+#: 272 -> 208 move with the build alone.  RE-READ 2026-09-28 on an RTX
+#: 5090 (node-2) and an RTX 5070 Ti (node-4), NVRTC 13.3.33 build id
+#: CL-37862127 on both: every row reproduced to the byte except
+#: ``rrtmgp_rte``, 5,152 -> 3,600 (see its row).
 SM120_NVRTC_13_3_33 = KernelFrameRecording(
     box='weather-node-1',
     device='NVIDIA GeForce RTX 5070 Ti',
@@ -326,7 +351,10 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'rrtmgp_cloud': 40,
         'rrtmgp_gas': 512,
         'rrtmgp_mcica': 0,
-        'rrtmgp_rte': 5152,
+        # RE-READ 2026-09-28 (node-2 and node-4): 5,152 was a reading of
+        # the source before the RRTMGP optimisation took three per-thread
+        # column arrays off rrtmgp_sw_2stream's stack.
+        'rrtmgp_rte': 3600,
         'rrtmgp_validation': 0,
         'ruc': 144,
         'sase': 6272,
@@ -346,7 +374,11 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'tke_budget': 0,
         'uh_diag': 0,
         'vert_interp': 768,
-        'wdm6': 9776,
+        # RE-READ 2026-09-28, RTX 5070 Ti (node-4), NVRTC 13.3.33,
+        # after 308c2d39e (WDM6 rain mass and number conservation)
+        # took falk and falkn, two per-level arrays, off the stack:
+        # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
+        'wdm6': 9264,
         'wdm6_refl': 16128,
         'wsm6': 7216,
         'ysu': 0,
@@ -498,10 +530,10 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         # and 1,552 after padding -- which the rewritten two-stream sweeps
         # now compute inline.  Nothing here is priced: the module sits far
         # below this platform's ceiling frames (kf 24,064, gf 23,984), so
-        # the reservation is unchanged.  The two sm_120 recordings still
-        # carry 5,152 for a source that no longer exists; neither box is
-        # reachable to re-read, and an over-priced frame is the safe
-        # direction for a rail gate.
+        # the reservation is unchanged.  The two sm_120 recordings carried
+        # 5,152 for that older source until they were re-read on
+        # 2026-09-28 (node-2 and node-4), where every sm_120 build
+        # compiles it to this same 3,600.
         'rrtmgp_rte': 3600,
         'rrtmgp_validation': 0,
         'ruc': 144,
@@ -522,7 +554,12 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'tke_budget': 0,
         'uh_diag': 0,
         'vert_interp': 768,
-        'wdm6': 9776,
+        # The source this read no longer exists: 308c2d39e took the
+        # frame to 9,264 B on every sm_120 build read 2026-09-28
+        # (NVRTC 12.9.86, 13.0.48, 13.0.88, 13.3.33, 13.4.92).  This
+        # card was read again at the 2.8.0 cut's Windows step
+        # (2026-09-29): 9,264 B at WDM6_KMAX 64 on sm_86 as well.
+        'wdm6': 9264,
         'wdm6_refl': 16128,
         'wsm6': 7216,
         # RE-READ 2026-08-21 on this card at the post-workspace
@@ -586,6 +623,118 @@ SM86_NVRTC_12_9_86 = KernelFrameRecording(
 )
 
 
+#: The compiler every fresh ``pip install gpuwm[gpu-cu13]`` has installed
+#: since 2026-09-16, when cuda-toolkit 13.4.2 became the ``[ctk]``
+#: resolution and pinned nvidia-cuda-nvrtc 13.4.92 (see
+#: :data:`RESOLVED_TOOLCHAIN_PINS`).  Read 2026-09-28 with
+#: ``tools/vram_reserve_probe.py frames`` in a venv installed from
+#: ``cupy-cuda13x[ctk]>=14.0`` (CuPy 14.2.0, NVRTC build id CL-38855100),
+#: fresh CuPy cache, on an RTX 5090 (weather-node-2, 170 SMs) and an RTX
+#: 5070 Ti (weather-node-4, 70 SMs): the two cards agree to the byte on
+#: every module.  Every row equals the 13.3.33 recording's, so the
+#: 13.3 -> 13.4 step moved no standalone frame on this architecture, and
+#: the five modules that recording never read (``lbc_time``,
+#: ``milbrandt2_zet``, ``mynn_dmp_sibling``, ``mynn_scalar_mix``,
+#: ``ntiedtke``) read 0 B.  No row is above the ceiling the other
+#: recordings already carry, so adding it moves no shipped frame; what it
+#: adds is the exact-equality leg of the driver gate on the compiler a
+#: fresh CUDA-13 install actually runs.  COMPLETE: every ``.cu`` in the
+#: tree that compiles alone has a number here.
+SM120_NVRTC_13_4_92 = KernelFrameRecording(
+    box='weather-node-2',
+    device='NVIDIA GeForce RTX 5090',
+    compute_capability='120',
+    nvrtc_build='13.4.92',
+    platform_family='linux',
+    measured='2026-09-28',
+    complete=True,
+    frames=MappingProxyType({
+        'acoustic': 544,
+        'advection': 0,
+        'coriolis_map': 0,
+        'diagnostics': 0,
+        'diff6': 0,
+        'diff6_seam': 0,
+        'diffusion': 0,
+        'dycore': 0,
+        'ftz_probe': 0,
+        'gf': 72,
+        'health': 0,
+        'health_tile': 0,
+        'jacobi_eigh': 0,
+        'kessler': 5120,
+        'kf': 512,
+        'kf_validation': 0,
+        'lbc_flow': 0,
+        'lbc_state': 0,
+        'lbc_time': 0,
+        'microphysics_validation': 0,
+        'milbrandt2': 2048,
+        'milbrandt2_zet': 0,
+        'morrison': 5120,
+        'myjpbl': 9232,
+        'myjsfc': 0,
+        'mynn_dmp_sibling': 0,
+        'mynn_pbl': 0,
+        'mynn_scalar_mix': 0,
+        'mynn_surface': 0,
+        'nest': 0,
+        'nest_microphysics': 0,
+        'noah': 176,
+        'noahmp_bareflux': 0,
+        'noahmp_fluxprep': 0,
+        'noahmp_leaves': 208,
+        'noahmp_radiation': 0,
+        'noahmp_sflx': 0,
+        'noahmp_snow': 200,
+        'noahmp_soilwater': 0,
+        'noahmp_vegeflux': 0,
+        'noahmp_vegprecip': 0,
+        'noahmp_water': 224,
+        'nssl2': 15504,
+        'nssl2_diagnostics': 0,
+        'nssl2_driver_support': 15504,
+        'nssl2_fused_gs': 216,
+        'nssl2_nucond': 0,
+        'nssl2_qvexcess': 0,
+        'ntiedtke': 0,
+        'openbc': 0,
+        'pd_advection': 0,
+        'refl': 18432,
+        'rrtmg_lw': 0,
+        'rrtmg_mcica_wrf': 0,
+        'rrtmgp_cloud': 40,
+        'rrtmgp_gas': 512,
+        'rrtmgp_mcica': 0,
+        'rrtmgp_rte': 3600,
+        'rrtmgp_validation': 0,
+        'ruc': 144,
+        'sase': 6272,
+        'saxpy': 0,
+        'sfclay': 0,
+        'shinhong': 17160,
+        'shinhong_validation': 0,
+        'smag2d': 0,
+        'spec_bdy': 0,
+        'thompson': 11264,
+        'thompson_aerosol_cold': 0,
+        'thompson_aerosol_probe': 0,
+        'thompson_aerosol_sat': 0,
+        'thompson_aerosol_sed': 9216,
+        'thompson_aerosol_state': 40,
+        'thompson_aerosol_warm': 0,
+        'tke_budget': 0,
+        'uh_diag': 0,
+        'vert_interp': 768,
+        'wdm6': 9264,
+        'wdm6_refl': 16128,
+        'wsm6': 7216,
+        'ysu': 0,
+        'ysu_validation': 0,
+    }),
+)
+
+
 #: Every recording, oldest reading first.  Order is not significant to
 #: the ceiling; it is the order a reader should walk them in.
 KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
@@ -634,7 +783,12 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             'diffusion': 0,
             'dycore': 0,
             'ftz_probe': 0,
-            'gf': 88,
+            # RE-READ 2026-09-28 on an RTX 5090 (node-2) and an RTX 5070
+            # Ti (node-4), NVRTC 13.0.88 build id CL-36424714 on both:
+            # gf 88 -> 72 and shinhong 14,040 -> 13,000 (its row below)
+            # since this recording was read; every other row reproduced
+            # to the byte.
+            'gf': 72,
             'health': 0,
             'health_tile': 0,
             'jacobi_eigh': 0,
@@ -686,7 +840,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             'sase': 6272,
             'saxpy': 0,
             'sfclay': 0,
-            'shinhong': 14040,
+            'shinhong': 13000,
             'shinhong_validation': 0,
             'smag2d': 0,
             'spec_bdy': 0,
@@ -700,7 +854,11 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             'tke_budget': 0,
             'uh_diag': 0,
             'vert_interp': 768,
-            'wdm6': 9776,
+            # RE-READ 2026-09-28, RTX 5070 Ti (node-4), NVRTC 13.0.88,
+            # after 308c2d39e (WDM6 rain mass and number conservation)
+            # took falk and falkn, two per-level arrays, off the stack:
+            # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
+            'wdm6': 9264,
             'wdm6_refl': 16128,
             'wsm6': 7216,
             'ysu': 0,
@@ -726,6 +884,9 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # beside this architecture's other recording, where the eight stems it
     # read and why those eight are written out.
     SM86_NVRTC_12_9_86,
+    # What a fresh gpu-cu13 install compiles on since 2026-09-16, read
+    # 2026-09-28 on an RTX 5090 and an RTX 5070 Ti.  Defined above.
+    SM120_NVRTC_13_4_92,
 )
 
 
@@ -892,7 +1053,7 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # adds 0 B to the launch-time reservation -- the refusal that stood on
     # scheme 4 since the 1.8.8 sweep was guarding a term that costs nothing
     # here.  The reservation a Noah-MP configuration pays is then whatever
-    # the rest of its kernel set pays (rrtmgp_rte at 5,152 B on this
+    # the rest of its kernel set pays (rrtmgp_rte at 3,600 B on this
     # platform, for instance), exactly as for scheme 2.
     ComposedUnitFrameRecording(
         box='weather-node-1',
@@ -1218,6 +1379,84 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
                 '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
         }),
     ),
+    # weather-node-2, RTX 5090 (170 SMs x 1,536), Linux, sm_120 at NVRTC
+    # 13.4.92 -- the compiler a FRESH `pip install gpuwm[gpu-cu13]` has
+    # installed since 2026-09-16, when cuda-toolkit 13.4.2 (the `[ctk]`
+    # extra's resolution) began pinning nvidia-cuda-nvrtc 13.4.92.  Read
+    # 2026-09-28 with `python tools/measure_noahmp_frames.py measure` in a
+    # venv installed from `cupy-cuda13x[ctk]>=14.0` (CuPy 14.2.0, NVRTC
+    # build id CL-38855100), same instrument and same fresh-process
+    # discipline as the rows above (fifteen units, 108 exports, empty CuPy
+    # cache, zero launches).  weather-node-4's RTX 5070 Ti (70 SMs) read
+    # the same day in its own venv of the same resolution gave the same
+    # frames and the same unit identities, so the row is a reading of the
+    # platform and not of one card.
+    #
+    # WHAT MOVED: nothing.  Every frame and every unit identity equals the
+    # 13.3.33 and 13.4.59 rows, and the three standalone stems agree with
+    # SM120_NVRTC_13_4_92 to the byte (noahmp_leaves 208, noahmp_snow 200,
+    # noahmp_water 224).  What the row changes is the basis: without it a
+    # fresh gpu-cu13 install was priced from the ceiling over the other
+    # rows (noahmp_leaves and the two units whose maximum it is at 272 B,
+    # the CUDA-12 reading) and plan review said "not measured on this
+    # card" about the card class the docs name as measured.
+    ComposedUnitFrameRecording(
+        box='weather-node-2',
+        device='NVIDIA GeForce RTX 5090',
+        compute_capability='120',
+        nvrtc_build='13.4.92',
+        platform_family='linux',
+        measured='2026-09-28',
+        frames=MappingProxyType({
+            'noahmp_bareflux': 0,
+            'noahmp_driver_composed': 352,
+            'noahmp_energy_composed': 208,
+            'noahmp_fluxprep': 0,
+            'noahmp_glacier_composed': 456,
+            'noahmp_leaves': 208,
+            'noahmp_libm_slab_composed': 208,
+            'noahmp_radiation': 0,
+            'noahmp_sflx': 0,
+            'noahmp_snow': 200,
+            'noahmp_soilwater': 0,
+            'noahmp_thermal_composed': 368,
+            'noahmp_vegeflux_runtime': 0,
+            'noahmp_vegprecip': 0,
+            'noahmp_water': 224,
+        }),
+        unit_identity=MappingProxyType({
+            'noahmp_bareflux':
+                '0b93a806f083cf33808f147ea0ed104cbae32f26305e4476834dc0ddf747dfce',
+            'noahmp_driver_composed':
+                '287907ce202a69af463063c1308a7b2726582560999915cd9c7411908e16b18b',
+            'noahmp_energy_composed':
+                '531ed4d33a90371bd4c6ca0f2cac7a73704655960147421df7158add99933071',
+            'noahmp_fluxprep':
+                '42b862510256d660d7f2a4e8d60fcb1d2fbca923509686a061034d6b8896f0ec',
+            'noahmp_glacier_composed':
+                '569ceb5fb679388581bc1b6fc718aa0aa5304b31d1c9cbfe35d0974427d3e2d1',
+            'noahmp_leaves':
+                '39bdbf3a366ac8b8876600a6becaa46754adc1142c7722a7965cc98945c60878',
+            'noahmp_libm_slab_composed':
+                '88b3b10a4c35d6d86b199b77173cddf8e6d89be75da243adc773ff6b2dce959c',
+            'noahmp_radiation':
+                '77216cfeff3226232467eb91d8bf625ca661e9424f712ae8da748904eaee9acd',
+            'noahmp_sflx':
+                '76ca4db5df80bce0ba053e65d615d64058ffcf6efd1a8a1e482568f8fed48f80',
+            'noahmp_snow':
+                '39205d245c1e334367ad7bef5c521f527fbfd9895adc2613b2e246c4963e7262',
+            'noahmp_soilwater':
+                '2eb119965a7759ce3b8f29c84526634db02d3830c9378a3426add974eeb5910f',
+            'noahmp_thermal_composed':
+                '6d9d80383b8a9a818238ae04e66c0779239a532b2e601b9a1d9e3e8c6dfa22a0',
+            'noahmp_vegeflux_runtime':
+                '517bc16aa14c818c1f0185dab3ab0142b62fbe6004d96a60d2fffea250c716ae',
+            'noahmp_vegprecip':
+                '80e07bc9d36be385bf265617529f2c7b7111e0225b8fc738e357946bda1fd874',
+            'noahmp_water':
+                '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
+        }),
+    ),
 )
 
 
@@ -1282,9 +1521,26 @@ class ResolvedToolchainPin:
 #: changed ``nvidia-cuda-nvrtc`` version is a new compile platform and
 #: needs a new row from ``measure`` on each architecture listed.
 RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
-    # 2026-09-10, pip 25.2 against PyPI: cupy-cuda13x 14.2.0 ->
-    # cuda-toolkit 13.4.1.0 (uploaded 2026-09-09) -> nvidia-cuda-nvrtc
-    # 13.4.59.  The compiler every fresh gpu-cu13 install has today.
+    # 2026-09-28, pip 26.2.1 against PyPI (`python
+    # tools/measure_noahmp_frames.py resolve`): cupy-cuda13x 14.2.0 ->
+    # cuda-toolkit 13.4.2 (uploaded 2026-09-16) -> nvidia-cuda-nvrtc
+    # 13.4.92.  The compiler every fresh gpu-cu13 install has today; both
+    # tables carry an sm_120 reading of it (SM120_NVRTC_13_4_92 and the
+    # composed row), read the same day on an RTX 5090 and an RTX 5070 Ti.
+    ResolvedToolchainPin(
+        extra='gpu-cu13',
+        requirement='cupy-cuda13x[ctk]>=14.0',
+        cuda_toolkit='13.4.2',
+        nvrtc_distribution='nvidia-cuda-nvrtc',
+        nvrtc_build='13.4.92',
+        resolved='2026-09-28',
+        current=True,
+        noahmp_architectures=('120',),
+    ),
+    # The window before it: cuda-toolkit 13.4.1.0 (uploaded 2026-09-09)
+    # pinned nvidia-cuda-nvrtc 13.4.59, resolved 2026-09-10 with pip 25.2.
+    # An install resolved between 2026-09-09 and the 13.4.2 upload on
+    # 2026-09-16 runs this compiler and is priced from the 13.4.59 rows.
     ResolvedToolchainPin(
         extra='gpu-cu13',
         requirement='cupy-cuda13x[ctk]>=14.0',
@@ -1292,7 +1548,7 @@ RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
         nvrtc_distribution='nvidia-cuda-nvrtc',
         nvrtc_build='13.4.59',
         resolved='2026-09-10',
-        current=True,
+        current=False,
         noahmp_architectures=('120',),
     ),
     # The window before it: cuda-toolkit 13.3.x (13.3.1 on the venv the

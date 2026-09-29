@@ -15,7 +15,10 @@ import pytest
 from gpuwm import cyclone_setup as tc
 from gpuwm import cyclone_sources as cs
 from gpuwm import domain_wizard as dw
+from gpuwm.fetch_routes import resolve_leads, route_for
 from gpuwm.source_adapters import get_source_adapter
+
+from cyclone_preset_fit import center as tc_point, holds_the_preset_root
 
 CYCLE = "2026090900"
 MOMENT = datetime(2026, 9, 9, 0)
@@ -52,6 +55,21 @@ def test_every_lead_publishing_source_begins_at_the_lead_it_is_given(source):
     lead = min(step * 2, adapter.max_forecast_hour - step)
     if lead <= 0:
         pytest.skip(f"{source} publishes no lead beyond one forcing interval")
+    if not holds_the_preset_root(source):
+        # The preset root fits nowhere in this source's window, so the door
+        # refuses it by name and emits no file.  The door checks the lead
+        # against the fetch route before the window, so a refused lead would
+        # fail this match with its own message; the route's ladder is then
+        # asked directly that the window begins at the lead.
+        with pytest.raises(ValueError, match="covering sources"):
+            tc.configuration_text(cycle=CYCLE, point=tc_point(source),
+                                  hours=step, forcing_source=source,
+                                  start_hour=lead)
+        leads = resolve_leads(route_for(source), MOMENT, step,
+                              cadence=dw._fetch_cadence_h(source, lead),
+                              start_hour=lead)
+        assert leads[0] == lead and leads[-1] == lead + step
+        return
     text, exp = tc.configuration_text(cycle=CYCLE, point=tc_point(source),
                                       hours=step, forcing_source=source,
                                       start_hour=lead)
@@ -61,12 +79,6 @@ def test_every_lead_publishing_source_begins_at_the_lead_it_is_given(source):
     assert table["fetch"]["cycle"] == "2026-09-09T00"
     from gpuwm.fetch import validate_fetch_hints
     validate_fetch_hints(table["fetch"], source="fixture")
-
-
-def tc_point(source):
-    from gpuwm.source_coverage import window_centre
-    window = get_source_adapter(source).coverage_window
-    return window_centre(window) if window is not None else POINT
 
 
 def test_the_lead_reaches_the_clock_the_header_and_the_document():

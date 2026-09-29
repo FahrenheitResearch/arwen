@@ -227,6 +227,30 @@ FINE_INPUT_STREAM_DELAYED_WAY_OUT = (
     f"time. Set fine_input_stream = {FINE_INPUT_STREAM_OWN_INPUT} to take "
     "every field from the child's own input instead.")
 
+#: The adaptive clock's &domains keys, as (key, WRF Registry default,
+#: cast), stated once for the importer that reads them and the HRRR route
+#: writer (:func:`gpuwm.hrrr_route_inputs.render_namelist_input`) that
+#: spells them, so the two cannot drift.  Registry.EM_COMMON:2269-2281
+#: declares the SCALARS scope 1, one value for the run; the COLUMNS are
+#: max_domains, and gpuwm carries them per domain
+#: (``gpuwm.experiment._DOMAIN_RUN_OVERRIDES``).
+ADAPTIVE_CLOCK_SCALARS = (
+    ("use_adaptive_time_step", False, bool),
+    ("step_to_output_time", True, bool),
+    ("adaptation_domain", 1, int),
+)
+ADAPTIVE_CLOCK_COLUMNS = (
+    ("target_cfl", 1.2, float),
+    ("target_hcfl", 0.84, float),
+    ("max_step_increase_pct", 5, int),
+    ("starting_time_step", -1, int),
+    ("starting_time_step_den", 0, int),
+    ("max_time_step", -1, int),
+    ("max_time_step_den", 0, int),
+    ("min_time_step", -1, int),
+    ("min_time_step_den", 0, int),
+)
+
 
 @dataclass(frozen=True)
 class FineInputStreamDecision:
@@ -1681,35 +1705,28 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     #
     # SCOPE, from Registry.EM_COMMON:2269-2281 -- use_adaptive_time_step,
     # step_to_output_time and adaptation_domain are scope 1 (one scalar
-    # for the run); the rest are max_domains.  gpuwm's [shared] block is
-    # one value for the tree, so a per-domain column that DISAGREES is
-    # refused by name rather than silently reduced to its first entry.
-    use_adaptive_time_step = bool(dm.scalar("use_adaptive_time_step", False))
-    step_to_output_time = bool(dm.scalar("step_to_output_time", True))
-    adaptation_domain = int(dm.scalar("adaptation_domain", 1))
-
-    def _one_value_for_the_tree(key, default, cast):
-        raw = dm.take(key)
-        if raw is None:
-            return cast(default)
-        values = [cast(v) for v in raw]
-        if len(set(values)) > 1:
-            raise _err(
-                "domains", key, raw,
-                f"gpuwm carries {key} in [shared], one value for the "
-                f"tree, and this namelist gives a different value per "
-                f"domain ({values}).  Split the run, or set one value")
-        return values[0]
-
-    target_cfl = _one_value_for_the_tree("target_cfl", 1.2, float)
-    target_hcfl = _one_value_for_the_tree("target_hcfl", 0.84, float)
-    max_step_increase_pct = _one_value_for_the_tree("max_step_increase_pct", 5, int)
-    starting_time_step = _one_value_for_the_tree("starting_time_step", -1, int)
-    starting_time_step_den = _one_value_for_the_tree("starting_time_step_den", 0, int)
-    max_time_step = _one_value_for_the_tree("max_time_step", -1, int)
-    max_time_step_den = _one_value_for_the_tree("max_time_step_den", 0, int)
-    min_time_step = _one_value_for_the_tree("min_time_step", -1, int)
-    min_time_step_den = _one_value_for_the_tree("min_time_step_den", 0, int)
+    # for the run); the rest are max_domains, and gpuwm carries them per
+    # domain (gpuwm.experiment._DOMAIN_RUN_OVERRIDES: a parent and its
+    # nest reach target_cfl at different steps, and upstream's own
+    # guidance runs max_step_increase_pct at 5 on a parent and 51 on a
+    # nest).  So a column is read per domain on the importer's
+    # last-value fill, the root's value goes to [shared] and a domain
+    # that differs gets its own [[domain]] row below, on epssm's rule.  A
+    # uniform column, which is every column that imported before, emits
+    # the same TOML it always did.  The refusal of a DISAGREEING column
+    # that stood here ("one value for the tree") predates the per-domain
+    # overrides and turned away every nested adaptive namelist, among
+    # them the HRRR route's own.
+    use_adaptive_time_step, step_to_output_time, adaptation_domain = (
+        cast(dm.scalar(key, default))
+        for key, default, cast in ADAPTIVE_CLOCK_SCALARS)
+    adaptive_columns = {
+        key: [cast(value) for value in dm.col(key, max_dom, default)]
+        for key, default, cast in ADAPTIVE_CLOCK_COLUMNS}
+    (target_cfl, target_hcfl, max_step_increase_pct, starting_time_step,
+     starting_time_step_den, max_time_step, max_time_step_den,
+     min_time_step, min_time_step_den) = (
+        adaptive_columns[key][0] for key, _, _ in ADAPTIVE_CLOCK_COLUMNS)
 
     _NEST_GUARD_WHY = {
         "interp_method_type":
@@ -2796,12 +2813,15 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         "physics", "clos_choice", ph.col("clos_choice", max_dom, 0)))
     ishallow = int(_uniform(
         "physics", "ishallow", ph.col("ishallow", max_dom, 0)))
-    if clos_choice != 0:
-        raise _err(
-            "physics", "clos_choice", [clos_choice],
-            "only the 16-member ensemble closure (0, the Registry "
-            "default) is admitted: the single-closure arms carry no GF "
-            "oracle coverage.")
+    # 0..16 are admitted as written: 0 is the ensemble mean, 1..16 one
+    # closure member alone, and the load of the emitted TOML says the
+    # single-member arms are implemented but not verified against WRF.
+    # Only a value with no meaning in WRF's closure code is refused, with
+    # the same sentence the run door prints.
+    from gpuwm.config import gf_clos_choice_refusal
+    clos_refusal = gf_clos_choice_refusal(clos_choice)
+    if clos_refusal is not None:
+        raise _err("physics", "clos_choice", [clos_choice], clos_refusal)
     if ishallow not in (0, 1):
         raise _err("physics", "ishallow", [ishallow],
                    "must be 0 or 1 (CUP_gf_sh off/on).")
@@ -3715,6 +3735,11 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 continue
             if _dom_col[n] != _dom_col[0]:
                 lines.append(f"{_dom_key} = {_dom_fmt(_dom_col[n])}")
+        # The adaptive clock's max_domains targets and clamps, same rule.
+        for _clock_key, _, _ in ADAPTIVE_CLOCK_COLUMNS:
+            _clock_col = adaptive_columns[_clock_key]
+            if _clock_col[n] != _clock_col[0]:
+                lines.append(f"{_clock_key} = {_fmt(_clock_col[n])}")
         # WRF declares LW/SW as max_domains arrays. Emit only differences
         # from the inherited root choice, preserving uniform documents.
         if (radiation_pairs[n], legacy_rrtmg_col[n]) != (

@@ -6,12 +6,13 @@
 //! reuse, and reaching around it to `agent()` would silently drop all
 //! four:
 //!
-//! 1. **`get_bytes_parallel_whole`** (`wx-core client.rs:723`) --
-//!    probes range support, splits the object into 16 MiB chunks
-//!    (`FULL_FILE_RANGE_CHUNK_BYTES`) and pulls them through rayon.
-//! 2. **`get_ranges`** (`client.rs:828`) -- parallel range GETs for
-//!    everything except NOMADS, which it fetches **serially** on
-//!    purpose (`client.rs:842`).
+//! 1. **`get_bytes_parallel_whole`** -- probes range support, splits
+//!    the object into 16 MiB chunks (`FULL_FILE_RANGE_CHUNK_BYTES`) and
+//!    pulls them over a bounded number of streams
+//!    (`RUSTWX_DOWNLOAD_STREAMS`, 16 by default), each chunk resumed
+//!    from the byte where a broken or stalled body stopped.
+//! 2. **`get_ranges`** -- the same bounded pool for everything except
+//!    NOMADS, which it fetches **serially** on purpose.
 //! 3. **The cross-process NOMADS rate governor** (`client.rs:178-232`):
 //!    a lock file plus `%TEMP%\rustwx_nomads_rate_limit.state` holding
 //!    a 2.5 s minimum inter-request gap and a 15-minute node-wide
@@ -33,8 +34,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+
 use wx_core::download::{
     byte_ranges, find_entries, parse_idx, CacheDedup, DownloadClient, DownloadConfig,
+    HeadOutcome, TransferProgress,
 };
 
 use crate::plan::{coalesce_ranges, grib2_message_length, validate_idx, IdxRow, ProbeFacts};
@@ -63,8 +67,35 @@ pub fn idx_was_unfetchable(error: &str) -> bool {
     error.starts_with(IDX_TRANSPORT_PREFIX)
 }
 
+/// Why a payload transfer produced no bytes, typed at the source.
+///
+/// `Network` is a transfer the network ended after the client's own
+/// retries (a connection that failed or timed out, a body that broke
+/// off, a 429 or 5xx that outlived every retry): asking again later can
+/// succeed.  `Refused` is an answer the origin gave on purpose, or bytes
+/// that do not add up (a 4xx, a 200 to a range request, a span it was
+/// not asked for, a length or range account that is wrong): another
+/// attempt would only repeat it, and calling it a dropped connection
+/// sends the reader after the wrong fault.
+#[derive(Debug, PartialEq)]
+pub enum TransferFault {
+    Network(String),
+    Refused(String),
+}
+
+impl From<wx_core::RustmetError> for TransferFault {
+    fn from(error: wx_core::RustmetError) -> Self {
+        if error.is_transfer() {
+            TransferFault::Network(error.to_string())
+        } else {
+            TransferFault::Refused(error.to_string())
+        }
+    }
+}
+
 pub struct Fetcher {
     client: DownloadClient,
+    progress: Arc<TransferProgress>,
 }
 
 /// What one successful `.idx` read produced.
@@ -85,7 +116,41 @@ impl Fetcher {
             None => DownloadClient::new_with_config(DownloadConfig::default()),
         }
         .map_err(|error| format!("could not build the download client: {error}"))?;
-        Ok(Self { client })
+        Ok(Self::around(client))
+    }
+
+    fn around(mut client: DownloadClient) -> Self {
+        let progress = TransferProgress::new();
+        client.set_progress(progress.clone());
+        Self { client, progress }
+    }
+
+    /// A fetcher on a client with a short stall window and one retry,
+    /// for tests that stand up a local origin.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        let client = DownloadClient::new_with_config(DownloadConfig {
+            connect_timeout: std::time::Duration::from_secs(5),
+            stall: wx_core::download::StallLimit {
+                window: std::time::Duration::from_secs(5),
+                min_bytes: 1,
+            },
+            max_retries: 1,
+            streams: 2,
+        })
+        .expect("download client");
+        Self::around(client)
+    }
+
+    /// The body bytes the client has received for the current object.
+    pub fn progress(&self) -> Arc<TransferProgress> {
+        self.progress.clone()
+    }
+
+    /// Chunk streams one object's transfer keeps open at once.
+    #[cfg(test)]
+    pub fn streams(&self) -> usize {
+        self.client.streams()
     }
 
     /// What this run's cache wrote versus what it already held.
@@ -179,7 +244,11 @@ impl Fetcher {
         }
 
         if !facts.object_present {
-            facts.object_present = self.client.head_ok(grib_url);
+            match self.client.head_status(grib_url) {
+                HeadOutcome::Present => facts.object_present = true,
+                HeadOutcome::Absent => {}
+                HeadOutcome::Unreachable(reason) => facts.object_unreachable = Some(reason),
+            }
         }
         (facts, payload)
     }
@@ -222,11 +291,10 @@ impl Fetcher {
         }
     }
 
-    /// Pull the whole object through 16 MiB parallel range GETs.
-    pub fn get_full_file(&self, grib_url: &str) -> Result<Vec<u8>, String> {
-        self.client
-            .get_bytes_parallel_whole(grib_url)
-            .map_err(|error| format!("{error}"))
+    /// Pull the whole object through 16 MiB range GETs on a bounded
+    /// number of streams.
+    pub fn get_full_file(&self, grib_url: &str) -> Result<Vec<u8>, TransferFault> {
+        Ok(self.client.get_bytes_parallel_whole(grib_url)?)
     }
 
     /// Pull only the selected messages, as coalesced range GETs.
@@ -235,7 +303,7 @@ impl Fetcher {
         grib_url: &str,
         payload: &IdxPayload,
         selection: &[usize],
-    ) -> Result<(Vec<u8>, Vec<RangeRecord>), String> {
+    ) -> Result<(Vec<u8>, Vec<RangeRecord>), TransferFault> {
         // Range algebra stays upstream's: parse_idx -> byte_ranges,
         // then coalesced so a 561-record selection becomes a handful of
         // GETs instead of 561.
@@ -244,10 +312,7 @@ impl Fetcher {
         let raw = byte_ranges(&entries, &chosen);
         let merged = coalesce_ranges(&raw);
 
-        let bytes = self
-            .client
-            .get_ranges(grib_url, &merged)
-            .map_err(|error| format!("{error}"))?;
+        let bytes = self.client.get_ranges(grib_url, &merged)?;
 
         // Attribute each merged range back to the index rows it spans,
         // so the Python side can author the per-range receipt.  The
@@ -283,10 +348,10 @@ impl Fetcher {
             });
         }
         if records.iter().map(|record| record.bytes).sum::<u64>() != total {
-            return Err(format!(
+            return Err(TransferFault::Refused(format!(
                 "range accounting does not add up: {} range bytes vs {total} received",
                 records.iter().map(|record| record.bytes).sum::<u64>()
-            ));
+            )));
         }
         Ok((bytes, records))
     }

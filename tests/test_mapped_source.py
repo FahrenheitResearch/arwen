@@ -331,7 +331,8 @@ def test_netcdf_mapping_materializes_two_complete_canonical_frames(tmp_path):
     assert not (_GRIB_DECODER_ROLES & set(inspection["decoders"]))
 
 
-def test_regular_snapshot_conversion_rejects_source_land_soil_gap(tmp_path):
+def test_regular_snapshot_conversion_leaves_a_source_land_soil_gap_missing(
+        tmp_path):
     mapping_path = tmp_path / "mapping.json"
     source = tmp_path / "source.nc"
     _write_mapping(mapping_path, _mapping())
@@ -349,8 +350,22 @@ def test_regular_snapshot_conversion_rejects_source_land_soil_gap(tmp_path):
     fields["soil_temperature"] = replace(
         temperature, values=temperature_values, missing_count=1,
     )
-    with pytest.raises(ValueError, match="missing source-land values"):
+    # One land cell without a value is the source's soil tiling disagreeing
+    # with its land cover: left missing, so the masked mapping takes no
+    # donor from it, and not refused.
+    regular = mapped_frames_to_regular_snapshots(
+        (replace(frame, fields=fields),))
+    assert np.isnan(regular[0].fields[MAPPED_SOIL_TEMPERATURE][0, 0, 0])
+    # No value on ANY land cell is a source without the field.
+    fields["soil_temperature"] = replace(
+        temperature, values=np.full_like(temperature_values, np.nan),
+        missing_count=temperature_values.size,
+    )
+    with pytest.raises(ValueError, match="no soil temperature field"):
         mapped_frames_to_regular_snapshots((replace(frame, fields=fields),))
+    fields["soil_temperature"] = replace(
+        temperature, values=temperature_values, missing_count=1,
+    )
 
     land_values[0, 0] = 0.0
     fields["land_fraction"] = replace(
@@ -484,6 +499,48 @@ def test_netcdf_mapping_rejects_cadence_different_from_target(tmp_path):
     _write_source(source, times=(0.0, 2.0))
     with pytest.raises(ValueError, match="mapped cadence 7200 seconds"):
         decode_mapped_source(mapping_path, [source])
+
+
+@pytest.mark.parametrize("engine", ["rust", "python"])
+def test_a_target_declaring_multiples_decodes_a_coarser_whole_multiple(
+        tmp_path, monkeypatch, engine):
+    """A 3 h series of an hourly publisher is a series of published times."""
+
+    monkeypatch.setenv("GPUWM_MAPPED_ENGINE", engine)
+    mapping = _mapping(cadence=3600)
+    mapping["target"]["accept_boundary_interval_multiples"] = True
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, mapping)
+    _write_source(source, times=(0.0, 3.0, 6.0))
+    frames = decode_mapped_source(mapping_path, [source])
+    assert [frame.valid_time.hour for frame in frames] == [0, 3, 6]
+
+    off_multiple = tmp_path / "off-multiple.nc"
+    _write_source(off_multiple, times=(0.0, 1.5, 3.0))
+    with pytest.raises(ValueError, match=(
+            "mapped cadence 5400 seconds is not a whole multiple of the "
+            "3600 seconds the target contract declares")):
+        decode_mapped_source(mapping_path, [off_multiple])
+
+
+def test_boundary_interval_multiples_need_the_interval_they_multiply(tmp_path):
+    mapping = _mapping()
+    mapping["target"]["accept_boundary_interval_multiples"] = True
+    mapping["target"]["require_lateral_boundaries"] = False
+    del mapping["target"]["boundary_interval_seconds"]
+    mapping_path = tmp_path / "mapping.json"
+    _write_mapping(mapping_path, mapping)
+    with pytest.raises(ValueError, match=(
+            "accept_boundary_interval_multiples needs "
+            "target.boundary_interval_seconds")):
+        load_mapping(mapping_path)
+    mapping["target"]["require_lateral_boundaries"] = True
+    mapping["target"]["boundary_interval_seconds"] = 3600
+    mapping["target"]["accept_boundary_interval_multiples"] = "yes"
+    _write_mapping(mapping_path, mapping)
+    with pytest.raises(ValueError, match="must be boolean"):
+        load_mapping(mapping_path)
 
 
 def test_netcdf_mapping_rejects_ensemble_without_one_selected_member(tmp_path):
@@ -975,6 +1032,54 @@ def test_preserve_mask_policy_is_restricted_to_land_aware_soil(tmp_path):
         load_mapping(path)
 
 
+@pytest.mark.parametrize("name", sorted(mapped_source.MASKED_WATER_STATE_FIELDS))
+def test_preserve_mask_admits_the_water_state_read_over_water_only(tmp_path, name):
+    """A sea surface analysis is missing over land by construction; the
+    consumers of the water state read it from water cells only, so its
+    mask is carried rather than refused."""
+
+    mapping = _mapping()
+    field = _field(name, "K", ["y", "x"], "surface")
+    field["missing"] = {"kind": "preserve_mask"}
+    mapping["fields"][name] = field
+    path = tmp_path / "water-preserve.json"
+    _write_mapping(path, mapping)
+    load_mapping(path)
+
+
+#: Initialization-policy wording that says the source does NOT supply a
+#: field: not yet bound, not published, absent, not borrowed, not a
+#: declared shape.
+_UNBOUND_POLICY_WORDS = (
+    "not_yet", "not_published", "absent", "not_borrowed", "not_a_declared")
+
+_SHIPPED_MAPPINGS = tuple(sorted(
+    (*(Path(mapped_source.__file__).parent / "authorities").glob(
+        "*.mapping.json"),
+     *(Path(__file__).parents[1] / "configs").glob("*.mapping.json"))))
+
+
+@pytest.mark.parametrize(
+    "path", _SHIPPED_MAPPINGS, ids=[path.name for path in _SHIPPED_MAPPINGS])
+def test_a_shipped_mapping_never_calls_a_field_it_binds_unbound(path):
+    """A frame header carries its mapping's initialization policies beside
+    the fields it decoded, so a policy saying a bound field is unbound
+    makes the frame contradict itself: the ERA5 surface donor carried a
+    decoded sea ice plane under a policy that said sea ice was not yet
+    bound."""
+
+    mapping = json.loads(path.read_text(encoding="utf-8"))
+    policies = mapping.get("target", {}).get("initialization_policies", {})
+    contradicted = {
+        name: policy for name, policy in policies.items()
+        if name in mapping.get("fields", {})
+        and any(word in policy for word in _UNBOUND_POLICY_WORDS)
+    }
+    assert not contradicted, (
+        f"{path.name} binds {sorted(contradicted)} and its "
+        f"initialization_policies call them unbound: {contradicted}")
+
+
 def _cycle_invariant_collection(
     *, second_time_land: np.ndarray | None = None,
 ) -> mapped_source._DecodedCollection:
@@ -1224,3 +1329,40 @@ def test_engine_decode_refuses_a_missing_compose_scratch_by_name(
     assert "GPUWM_COMPOSE_SCRATCH" in str(refusal.value)
     assert str(missing) in str(refusal.value)
     assert not launched
+
+
+def test_engine_decode_on_a_full_scratch_disk_names_where_it_stages(
+        tmp_path, monkeypatch):
+    """The decode route's disk refusal names the scratch it stages in.
+
+    The engine's sentence names its own temporary folder, deleted as the
+    decode fails, so the remedy names the directory the next attempt
+    stages under and the variable that moves it.
+    """
+
+    from gpuwm import mapped_engine_bridge
+    from gpuwm.ingest.source_coverage import ScratchDiskRefusal
+
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, _mapping())
+    _write_source(source)
+    scratch = tmp_path / "small-scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))
+
+    def full_disk(subcommand, **kwargs):
+        raise mapped_engine_bridge.refusal_error(
+            {"class": "disk_full",
+             "message": f"the frame stream in {kwargs['output']} needs 9 bytes",
+             "remedy": "free space"})
+
+    monkeypatch.setattr(mapped_engine_bridge, "run_engine", full_disk)
+
+    with pytest.raises(ScratchDiskRefusal) as refusal:
+        decode_mapped_source(mapping_path, [source])
+
+    assert "needs 9 bytes" in str(refusal.value)
+    assert f"stages its frame stream in {scratch}." in refusal.value.remedy
+    assert "GPUWM_COMPOSE_SCRATCH" in refusal.value.remedy
+    assert list(scratch.iterdir()) == []

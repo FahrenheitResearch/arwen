@@ -98,7 +98,7 @@ impl Selection {
         match self.spec.as_str() {
             "all" => "All available plots".into(),
             "none" => "No plots".into(),
-            _ => format!("{} · {} selected", self.label, self.spec.split(',').count()),
+            _ => format!("{} · {} selected", self.label, product_terms(&self.spec).len()),
         }
     }
 }
@@ -123,6 +123,64 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
+/// The products of one product list, each section term whole.
+///
+/// The renderer's own rule (`split_product_spec` in
+/// tools/rustwx/crates/rw-wrfbatch/src/section.rs), which
+/// `gpuwm.rustwx.product_spec_terms` mirrors: a section's level list is
+/// comma-separated too (`xsec:wa=1,2,5@5`), so a token that follows an
+/// `xsec:` term whose last term opened a level list, and that is a level,
+/// continues that list instead of naming a product. The continuation may
+/// carry the term that closes the list (`0.1/wa` in
+/// `xsec:QCLOUD=0.01,0.1/wa`). Split on every comma, the picker listed
+/// `0.1/wa` as a product of its own.
+pub fn product_terms(spec: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for token in spec.split(',').map(str::trim).filter(|token| !token.is_empty()) {
+        let continues = terms.last().is_some_and(|prior| {
+            prior.starts_with(SECTION_PREFIX)
+                && level_list_open(prior)
+                && continues_level_list(token)
+        });
+        match terms.last_mut() {
+            Some(prior) if continues => {
+                prior.push(',');
+                prior.push_str(token);
+            }
+            _ => terms.push(token.to_owned()),
+        }
+    }
+    terms
+}
+
+const SECTION_PREFIX: &str = "xsec:";
+
+/// True when the term's last `/` part carries an `=` level list that a
+/// following level may continue.
+fn level_list_open(term: &str) -> bool {
+    let last = term.rsplit('/').next().unwrap_or(term);
+    last.contains('=') && !last.rsplit('=').next().unwrap_or("").contains('@')
+}
+
+/// A level (`-10`, `0.5`, `10@5`), or the list's last level followed by
+/// the term that closes it (`0.1/wa`, `10@5/tk=-20`).
+fn continues_level_list(token: &str) -> bool {
+    match token.split_once('/') {
+        Some((level, rest)) => is_level(level) && !rest.trim().is_empty(),
+        None => is_level(token),
+    }
+}
+
+/// What the renderer parses as a level, with an optional highlight.
+fn is_level(token: &str) -> bool {
+    let (level, highlight) = match token.split_once('@') {
+        Some((level, highlight)) => (level, Some(highlight)),
+        None => (token, None),
+    };
+    let numeric = |text: &str| !text.is_empty() && text.trim().parse::<f32>().is_ok();
+    numeric(level) && highlight.map_or(true, numeric)
+}
+
 pub fn normalize(spec: &str) -> Result<String, String> {
     if spec.len() > 32 * 1024 {
         return Err("The product list exceeds 32 KiB.".into());
@@ -130,14 +188,14 @@ pub fn normalize(spec: &str) -> Result<String, String> {
     if spec.chars().any(char::is_control) {
         return Err("Product selectors cannot contain control characters.".into());
     }
-    let tokens: Vec<_> = spec.split(',').map(str::trim).collect();
-    if tokens.iter().any(|value| value.is_empty()) {
+    if spec.split(',').map(str::trim).any(str::is_empty) {
         return Err(
             "Choose at least one product, or choose None. Empty list entries are not allowed."
                 .into(),
         );
     }
-    if tokens.len() > 1 && tokens.iter().any(|value| matches!(*value, "all" | "none")) {
+    let tokens = product_terms(spec);
+    if tokens.len() > 1 && tokens.iter().any(|value| matches!(value.as_str(), "all" | "none")) {
         return Err(
             "All and None must stand alone. Choose individual products to customize the list."
                 .into(),
@@ -145,6 +203,16 @@ pub fn normalize(spec: &str) -> Result<String, String> {
     }
     // Preserve order and explicit selectors. The live engine validates their meaning.
     Ok(tokens.join(","))
+}
+
+pub fn for_section(spec: &str, has_section: bool) -> Result<String, String> {
+    let spec = normalize(spec)?;
+    let sections = product_terms(&spec).into_iter()
+        .filter(|term| term.starts_with(SECTION_PREFIX)).collect::<Vec<_>>();
+    if !has_section && !sections.is_empty() {
+        return Err(format!("Cross-section plots {} need a latitude,longitude,latitude,longitude line; without it the renderer cannot locate the slice. Use a forecast door that carries a section line, or remove these plots from this request.", sections.join(", ")));
+    }
+    Ok(spec)
 }
 
 fn decode(bytes: &[u8]) -> Result<Selection, String> {
@@ -363,11 +431,13 @@ mod tests {
     fn explicit_plot_choices_persist_without_mutating_science_and_exports_inherit() {
         let config = config();
         let original = fs::read(&config).unwrap();
-        // 24, not the 25 this pinned before: simulated_ir_satellite
-        // left the general preset and carries its reason instead, so
-        // the default request is one product shorter
+        // 22: simulated_ir_satellite left the general preset when it
+        // gained its reason, and 10m_wind_gusts, precipitation_type and
+        // cloud_cover left it when every run was measured drawing 20 of
+        // 24 -- no wrfout carries their fields -- with cloud_cover_levels,
+        // which a wrfout does carry, in place of the total
         // (gpuwm/data/tui/plot-presets.json).
-        assert_eq!(load(&config).unwrap().spec.split(',').count(), 24);
+        assert_eq!(load(&config).unwrap().spec.split(',').count(), 22);
         assert!(!sidecar(&config).exists());
         let selection = Selection {
             label: "Custom".into(),
@@ -419,19 +489,24 @@ mod tests {
         // the availability authority landed, and nothing a reader sees
         // carried it: the picker read the product names out of the same
         // document and dropped the statement beside them.
-        let gust = "The wind maximum uses stored 10 m wind snapshots. It is not a gust \
-                    diagnostic; gust magnitude or a gust swath requires separate analysis.";
-        let cloud = "Cloud fraction is not written by this history lane.";
+        //
+        // No shipped preset names a product this lane cannot draw any
+        // more (gpuwm/data/tui/plot-presets.json), so the statement is
+        // proven on a record that names two of the general preset's own
+        // products: the mechanism, not the shipped record, is under test.
+        let layers =
+            "Recorded as unavailable for this fixture: the layer panel is not a total cloud fraction.";
+        let water = "Recorded as unavailable for this fixture.";
         let catalog = Catalog::with_availability(
             Path::new("python"),
             vec!["total_qpf".into()],
-            &[("10m_wind_gusts", gust), ("cloud_cover", cloud)],
+            &[("cloud_cover_levels", layers), ("precipitable_water", water)],
             "the packaged lane record, plus the renderer's own requirement rows",
         );
         let rows = preset_rows(&catalog);
         assert_eq!(rows[0].len(), 2, "the preset row states what is unserved");
         assert!(
-            rows[0][1].contains("10m_wind_gusts") && rows[0][1].contains("cloud_cover"),
+            rows[0][1].contains("cloud_cover_levels") && rows[0][1].contains("precipitable_water"),
             "{}",
             rows[0][1]
         );
@@ -444,14 +519,14 @@ mod tests {
 
         let form = Form::from_selection(Selection::preset(0));
         let review = review_rows(&form, &catalog, 200);
-        let gusts = review
+        let cloud = review
             .iter()
-            .find(|lines| lines[1].trim() == "10m_wind_gusts")
+            .find(|lines| lines[1].trim() == "cloud_cover_levels")
             .expect("the general preset requests it");
-        assert!(gusts[2].contains("not drawn by this install"), "{gusts:?}");
+        assert!(cloud[2].contains("not drawn by this install"), "{cloud:?}");
         assert!(
-            gusts.iter().skip(2).any(|line| line.contains("gust diagnostic")),
-            "{gusts:?}"
+            cloud.iter().skip(2).any(|line| line.contains("total cloud fraction")),
+            "{cloud:?}"
         );
         let qpf = review
             .iter()
@@ -463,11 +538,11 @@ mod tests {
         // record: the statement is a packaged file either way.
         let answer = parse_answer(&serde_json::json!({
             "error": "rw_wrfbatch is not built",
-            "preset_availability": {"general": {"cloud_cover": cloud}},
+            "preset_availability": {"general": {"cloud_cover_levels": layers}},
             "preset_availability_basis": "the packaged lane record only",
         }));
         assert!(answer.products.is_err());
-        assert_eq!(answer.unavailable["cloud_cover"], cloud);
+        assert_eq!(answer.unavailable["cloud_cover_levels"], layers);
         assert_eq!(answer.basis.as_deref(), Some("the packaged lane record only"));
     }
 
@@ -510,6 +585,64 @@ mod tests {
             normalize(" var:SNOWH, total_qpf ").unwrap(),
             "var:SNOWH,total_qpf"
         );
+    }
+
+    #[test]
+    fn a_section_term_keeps_its_level_list_as_one_picker_row() {
+        // The renderer's own rule (rw-wrfbatch section.rs
+        // split_product_spec, mirrored by gpuwm.rustwx.product_spec_terms):
+        // `0.1/wa` closes the level list of `xsec:QCLOUD=0.01,0.1/wa` and is
+        // not a product. Split on every comma, the picker listed it as a row.
+        let spec = "composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa";
+        let mut form = Form::new(&config());
+        let mut rows = |spec: &str| {
+            form.selection = Selection {
+                label: "Custom".into(),
+                spec: spec.into(),
+            };
+            (form.tokens(), form.selection.summary())
+        };
+        assert_eq!(
+            rows(spec),
+            (
+                vec!["composite_reflectivity".to_owned(), "xsec:QCLOUD=0.01,0.1/wa".to_owned()],
+                "Custom · 2 selected".to_owned()
+            )
+        );
+        assert_eq!(
+            rows("xsec:wa=1, 2 ,5@5/tk=-20,total_qpf,xsec:tk/wa").0,
+            ["xsec:wa=1,2,5@5/tk=-20", "total_qpf", "xsec:tk/wa"]
+        );
+        // A level list closed by its `@` highlight takes no more levels, and
+        // a number after a store product is that store product's neighbour.
+        assert_eq!(rows("xsec:wa=1@5,2").0, ["xsec:wa=1@5", "2"]);
+        assert_eq!(rows("total_qpf,5").0, ["total_qpf", "5"]);
+        assert_eq!(normalize(&format!(" {spec} ")).unwrap(), spec);
+        assert_eq!(
+            normalize("xsec:wa=1, 2 ,5@5,total_qpf").unwrap(),
+            "xsec:wa=1,2,5@5,total_qpf"
+        );
+        assert!(normalize("xsec:QCLOUD=0.01,0.1/wa,all").is_err());
+        assert!(normalize("xsec:QCLOUD=0.01,,0.1/wa").is_err());
+    }
+
+    #[test]
+    fn plots_without_a_section_line_hide_and_refuse_cross_sections() {
+        let spec = "xsec:wa=1,2/temperature";
+        let catalog = Catalog::fixture(Path::new("python"), vec!["total_qpf".into(), spec.into()]);
+        let mut form = Form::from_selection(Selection { label: "All".into(), spec: "all".into() });
+        assert!(!form.product_rows(&catalog).iter().any(|name| name.starts_with("xsec:")));
+        form.customize(&catalog);
+        assert_eq!(form.selection.spec, "total_qpf");
+        form.selection.spec = spec.into();
+        form.mode = Mode::Review;
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(form.key(enter, &catalog), Intent::Keep));
+        assert!(form.notice.contains(spec) && form.notice.contains("cannot locate the slice"));
+        form.has_section = true;
+        assert!(form.product_rows(&catalog).contains(&spec.to_owned()));
+        assert!(matches!(form.key(enter, &catalog), Intent::Save));
+        assert_eq!(form.selection.spec, spec);
     }
 }
 
@@ -615,6 +748,7 @@ pub struct Form {
     pub query: String,
     pub notice: String,
     pub original: Option<Vec<u8>>,
+    pub has_section: bool,
 }
 
 pub enum Intent {
@@ -634,6 +768,7 @@ impl Form {
             query: String::new(),
             notice: PRESET_NOTICE.into(),
             original: None,
+            has_section: false,
         }
     }
     pub fn new(config: &Path) -> Self {
@@ -661,13 +796,7 @@ impl Form {
         ![PRESET_NOTICE, PRODUCT_NOTICE, REVIEW_NOTICE, TEXT_NOTICE].contains(&self.notice.as_str())
     }
     pub fn tokens(&self) -> Vec<String> {
-        self.selection
-            .spec
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .collect()
+        product_terms(&self.selection.spec)
     }
     pub fn product_rows(&self, catalog: &Catalog) -> Vec<String> {
         let mut names = catalog.products.clone();
@@ -687,8 +816,9 @@ impl Form {
         names.dedup();
         let query = self.query.to_lowercase();
         names.retain(|name| {
-            name.to_lowercase().contains(&query)
-                || product_label(name).to_lowercase().contains(&query)
+            (self.has_section || !name.starts_with(SECTION_PREFIX))
+                && (name.to_lowercase().contains(&query)
+                    || product_label(name).to_lowercase().contains(&query))
         });
         names
     }
@@ -700,7 +830,9 @@ impl Form {
                         .into();
                 return;
             }
-            self.selection.spec = catalog.products.join(",");
+            self.selection.spec = catalog.products.iter()
+                .filter(|name| self.has_section || !name.starts_with(SECTION_PREFIX))
+                .cloned().collect::<Vec<_>>().join(",");
         } else if self.selection.spec == "none" {
             self.selection.spec.clear();
         }
@@ -773,7 +905,7 @@ impl Form {
             return Intent::Keep;
         }
         if key.code == KeyCode::F(4) || (ctrl && key.code == KeyCode::Enter) {
-            match normalize(&self.selection.spec) {
+            match for_section(&self.selection.spec, self.has_section) {
                 Ok(spec) => {
                     self.selection.spec = spec;
                     self.mode = Mode::Review;
@@ -798,7 +930,7 @@ impl Form {
                     self.selection.spec.push(c);
                     self.selection.label = "Custom".into();
                 }
-                KeyCode::Enter => match normalize(&self.selection.spec) {
+                KeyCode::Enter => match for_section(&self.selection.spec, self.has_section) {
                     Ok(spec) => {
                         self.selection.spec = spec;
                         self.selection.label = "Custom".into();
@@ -825,7 +957,12 @@ impl Form {
             KeyCode::PageDown => self.selected = (self.selected + 5).min(count.saturating_sub(1)),
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.selected = count.saturating_sub(1),
-            KeyCode::Enter if self.mode == Mode::Review => return Intent::Save,
+            KeyCode::Enter if self.mode == Mode::Review => {
+                match for_section(&self.selection.spec, self.has_section) {
+                    Ok(spec) => { self.selection.spec = spec; return Intent::Save; }
+                    Err(error) => self.notice = error,
+                }
+            }
             KeyCode::Enter => self.choose(self.selected, catalog),
             KeyCode::Char(' ') if self.mode == Mode::Products => {
                 self.choose(self.selected, catalog)

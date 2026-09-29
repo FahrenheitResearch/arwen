@@ -33,20 +33,30 @@ from gpuwm.ingest.lateral_bc import (
     attach_lateral_boundaries,
     start_last_forcing_order,
 )
+from gpuwm.ingest.boundary_stream import (
+    PreparedTreeWriter,
+    producer_device_bytes,
+    remove_unfinished_tree,
+)
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
-    write_prepared_cache,
 )
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+from gpuwm.ingest.preparation_price import (
+    price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
+    admit_preparation,
     release_backend_memory,
     resolve_preprocess_backend,
 )
 from gpuwm.ingest.real import initialize_real
-from gpuwm.ingest.soil import door_reconciled_soil_category
+from gpuwm.ingest.soil import (
+    door_reconciled_soil_category, soil_temperature_repair_proof)
 from gpuwm.ingest.source_coverage import (
     PreparationRefusal,
     RunInputRefusal,
     VerticalLadderRefusal,
+    existing_output_root_refusal,
     owns_source_coverage_refusal,
 )
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
@@ -56,6 +66,7 @@ from gpuwm.mapped_composition import (
     _decoder_inventory,
     _path_inventory,
     decode_composed_source,
+    decoded_vertical_ladder,
     mapped_composition_receipt,
 )
 from gpuwm.mapped_engine_bridge import (
@@ -86,6 +97,7 @@ from gpuwm.native_wrf_contract import (
     write_native_geometry_receipt,
     write_native_static_cache,
 )
+from gpuwm.source_authorities import boundary_interval_refusal
 from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
 )
@@ -96,6 +108,7 @@ from gpuwm.wrf_direct import (
     stock_wrf_export_not_requested, stock_wrf_export_refused,
     validate_stock_wrf_export_config, validate_stock_wrf_export_hierarchy,
 )
+from gpuwm.native_domain_artifacts import published_path_refusal
 from gpuwm.native_hierarchy import STOCK_WRF_EXPORT_MODES
 from gpuwm.progress import prep_stage
 
@@ -349,12 +362,10 @@ def _validate_target_contract(
             or not isinstance(boundary_interval_seconds, int)
             or boundary_interval_seconds <= 0):
         raise ValueError("mapped boundary interval must be a positive integer")
-    declared_interval = target["boundary_interval_seconds"]
-    if boundary_interval_seconds != declared_interval:
-        raise ValueError(
-            f"mapped boundary interval {boundary_interval_seconds} differs "
-            f"from target contract {declared_interval}"
-        )
+    refusal = boundary_interval_refusal(
+        target, boundary_interval_seconds, subject="mapped boundary interval")
+    if refusal is not None:
+        raise ValueError(refusal)
     validate_boundary_timing(
         exp, boundary_interval_seconds,
         source=(
@@ -465,12 +476,51 @@ def _decoder_inventory_refusal(message, formats, *, missing=(), extra=()):
     return DecoderInventoryRefusal(text, remedy=remedy)
 
 
+def _announce_vertical_ladder(entry: Mapping[str, object]) -> None:
+    """Say, once, that the source files carry fewer levels than declared."""
+
+    units = str(entry["units"])
+
+    def label(value: object) -> str:
+        if units == "Pa":
+            return f"{float(value) / 100.0:g} hPa"
+        return f"{float(value):g} {units}"
+
+    carried = len(entry["decoded_levels"])
+    declared = len(entry["declared_levels"])
+    absent = ", ".join(label(value) for value in entry["absent_levels"])
+    warn(f"the source files carry {carried} of the {declared} vertical "
+         f"levels this source declares (absent: {absent}); the column is "
+         f"built from the {carried} they carry",
+         "The mapping lists this ladder in vertical.era_ladders: another "
+         "publication of the same product carries it.  Every field is read "
+         "on the ladder all of them share, the receipt records it under "
+         "source_vertical_ladder, and a model top above the highest carried "
+         "level is still refused.")
+
+
+def _announce_derived_terrain(entry: Mapping[str, object]) -> None:
+    """Say, once, that the source's terrain was derived, not read."""
+
+    cells = int(entry["cells"])
+    below = int(entry["cells_below_lowest_level"])
+    warn(f"the source files carry no surface geopotential, so terrain is "
+         f"derived at all {cells} source cells as each column's height at "
+         f"its surface pressure ({below} of them below the lowest pressure "
+         f"level, from the 2 m temperature and dewpoint); it spans "
+         f"{float(entry['minimum_m']):.0f} to {float(entry['maximum_m']):.0f} m",
+         "The mapping declares this under fields.terrain_height.when_absent. "
+         "The receipt records it under source_composition.alignment.derived.")
+
+
 def _announce_adaptation(sentence: str) -> None:
     """Say, once, that the run is not on the configured vertical coordinate."""
 
     warn(sentence,
-         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
-         "fatal and names reducing etac as the remedy; the remedy is "
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls a column "
+         "the coordinate cannot order fatal and names reducing etac as "
+         "the remedy, and a column it only just orders keeps one layer "
+         "too thin to integrate, which a lower etac thickens; the etac is "
          "derived here from the terrain this run can actually touch and "
          "applied, so the prepared inputs, their receipt and the forecast "
          "all carry the same coordinate.  p_top is untouched.")
@@ -510,7 +560,7 @@ def prepare_mapped_wrf(
     static_receipt: str | Path | None = None,
     experiment_config: str | Path,
     output_root: str | Path,
-    preprocess_backend: str = "cuda",
+    preprocess_backend: str = "auto",
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: str | Path | None = None,
     hierarchy_workers: int | None = None,
@@ -740,15 +790,12 @@ def prepare_mapped_wrf(
                 "remedy: point --geog-root at a staged WPS_GEOG tree.  "
                 "`gpuwm fetch-geog` stages one (~16 GB) and prints the "
                 "root to pass."))
-    if output_root.exists():
-        raise PreparationRefusal(
-            f"refusing to overwrite mapped output {output_root}: a "
-            "prepared tree is published atomically, and a folder that "
-            "already exists may be a finished run something else reads",
-            remedy=(
-                "remedy: pass a fresh --output-root, or move or remove "
-                "the old folder yourself first; prep never deletes an "
-                "output tree."))
+    # A head published early whose producer failed, was stopped or went
+    # silent is this tool's own unfinished product, not a finished run.
+    remove_unfinished_tree(output_root)
+    refusal = existing_output_root_refusal(output_root)
+    if refusal is not None:
+        raise refusal
     run_control_before = {
         "wps_namelist": _file_receipt(wps_namelist),
         "experiment_config": _file_receipt(experiment_config),
@@ -757,6 +804,17 @@ def prepare_mapped_wrf(
         run_control_before["cpu_preprocess_bridge"] = _file_receipt(cpu_bridge)
 
     exp = load_experiment(experiment_config)
+    # THE FLOOR, BEFORE THE DECODE (A98).  The backend is resolved here,
+    # weighed against the lower bound the domains alone set: an explicit
+    # cuda they cannot fit is refused in seconds instead of after the
+    # decode and the statics, and auto moves to the CPU here.  Resolving
+    # allocates nothing on the card; the decoded price below stays the
+    # binding check.
+    preprocess = resolve_preprocess_backend(
+        preprocess_backend, workers=preprocess_workers,
+        cpu_bridge=cpu_bridge,
+        price=lambda: price_preparation_floor("mapped", exp),
+    )
     from gpuwm.static.highres_production import (
         load_static_highres, apply_prepared_highres, static_highres_identity)
     static_highres = load_static_highres(experiment_config)
@@ -773,6 +831,15 @@ def prepare_mapped_wrf(
     refuse_unrouted_perturbation(exp, "mapped-adapter prepared-cache")
     refuse_unrouted_spawn(exp, "mapped-adapter prepared-cache")
     hierarchy = len(exp.domains) > 1
+    # A domain tree is published through staging deeper than its
+    # output root; refused here, the first point this door knows it
+    # prepares a tree, before any source is decoded.  A single-domain
+    # bundle publishes no tree and is not measured against it.
+    if hierarchy:
+        refusal = published_path_refusal(
+            output_root, wrf_export=stock_wrf_export != "off")
+        if refusal is not None:
+            raise ValueError(refusal)
     # Refused HERE rather than left to the hierarchy call, because the
     # hierarchy call is the thing that does not happen on a single-domain
     # preparation: without this the flag would be accepted, silently emit
@@ -781,8 +848,9 @@ def prepare_mapped_wrf(
     # `gpuwm.gfs_direct` (statics_corridor / len(exp.domains) < 2).
     if statics_corridor is not None and not hierarchy:
         raise ValueError(
-            "--statics-corridor prepares child-resolution statics over a "
-            "parent extent, and this experiment has no child domain; "
+            "--statics-corridor prepares child-resolution statics over the "
+            "ground a child domain can reach, and this experiment has no "
+            "child domain; "
             "remove the flag or prepare a domain tree")
     target_contract = _validate_target_contract(
         mapping_contract,
@@ -856,12 +924,21 @@ def prepare_mapped_wrf(
     if dict(bundle.decoder_paths) != decoders:
         raise ValueError("decoded decoder paths differ from requested decoders")
     composition_receipt = mapped_composition_receipt(bundle)
+    vertical_ladder = decoded_vertical_ladder(bundle, mapping_contract)
+    if vertical_ladder is not None:
+        _announce_vertical_ladder(vertical_ladder)
+    derived_terrain = dict(composition_receipt.get("alignment") or {}).get("derived")
+    if derived_terrain is not None:
+        _announce_derived_terrain(derived_terrain)
     snapshots = _forcing_series(bundle)
     for_grids = getattr(snapshots, "for_grids", None)
     if for_grids is not None:
         snapshots = for_grids(grids)
+    # The backend resolves later; an explicit --preprocess-workers is the
+    # count every host step takes, and without one the automatic count.
     snapshots = overlay_snapshot_sequence(snapshots, water_overlay,
-                                          binding=water_overlay_binding)
+                                          binding=water_overlay_binding,
+                                          workers=preprocess_workers)
     times = _forcing_valid_times(snapshots)
     if not times or times[0] != exp.start_time:
         raise ValueError(
@@ -955,10 +1032,15 @@ def prepare_mapped_wrf(
         static_highres=static_highres, announce=_announce_adaptation)
     cfg = exp.root.run
 
-    preprocess = resolve_preprocess_backend(
-        preprocess_backend, workers=preprocess_workers,
-        cpu_bridge=cpu_bridge,
-    )
+    # Priced from the decoded composition, before the first device
+    # allocation: auto prepares on the CPU when the card cannot hold it,
+    # and an explicit cuda that cannot fit is refused by name (A65).  A
+    # backend already on the CPU is not priced.  The card is read again
+    # here: the decode took minutes and the card may be shared.
+    preprocess = admit_preparation(
+        preprocess,
+        lambda: price_forcing_preparation("mapped", exp, snapshots),
+        workers=preprocess_workers)
     preprocess_receipt = preprocess.receipt()
     # The same declared policy reaches the root and every child catalog.
     water_statics = WaterTemperatureStatics.for_route(
@@ -967,11 +1049,15 @@ def prepare_mapped_wrf(
         landuse_attrs=selection.landuse_global_attrs())
     with prep_stage("root_initialize", label="Initialize root forcing states",
                     backend=str(preprocess_receipt["backend"]),
-                    count=len(snapshots)):
+                    count=len(snapshots) if hierarchy else 1):
         initialize_started = time.perf_counter()
-        # ONE forcing time is ever resident.  The start time is built LAST
-        # (start_last_forcing_order) and is the only met/state this loop
-        # retains; every other time contributes its perimeter frames against
+        # ONE forcing time is ever resident.  A single domain builds the
+        # start time FIRST, writes it into the published head and releases
+        # it, then builds each later time and writes each interval as soon
+        # as its two times exist (gpuwm.ingest.boundary_stream).  A hierarchy
+        # still needs every root interval before its children, so it builds
+        # the start time LAST (start_last_forcing_order) and keeps only that
+        # met/state; every other time contributes its perimeter frames against
         # its own position and is released before the next one is
         # interpolated.  Walking the times in order instead meant holding the
         # start time -- which nothing reads until the boundaries are complete
@@ -995,7 +1081,11 @@ def prepare_mapped_wrf(
         )
         coriolis_f, coriolis_e = grid.coriolis_m()
         rotation_sin, rotation_cos = grid.rotation_m()
-        for index in start_last_forcing_order(len(snapshots)):
+        def build_forcing_time(index):
+            # One forcing time's build, unchanged: interpolate, initialize,
+            # attach the map factors.  The single-domain route calls it start
+            # first (gpuwm.ingest.boundary_stream); the hierarchy keeps the
+            # start time last until its children are chained too.
             source = snapshots[index]
             # Metgrid classifies masked-field TARGET cells by the model
             # (geogrid) landmask; the mapped lane declares it like the ERA5
@@ -1006,9 +1096,13 @@ def prepare_mapped_wrf(
                 water_temperature_statics=water_statics)
             initialized = initialize_real(
                 met, cfg, coord, static["HGT_M"], grid=grid,
+                landmask=static["LANDMASK"],
                 p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
                 preprocess_backend=preprocess,
                 state_backend="preprocess",
+                # Only the start time's result is kept below; every later
+                # time contributes its state to the boundaries.
+                boundary_only=index != 0,
                 # THE FRONT DOOR for the mp=28 aerosol default is the "grid="
                 # above (lane/static-dataset-door), and it is the SAME door the
                 # other ten real routes now use.
@@ -1041,15 +1135,28 @@ def prepare_mapped_wrf(
                 mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
                 sina=rotation_sin, cosa=rotation_cos,
             )
-            forcing.add_state(initialized.state, index=index)
-            if index == 0:
-                initial_met = met
-                initial_result = initialized
-            else:
-                del met, initialized
-                release_backend_memory(preprocess)
-        boundaries = forcing.build(times)
-        attach_lateral_boundaries(initial_result.state, boundaries)
+            return met, initialized
+
+        if hierarchy:
+            for index in start_last_forcing_order(len(snapshots)):
+                met, initialized = build_forcing_time(index)
+                forcing.add_state(initialized.state, index=index)
+                if index == 0:
+                    initial_met = met
+                    initial_result = initialized
+                else:
+                    del met, initialized
+                    release_backend_memory(preprocess)
+            boundaries = forcing.build(times)
+            attach_lateral_boundaries(initial_result.state, boundaries)
+        else:
+            # START FIRST.  The start time makes the head (state, surface,
+            # static fields, receipts); the later times are built after it is
+            # published, one resident at a time, and each interval is written
+            # as soon as its two times exist.
+            initial_met, initial_result = build_forcing_time(0)
+            forcing.add_state(initial_result.state, index=0)
+            boundaries = None
         # No lake skin override: the masked=both SKINTEMP chain with
         # static-landmask targets already yields water-source skin at lakes,
         # matching real.exe's no-TAVGSFC behavior.  The static landmask drives
@@ -1073,6 +1180,10 @@ def prepare_mapped_wrf(
             deep_soil_temperature=static["TMN"],
             soil_layer_contract=bundle.soil_layer_contract,
             landmask=static["LANDMASK"],
+            # Land the source holds no land for takes the column the
+            # router builds (gpuwm/ingest/soil.py: island_soil_columns).
+            soil_no_source_land=getattr(
+                initial_met, "soil_no_source_land", None),
             terrain=static["HGT_M"],
             source_orography=initial_met.fields["SOURCE_OROGRAPHY"],
             water_temperature=getattr(initial_met, "water_temperature", None),
@@ -1085,6 +1196,7 @@ def prepare_mapped_wrf(
                 snapshots[0], grid, experiment_config),
             route=_WATER_ROUTE,
         )
+        soil_temperature_repair = soil_temperature_repair_proof(soil, grid)
     initialize_seconds = time.perf_counter() - initialize_started
 
     # Keep atomic siblings short.  Repeating a user-supplied output name at
@@ -1094,6 +1206,7 @@ def prepare_mapped_wrf(
     if staging.exists():
         raise FileExistsError(f"mapped staging output already exists: {staging}")
     staging.mkdir(parents=True)
+    writer = None
     try:
         static_path = staging / "native-static.npz"
         geometry_path = staging / "geometry-receipt.json"
@@ -1279,6 +1392,10 @@ def prepare_mapped_wrf(
                 # sub-source-cell reconstitution ran on it.
                 "soil_texture_downscale": dict(
                     getattr(soil, "soil_texture_downscale", {}) or {}),
+                # Present only when real.exe's TSLB reasonableness rebuild
+                # touched a land column of the root.
+                **({"soil_temperature_repair": soil_temperature_repair}
+                   if soil_temperature_repair is not None else {}),
                 forcing_key: list(forcing_axis),
                 "boundary_interval_seconds": boundary_interval_seconds,
                 "target_contract": target_contract,
@@ -1297,6 +1414,11 @@ def prepare_mapped_wrf(
                     "root_static_receipt": root_static_receipt,
                 },
                 "source_composition": composition_receipt,
+                # Present only when the source files carried fewer vertical
+                # levels than the mapping declares (an era ladder), as in
+                # the single-domain proof.
+                **({"source_vertical_ladder": vertical_ladder}
+                   if vertical_ladder is not None else {}),
                 "preprocessing": preprocess_receipt,
                 "hierarchy_workers": selected_workers,
                 "root_static": static_output_receipt,
@@ -1365,12 +1487,81 @@ def prepare_mapped_wrf(
             **forcing_identity,
             source_identity=source_identity,
         )
-        with prep_stage("prepared_cache", label="Write prepared cache"):
-            cache_started = time.perf_counter()
-            cache_receipt = write_prepared_cache(
-                prepared_path, identity=identity,
+        writer = PreparedTreeWriter(
+            staging=staging, output_root=output_root, identity=identity)
+        # Everything the proof says that the start time already knows.  The
+        # seal adds only the cache receipt, the export and the wall times
+        # (boundary_stream.SEAL_ONLY_PROOF_KEYS), and refuses a proof that
+        # differs from this head anywhere else.
+        proof_head = {
+            "schema": PROOF_SCHEMA,
+            "status": "READY_NOT_YET_STOCK_WRF_GATED",
+            "stock_wrf_export": stock_wrf_export,
+            "vertical_coordinate": _vertical_coordinate_receipt(
+                exp, vertical_adaptation),
+            "forcing_times": [value.isoformat() for value in times],
+            # The soil-state SOURCE resolution and whether the
+            # sub-source-cell reconstitution ran on it.
+            "soil_texture_downscale": dict(
+                getattr(soil, "soil_texture_downscale", {}) or {}),
+            # Present only when real.exe's TSLB reasonableness rebuild
+            # touched a land column, so a healthy proof is unchanged.
+            **({"soil_temperature_repair": soil_temperature_repair}
+               if soil_temperature_repair is not None else {}),
+            forcing_key: list(forcing_axis),
+            "boundary_interval_seconds": boundary_interval_seconds,
+            "execution_inputs": {
+                "decoders": _bound_decoder_receipts(
+                    bundle.decoder_paths,
+                    bundle.decoder_sha256,
+                ),
+                **run_control_before,
+                "geog_root": str(geog_root),
+                "geog_source_binding": (
+                    "resolved_dataset_paths_plus_native_static_output_sha256"
+                ),
+                "root_static_provider": root_static_provider,
+                "root_static_receipt": root_static_receipt,
+                "geog_resolution_tokens": list(selection.resolution_tokens),
+                "geog_datasets": {
+                    field: str(selection.path(field))
+                    for field in (
+                        "terrain", "landuse", "soil_top", "soil_bottom",
+                        "greenfrac", "lai", "albedo", "snow_albedo",
+                        "soil_temperature",
+                    )
+                },
+            },
+            "source_composition": composition_receipt,
+            # Present only when the source files carried fewer vertical
+            # levels than the mapping declares (an era ladder), so a
+            # full-ladder preparation's receipt is unchanged.
+            **({"source_vertical_ladder": vertical_ladder}
+               if vertical_ladder is not None else {}),
+            "preprocessing": preprocess.receipt(),
+            # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
+            # Unconditional, and stated even when no floor fired.
+            **moisture_floor_proof_entry(
+                initial_result,
+                when_unrecorded=(
+                    "this preparation's initialization result carries "
+                    "no moisture-floor field, so it came from an ingest "
+                    "predating the receipt; re-prepare the case to "
+                    "record whether its vapour was floored on the way "
+                    "in")),
+            "static": static_output_receipt,
+            "geometry": geometry_receipt,
+        }
+        # One machine, one card: the forecast may start beside this
+        # producer only when both fit (boundary_stream.chained_admission).
+        writer.admit(
+            experiment=exp, backend=str(preprocess_receipt["backend"]),
+            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])))
+        with prep_stage("prepared_head", label="Publish prepared head"):
+            head_started = time.perf_counter()
+            writer.write_head(
                 initial_result=initial_result, met=initial_met,
-                boundaries=boundaries, surface=canonical_noah_surface(soil),
+                surface=canonical_noah_surface(soil),
                 metadata={
                     "source_adapter": "mapped",
                     "initial_valid_time": times[0].isoformat(),
@@ -1381,10 +1572,42 @@ def prepare_mapped_wrf(
                         "receipt_content_sha256"
                     ],
                 },
+                lbc={
+                    "spec_bdy_width": cfg.spec_bdy_width,
+                    "spec_zone": cfg.spec_zone,
+                    "relax_zone": cfg.relax_zone,
+                    "schedule": [
+                        [float(earlier), float(later)] for earlier, later
+                        in zip(forcing_seconds, forcing_seconds[1:])],
+                    "fields": forcing.inventory,
+                },
+                proof_head=proof_head,
+                input_manifest_sha256=published_manifest_sha256,
+                forcing=forcing,
             )
-            cache_receipt = dict(cache_receipt)
+        head_seconds = time.perf_counter() - head_started
+        # The start state has done its work: it is in the head.
+        del initial_result, initial_met
+        release_backend_memory(preprocess)
+        with prep_stage("root_boundaries",
+                        label="Initialize remaining forcing states",
+                        backend=str(preprocess_receipt["backend"]),
+                        count=len(snapshots) - 1):
+            boundaries_started = time.perf_counter()
+            writer.stream_forcing_times(
+                count=len(snapshots), build_forcing_time=build_forcing_time,
+                forcing=forcing, times=times,
+                release=lambda: release_backend_memory(preprocess))
+        initialize_seconds += time.perf_counter() - boundaries_started
+        with prep_stage("prepared_cache", label="Seal prepared cache"):
+            cache_started = time.perf_counter()
+            cache_receipt = dict(writer.seal_cache())
             cache_receipt["path"] = "prepared-cache"
-        cache_seconds = time.perf_counter() - cache_started
+        cache_seconds = head_seconds + time.perf_counter() - cache_started
+        prepared_path = writer.cache_path
+        static_path = writer.root / "native-static.npz"
+        geometry_path = writer.root / "geometry-receipt.json"
+        wrf_path = writer.root / "wrf-native-input"
         with prep_stage("wrf_export", label="Companion WRF files") as export_stage:
             export_started = time.perf_counter()
             export_schema = "gpuwm-native-direct-wrf-export-v3"
@@ -1424,56 +1647,10 @@ def prepare_mapped_wrf(
         if run_control_after != run_control_before:
             raise ValueError("mapped run-control bytes changed during preparation")
         proof = {
-            "schema": PROOF_SCHEMA,
-            "status": "READY_NOT_YET_STOCK_WRF_GATED",
-            "stock_wrf_export": stock_wrf_export,
-            "vertical_coordinate": _vertical_coordinate_receipt(
-                exp, vertical_adaptation),
-            "forcing_times": [value.isoformat() for value in times],
-            # The soil-state SOURCE resolution and whether the
-            # sub-source-cell reconstitution ran on it.
-            "soil_texture_downscale": dict(
-                getattr(soil, "soil_texture_downscale", {}) or {}),
-            forcing_key: list(forcing_axis),
-            "boundary_interval_seconds": boundary_interval_seconds,
-            "execution_inputs": {
-                "decoders": _bound_decoder_receipts(
-                    bundle.decoder_paths,
-                    bundle.decoder_sha256,
-                ),
-                **run_control_before,
-                "geog_root": str(geog_root),
-                "geog_source_binding": (
-                    "resolved_dataset_paths_plus_native_static_output_sha256"
-                ),
-                "root_static_provider": root_static_provider,
-                "root_static_receipt": root_static_receipt,
-                "geog_resolution_tokens": list(selection.resolution_tokens),
-                "geog_datasets": {
-                    field: str(selection.path(field))
-                    for field in (
-                        "terrain", "landuse", "soil_top", "soil_bottom",
-                        "greenfrac", "lai", "albedo", "snow_albedo",
-                        "soil_temperature",
-                    )
-                },
-            },
-            "source_composition": composition_receipt,
-            "preprocessing": preprocess.receipt(),
-            # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
-            # Unconditional, and stated even when no floor fired.
-            **moisture_floor_proof_entry(
-                initial_result,
-                when_unrecorded=(
-                    "this preparation's initialization result carries "
-                    "no moisture-floor field, so it came from an ingest "
-                    "predating the receipt; re-prepare the case to "
-                    "record whether its vapour was floored on the way "
-                    "in")),
-            "static": static_output_receipt,
-            "geometry": geometry_receipt,
+            **proof_head,
             "prepared_cache": cache_receipt,
             "export": export_receipt,
+            "boundary_stream": writer.boundary_stream_proof(),
             "timing_seconds": {
                 "static": static_seconds,
                 "decode_and_compose": decode_seconds,
@@ -1486,19 +1663,25 @@ def prepare_mapped_wrf(
         proof["proof_content_sha256"] = hashlib.sha256(
             _canonical(proof).encode("utf-8")
         ).hexdigest()
-        (staging / "proof.json").write_text(
-            json.dumps(proof, indent=2, sort_keys=True, allow_nan=False) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(staging, output_root)
+        writer.publish(proof)
         # The composed frame stream is spent: every valid time has been
         # interpolated and the tree is published, so the engine scratch
         # it streamed from goes now rather than at collection.
         bundle.close()
         return proof
-    except BaseException:
-        bundle.close()
-        shutil.rmtree(staging, ignore_errors=True)
+    except BaseException as error:
+        try:
+            if writer is not None:
+                # A head already published stays, marked failed, so a
+                # waiting forecast ends with this reason and the next
+                # preparation of this output root rebuilds it.  Recorded
+                # first, so a close that raises cannot leave it unwritten.
+                writer.fail(error)
+        finally:
+            try:
+                bundle.close()
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
@@ -1623,9 +1806,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--statics-corridor", nargs="?", const="all", default=None,
         metavar="GRID_IDS",
-        help="seal child-resolution statics over the parent extent for "
-             "every child (bare flag) or for a comma-separated list of "
-             "child grid ids.  REQUIRED when the experiment configures "
+        help="seal child-resolution statics over the ground each child "
+             "can reach, for every child (bare flag) or for a "
+             "comma-separated list of child grid ids.  REQUIRED when "
+             "the experiment configures "
              "[relocation]: a prepared bundle runs without WPS_GEOG, so "
              "a nest that moves onto ground it has not visited has no "
              "other source of terrain, landuse and soil category.  Costs "
@@ -1823,31 +2007,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ValueError as error:
         parser.error(str(error))
-    proof = prepare_mapped_wrf(
-        composition=args.composition,
-        mapping=args.mapping,
-        primary_files=args.primary_files,
-        supplement_files=supplements,
-        provenance_files=provenance,
-        contributing_mappings=contributing,
-        input_manifest=args.input_manifest,
-        input_manifest_sha256=args.input_manifest_sha256,
-        grib1_bridge=args.grib1_bridge,
-        grib2_inventory=args.grib2_inventory,
-        grib2_dump=args.grib2_dump,
-        wps_namelist=args.wps_namelist,
-        geog_root=args.geog_root,
-        static_input=args.static_input,
-        static_receipt=args.static_receipt,
-        experiment_config=args.experiment_config,
-        output_root=args.output_root,
-        preprocess_backend=args.preprocess_backend,
-        preprocess_workers=args.preprocess_workers,
-        cpu_preprocess_bridge=args.cpu_preprocess_bridge,
-        hierarchy_workers=args.hierarchy_workers,
-        stock_wrf_export=args.stock_wrf_export,
-        statics_corridor=statics_corridor,
-    )
+    try:
+        proof = prepare_mapped_wrf(
+            composition=args.composition,
+            mapping=args.mapping,
+            primary_files=args.primary_files,
+            supplement_files=supplements,
+            provenance_files=provenance,
+            contributing_mappings=contributing,
+            input_manifest=args.input_manifest,
+            input_manifest_sha256=args.input_manifest_sha256,
+            grib1_bridge=args.grib1_bridge,
+            grib2_inventory=args.grib2_inventory,
+            grib2_dump=args.grib2_dump,
+            wps_namelist=args.wps_namelist,
+            geog_root=args.geog_root,
+            static_input=args.static_input,
+            static_receipt=args.static_receipt,
+            experiment_config=args.experiment_config,
+            output_root=args.output_root,
+            preprocess_backend=args.preprocess_backend,
+            preprocess_workers=args.preprocess_workers,
+            cpu_preprocess_bridge=args.cpu_preprocess_bridge,
+            hierarchy_workers=args.hierarchy_workers,
+            stock_wrf_export=args.stock_wrf_export,
+            statics_corridor=statics_corridor,
+        )
+    except InitializationMemoryRefused as error:
+        # A preparation the card cannot hold under an explicit
+        # --preprocess-backend cuda (PreparationDeviceRefused), or any
+        # other measured initialization budget that refuses the case, is
+        # a refusal with its own remedy line: one message at exit 2, as
+        # `gpuwm` itself answers it, not a traceback that buries the
+        # remedy at the bottom of a stack.
+        print(f"rw-wps: {error}", file=sys.stderr)
+        return 2
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
     export = proof.get("export", proof.get("wrf_manifest", {}))
     if export.get("status") == "REFUSED":

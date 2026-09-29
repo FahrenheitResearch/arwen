@@ -33,9 +33,9 @@ from gpuwm.ingest import real as real_module
 from gpuwm.ingest.horiz import (
     WPS_PARABOLIC_NEGATIVE_WEIGHT,
     HorizontalSnapshot,
-    _wps_oned,
     parabolic_undershoot_floor,
 )
+from gpuwm.verify.wps_masked_oracle import _wps_oned
 from gpuwm.ingest.real import (
     _specific_humidity_to_mixing_ratio,
     initialize_real,

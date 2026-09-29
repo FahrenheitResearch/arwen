@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -409,9 +410,10 @@ def test_every_installed_console_script_is_a_documented_door():
         if name in ALIASES:
             continue
         if name == "gpuwm":
-            # The subcommand tree IS this door; it has no options of its
-            # own beyond the ones its subcommands carry.
-            if not any(door.startswith("gpuwm ") for door in built):
+            # The root is a door of its own (`gpuwm --help-all`), and its
+            # subcommand tree is documented door by door below it.
+            if name not in built or not any(
+                    door.startswith("gpuwm ") for door in built):
                 offenders.append(name)
             continue
         if name not in built:
@@ -719,8 +721,15 @@ def test_the_reference_page_shows_how_to_pass_a_config():
             f"config file, which is the entire input to the command")
 
 
-def test_the_argument_table_reader_tells_arguments_from_options():
-    """The instrument, against a known answer, both directions."""
+def test_the_argument_table_reader_tells_arguments_from_options(
+        tmp_path, monkeypatch):
+    """The instrument, against a known answer, both directions.
+
+    The sample page is written under a stand-in repository root.  This
+    test used to overwrite the committed page in place and put it back
+    afterwards, and every other worker of a parallel run that read the
+    page in between read the sample instead.
+    """
 
     sample = ("## `x door`\n\n"
               "| argument | what it does |\n"
@@ -730,14 +739,12 @@ def test_the_argument_table_reader_tells_arguments_from_options():
               "| option | what it does |\n"
               "|---|---|\n"
               "| `--explain` | say more |\n")
-    doc = _repo_root() / _CLI_OPTIONS_DOC
-    original = doc.read_bytes()
-    try:
-        doc.write_text(sample, encoding="utf-8", newline="")
-        assert _documented_arguments() == {"x door": {"CONFIG"}}
-        assert _documented_options() == {"x door": {"--explain"}}
-    finally:
-        doc.write_bytes(original)
+    doc = tmp_path / _CLI_OPTIONS_DOC
+    doc.parent.mkdir(parents=True)
+    doc.write_text(sample, encoding="utf-8", newline="")
+    monkeypatch.setattr(sys.modules[__name__], "_repo_root", lambda: tmp_path)
+    assert _documented_arguments() == {"x door": {"CONFIG"}}
+    assert _documented_options() == {"x door": {"--explain"}}
 
 
 def test_the_reference_page_names_no_developer_machine():

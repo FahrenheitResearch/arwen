@@ -43,6 +43,11 @@ use serde_json::{Map, Value};
 /// only comparable against the same rule.
 pub const PORTABLE_HEADER_RULE: &str = "gpuwm-portable-frame-header-v1";
 
+/// The `source_field` prefix of a field a frame completed from its own
+/// state where the source left it out
+/// (`gpuwm.source_frame.COMPLETED_FIELD_REFERENCE_PREFIX`).
+pub const COMPLETED_FIELD_REFERENCE_PREFIX: &str = "@completed.";
+
 /// The fields a mapping produces through a transcendental.
 ///
 /// Port of `gpuwm.mapped_source.libm_dependent_fields`.  Two productions
@@ -143,7 +148,13 @@ pub fn portable_frame_header(
             else {
                 continue;
             };
-            if libm_dependent.contains(&name) {
+            // A field this frame completed hydrostatically took
+            // logarithms, whichever mapping declared it.
+            let completed = descriptor
+                .get("source_field")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.starts_with(COMPLETED_FIELD_REFERENCE_PREFIX));
+            if libm_dependent.contains(&name) || completed {
                 if let Some(object) = descriptor.as_object_mut() {
                     object.insert(
                         "data_reference".to_owned(),

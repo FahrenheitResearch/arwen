@@ -152,6 +152,13 @@ def test_the_gallery_draws_the_product_set_this_run_selected(prepared):
     assert plots.render_selection(c.record)["products"] == ["2m_temperature", "sbcape"]
 
 
+def test_sectionless_gallery_keeps_run_maps_and_refuses_explicit_sections():
+    record = {"products": "2m_temperature,xsec:QCLOUD=0.01,0.1/wa"}
+    assert plots.render_selection(record)["products"] == ["2m_temperature"]
+    with pytest.raises(ValueError, match="cannot locate the slice"):
+        plots.render_selection(record, {"products": ["xsec:wa"]})
+
+
 def test_a_requested_size_and_product_set_get_their_own_gallery(prepared):
     """C-225: the render options travel with the request and key the gallery."""
     c = prepared.case
@@ -162,6 +169,7 @@ def test_a_requested_size_and_product_set_get_their_own_gallery(prepared):
     assert value["width"] == 800 and value["height"] == 600
     assert value["render_id"] != own["render_id"]
     assert value["selection_products"] == ["2m_temperature"]
+    assert value["map_products"] is True
     # The watcher now renders both galleries, each into its own receipt.
     plots._work_selections(c.tmp_path, c.record["id"])
     viewer._work_job(c.tmp_path, c.record["id"])
@@ -190,3 +198,67 @@ def test_the_gallery_door_registers_its_render_options():
         "--products", "2m_temperature,var:T2", "--width", "800", "--height", "600"])
     assert plots.request_options(args) == {"products": ["2m_temperature", "var:T2"],
                                            "width": 800, "height": 600}
+
+
+def _recording_environments(monkeypatch, module):
+    """Every renderer call's command and the environment it was handed."""
+    seen = []
+    inner = module.subprocess.run
+    def run(command, **kwargs):
+        seen.append((list(command), kwargs.get("env")))
+        return inner(command, **kwargs)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    return seen
+
+
+def test_a_wheel_install_hands_the_gallery_renderer_its_map_files(prepared, tmp_path, monkeypatch):
+    """THE BREAKAGE: the gallery watcher started the renderer with the caller's
+    environment, so the renderer of a pip install was handed no map files and
+    every gallery picture of a remote job had no coastlines, borders or state
+    lines. Measured on the 5070 Ti host from a wheel install: the same
+    --render-store-request call with and without renderer_env differed by
+    21,141 px, all of them map lines."""
+    from test_render_basemap_delivery import wheel_with_companion
+    companion = wheel_with_companion(tmp_path, monkeypatch)
+    seen = _recording_environments(monkeypatch, plots)
+    c = prepared.case
+    state = plots.work_once(c.tmp_path, c.record["id"])
+    drawn = [env for command, env in seen if "--render-store-request" in command]
+    assert len(drawn) == 1 and prepared.renders
+    assert drawn[0] is not None, "the gallery renderer got the caller's environment and no map files"
+    assert drawn[0]["RUSTWX_BASEMAP_DIR"] == str(companion)
+    assert "render_warning" not in state
+    assert not (plots._root(c.tmp_path, c.record["id"]) / plots.MAP_GAP).exists()
+
+
+def test_a_gallery_drawn_with_no_map_files_says_so_in_the_job_status(prepared, tmp_path, monkeypatch):
+    """The gallery still draws, and its status says what the pictures lack
+    and the command that restores the files, until the gallery is done."""
+    from test_render_basemap_delivery import wheel_with_companion
+    wheel_with_companion(tmp_path, monkeypatch, maps=False)
+    c = prepared.case
+    state = plots.work_once(c.tmp_path, c.record["id"])
+    assert len(prepared.renders) == 1, "a missing map is a note, never a refusal to draw"
+    warning = state["render_warning"]
+    assert "no coastlines, borders or state lines" in warning
+    assert "pip install --force-reinstall gpuwm-data" in warning
+    c.status["state"] = "completed"
+    done = plots.work_once(c.tmp_path, c.record["id"])
+    assert done["done"] and done["render_warning"] == warning
+    # The job's own gallery status is the one `gpuwm remote status` reads.
+    status = json.loads((plots._root(c.tmp_path, c.record["id"]) / "status.json").read_text(encoding="utf-8"))
+    assert status["render_warning"] == warning
+
+
+def test_a_sections_only_run_draws_no_gallery_of_default_maps(prepared):
+    c = prepared.case
+    c.record["products"] = "xsec:wa"
+    summary = plots.work_once(c.tmp_path, c.record["id"])
+    assert summary["state"] == "no_map_products" and summary["note"] == viewer.NO_MAP_PRODUCTS_NOTE
+    assert summary["selection_products"] == [] and not prepared.renders
+    request = {**c.request, "action": "native-plots", "sequence": 1, "domain": 1}
+    value = plots.catalog(request, c.tmp_path)
+    assert value["selection_basis"] == viewer.NO_MAP_PRODUCTS_NOTE
+    # The flag a terminal reads to answer with that note, instead of saying
+    # the gallery is still being prepared for a run that will never draw one.
+    assert value["map_products"] is False and value["waiting"] is True

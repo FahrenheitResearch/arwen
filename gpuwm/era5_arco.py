@@ -8,10 +8,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 
 import numpy as np
+
+from gpuwm.filesystem_paths import publish_new
 
 from gpuwm.ingest.regular_netcdf import REGULAR_FIELD_UNITS
 
@@ -67,6 +70,57 @@ def _validate(path, *, times, area):
     return {"checks": ["exact selected times", "all 37 pressure levels", "complete forcing inventory",
                        "native missing-mask provenance", "coordinate coverage", "required finite fields"],
             "failures": []}
+
+
+#: The native reader's per-record line, relayed as "fetch: Zarr: <time> <k>/<n> <field>".
+_RECORD_LINE = re.compile(r"Zarr: .* (\d+)/(\d+) \S+$")
+
+
+def _publish_acquisition(times, *, done: int, phase: str, path: Path | None = None,
+                         reused: bool | None = None) -> None:
+    """How many of the request's times are read, on the shared acquisition block.
+
+    The same block the CDS provider publishes (``arwen.acquisition-progress.v1``),
+    so a run page shows "time 2 of 4" here too.  The provider moves whole Zarr
+    chunks and crops them, so no byte total exists up front; only the bytes
+    already written to the output are stated.
+    """
+
+    from gpuwm import progress as progress_mod
+
+    acquisition = {"schema": "arwen.acquisition-progress.v1", "source": "era5",
+                   "provider": "arco", "phase": phase,
+                   "forcing_times_total": len(times), "forcing_times_completed": int(done)}
+    if reused is not None:
+        acquisition["reused"] = reused
+    if path is not None:
+        try:
+            acquisition["bytes_available"] = path.stat().st_size
+        except OSError:
+            pass
+    progress_mod.emit_event("fetch_progress", label="fetch era5", acquisition=acquisition)
+
+
+def _acquisition_progress(progress, times, output: Path):
+    """The reader's status lines, passed on, and each new record said as progress.
+
+    Before this the fetch stage of an ARCO run wrote nothing a page could read
+    between its start and its end, which is minutes on a long window.
+    """
+
+    last = [-1]
+
+    def relay(text: str) -> None:
+        progress(text)
+        match = _RECORD_LINE.search(str(text))
+        if match is None:
+            return
+        done = int(match.group(1)) - 1
+        if done != last[0]:
+            last[0] = done
+            _publish_acquisition(times, done=done, phase="reading", path=output)
+
+    return relay
 
 
 def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
@@ -128,6 +182,7 @@ def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
                     _validate(target, times=times, area=area)
                     if fetch.sha256_file(target) == artifact["sha256"]:
                         progress(f"fetch era5: reused verified ARCO inputs in {target}")
+                        _publish_acquisition(times, done=len(times), phase="ready", reused=True)
                         return target
             except (OSError, ValueError, KeyError, TypeError):
                 pass
@@ -139,7 +194,9 @@ def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
             combined = stage / combined_name
             progress("fetch era5: reading Google ARCO source metadata and native Zarr chunks")
             native = extract_regular_zarr(request, request_path=stage / "request.json",
-                                         output=combined, progress=progress)
+                                         output=combined,
+                                         progress=_acquisition_progress(progress, times, combined))
+            _publish_acquisition(times, done=len(times), path=combined, phase="validating")
             progress("fetch era5: validating native NetCDF forcing inventory and coverage")
             validation = _validate(combined, times=times, area=area)
             receipt = {"schema": _SCHEMA, "status": "validated", "request": identity,
@@ -156,11 +213,14 @@ def retrieve_era5_arco(*, cycle: datetime | str, hours: int, area,
                             raise FileExistsError(f"ARCO retrieval preserves the changed path: {path}")
                         aside = fetch_guard.quarantine(path, tag="era5-arco-refetch")
                         progress(f"fetch era5: preserved previous {path.name} as {aside.name}")
-            os.link(combined, target)
+            publish_new(combined, target)
+            # On a volume without hard links the stage's copy has moved, so the
+            # rollback below recognises the published file by its own stat.
+            published = target.stat()
             try:
-                os.link(staged_receipt, receipt_path)
+                publish_new(staged_receipt, receipt_path)
             except BaseException:
-                if target.is_file() and os.path.samestat(combined.stat(), target.stat()):
+                if target.is_file() and os.path.samestat(published, target.stat()):
                     target.unlink()
                 raise
             fetch_guard._fsync_dir(out)

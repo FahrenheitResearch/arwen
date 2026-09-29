@@ -299,7 +299,7 @@ def test_auto_ordinary_dispatch_takes_one_admission_before_the_fetch(tmp_path, m
         pass
     def prepare(*args, **kwargs):
         events.append("prepare")
-        assert kwargs["store_request"].backend == "cuda"
+        assert kwargs["store_request"].backend == "auto"
         raise ReachedInitializer
     monkeypatch.setattr(runtime, "prepare_experiment_case", prepare)
     with pytest.raises(ReachedInitializer):
@@ -309,7 +309,13 @@ def test_auto_ordinary_dispatch_takes_one_admission_before_the_fetch(tmp_path, m
 
 
 def test_all_streamed_tree_still_prices_retained_global_workspaces():
+    # On 13.5 GiB the only all-streamed road tiles the child at 4.86x
+    # redundancy, which auto reached through the retired fallback that
+    # lifted the planner's limit.  The limit now binds auto, so this
+    # fixture asks for that tiling by the explicit knob; what it pins is
+    # the workspace pricing, not the choice.
     exp = _tree(child_n=256)
+    exp = replace(exp, tiles=replace(exp.tiles, max_redundancy=False))
     estimate = _windows_estimate(exp)
     nodes = st._config_tree_nodes(exp.domains)
     empty = st._resident_subset_envelope(estimate, nodes, set())
@@ -324,23 +330,34 @@ def test_all_streamed_tree_still_prices_retained_global_workspaces():
     assert result.configured_mixed_envelope_bytes <= 13 * GIB
 
 
-def test_only_auto_treats_redundancy_as_advice_and_real_shortages_stay_errors():
-    # A small open grid is legally tiled but inevitably exceeds the low-level
-    # default4x throughput preference. Pinned and hard API limits remain intact.
+def test_auto_honours_the_redundancy_limit_and_real_shortages_stay_errors():
+    """The retired guard pinned auto's slow-tiling fallback; this pins its end.
+
+    It used to require that auto, refused by the planner's redundancy
+    limit, drop the limit and return the slower tiling with a warning.
+    That fallback streamed a 206x204x49 domain in 1,190 tiles at 49.95x,
+    237-547 s per step against 0.6-1.9 s resident (measured 2026-09-26),
+    so auto now keeps the limit (tests/test_streamed_auto_tiling.py
+    pins what it does instead) and only an explicit
+    ``[tiles] max_redundancy = false`` accepts such a tiling.
+    """
     cfg = _exp(48).root.run
     machine = ap.Machine(32 * GIB, 256 * GIB)
     with pytest.raises(ap.CannotPlan) as hard:
         ap.plan(cfg, machine, prefer_resident=False, max_redundancy=4.0)
     assert "redundancy" in hard.value.detail
-    legal = st._plan_with_efficiency_advice(
-        cfg, machine, mode="auto", prefer_resident=False)
-    assert legal.redundancy > 4 and legal.vram_bytes <= legal.vram_budget_bytes
-    assert any("slower legal tiling" in item for item in legal.warnings)
-    with pytest.raises(ap.CannotPlan):
-        st._plan_with_efficiency_advice(cfg, machine, mode="on", prefer_resident=False)
+    assert hard.value.detail["redundancy"] > ap.MAX_REDUNDANCY
+    assert hard.value.detail["ntiles"] >= 1 and hard.value.detail["limit"] == 4.0
+    auto = st.StreamingOptions(mode="auto")
+    with pytest.raises(ap.CannotPlan) as refused:
+        st.decide(cfg, auto, machine=machine, allow_resident=False)
+    assert "redundancy" in refused.value.detail
+    lifted = st.decide(cfg, replace(auto, max_redundancy=False),
+                       machine=machine, allow_resident=False)
+    assert lifted.stream and lifted.redundancy > ap.MAX_REDUNDANCY
     with pytest.raises(ap.CannotPlan) as shortage:
-        st._plan_with_efficiency_advice(cfg, replace(machine, vram_bytes=1),
-                                       mode="auto", prefer_resident=False)
+        st.decide(cfg, auto, machine=replace(machine, vram_bytes=1),
+                  allow_resident=False)
     assert "redundancy" not in shortage.value.detail
 
 

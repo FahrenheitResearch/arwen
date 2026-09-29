@@ -17,6 +17,13 @@ from test_attribute_tracking import config, footprint
 @pytest.mark.parametrize("extremum", ["max", "min"])
 def test_actual_cupy_resident_device_host_and_canonical_parity(attribute, reduction, extremum):
     import cupy as cp
+    # The footprint bound below is this test's own.  The default pool is
+    # per process and keeps freed blocks, so an earlier test in the same
+    # worker left gigabytes in total_bytes(); cached blocks are released
+    # and what other tests still hold is measured before this one starts.
+    pool = cp.get_default_memory_pool()
+    pool.free_all_blocks()
+    held_before = pool.total_bytes()
     # requires_gpu checks the CUDA prerequisite. These bounded arrays and
     # host/device parity assertions have no dependency on a GPU model name.
     j, i = np.mgrid[:40, :50]
@@ -100,7 +107,7 @@ def test_actual_cupy_resident_device_host_and_canonical_parity(attribute, reduct
             np.full(volume.shape, 9999., dtype=np.float32))
         stored = streaming.domain_store(modes[mode])["state/"+carrier]
         np.testing.assert_array_equal(cp.asnumpy(stored), originals["carrier"])
-    assert cp.get_default_memory_pool().total_bytes() < 1024**3
+    assert pool.total_bytes() - held_before < 1024**3
 
 
 @requires_gpu

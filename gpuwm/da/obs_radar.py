@@ -31,9 +31,10 @@ is the one an innovation must be taken against.
 **The grid is bound by its arrays, not by its name.**  Every entry point
 here takes the caller's own :class:`~gpuwm.obs.target_grid.TargetGrid` and
 recomputes the digest table the writer bound to the file, ``z_w`` included.
-``grid_identity_sha256`` on its own cannot do that job: it digests ``lat``,
-``lon``, ``z_w`` and ``terrain_m`` at float64, while the file stores three
-of the four at float32 and no vertical coordinate at all.  A file whose
+``grid_identity_sha256`` on its own cannot do that job: it digests the
+projection's definition, ``z_w`` and ``terrain_m`` at float64, while the
+file stores the coordinates and terrain at float32 and no vertical
+coordinate at all.  A file whose
 identity attribute has been relabelled to name a different grid passes
 every check a reader can make by itself, and assimilating it puts every
 observation in the wrong column.  So the string is accepted only as an
@@ -131,10 +132,9 @@ def read_document(source, *, expected_grid,
     is **required**, because the identity string alone cannot close the
     door this function stands in.
 
-    ``grid_identity_sha256`` is a digest of the projection descriptor and
-    of ``lat``, ``lon``, ``z_w`` and ``terrain_m`` at float64.  The file
-    stores three of those four arrays, at float32, and no vertical
-    coordinate at all -- so a reader can prove the stored arrays match the
+    ``grid_identity_sha256`` is a digest of the projection's definition
+    and of ``z_w`` and ``terrain_m`` at float64.  The file stores the
+    coordinates and terrain, at float32, and no vertical coordinate at all -- so a reader can prove the stored arrays match the
     file's own digest table, and can never recompute the identity from
     them.  A file whose ``grid_identity_sha256`` attribute has been
     relabelled to name a different grid is therefore internally consistent
@@ -172,7 +172,7 @@ def read_document(source, *, expected_grid,
             f"adapter reads {list(OBS_SCHEMAS)}")
     demanded = expected_grid.identity_sha256()
     if (expected_grid_identity is not None
-            and expected_grid_identity != demanded):
+            and not expected_grid.matches_identity(expected_grid_identity)):
         raise RadarObsAdapterError(
             f"expected_grid hashes to {demanded} but expected_grid_identity "
             f"demands {expected_grid_identity}; the caller is asking for two "
@@ -336,8 +336,8 @@ def radar_grid_to_gridded_obs(
     ``expected_grid`` is the caller's own
     :class:`~gpuwm.obs.target_grid.TargetGrid` and is required.  See
     :func:`read_document` for why an identity string is not enough: it is a
-    claim about four arrays of which the file stores three, at a narrower
-    dtype, and none of them vertical.
+    claim about arrays the file stores only in part, at a narrower dtype,
+    and none of them vertical.
 
     ``reflectivity_simulated`` is ``H(x_k)`` for reflectivity, ``(R, nz, ny,
     nx)``, or None to leave reflectivity out.  ``velocity_simulated`` is a

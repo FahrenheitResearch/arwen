@@ -292,7 +292,6 @@
           }
         },
         "grid_fingerprint": "5711cdb0147a78b2b82226d703052db0faff33e17b591629fd4b81b9b6a73702",
-        "header_sha256": "2bc2059757a1772eeaa6903aeb4bc9dda129cc19c8af95c704ada3c488c4d56b",
         "inputs": [
           {
             "name": "mem072_1932032100_pl.grb2",
@@ -320,6 +319,7 @@
           "sha256": "f77da05c647a5285e777efb42eccba1ea9def0ca2ef0c6591e22117346be4860"
         },
         "member": null,
+        "portable_header_sha256": "ea5c67e6a2907151314813261bc314a94410875ba126f59173da58de052d588b",
         "source_cycle": "1932-03-21T00:00:00",
         "valid_time": "1932-03-21T00:00:00",
         "vertical": {
@@ -619,7 +619,6 @@
           }
         },
         "grid_fingerprint": "5711cdb0147a78b2b82226d703052db0faff33e17b591629fd4b81b9b6a73702",
-        "header_sha256": "4b0a48bdb5ecfcd7cd1a7d73b0950f379b3d212603232bac4b90685fccd5940f",
         "inputs": [
           {
             "name": "mem072_1932032100_pl.grb2",
@@ -647,6 +646,7 @@
           "sha256": "f77da05c647a5285e777efb42eccba1ea9def0ca2ef0c6591e22117346be4860"
         },
         "member": null,
+        "portable_header_sha256": "3951997918515a9398c8b3381d1daa8806f2c6914bdd188ae5292f7c549cc9d4",
         "source_cycle": "1932-03-21T00:00:00",
         "valid_time": "1932-03-21T03:00:00",
         "vertical": {
@@ -657,11 +657,12 @@
         "vertical_units": "Pa"
       }
     ],
+    "header_rule": "gpuwm-portable-frame-header-v1",
     "mapping": {
       "name": "rw-wps-20crv3-member-grib2.mapping.json",
       "sha256": "2e9877d51d9c993e83311c87236467b99ce9022638a343985da10ccd195efe09"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "twentycrv3-member-pl-sfc",
     "verdict": "DECODED"
   },
@@ -1559,10 +1560,6 @@
       },
       "materialization": {
         "frame_count": 2,
-        "frame_header_sha256": [
-          "2bc2059757a1772eeaa6903aeb4bc9dda129cc19c8af95c704ada3c488c4d56b",
-          "4b0a48bdb5ecfcd7cd1a7d73b0950f379b3d212603232bac4b90685fccd5940f"
-        ],
         "frame_header_sha256_portable": [
           "ea5c67e6a2907151314813261bc314a94410875ba126f59173da58de052d588b",
           "3951997918515a9398c8b3381d1daa8806f2c6914bdd188ae5292f7c549cc9d4"
@@ -1575,7 +1572,7 @@
       "status": "CANONICAL_FRAMES_MATERIALIZED_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "twentycrv3-member-pl-sfc",
     "verdict": "INSPECTED"
   },
@@ -1583,6 +1580,6 @@
     "machine": "AMD64",
     "system": "Windows"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "twentycrv3-member-pl-sfc"
 }

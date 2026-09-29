@@ -55,14 +55,14 @@ def _digest_without_the_adaptive_config_keys(path) -> str:
             header.pop(name, None)
         # The v6 stamp is the declared 2.7.0 break, not a config key.
         header["format_version"] = _HISTORICAL_FORMAT_VERSION
-        # eta_levels was appended later (80a3009c2/06c29b747).
-        # Unwind that separate config addition to reach the historical
-        # pre-adaptive tree; leave every array and non-config header bound.
-        for key in ADAPTIVE_TIMESTEP_RUN_FIELDS + ("eta_levels",):
+        # eta_levels was appended later (80a3009c2/06c29b747), and the
+        # relax_timescale_s / relax_w pair after it.  Unwind those separate
+        # config additions to reach the historical pre-adaptive tree;
+        # leave every array and non-config header bound.
+        for key in ADAPTIVE_TIMESTEP_RUN_FIELDS + (
+                "eta_levels", "relax_timescale_s", "relax_w"):
             header["config"].pop(key, None)
-        values = {key: value for key, value in header["config"].items()
-                  if key not in restart.CONFIG_RUN_LENGTH_FIELDS
-                  and key not in restart.CONFIG_DIAGNOSTIC_FIELDS}
+        values = restart._configuration_digest_values(header["config"])
         setup = copy.deepcopy(header["physics_setup"])
         setup["configuration_sha256"] = restart._json_sha256(
             restart._json_value(values, "RunConfig"))

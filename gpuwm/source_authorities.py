@@ -160,6 +160,24 @@ _PACKAGED_PROFILES = MappingProxyType({
         input_normalizer="icon-gdt101-pressure-v1",
         normalization="631506352f390d13bfd952ceecc76a716581a70b7d7ec515f882bde95fedfdb6",
     ),
+    # DWD's 2.2 km ICON-D2 on its native R19B07 mesh (542,040 cells), the
+    # same GDT-101 normalization with its own mesh, ladder and cadence rows.
+    # DWD also publishes a regular-lat-lon ICON-D2, but that product masks
+    # the 17 % of its bounding box outside the model domain in every field,
+    # and the mapped route validates each field over its whole extent, so
+    # the native mesh is the product the route can read.  Selectors were
+    # authored from real 2026-09-27 12Z bytes (grib_ls inventory).
+    "icon-d2-grib2-v1": _profile(
+        "rw-wps-icon-d2-grib2",
+        source_format="grib2",
+        mapping="f18c5f15f769f4340441b9c5b599a9145cab4770b7070c5a24909122846611ac",
+        composition="a4b05c684fee8db595ea2b16f4cb2ba8af807415af4e494b57f948061268e8a6",
+        provenance="0241a993bd971863aed47e34fba254448f3c301f1f362a7ef7228701a4d58559",
+        data_role="icon_d2_invariant_surface",
+        provenance_role="icon_d2_invariant_surface_provenance",
+        input_normalizer="icon-d2-gdt101-model-level-v1",
+        normalization="7e4d50967e93c0df585cc2f9a18f331b2d2b90217fd7891c9d6ef6a5234be150",
+    ),
     "20crv3-member-grib2-v1": _profile(
         "rw-wps-20crv3-member-grib2",
         source_format="grib2",
@@ -182,11 +200,15 @@ _PACKAGED_PROFILES = MappingProxyType({
     # generic mapped route: the Lambert CONUS grid, grid-relative wind
     # rotation and nine-node RUC soil are all TABLE DATA in these three
     # documents.  Selectors were authored from real 2026-08-15 00Z bytes
-    # through the converged grib-core inventory.
+    # through the converged grib-core inventory.  Cloud ice also lists
+    # CICE (0/6/0), the identity HRRR published it under before HRRRv3
+    # (July 2018), after CIMIXR (0/1/82), read from real 2017-01-19 00Z
+    # bytes: with CIMIXR alone every earlier cycle was refused at
+    # preparation for lacking cloud_ice_mixing_ratio.
     "hrrr-prs-grib2-v1": _profile(
         "rw-wps-hrrr-prs-grib2",
         source_format="grib2",
-        mapping="ac6453cd64eb9c9a63a9df7946b080d105aa63148b101ece45bf79110b82823a",
+        mapping="a639c5bb7a540bb50bf658672ff2f9e02a4a96786283e034fe81d2634b2ce117",
         composition="2a2bb75714428cdb9b051303e53d91c88f3c1b48a798339bb9244a6b412e392e",
         provenance="f2aade12671166959e42cacd357bc54359af4d3034eedff81630b26646eb4b8c",
         data_role="hrrr_prs_in_band_surface",
@@ -221,7 +243,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "gem-gdps-grib2-v1": _profile(
         "rw-wps-gem-gdps-grib2",
         source_format="grib2",
-        mapping="75811eab726d9217cca4abe224162ccdfb717457f4f0e39faefbf1ef08e1c98a",
+        mapping="093f2286700f539baa33b425e0d2a2f30a8622bbff3918f588c189b2c1c3f9fa",
         composition="13d7e4ca06f8012cfd252c03d70d9fae69d2e18b9b51975445d70a506e1d90ed",
         provenance="823e07b38677e3c0c83da984637a4fda83d1eb09be2401cb4e0a9e433820de22",
         data_role="gdps_analysis_invariant_surface",
@@ -234,11 +256,13 @@ _PACKAGED_PROFILES = MappingProxyType({
     # cycle-invariant), the geopotential-to-metres terrain scale and the
     # two-layer ordinal (type 151) soil column are all rows in these three
     # documents.  Selectors were authored from real 2026-08-17 00Z bytes
-    # through the converged grib-core inventory.
+    # through the converged grib-core inventory.  Earlier AIFS cycles
+    # publish pressure-level geopotential and no geopotential height, so
+    # the height field lists those records second, scaled to metres.
     "aifs-single-grib2-v1": _profile(
         "rw-wps-aifs-single-grib2",
         source_format="grib2",
-        mapping="7f65b6f9879112b27abcb1b6f02c2313de0571e673e864f848e2f5d01f3ea247",
+        mapping="421178fe8a81e304db6904428d57bd1852d2c55d9f3fda1f95a1becaeafba5dc",
         composition="bf0687369b7888f85ea5c2aa61f7f6800c8b99bec3331f9f4d021c565a775ba8",
         provenance="8aeb0d51ef5e43c504d7d5cf9d4b98992bd5becee2b75dccbb7d8b7808579aff",
         data_role="aifs_single_in_band_surface",
@@ -254,7 +278,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "ecmwf-open-data-oper-grib2-v1": _profile(
         "rw-wps-ecmwf-open-data-oper-grib2",
         source_format="grib2",
-        mapping="1255405235db1f456c03de0f4757750568017b13cfed1b4a5f8b27bf3ead7c47",
+        mapping="95ff9698d9db7f346f3973333936e58fda5860c9f2e4f76da76b2ed2c1284185",
         composition="3bd9c9cc25c74b53169b586e9d9ff499aeef3f512ef35c8dd551fd769fdfe5c1",
         provenance="c574a07fb303620eab432eea89dad3e765ccd510d965f2b0734c4e278d435b8b",
         data_role="ecmwf_open_data_in_band_surface",
@@ -274,7 +298,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "gdas-pgrb2-0p25-grib2-v1": _profile(
         "rw-wps-gdas-pgrb2-0p25-grib2",
         source_format="grib2",
-        mapping="f6de7a0a42d86ba1aa7e8cd84d30db79870843c25ccb6aa7ad3a3dbe8b4c4fc5",
+        mapping="eee8342a5a9a57f17d267dd48ad5edbb1a72f6d34c8803bd2ba1010668e0268d",
         composition="7d57188638a53ecf8771ce4779c7923015cee519b63318f6dcd0982798abf75d",
         provenance="13105c86f74d247d8795c075458ccc87bea1de5f663d53b805a1765aaa07c5a6",
         data_role="gdas_pgrb2_in_band_surface",
@@ -303,11 +327,15 @@ _PACKAGED_PROFILES = MappingProxyType({
     ),
     # The AIGFS HYBRID: the same operational NOMADS atmosphere (every
     # selector still pins subcenter=0 against the S3/EAGLE imposter) made
-    # RUNNABLE by borrowing the seven canonicals AIGFS does not publish --
-    # terrain, land mask, skin temperature, surface pressure, 2 m
-    # humidity, and the four-layer soil column -- from the SAME CYCLE's
-    # GDAS 0.25-degree analysis through the cross-source composition
-    # (field_sources, source_cycle_analysis_broadcast clock).  The donor
+    # RUNNABLE by borrowing the six canonicals AIGFS does not publish --
+    # terrain, land mask, skin temperature, 2 m humidity, and the
+    # four-layer soil column -- from the SAME CYCLE's GDAS 0.25-degree
+    # analysis through the cross-source composition (field_sources,
+    # source_cycle_analysis_broadcast clock).  Surface pressure, which
+    # AIGFS does not publish either, is derived at every lead from its own
+    # mean-sea-level pressure at the analysis terrain height, so the
+    # column mass follows the forecast instead of holding the analysis
+    # value.  The donor
     # decodes through its own mapping, shipped here as a fourth pinned
     # authority: the checked-in GFS pressure-level table with one
     # table-data change (2 m specific humidity DIRECTLY selected, because
@@ -316,9 +344,9 @@ _PACKAGED_PROFILES = MappingProxyType({
     "aigfs-gdas-hybrid-grib2-v1": _profile(
         "rw-wps-aigfs-gdas-hybrid-grib2",
         source_format="grib2",
-        mapping="0427834583be3189130ff676a57aff9d000a2196b82eb0bb7c2f7215412fff4d",
-        composition="85aafd9a79e3d6ac33b6e14fcaee08cfc5608b90d64e0fdcf0de9dc0874481a7",
-        provenance="99aea1e8945dd56e618d12e516870943b6d18c5a452ed016eddd24edb0264256",
+        mapping="b672a224abdf5d41b2675034530440577e4d2976420d90a4d89dfad0b3f50ff6",
+        composition="e11db42390a6b1f08b2edcd7d25e4574dc5be74021748e65c3c7b1115c34d07c",
+        provenance="72299bca17576bce3a0bedfe846806dbde31d126781d4d3ebaafb9dbf78318ed",
         data_role="physical_analysis_surface_data",
         provenance_role="physical_analysis_surface_provenance",
         contributing_mappings={
@@ -351,7 +379,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "gefs-ensemble-grib2-v1": _profile(
         "rw-wps-gefs-ensemble-grib2",
         source_format="grib2",
-        mapping="d54a0fda85ae9f226379f419d9a6136b9597f86a031801c5c846705dd8ad9762",
+        mapping="2445d2a0b985c24096a729e5f7b443613d5da579828627fba239356c6efbf668",
         composition="f7db1f0399456334c86b4aad0a1591a3e1faf38fba190d7a439ce96fecebf529",
         provenance="5f7644c1cb68f06a347602d60b63443170c33973efa98e530c254a463f3fe154",
         data_role="gefs_member_in_band_surface",
@@ -367,7 +395,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "icon-eu-regular-grib2-v1": _profile(
         "rw-wps-icon-eu-regular-grib2",
         source_format="grib2",
-        mapping="141c635c9adc6690719fd52ff0fbcfe78d478a14e18cea8bb13df812359b3fc1",
+        mapping="ae8075c069206c4f3917830aa769a2c4ef8f39a03ae31b3d7ee8c31c63f23cea",
         composition="6220800aa224b2ef8ae40d899760d8ed9100d0ce69a44fa06a80e039bdc74b2b",
         provenance="79ed94eee82ef0dc90b0e5b4ea79ce437f9006aa80d873bc297542002421fa57",
         data_role="icon_eu_invariant_surface",
@@ -380,6 +408,11 @@ _PACKAGED_PROFILES = MappingProxyType({
     # no skin temperature and no 2 m humidity, so the mapping declares
     # those six gaps composition_bound and the composition binds them to
     # the packaged donor mapping under source_cycle_analysis_broadcast.
+    # Surface pressure is derived at every lead from the member's own
+    # mean-sea-level pressure at the analysis terrain height: the NOMADS
+    # sfc product carries no surface pressure, and the record the AWS
+    # mirror appends sits on the AI model's own orography, not on the
+    # terrain the composition pairs it with.
     # Every selector pins PDT 1 -- the individual-member template -- so
     # deterministic bytes and ensemble statistics refuse at the mapped
     # decode itself.  Member identity is verified separately by the
@@ -389,9 +422,9 @@ _PACKAGED_PROFILES = MappingProxyType({
     "aigefs-member-hybrid-grib2-v1": _profile(
         "rw-wps-aigefs-member-hybrid-grib2",
         source_format="grib2",
-        mapping="2d5df9b66b465e72934b97d5f91904fb17bd5137ef885011831b4c698085d5bc",
+        mapping="c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7",
         composition="9965904c92f08cd71323e2565d7a663863c8ca061f3e991b813b52ad2a6a5d10",
-        provenance="a0439034d605b6215c16445c3f2459d2f027b87ac4d7228d4f1118d3cbf15d23",
+        provenance="4050afea573ffa3b590deb6ef0f0e2a86f2d6feca25423b38cd31f4e025b6bb2",
         data_role="physical_analysis_surface_data",
         provenance_role="physical_analysis_surface_provenance",
         contributing_mappings={
@@ -440,14 +473,21 @@ _PACKAGED_PROFILES = MappingProxyType({
     # as lnsp (which affine-only unit transforms cannot exponentiate) --
     # so the same-hour ERA5 pressure-level/single-level analysis is the
     # cross-source donor for all ten of those fields, decoded through
-    # its own pinned mapping.  Proven on real 2026-05-30 CDS bytes: both
+    # its own pinned mapping.  It also lends the water state the
+    # pressure-level route reads from the same file -- sea surface
+    # temperature, sea ice and the lake model's water and ice -- so the
+    # two routes assemble the same water temperature from one donor
+    # instead of this one giving every lake its skin temperature, and
+    # the snow water equivalent, which this route otherwise started at
+    # zero everywhere.
+    # Proven on real 2026-05-30 CDS bytes: both
     # engines byte-identical on air_pressure and geopotential_height
     # (max ULP 0) and a preparation to rc 0.
     "era5-model-level-l137-grib2-v1": _profile(
         "rw-wps-era5-model-level-l137-grib2",
         source_format="grib2",
-        mapping="51b656c17ba0bd29e3df7a8b07f8367be9cad731d9ee210fd7ae545c4da830ac",
-        composition="012bffc1322363560101ed393bb098e78f2cc013219ebf1e123561d6c0c0a05e",
+        mapping="e66420c7163beb25f4431df8a026a58e141276c85434260b4107255994b730af",
+        composition="eab1fcd5c10a746ebdaf269e910e08ea77a40d0db9789539423cbda477201e62",
         provenance="3c6477f94c1ab3428c5f3f1d6fb29c57ca9620dfecf41d600ca165df8609da7c",
         data_role="physical_analysis_surface_data",
         provenance_role="physical_analysis_surface_provenance",
@@ -455,8 +495,8 @@ _PACKAGED_PROFILES = MappingProxyType({
             "physical_analysis_surface_mapping": {
                 "file": "rw-wps-era5-plev-surface-donor.mapping.json",
                 "sha256": (
-                    "38bb519c8cad40afd422f3f9b03c0bedcac8512df43b3867"
-                    "58c18a64334fe060"
+                    "a16c6a9b615d5999030051aa3fb2170de7993467580c4f44"
+                    "840eebd0f1ec5e69"
                 ),
             },
         },
@@ -493,14 +533,16 @@ _PACKAGED_MEMBER_GRAMMARS = MappingProxyType({
     # filename is byte-identical across members), whose encoded ensemble
     # size says 31 (control included -- the opposite octet convention
     # from GEFS), and whose control carries NO control flag
-    # (typeOfEnsembleForecast = 3 like every perturbed member;
-    # perturbationNumber == 0 is the only discriminator).  Every
-    # declared value was measured from real 2026-08-17 00Z bytes
-    # through the extended grib-core inventory.
+    # (typeOfEnsembleForecast like every perturbed member: 6 as NOMADS
+    # serves it, 3 in the AWS mirror's rewritten copy;
+    # perturbationNumber == 0 is the only discriminator), and whose
+    # mirror serves part of its archive under another writer's octets
+    # (declared per class as rewrites).  Every declared value was
+    # measured from real bytes through the extended grib-core inventory.
     "aigefs-ensemble-grib2-members-v1": MappingProxyType({
         "file": "rw-wps-aigefs-ensemble-grib2.members.json",
         "sha256": (
-            "de8dceeb2f37efd351ae443efab6ce233540c4e78fc2c610bc93d88b656cc7ce"
+            "7d8237d0ad3d5010380527beaeea9ea8f68c3b4154a37bb4394dc0e71d21795c"
         ),
     }),
 })
@@ -761,7 +803,64 @@ def packaged_gfs_vtable_sha256() -> str:
     return _GFS_VTABLE_SHA256
 
 
+#: The mapping target key that widens ``boundary_interval_seconds`` from
+#: the one spacing a series must have to the finest one it may have.
+BOUNDARY_MULTIPLES_KEY = "accept_boundary_interval_multiples"
+
+
+def boundary_interval_refusal(target: Mapping[str, object], seconds: int,
+                              *, subject: str = "mapped cadence") -> str | None:
+    """Why a mapping target refuses a uniform boundary interval, or None.
+
+    ``boundary_interval_seconds`` names the publisher's own spacing.  A
+    target that also declares :data:`BOUNDARY_MULTIPLES_KEY` takes a
+    uniform series at any whole multiple of that spacing: every valid
+    time in such a series is one the publisher wrote, and no mapped field
+    depends on the spacing, because the mapping grammar has no
+    time-window statistic to bind one to.  Without the key the declared
+    spacing is the only one the target takes, which is what every
+    mapping that does not declare it keeps.
+
+    ONE function for the decode's frame check, the direct export's
+    contract check and the doors that write a cadence, so a cadence one
+    of them accepts cannot be refused by another.
+    """
+
+    declared = target.get("boundary_interval_seconds")
+    if target.get(BOUNDARY_MULTIPLES_KEY) is True:
+        declared = int(declared)
+        if seconds > 0 and seconds % declared == 0:
+            return None
+        return (f"{subject} {seconds} seconds is not a whole multiple of "
+                f"the {declared} seconds the target contract declares")
+    if declared is not None and int(declared) == seconds:
+        return None
+    return f"{subject} {seconds} seconds differs from target contract {declared!r}"
+
+
+#: Parsed mapping targets, keyed by profile and the verified bytes' digest.
+_TARGETS: dict[str, tuple[str, Mapping[str, object]]] = {}
+
+
+def packaged_mapping_target(profile_id: str) -> Mapping[str, object]:
+    """One packaged profile's verified mapping ``target`` contract."""
+
+    path = packaged_authorities(profile_id)["mapping"]
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    cached = _TARGETS.get(profile_id)
+    if cached is None or cached[0] != digest:
+        target = json.loads(data).get("target")
+        if not isinstance(target, dict):
+            raise RuntimeError(
+                f"packaged {profile_id} mapping declares no target contract")
+        _TARGETS[profile_id] = (digest, MappingProxyType(target))
+    return _TARGETS[profile_id][1]
+
+
 __all__ = [
+    "BOUNDARY_MULTIPLES_KEY", "boundary_interval_refusal",
+    "packaged_mapping_target",
     "PROFILE_ROLES", "packaged_authorities", "packaged_authority_sha256",
     "packaged_normalization", "packaged_normalizer_ids",
     "packaged_composition",

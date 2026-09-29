@@ -187,6 +187,10 @@ pub fn grib2_message_length(head: &[u8]) -> Option<u64> {
 pub struct ProbeFacts {
     /// The GRIB object answered an existence probe.
     pub object_present: bool,
+    /// The existence probe got no answer at all (the network, or a 429 or
+    /// 5xx on both attempts): why.  `None` when the origin answered,
+    /// present or not.
+    pub object_unreachable: Option<String>,
     /// Total object size, known exactly only when the index was proven
     /// to cover it (`last_offset + last_message_bytes`).  A short index
     /// leaves this `None`; the full-file transport then measures the
@@ -242,6 +246,11 @@ pub enum Decision {
 /// says so in its own words (`gpuwm/fetch.py`).
 pub fn decide(request: ModeRequest, facts: &ProbeFacts, patterns: usize) -> Decision {
     if !facts.object_present {
+        if let Some(reason) = &facts.object_unreachable {
+            return Decision::Refuse(format!(
+                "this source could not be reached to ask for the GRIB object -- {reason}"
+            ));
+        }
         return Decision::Refuse("the GRIB object is not present at this source".to_string());
     }
     match request {
@@ -445,6 +454,7 @@ mod tests {
     fn complete_facts() -> ProbeFacts {
         ProbeFacts {
             object_present: true,
+            object_unreachable: None,
             object_bytes: Some(1_000),
             idx_declared: true,
             idx_fetched: true,

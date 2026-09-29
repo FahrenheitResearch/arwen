@@ -1009,12 +1009,16 @@ def test_follow_source_with_a_verified_corridor_is_accepted(
     stub = object()
 
     def fake_load(directory, *, expected_set_receipt, grid_id, child_dc,
-                  parent_run, reference_grid, frame_kwargs):
+                  parent_run, reference_grid, frame_kwargs,
+                  required_window, reach, sealed_child_statics):
         seen.update(directory=Path(directory), grid_id=grid_id,
                     expected=expected_set_receipt,
                     child=int(child_dc.grid_id),
                     parent_nx=int(parent_run.nx),
-                    frame_kwargs=frame_kwargs)
+                    frame_kwargs=frame_kwargs,
+                    sealed_child_statics=sealed_child_statics,
+                    required_window=tuple(required_window),
+                    reach=reach)
         return stub
 
     monkeypatch.setattr(corridor_module, "load_child_statics_corridor",
@@ -1025,9 +1029,18 @@ def test_follow_source_with_a_verified_corridor_is_accepted(
     # the whole subtree, so each member carries its own corridor.  On a
     # leaf mover -- this case -- that set has exactly one entry.
     assert inputs.statics_corridor == {2: stub}
+    assert seen["sealed_child_statics"] is inputs.domains[1].static_fields
     # Nothing above the mover moves here, so the corridor anchors to the
     # child's own parent -- the pre-mid-tree geometry, unchanged.
     assert seen["frame_kwargs"] == {}
+    # The loader is asked for the ground THIS run's nest can reach, the
+    # window the preparation sized the corridor to.
+    from gpuwm.experiment import load_experiment
+    from gpuwm.static.corridor import planned_corridor
+    exp = load_experiment(config)
+    plan = planned_corridor(exp, exp.domains[1])
+    assert seen["required_window"] == plan.window
+    assert seen["reach"] == plan.reach
     assert seen["grid_id"] == 2 and seen["child"] == 2
     assert seen["parent_nx"] == 100
     assert seen["expected"] == _D02_CORRIDOR_SET

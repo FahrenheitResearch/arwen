@@ -1,7 +1,7 @@
 """Phase 0 of the SASE gray-zone campaign: baseline, bands, actuation probe.
 
 Registered by docs/superpowers/specs/2026-08-02-sase-grayzone-campaign.md
-(approved by Drew 2026-08-03).  This runner drives the committed
+(approved 2026-08-03).  This runner drives the committed
 instrument -- ``gpuwm.verify.cases.cbl_dry.partition_run`` -- and appends
 one JSON receipt per run to a JSONL ledger; the ``score`` subcommand
 reduces that ledger to the per-rung table the campaign freezes its bands

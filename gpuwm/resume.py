@@ -20,6 +20,7 @@ expects.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -108,6 +109,122 @@ def discover_checkpoint_sets(outdir) -> list[CheckpointSet]:
                            for path in s.members.values()),
                        "" if s.set_id is None else s.set_id),
         reverse=True)
+
+
+#: How many complete checkpoint sets a run keeps in its output directory.
+#: Read by every checkpoint writer after it publishes a new set.  Unset
+#: keeps every set, which is what the engine's own consumers of an older
+#: set rely on (a branch or a downscale from an explicit earlier
+#: checkpoint).  ``gpuwm run-plan`` -- the door the page and the recipes
+#: start runs through -- sets it from ``run_options.keep_checkpoints``, and
+#: ``gpuwm go`` from ``--keep-checkpoints`` on every route, the GFS chain
+#: that builds no run plan included; both default to
+#: :data:`DEFAULT_KEEP_CHECKPOINTS`.  0 keeps every set; on ``go`` that is
+#: ``--keep-checkpoints 0``.  A downscaled child reads it too, and keeps
+#: :data:`DEFAULT_KEEP_CHECKPOINTS` when it is unset
+#: (:func:`gpuwm.offline_child_run.child_checkpoint_retention`), because a
+#: child is re-run rather than resumed and the next downscale binds to its
+#: newest set.
+KEEP_CHECKPOINTS_ENV = "GPUWM_KEEP_CHECKPOINTS"
+
+#: The sets a run-plan, go or downscale run keeps unless told otherwise.  One is
+#: enough to resume: a new set is published whole before an older one is
+#: removed, so there is always one complete set on disk.  Keeping every
+#: hourly set was the breakage: about 187 bytes per grid cell per hour,
+#: which filled a 58 GB disk nine hours into a 12 hour 1 km run.
+DEFAULT_KEEP_CHECKPOINTS = 1
+
+
+def checkpoint_sets_argument(text: str) -> int:
+    """``--keep-checkpoints`` on the child doors: a whole number of sets, 0 keeping every one."""
+    import argparse
+
+    try:
+        value = int(text)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a whole number of checkpoint sets; 0 keeps every set")
+    return value
+
+
+def checkpoint_retention() -> int | None:
+    """Complete sets to keep, from :data:`KEEP_CHECKPOINTS_ENV`; None keeps all."""
+    raw = os.environ.get(KEEP_CHECKPOINTS_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        keep = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{KEEP_CHECKPOINTS_ENV}={raw!r} is not a whole number of "
+            "checkpoint sets; 0 keeps every set") from None
+    if keep < 0:
+        raise ValueError(
+            f"{KEEP_CHECKPOINTS_ENV}={raw!r} is negative; 0 keeps every set")
+    return keep or None
+
+
+def retire_superseded_checkpoints(outdir, keep: int | None = None) -> list[Path]:
+    """Remove every checkpoint set older than the newest ``keep`` complete ones.
+
+    ``keep`` defaults to :func:`checkpoint_retention`.  A set counts as
+    complete when every domain its own header declares is on disk
+    (:func:`_whole_on_disk`); a torn set newer than the kept ones is left
+    alone (resume skips it with its reason), and anything older than the
+    kept ones goes.  Returns the removed files.
+    """
+    keep = checkpoint_retention() if keep is None else (int(keep) or None)
+    if not keep:
+        return []
+    sets = discover_checkpoint_sets(outdir)
+    if not sets:
+        return []
+    kept, removed = 0, []
+    for item in sets:
+        if kept < keep:
+            kept += _whole_on_disk(item)
+            continue
+        for path in item.members.values():
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+            removed.append(path)
+    return removed
+
+
+def _whole_on_disk(item: CheckpointSet) -> bool:
+    """Whether every domain ``item``'s own header declares is on disk.
+
+    Judged from the set itself and never from its neighbours.  A tree
+    set's member count follows the live tree: it grows when a nest is
+    born and shrinks when one retires.  Measuring every set against the
+    largest one in the directory meant that, once a nest retired, no
+    later set ever counted as complete, so nothing was pruned again and
+    the checkpoints piled up for the rest of the run.  The same rule let
+    a torn newer set (children written, root commit marker not yet) with
+    as many files as an older whole set stand in for it, and the whole
+    one was removed.
+
+    A header that cannot be read vouches for nothing.  A single-domain
+    checkpoint declares no ``domain_ids`` and carries no set id; it is
+    whole by itself.
+    """
+    from gpuwm.io.restart import read_restart_header
+
+    try:
+        header = read_restart_header(item.handle)
+    except (OSError, ValueError):
+        return False
+    declared = header.get("domain_ids") if isinstance(header, dict) else None
+    if declared is None:
+        return item.set_id is None and len(item.members) == 1
+    try:
+        return sorted(int(gid) for gid in declared) == sorted(item.members)
+    except (TypeError, ValueError):
+        return False
 
 
 def _default_validate(path: Path) -> None:
@@ -579,7 +696,10 @@ def offline_child_run_at(outdir) -> OfflineChildRun | None:
             and not _report_names_a_child(report)):
         return None
     config = outdir / DERIVED_CHILD_CONFIG_NAME
-    failure = report.get("failure")
+    # A child that was STOPPED carries its sentence under ``stop`` rather
+    # than ``failure`` (result STOPPED): it did not fail, and the reader
+    # is told why it ended all the same.
+    failure = report.get("failure") or report.get("stop")
     summary = failure.get("summary") if isinstance(failure, dict) else None
     return OfflineChildRun(
         outdir=outdir, config=(config if config.is_file() else None),

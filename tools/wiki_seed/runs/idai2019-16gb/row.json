@@ -1,0 +1,11 @@
+{
+ "card_gb": 16,
+ "rung": "static-12-3key-1-360",
+ "start": "2019-03-12T06:00Z",
+ "length_h": 78,
+ "fitted_grid": "12 km 156 by 158 points (1860 by 1884 km); 3 km 384 by 384 points (1149 by 1149 km); 1 km 366 by 366 points (365 by 365 km); 49 levels",
+ "memory": {
+  "need_gib": 11.43,
+  "budget_gib": 14.54
+ }
+}

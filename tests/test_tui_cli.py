@@ -26,7 +26,7 @@ def test_tui_ladder_covers_source_and_installed_locations(monkeypatch, tmp_path)
     staged = tmp_path / "user tools"
     monkeypatch.setattr(bridges, "packaged_bridge_dir", lambda: package / "libexec" / "bridges")
     monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
-    override = tmp_path / "Drew's tools" / "arwen-tui"
+    override = tmp_path / "Ana's tools" / "arwen-tui"
     monkeypatch.setenv(tui_cli.TUI_ENV, str(override))
     name = bridges.executable_name(tui_cli.TUI_NAME)
     assert tui_cli.tui_candidates() == (
@@ -87,13 +87,13 @@ def test_public_tui_arguments_survive_a_real_subprocess(monkeypatch, tmp_path, e
     # The probe records the actual argv reconstructed by the OS, including
     # Windows' command-line quoting. Only the executable is substituted;
     # every argument composed by the production launcher crosses a process.
-    probe = tmp_path / "Drew's argv probe.py"
+    probe = tmp_path / "Ana's argv probe.py"
     received = tmp_path / "received arguments.json"
     probe.write_text(
         "import json, pathlib, sys\n"
         "pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]), encoding='utf-8')\n"
         "raise SystemExit(7)\n", encoding="utf-8")
-    binary = tmp_path / "installed tools" / "Drew's arwen-tui"
+    binary = tmp_path / "installed tools" / "Ana's arwen-tui"
     monkeypatch.setattr(tui_cli, "require_tui", lambda: binary)
     run = subprocess.run
 
@@ -104,11 +104,11 @@ def test_public_tui_arguments_survive_a_real_subprocess(monkeypatch, tmp_path, e
 
     monkeypatch.setattr(tui_cli.subprocess, "run", run_probe)
     values = {
-        "--config": "Drew's configs/日本語 case.toml",
+        "--config": "Ana's configs/日本語 case.toml",
         "--output": "literal $(echo untouched) output",
         "--prepared": "prepared inputs/one;two",
         "--geog-root": "geography's folder/space here",
-        "--snapshot": "Drew's snapshots/terminal preview.html",
+        "--snapshot": "Ana's snapshots/terminal preview.html",
         "--snapshot-width": "80",
         "--snapshot-height": "24",
         "--snapshot-screen": "mode:supercell",

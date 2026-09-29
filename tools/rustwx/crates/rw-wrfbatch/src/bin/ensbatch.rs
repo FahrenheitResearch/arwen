@@ -895,16 +895,6 @@ fn render_product(
         density: LevelDensity::default(),
         mode: LegendMode::Stepped,
     };
-    let field_ladder = || match style {
-        Some(style) => (style.scale.clone(), style.display_units.clone()),
-        // No operational ladder resolved: say so rather than inventing
-        // one.  A generic ramp under a reflectivity title would be read
-        // as the NWS table by anyone who has seen the deterministic panel.
-        None => (
-            scales::spread_scale(threshold * 2.0),
-            spec.units.to_string(),
-        ),
-    };
 
     // The subtitle row has three slots and the renderer centres the middle
     // one on the PANEL, not in the gap between the other two -- so a long
@@ -915,9 +905,9 @@ fn render_product(
     let (values, title, units, scale, subtitle_left, contours, slug, colorbar) = match product {
         "mean" => {
             let mean = ensemble_mean(stack, args.nan_policy).map_err(|e| e.to_string())?;
-            let (scale, units) = field_ladder();
+            let (values, scale, units) = field_panel(&mean, style, spec, threshold);
             (
-                to_f32(&mean),
+                values,
                 format!("Ensemble mean {} ({members} members)", spec.title),
                 units,
                 scale,
@@ -984,7 +974,7 @@ fn render_product(
                 ties.tied_fraction,
                 args.tie_rule.as_str()
             );
-            let (scale, units) = field_ladder();
+            let (values, scale, units) = field_panel(&pmm, style, spec, threshold);
             let note = format!(
                 "PMM tie rule {}; {:.1}% of the mean field is plateau (largest group {})",
                 args.tie_rule.as_str(),
@@ -992,7 +982,7 @@ fn render_product(
                 ties.largest_tie_group
             );
             (
-                to_f32(&pmm),
+                values,
                 format!(
                     "Probability-matched mean {} ({members} members)",
                     spec.title
@@ -1116,6 +1106,41 @@ fn coverage_line(
 
 fn to_f32(values: &[f64]) -> Vec<f32> {
     values.iter().map(|value| *value as f32).collect()
+}
+
+/// A panel that shows the field itself (mean, PMM): its values, colour
+/// scale and units.
+///
+/// The field's operational ladder is calibrated in the units its own
+/// product is drawn in (2 m temperature in degF, precipitation in inches,
+/// 10 m wind in knots) while a member store holds the field in stored
+/// units (K, mm, m/s), so the values go through the style's own
+/// conversion before they meet that ladder, as the deterministic
+/// picture's values do.  Without it a 300 K mean was drawn as 300 degF.
+fn field_panel(
+    values: &[f64],
+    style: Option<&rustwx_products::viewer::StoreVariableStyle>,
+    spec: &FieldSpec,
+    threshold: f64,
+) -> (Vec<f32>, rustwx_render::ColorScale, String) {
+    match style {
+        Some(style) => (
+            values
+                .iter()
+                .map(|value| style.convert.apply(*value as f32))
+                .collect(),
+            style.scale.clone(),
+            style.display_units.clone(),
+        ),
+        // No operational ladder resolved: say so rather than inventing
+        // one.  A generic ramp under a reflectivity title would be read
+        // as the NWS table by anyone who has seen the deterministic panel.
+        None => (
+            to_f32(values),
+            scales::spread_scale(threshold * 2.0),
+            spec.units.to_string(),
+        ),
+    }
 }
 
 fn finite_max(values: &[f64]) -> Option<f64> {
@@ -1374,5 +1399,120 @@ mod tests {
         let files = member_wrfout_series(&root.join("member_007"), None).expect("series");
 
         assert_eq!(files.len(), 2);
+    }
+
+    /// One mean or PMM panel of a two-member stack whose members both
+    /// hold `values`, drawn under `style` into `out_dir`; its PNG bytes.
+    fn field_panel_png(
+        out_dir: &Path,
+        field: &str,
+        product: &str,
+        values: &[f64],
+        style: &rustwx_products::viewer::StoreVariableStyle,
+    ) -> Vec<u8> {
+        let (ny, nx) = (3usize, 4usize);
+        let lat: Vec<f32> = (0..ny * nx).map(|cell| 35.0 + (cell / nx) as f32).collect();
+        let lon: Vec<f32> = (0..ny * nx).map(|cell| -100.0 + (cell % nx) as f32).collect();
+        let spec = field_specs()
+            .into_iter()
+            .find(|spec| spec.name == field)
+            .expect("field spec");
+        let args = Args {
+            store_root: out_dir.join("stores"),
+            out_dir: out_dir.to_path_buf(),
+            members: Vec::new(),
+            field: field.to_string(),
+            products: vec![product.to_string()],
+            threshold: None,
+            neighborhood_km: 0.0,
+            frames: None,
+            nan_policy: NanPolicy::Mask,
+            tie_rule: PmmTieRule::FlatIndex,
+            width: 480,
+            height: 360,
+            source_label: "test".to_string(),
+            overlays: None,
+            annotations: None,
+        };
+        let stack = MemberStack::new(ny, nx, vec![(1, values.to_vec()), (2, values.to_vec())])
+            .expect("stack");
+        let coverage = missingness_report(&stack, NanPolicy::Mask).expect("coverage");
+        let path = render_product(
+            product,
+            &args,
+            &spec,
+            &stack,
+            &coverage,
+            spec.default_threshold,
+            0.0,
+            &lat,
+            &lon,
+            None,
+            Some(style),
+            "ens02",
+            "ensemble",
+        )
+        .expect("render")
+        .expect("a mean or PMM panel is drawn");
+        std::fs::read(path).expect("panel png")
+    }
+
+    #[test]
+    fn a_field_panel_draws_stored_values_in_the_units_of_its_ladder() {
+        // A member store holds 2 m temperature in K, 10 m wind in m/s and
+        // precipitation in mm; each field's operational ladder is drawn in
+        // other units.  The panel of the stored values must be the panel
+        // of the same field already in the ladder's units, and must not be
+        // the panel of the stored numbers read straight off that ladder.
+        let scratch = Scratch::new("ladder-units");
+        for (field, variable, stored_units, first, step) in [
+            ("t2", "temperature_2m", "K", 265.0, 4.0),
+            ("wspd10", "wind_speed_10m", "m/s", 1.0, 2.5),
+            ("precip", "apcp", "kg/m^2", 0.0, 6.0),
+        ] {
+            let selector = field_selector(field).expect("selector");
+            let style = rustwx_products::viewer::operational_style_for_store_variable(
+                variable,
+                &serde_json::to_value(selector).expect("selector json"),
+                stored_units,
+                rustwx_core::ModelId::WrfGdex,
+            )
+            .unwrap_or_else(|| panic!("{field}: operational ladder"));
+            assert!(
+                !style.convert.is_none(),
+                "{field}: the ladder is drawn in {} while the store holds {stored_units}",
+                style.display_units
+            );
+            let stored: Vec<f64> = (0..12).map(|cell| first + step * f64::from(cell)).collect();
+            let in_ladder_units: Vec<f64> = stored
+                .iter()
+                .map(|value| f64::from(style.convert.apply(*value as f32)))
+                .collect();
+            let mut settled = style.clone();
+            settled.convert = rustwx_products::viewer::UnitConvert::None;
+            for product in ["mean", "pmm"] {
+                let root = scratch.0.join(format!("{field}-{product}"));
+                let drawn = field_panel_png(&root.join("stored"), field, product, &stored, &style);
+                let expected = field_panel_png(
+                    &root.join("settled"),
+                    field,
+                    product,
+                    &in_ladder_units,
+                    &settled,
+                );
+                let unconverted =
+                    field_panel_png(&root.join("raw"), field, product, &stored, &settled);
+                assert!(
+                    drawn == expected,
+                    "{field} {product}: stored {stored_units} values must be drawn in {}",
+                    style.display_units
+                );
+                assert!(
+                    drawn != unconverted,
+                    "{field} {product}: the panel must not read {stored_units} numbers off a {} ladder",
+                    style.display_units
+                );
+            }
+        }
     }
 }

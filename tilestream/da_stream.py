@@ -569,54 +569,46 @@ def letkf_ledger(nz: int, ny: int, nx: int, members: int, nfields: int,
 def container_memory_limit() -> dict:
     """The cgroup's limit, and how far ``/proc/meminfo`` is from it.
 
-    ``hoststore.host_memory`` reads ``/proc/meminfo``, and
-    ``pinned_ceiling_bytes`` multiplies its ``MemTotal`` by
-    :data:`~tilestream.hoststore.PINNED_CEILING_FRACTION`.  Inside an
-    unprivileged container ``/proc/meminfo`` is the HOST's, not the
-    container's, so both numbers can be far too generous.  MEASURED on this
-    project's four rented boxes:
+    Inside an unprivileged container ``/proc/meminfo`` is the HOST's, not
+    the container's.  MEASURED on this project's four rented boxes:
 
         box        cgroup limit   /proc/meminfo   overstatement
         5090         120.6 GiB      125.6 GiB          1.04x
         2x4090       241.7 GiB      503.6 GiB          2.08x
         4090         342.0 GiB     1007.8 GiB          2.93x
 
-    A single streamed domain has survived that so far because it asks for
-    one store.  An ENSEMBLE asks for ``R`` of them, so the same mis-read
-    reaches the wall ``R`` times sooner -- and pinned pages cannot be
-    swapped, which is how this project already froze a machine.  Read the
-    cgroup, cap against it, and treat ``/proc/meminfo`` as an upper bound
-    that may be wrong by a factor of three.
+    An ENSEMBLE asks for ``R`` stores, so a host figure read as the
+    container's reaches the wall ``R`` times sooner -- and pinned pages
+    cannot be swapped, which is how this project already froze a machine.
+    ``hoststore.host_memory`` and ``pinned_ceiling_bytes`` are capped by the
+    limit; this report sets the limit (``cgroup_bytes``, the smallest on the
+    process's own cgroup path, read from ``cgroup_path``, and
+    ``cgroup_room_bytes``, the least room under any of them) beside the
+    uncapped host figure it would otherwise have been.
+
+    THE BREAKAGE: this read only the mount root's ``memory.max``.  Inside a
+    systemd scope with ``MemoryMax=2G`` the root carries no limit, so it
+    reported none, and the host's 30.55 GiB as the figure to trust.  It now
+    reads the planner's walk (``tilestream.autoplan._cgroup_memory_walk``).
     """
-    out: dict[str, Any] = {"cgroup_bytes": None, "cgroup_path": None}
-    for path in ("/sys/fs/cgroup/memory.max",
-                 "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-        try:
-            with open(path, "r", encoding="ascii") as handle:
-                raw = handle.read().strip()
-        except OSError:
-            continue
-        if raw == "max":
-            out["cgroup_path"] = path
-            break
-        try:
-            value = int(raw)
-        except ValueError:
-            continue
-        # cgroup v1 spells "no limit" as a number near 2**63; anything at or
-        # above the machine's own RAM is not a limit, it is the absence of
-        # one, and reporting it as a limit would be worse than reporting
-        # none at all.
-        out["cgroup_bytes"] = value
-        out["cgroup_path"] = path
-        break
+    from tilestream import autoplan, hoststore
 
-    from tilestream import hoststore
+    out: dict[str, Any] = {"cgroup_bytes": None, "cgroup_path": None,
+                           "cgroup_room_bytes": None}
+    bound = [level for level in autoplan._cgroup_memory_walk()
+             if level.limit is not None]
+    if bound:
+        tightest = min(bound, key=lambda level: level.limit)
+        out["cgroup_bytes"] = tightest.limit
+        out["cgroup_path"] = tightest.limit_file
+        out["cgroup_room_bytes"] = min(level.room for level in bound)
 
-    mem = hoststore.host_memory()
+    mem = hoststore._host_memory_uncapped()
     out["meminfo_total"] = mem["total"]
     out["meminfo_available"] = mem["available"]
-    out["pinned_ceiling_from_meminfo"] = hoststore.pinned_ceiling_bytes()
+    out["pinned_ceiling_from_meminfo"] = int(
+        hoststore.PINNED_CEILING_FRACTION * mem["total"])
+    out["pinned_ceiling"] = hoststore.pinned_ceiling_bytes()
     limit = out["cgroup_bytes"]
     if limit and mem["total"]:
         out["overstatement"] = mem["total"] / limit

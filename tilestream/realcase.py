@@ -508,6 +508,7 @@ def prepare_low_water(config_path: str, *, verbose=print):
                                          domain_boundary_snapshot,
                                          extract_lateral_side)
     from gpuwm.ingest.preflight import build_input_catalog
+    from gpuwm.ingest.cpu_backend import host_step_workers
     from gpuwm.ingest.preprocess_backend import (CudaPreprocessBackend,
                                                  release_backend_memory)
     from gpuwm.ingest.real import initialize_real
@@ -612,7 +613,8 @@ def prepare_low_water(config_path: str, *, verbose=print):
     water, water_policy = assembled_water_temperature(
         soil_fields, static=static, landuse_attrs=landuse_attrs, data=data,
         source_snapshot=snapshots[start_time], target_lat=lat,
-        target_lon=lon, route=WATER_ROUTE_LOW_WATER)
+        target_lon=lon, route=WATER_ROUTE_LOW_WATER,
+        workers=host_step_workers(backend))
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=reconciled_soil_type,
@@ -750,7 +752,7 @@ WATER_ROUTE_LOW_WATER = "the tiles low-water ERA5 route"
 
 def assembled_water_temperature(fields, *, static, landuse_attrs, data,
                                 source_snapshot, target_lat, target_lon,
-                                route):
+                                route, workers=None):
     """The finished water temperature this route hands the soil router.
 
     The #168 lake fix made a raw SST-beside-SKINTEMP pair a refusal at
@@ -803,7 +805,8 @@ def assembled_water_temperature(fields, *, static, landuse_attrs, data,
         source_lat=np.asarray(source_snapshot.latitude, dtype=np.float64),
         source_lon=np.asarray(source_snapshot.longitude, dtype=np.float64),
         target_lat=np.asarray(target_lat, dtype=np.float64),
-        target_lon=np.asarray(target_lon, dtype=np.float64))
+        target_lon=np.asarray(target_lon, dtype=np.float64),
+        workers=workers)
     announce_water_temperature(assembly.receipt,
                                scope=np.asarray(target_lat).shape)
     return assembly, policy
@@ -865,6 +868,7 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
                                          domain_boundary_snapshot,
                                          extract_lateral_side)
     from gpuwm.ingest.preflight import build_input_catalog
+    from gpuwm.ingest.cpu_backend import host_step_workers
     from gpuwm.ingest.preprocess_backend import (CudaPreprocessBackend,
                                                  release_backend_memory)
     from gpuwm.ingest.real import initialize_real
@@ -1001,7 +1005,8 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
     water, water_policy = assembled_water_temperature(
         soil_fields, static=static, landuse_attrs=landuse_attrs, data=data,
         source_snapshot=snapshots[start_time], target_lat=lat,
-        target_lon=lon, route=WATER_ROUTE_SLABBED)
+        target_lon=lon, route=WATER_ROUTE_SLABBED,
+        workers=host_step_workers(backend))
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         soil_type=reconciled_soil_type,

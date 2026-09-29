@@ -52,6 +52,7 @@ def _grib2_stream(messages: int) -> bytes:
 
 
 def _atmosphere_index(*, cloud_water_name: str = "CLMR",
+                      cloud_ice_name: str = "CIMIXR",
                       extra: tuple[tuple[str, str], ...] = (),
                       ) -> tuple[str, int]:
     """A complete wrfnat index in one provider's vocabulary.
@@ -63,7 +64,8 @@ def _atmosphere_index(*, cloud_water_name: str = "CLMR",
 
     rows: list[tuple[str, str]] = []
     for role in hrrr_transport.HYBRID_FIELDS:
-        name = cloud_water_name if role == "CLMR" else role
+        name = {"CLMR": cloud_water_name,
+                "CIMIXR": cloud_ice_name}.get(role, role)
         for level in range(1, 51):
             rows.append((name, f"{level} hybrid level"))
     rows.extend(hrrr_transport.SURFACE_FIELDS)
@@ -123,10 +125,44 @@ def test_selectors_count_the_same_in_either_index(spelling):
 def test_the_cloud_water_selector_carries_both_spellings():
     selectors = hrrr_transport.atmosphere_selectors()
     assert "CLMR|CLWMR:1 hybrid level" in selectors
+    assert "CIMIXR|CICE:1 hybrid level" in selectors
     # ...and nothing else grew an alternation by accident.
     alternating = {selector.split(":")[0] for selector in selectors
                    if "|" in selector}
-    assert alternating == {"CLMR|CLWMR"}
+    assert alternating == {"CLMR|CLWMR", "CIMIXR|CICE"}
+
+
+@pytest.mark.parametrize("engine", ["python", "rust-selectors"])
+def test_a_wrfnat_index_from_before_hrrr_v3_selects_its_cice_cloud_ice(engine):
+    """HRRRv1 and v2 index hybrid cloud ice as CICE and carry no CIMIXR.
+
+    Keyed on CIMIXR alone, every cycle before July 2018 was refused with
+    ``levels={'CIMIXR': []}`` on the idx-subset transport.
+    """
+
+    text, size = _atmosphere_index(cloud_ice_name="CICE")
+    if engine == "python":
+        rows = hrrr_transport._parse_index(text.encode("ascii"), size)
+        selected = hrrr_transport._atmosphere_selection(rows)
+        assert len(selected) == hrrr_transport.ATMOSPHERE_RECORD_COUNT
+        assert sum(rows[index].variable == "CICE"
+                   for index in selected) == 50
+    else:
+        observed = fetch.count_selectors_in_index(
+            text, hrrr_transport.atmosphere_selectors(),
+            hrrr_transport.ACCUMULATION_EXCLUSION)
+        assert observed == hrrr_transport.ATMOSPHERE_RECORD_COUNT
+
+
+def test_an_index_carrying_both_cloud_ice_codes_is_a_count_change_not_absorbed():
+    """No published HRRR file carries both; one that did is not guessed at."""
+
+    both = tuple(("CICE", f"{level} hybrid level") for level in range(1, 51))
+    text, size = _atmosphere_index(extra=both)
+    rows = hrrr_transport._parse_index(text.encode("ascii"), size)
+    with pytest.raises(hrrr_transport.IndexInventoryError,
+                       match="count=611"):
+        hrrr_transport._atmosphere_selection(rows)
 
 
 def test_an_absent_field_is_still_a_hard_error_under_aliasing():
@@ -377,6 +413,41 @@ def test_cli_refuses_a_byte_transport_the_python_engine_cannot_serve(
     assert "needs the rust fetch backbone" in capsys.readouterr().err
 
 
+#: The backbone's checkout build as each shell must receive it, written
+#: out rather than derived so a generator that loses its shell rule cannot
+#: also rewrite what it is judged against.  Windows PowerShell 5.1 rejects
+#: `&&` with a parser error.
+BACKBONE_BUILD_FOR_SHELL = {
+    False: "cd tools/rustwx && cargo build --release --locked --offline "
+           "&& cd ../..",
+    True: "cd tools\\rustwx; cargo build --release --locked --offline; "
+          "cd ..\\..",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_python_engine_refusal_spells_the_backbone_build_for_the_shell(
+        tmp_path, capsys, monkeypatch, windows):
+    """The build line in this refusal is one a Windows user can paste.
+
+    It printed `cd tools/rustwx && cargo build ...` on every OS, which
+    Windows PowerShell 5.1 cannot parse.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    rc = cli.main(["fetch", "--source", "hrrr", "--engine", "python",
+                   "--mode", "full-file", "--cycle", "2026-07-28T05",
+                   "--hours", "1", "--out", str(tmp_path / "hrrr")])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert BACKBONE_BUILD_FOR_SHELL[windows] in err, err
+    if windows:
+        assert "&&" not in err, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {err}")
+
+
 def test_the_backbone_flags_serve_hrrr_and_the_gfs_fullfile_route(
         tmp_path, capsys):
     """--engine/--mode used to be hrrr-only; the GFS full-file route
@@ -439,7 +510,8 @@ def test_the_built_binary_refuses_an_hrrr_product_it_would_downgrade():
         [str(BINARY), "probe", "--model", "hrrr", "--date", "20260728",
          "--cycle", "12", "--hours", "0", "--product", "wrfnative"],
         capture_output=True, text=True)
-    assert result.returncode == 2
+    # A refusal about the request, not a malformed command line.
+    assert result.returncode == rustwx_fetch.EXIT_REFUSED
     assert "not an HRRR product token" in result.stderr
     assert "wrfnat" in result.stderr
 
@@ -517,7 +589,8 @@ def _install_fake_backbone(monkeypatch, atmosphere: int,
                        if soil is None else soil)}
 
     def fake(*, binary, cycle, hour, kind, host, mode, out, cache_dir,
-             progress):
+             progress, retries=0, shown_name=None, streams=None,
+             byte_relay=None):
         records = counts[kind]
         name = (f"hrrr.t{cycle:%H}z.wrfnatf{hour:02d}.grib2"
                 if kind == "atmosphere"
@@ -871,3 +944,300 @@ def test_a_pinned_transport_is_not_second_guessed(tmp_path, monkeypatch,
                      backbone=tmp_path / "rw_fetch",
                      resolved_transport="nomads")
     assert "paces whole-file transfers" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# A failed rw_fetch reaches the run's failed event as its real reason
+# ---------------------------------------------------------------------------
+
+#: What a 2.7.7 rw_fetch printed on stderr when one 16 MiB chunk of a
+#: real wrfprs object timed out: wx-core's carriage-return progress, the
+#: reason glued onto it, then the whole usage text.  Captured from the
+#: built binary against noaa-hrrr-bdp-pds, abridged in the usage only.
+_GLUED_STDERR = (
+    "\r  Downloading chunks 1/25...\r  Downloading chunks 9/25..."
+    "rw_fetch: HTTP error: failed to read https://noaa-hrrr-bdp-pds.s3."
+    "amazonaws.com/hrrr.20260925/conus/hrrr.t06z.wrfprsf01.grib2: "
+    "timeout: global\n"
+    "usage: rw_fetch <fetch|probe|latest> [OPTIONS]\n"
+    "       rw_fetch --version | --help | --abi\n\n"
+    "  fetch    download a model-run window and print a fetch record\n\n"
+    "common options\n"
+    "  --model NAME            hrrr, gfs, gdas, rap, nam, ...\n\n"
+    "fetch options\n"
+    "  --mode MODE             auto (default) | full-file | idx-subset\n")
+
+
+def _stand_in(tmp_path: Path, *, stderr: str, code: int) -> list[str]:
+    """A command that prints ``stderr`` byte for byte and exits ``code``."""
+
+    script = tmp_path / "stand_in.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.stderr.buffer.write({stderr.encode('utf-8')!r})\n"
+        f"sys.exit({code})\n", encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_a_reason_glued_to_chunk_progress_is_the_reason_reported(tmp_path):
+    """The reason, not the first usage heading.
+
+    A 22.9 GiB HRRR fetch that lost one chunk 38 minutes in reached the
+    run's failed event as ``rw_fetch fetch: common options``.
+    """
+
+    with pytest.raises(RuntimeError) as caught:
+        rustwx_fetch._run(_stand_in(tmp_path, stderr=_GLUED_STDERR, code=2),
+                          what="fetch")
+    message = str(caught.value)
+    assert message == (
+        "rw_fetch fetch: HTTP error: failed to read https://noaa-hrrr-bdp-"
+        "pds.s3.amazonaws.com/hrrr.20260925/conus/hrrr.t06z.wrfprsf01.grib2"
+        ": timeout: global")
+    assert "common options" not in message
+
+
+def test_a_transfer_cut_off_is_transient_and_its_remedy_reaches_the_event(
+        tmp_path):
+    from gpuwm import runplan
+
+    stderr = ("\r  Downloading chunks 26/27...\n"
+              "rw_fetch: HTTP error: failed to read https://x/y: connection "
+              "reset (gave up after 4 attempts)\n")
+    out = tmp_path / "downloads"
+    with pytest.raises(rustwx_fetch.RwFetchError) as caught:
+        rustwx_fetch._run(
+            _stand_in(tmp_path, stderr=stderr,
+                      code=rustwx_fetch.EXIT_TRANSFER),
+            what="fetch", out=out)
+    error = caught.value
+    assert error.transient
+    assert error.reason.endswith("(gave up after 4 attempts)")
+    assert str(out) in error.remedy
+    # The run-plan front door relays it rather than `remedy: null`.
+    assert runplan._remedy(error) == error.remedy
+
+
+def test_a_refusal_is_not_transient_and_a_silent_exit_still_says_so(tmp_path):
+    with pytest.raises(rustwx_fetch.RwFetchError) as caught:
+        rustwx_fetch._run(
+            _stand_in(tmp_path, stderr="\nrw_fetch: f000: no source served "
+                      "this object -- aws: the object is absent\n", code=1),
+            what="fetch")
+    assert not caught.value.transient
+    assert caught.value.remedy is None
+    assert str(caught.value).endswith("the object is absent")
+    assert rustwx_fetch.failure_reason("", -9) == (
+        "rw_fetch was stopped by signal 9 before it reported a reason")
+    assert rustwx_fetch.failure_reason("  Downloading chunks 3/9...", 5) == (
+        "rw_fetch exited 5 without reporting a reason")
+
+
+def _one_file_record(out: Path) -> dict:
+    return {"schema": rustwx_fetch.FETCH_RECORD_SCHEMA, "files": [{
+        "name": "hrrr.t06z.wrfprsf18.grib2", "bytes": 1, "wall_seconds": 1.0,
+        "source": "aws", "mode": "full-file", "mode_reason": "requested",
+        "grib_url": "https://example/hrrr.t06z.wrfprsf18.grib2"}]}
+
+
+def test_the_rust_hrrr_route_asks_again_after_a_network_cut_off(
+        tmp_path, monkeypatch):
+    """One object cut off by the network costs that object a retry.
+
+    It used to cost the run: the Rust route spent none of the fetch's
+    retry budget, so f18 soil failing after the backbone's own retries
+    ended a fetch whose other 43 files had landed.
+    """
+
+    calls: list[int] = []
+
+    def flaky(binary, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise rustwx_fetch.RwFetchError(
+                "fetch", "HTTP error: failed to read https://x: connection "
+                "reset", returncode=rustwx_fetch.EXIT_TRANSFER)
+        return _one_file_record(kwargs["out"])
+
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", flaky)
+    waits: list[float] = []
+    monkeypatch.setattr(fetch.fetch_pool, "sleep_unless_stopped",
+                        lambda seconds, **_: waits.append(seconds))
+    said: list[str] = []
+    entry = fetch._rw_fetch_hrrr(
+        binary=Path("rw_fetch"), cycle=datetime(2026, 9, 25, 6), hour=18,
+        kind="soil", host="s3", mode="full-file", out=tmp_path,
+        cache_dir=None, progress=said.append, retries=2,
+        shown_name="hrrr.t06z.soilf18.grib2")
+    assert entry["name"] == "hrrr.t06z.wrfprsf18.grib2"
+    assert len(calls) == 2
+    assert any("asking again (1 of 2) in 2 s" in line for line in said)
+    # The shared backoff, not an immediate re-ask.
+    assert waits == [2.0]
+    # One completion line, under the name the file is filed as.
+    done = [line for line in said if " B in " in line]
+    assert len(done) == 1 and "soilf18" in done[0], said
+
+
+def test_the_rust_hrrr_route_does_not_retry_a_refusal_or_past_its_budget(
+        tmp_path, monkeypatch):
+    for code, budget, expected_calls, expected_waits in (
+            (rustwx_fetch.EXIT_REFUSED, 3, 1, []),
+            (rustwx_fetch.EXIT_TRANSFER, 2, 3, [2.0, 4.0])):
+        calls: list[int] = []
+        waits: list[float] = []
+        monkeypatch.setattr(fetch.fetch_pool, "sleep_unless_stopped",
+                            lambda seconds, **_: waits.append(seconds))
+
+        def failing(binary, **kwargs):
+            calls.append(1)
+            raise rustwx_fetch.RwFetchError("fetch", "no", returncode=code)
+
+        monkeypatch.setattr(rustwx_fetch, "run_fetch", failing)
+        with pytest.raises(rustwx_fetch.RwFetchError):
+            fetch._rw_fetch_hrrr(
+                binary=Path("rw_fetch"), cycle=datetime(2026, 9, 25, 6),
+                hour=0, kind="atmosphere", host="s3", mode="full-file",
+                out=tmp_path, cache_dir=None, progress=lambda _: None,
+                retries=budget)
+        assert len(calls) == expected_calls
+        assert waits == expected_waits
+
+
+def test_the_rust_hrrr_route_counts_its_asks_against_the_budget_it_spends(
+        tmp_path, monkeypatch):
+    """Each "asking again (N of M)" line names the asks the loop will make.
+
+    A fetch handed the Python transport's budget of five was told "1 of
+    5" and then stopped after the fourth ask, because the shared schedule
+    caps the loop at ``TRANSIENT_ATTEMPTS - 1``; the reader waited for a
+    fifth ask that never came.
+    """
+
+    from gpuwm import fetch_endpoints
+
+    calls: list[int] = []
+    monkeypatch.setattr(fetch.fetch_pool, "sleep_unless_stopped",
+                        lambda seconds, **_: None)
+
+    def cut_off(binary, **kwargs):
+        calls.append(1)
+        raise rustwx_fetch.RwFetchError(
+            "fetch", "HTTP error: connection reset",
+            returncode=rustwx_fetch.EXIT_TRANSFER)
+
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", cut_off)
+    budget = fetch_endpoints.TRANSIENT_ATTEMPTS - 1
+    said: list[str] = []
+    with pytest.raises(rustwx_fetch.RwFetchError):
+        fetch._rw_fetch_hrrr(
+            binary=Path("rw_fetch"), cycle=datetime(2026, 9, 25, 6), hour=0,
+            kind="atmosphere", host="s3", mode="full-file", out=tmp_path,
+            cache_dir=None, progress=said.append, retries=budget + 1)
+    asks = [line for line in said if "asking again" in line]
+    assert len(calls) == budget + 1
+    assert len(asks) == budget
+    for number, line in enumerate(asks, start=1):
+        assert f"asking again ({number} of {budget}) in" in line, said
+
+
+def test_a_cut_off_rust_transfer_moves_the_gfs_ladder_on():
+    from gpuwm import fetch_endpoints
+
+    cut = rustwx_fetch.RwFetchError(
+        "fetch", "HTTP error: connection reset",
+        returncode=rustwx_fetch.EXIT_TRANSFER)
+    refused = rustwx_fetch.RwFetchError(
+        "fetch", "--model is required", returncode=rustwx_fetch.EXIT_REFUSED)
+    assert fetch_endpoints.fault_reason(cut) == (
+        "the connection failed -- HTTP error: connection reset")
+    assert fetch_endpoints.fault_reason(refused) is None
+
+
+@needs_binary
+def test_the_built_binary_prints_a_runtime_reason_without_the_usage_text(
+        tmp_path):
+    """A refusal after the command line parsed is one line, exit 1."""
+
+    result = subprocess.run(
+        [str(BINARY), "fetch", "--model", "hrrr", "--date", "20260925",
+         "--cycle", "06", "--hours", "0", "--product", "wrfprs"],
+        capture_output=True, text=True)
+    assert result.returncode == rustwx_fetch.EXIT_REFUSED
+    assert "usage:" not in result.stderr
+    assert rustwx_fetch.failure_reason(result.stderr, result.returncode) == (
+        "--out DIR is required")
+
+
+#: What a current rw_fetch prints when an origin answers a chunk's range
+#: request with the whole object: an answer the origin gave on purpose,
+#: exit 1, not a transfer the network cut off.
+_RANGE_IGNORED_STDERR = (
+    "\r  Downloading chunks 1/27...\n"
+    "rw_fetch: HTTP error: range request for https://mirror.example/hrrr."
+    "t06z.wrfnatf00.grib2 (bytes=16777216-33554431) returned HTTP 200, not "
+    "206; the origin did not serve the requested span\n")
+
+
+def test_an_origin_that_ignores_range_is_not_retried_or_blamed_on_the_network(
+        tmp_path, monkeypatch):
+    """A refusal from the origin gets no retry loop and no network remedy.
+
+    Every payload failure used to exit 3, so a mirror that ignores Range
+    or refuses access was downloaded again up to the retry budget and the
+    reader was told to wait for a steadier connection.
+    """
+
+    from gpuwm import fetch_endpoints, runplan
+
+    command = _stand_in(tmp_path, stderr=_RANGE_IGNORED_STDERR,
+                        code=rustwx_fetch.EXIT_REFUSED)
+    with pytest.raises(rustwx_fetch.RwFetchError) as caught:
+        rustwx_fetch._run(command, what="fetch", out=tmp_path / "downloads")
+    error = caught.value
+    assert not error.transient
+    assert error.remedy is None
+    assert error.reason.endswith("the origin did not serve the requested span")
+    assert fetch_endpoints.fault_reason(error) is None
+    assert "network cut" not in (runplan._remedy(error) or "")
+
+    calls: list[int] = []
+
+    def refused(binary, **kwargs):
+        calls.append(1)
+        return rustwx_fetch._run(command, what="fetch", out=kwargs["out"])
+
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", refused)
+    said: list[str] = []
+    with pytest.raises(rustwx_fetch.RwFetchError):
+        fetch._rw_fetch_hrrr(
+            binary=Path("rw_fetch"), cycle=datetime(2026, 9, 25, 6), hour=0,
+            kind="atmosphere", host="s3", mode="full-file", out=tmp_path,
+            cache_dir=None, progress=said.append, retries=5)
+    assert len(calls) == 1
+    assert not any("asking again" in line for line in said)
+
+
+def test_exit_2_from_an_older_backbone_is_not_called_a_command_line_dispute(
+        tmp_path):
+    """A pre-split backbone exits 2 for everything, a dropped link too.
+
+    Its probe still passes (the record ABI did not change), so exit 2
+    alone does not mean the command line was refused.  Only a current
+    backbone's usage-error line does.
+    """
+
+    with pytest.raises(rustwx_fetch.RwFetchError) as caught:
+        rustwx_fetch._run(_stand_in(tmp_path, stderr=_GLUED_STDERR, code=2),
+                          what="fetch")
+    older = caught.value.remedy
+    assert "disagree about its command line" not in older
+    assert "older than this gpuwm" in older
+
+    usage = ("\nrw_fetch: unknown option \"--bogus\"\n"
+             "rw_fetch --help lists every option\n")
+    with pytest.raises(rustwx_fetch.RwFetchError) as caught:
+        rustwx_fetch._run(_stand_in(tmp_path, stderr=usage, code=2),
+                          what="fetch")
+    assert "disagree about its command line" in caught.value.remedy
+    assert caught.value.reason == 'unknown option "--bogus"'

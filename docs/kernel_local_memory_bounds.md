@@ -598,7 +598,7 @@ targets, in order:
 
 | kernel | frame | selector |
 |---|---|---|
-| `shinhong_column` | 14,040 B (17,160 on NVRTC 13.3) | `bl_pbl_physics = 11` |
+| `shinhong_column` | 13,000 B on NVRTC 13.0 (17,160 on 13.3 and 13.4; sm_120, read 2026-09-28) | `bl_pbl_physics = 11` |
 | `myjpbl_column` | **9,232 B** | `bl_pbl_physics = 2` |
 | `wsm6_column` | 7,216 B | `mp_physics = 6` |
 | `sase_*` | 6,272 B | SASE |

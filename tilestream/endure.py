@@ -119,14 +119,22 @@ def _proc_gib(field: str) -> float:
 
 
 def _cgroup_gib() -> float:
-    """Container RSS.  ``/proc/meminfo`` reports the HOST's on these boxes."""
-    for path in ("/sys/fs/cgroup/memory.current",
-                 "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
-        try:
-            with open(path) as fh:
-                return float(fh.read().strip()) / 2 ** 30
-        except OSError:
-            continue
+    """Memory charged to this process's own cgroup, in GiB; NaN when unread.
+
+    ``/proc/meminfo`` reports the HOST's on these boxes.  The usage is the
+    deepest level of the planner's walk that publishes one
+    (``tilestream.autoplan._cgroup_memory_walk``): the process's own cgroup,
+    or its nearest ancestor that reports usage.
+
+    THE BREAKAGE: this read the mount root's ``memory.current``, which a
+    cgroup v2 root does not have, so inside a systemd scope (or on any bare
+    host) the trace's cgroup column was NaN from the first step.
+    """
+    from tilestream import autoplan
+
+    for level in autoplan._cgroup_memory_walk():
+        if level.usage is not None:
+            return level.usage / 2 ** 30
     return float("nan")
 
 
@@ -135,7 +143,9 @@ def sample() -> dict:
 
     MEASURED at 0.14 ms, against a 660 ms step: sampling every step rather
     than every twentieth costs 0.02% and is what makes a slope fit over 4320
-    points possible instead of 216.
+    points possible instead of 216.  Reading the process's own cgroup
+    (:func:`_cgroup_gib`) added 0.11 ms, measured in a systemd scope six
+    levels deep, so a row is about 0.25 ms, still under 0.04% of the step.
     """
     import cupy as cp
     from tilestream import hoststore

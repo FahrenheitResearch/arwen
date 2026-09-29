@@ -23,7 +23,7 @@ There is no separate "LES-verified" tier and none is claimed.
 
 | `km_opt` | closure | SGS TKE | selectable on a nest |
 |---|---|---|---|
-| 2 | 1.5-order prognostic TKE, `K = c_k sqrt(e) l` | prognostic carrier, advected | yes, unless the **parent** is also `km_opt=2` — see §4 |
+| 2 | 1.5-order prognostic TKE, `K = c_k sqrt(e) l` | prognostic carrier, advected | yes; under a `km_opt=2` parent it loads with a not-yet-verified warning (see §4) |
 | 3 | 3-D Smagorinsky, `K = (c_s l)^2 \|S\|` | diagnostic | yes |
 
 Both require `diff_opt=2`. `km_opt=2` additionally requires
@@ -386,16 +386,16 @@ These are limits of the current build, not opinions about LES.
   initial state and the whole lateral-boundary table set once at
   preparation in FP64. That is the door that recovers the 4.8 points of
   resolved TKE the shared 49-level grid gives up, measured in §2 above.
-- **`km_opt=2` is refused only under a `km_opt=2` PARENT.** WRF gives
-  `tke` no `i` (nest-interpolation) and no `f` (feedback) Registry flag,
-  so a child cold-starts its own TKE and never feeds it back. Under a
-  parent carrying no TKE there is nothing to interpolate or feed back, and
-  that case has been run: a 250 m `km_opt=2` child under a `km_opt=4`
-  parent, 7 h, PASS, carrying 4.8x–9.9x the parent's resolved w variance
-  and *leading the `km_opt=3` child at every output time* despite the cold
-  start. Under a `km_opt=2` parent the parent does hold a field WRF
-  declines to hand down, no such tree has been run, and it stays refused
-  — in `gpuwm.experiment`, the only place that can see the parent.
+- **`km_opt=2` on a nest cold-starts its own TKE, under any parent.** WRF
+  gives `tke` no `i` (nest-interpolation) and no `f` (feedback) Registry
+  flag, so a child cold-starts its own TKE and never feeds it back, and
+  ArWen's nest forcing carries no TKE row either. Under a parent carrying
+  no TKE that case has been run: a 250 m `km_opt=2` child under a
+  `km_opt=4` parent, 7 h, PASS, carrying 4.8x to 9.9x the parent's resolved
+  w variance and *leading the `km_opt=3` child at every output time*
+  despite the cold start. Under a `km_opt=2` parent the child does the
+  same thing and the parent's TKE stays on the parent, as in WRF; that
+  tree loads with a warning that it is implemented and not yet verified.
 - **`km_opt=2` requires `bl_pbl_physics=0`** (see §1).
 - **Per-domain `isfflx` is an ArWen-over-WRF extension.** `isfflx` is
   `nentries=1` in the WRF Registry — a scalar. ArWen's TOML schema admits it
@@ -520,7 +520,7 @@ checkpoint crosses the change.
   demonstrates the closure works there — it does not verify it there.
 - **The nested results are one case, in one window, under one parent
   closure.** Both `km_opt=3` and `km_opt=2` have run there, but the parent
-  was `km_opt=4` in both; a `km_opt=2` parent is untested and refused.
+  was `km_opt=4` in both; a `km_opt=2` parent is admitted and unverified.
 - **The nested child is COARSE LES at the gray-zone edge**, because it runs
   its 3 km grandparent's 49 shared levels — measured, 18 inside the 1741 m
   boundary layer, an effective dz of 96.7 m. Vertical resolution, not the

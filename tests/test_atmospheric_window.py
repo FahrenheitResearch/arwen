@@ -16,6 +16,7 @@ from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.mapped_source import mapped_frames_to_regular_snapshots
 import test_mapped_frameset_streaming as fixture
+from conftest import requires_wps_masked_chain_bridge
 
 
 @pytest.fixture
@@ -70,6 +71,7 @@ def test_provider_packs_only_atmosphere_with_original_pressure_ladder(source):
     assert bundle.frames._cached_frame is None
 
 
+@requires_wps_masked_chain_bridge
 def test_actual_cpu_join_all_fields_and_mass_u_v_union(source):
     _, bundle = source
     grids = (target(), target(37., -102.))
@@ -81,6 +83,7 @@ def test_actual_cpu_join_all_fields_and_mass_u_v_union(source):
                                 interpolate_era5_to_lambert(small, grid, backend="cpu"))
 
 
+@requires_wps_masked_chain_bridge
 def test_outside_request_reloads_original_atmosphere_and_preserves_overlay(source):
     _, bundle = source
     full = bundle.regular_snapshots()[0]
@@ -224,6 +227,7 @@ def test_full_reload_rejects_changed_source_clock(source):
 
 
 @pytest.mark.parametrize("projected,reverse", [(False, True), (True, False)])
+@requires_wps_masked_chain_bridge
 def test_declared_projection_and_scan_order_keep_all_horizontal_bytes(source, tmp_path, projected, reverse):
     from gpuwm import mapped_source as ms
     frame, _ = source

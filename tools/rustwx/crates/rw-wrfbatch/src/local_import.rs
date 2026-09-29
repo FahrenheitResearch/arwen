@@ -2019,34 +2019,59 @@ fn wrf_times_from_netcdf(
     time_dimension: &str,
     record_count: usize,
 ) -> Result<Option<Vec<SourceTimeRecord>>, ImportError> {
+    let Some(labels) = wrf_time_labels_from_netcdf(nc, time_dimension, record_count)? else {
+        return Ok(None);
+    };
+    source_records_from_labels(labels, record_count, "Times").map(Some)
+}
+
+/// WRF `Times` as one label per record, in each form a NetCDF file carries:
+///
+/// * `char Times(Time, DateStrLen)` in a classic file, which `read_strings`
+///   returns as one string per record;
+/// * the same char matrix in a NetCDF-4 file (what `ncks -4` writes from a
+///   wrfout), which the HDF5 layer stores as one-byte strings, so
+///   `read_strings` returns one string per character and they are joined
+///   back into records here (before, such a cut was refused with "Times
+///   decoded 19 records, expected 1");
+/// * `string Times(Time)` (NetCDF-4 NC_STRING), one string per record.
+fn wrf_time_labels_from_netcdf(
+    nc: &NcFile,
+    time_dimension: &str,
+    record_count: usize,
+) -> Result<Option<Vec<String>>, ImportError> {
     let Some(variable) = nc.variable("Times") else {
         return Ok(None);
     };
     let shape = variable.shape();
     let dimensions = variable.dimensions();
-    if shape.len() != 2
-        || dimensions.len() != 2
-        || dimensions[0].name() != time_dimension
-        || shape[0] != record_count
-        || shape[1] == 0
-    {
-        return Err(ImportError::TimeAxis(format!(
-            "Times has shape {shape:?}; expected [{record_count}, DateStrLen] on dimension {time_dimension}"
-        )));
-    }
-    let width = shape[1];
-    if width > MAX_TIME_LABEL_WIDTH {
-        return Err(ImportError::TimeAxis(format!(
-            "Times DateStrLen is {width}; the supported maximum is {MAX_TIME_LABEL_WIDTH} bytes"
-        )));
-    }
-    let elements = record_count
-        .checked_mul(width)
-        .ok_or_else(|| ImportError::TimeAxis("Times element count overflowed usize".to_string()))?;
-    if elements > MAX_TIME_LABEL_ELEMENTS {
-        return Err(ImportError::TimeAxis(format!(
-            "Times contains {elements} character elements; the safety limit is {MAX_TIME_LABEL_ELEMENTS}"
-        )));
+    let leading_is_time = !dimensions.is_empty()
+        && dimensions.len() == shape.len()
+        && dimensions[0].name() == time_dimension
+        && shape[0] == record_count;
+    let width = match shape.len() {
+        2 if leading_is_time && shape[1] > 0 => Some(shape[1]),
+        1 if leading_is_time => None,
+        _ => {
+            return Err(ImportError::TimeAxis(format!(
+                "Times has shape {shape:?}; expected char [{record_count}, DateStrLen] or string [{record_count}] on dimension {time_dimension}"
+            )));
+        }
+    };
+    if let Some(width) = width {
+        if width > MAX_TIME_LABEL_WIDTH {
+            return Err(ImportError::TimeAxis(format!(
+                "Times DateStrLen is {width}; the supported maximum is {MAX_TIME_LABEL_WIDTH} bytes"
+            )));
+        }
+        let elements = record_count.checked_mul(width).ok_or_else(|| {
+            ImportError::TimeAxis("Times element count overflowed usize".to_string())
+        })?;
+        if elements > MAX_TIME_LABEL_ELEMENTS {
+            return Err(ImportError::TimeAxis(format!(
+                "Times contains {elements} character elements; the safety limit is {MAX_TIME_LABEL_ELEMENTS}"
+            )));
+        }
     }
     // Read the char matrix as text, one string per record.  This used to
     // go through `read_array_f64` and reassemble bytes from promoted
@@ -2057,20 +2082,42 @@ fn wrf_times_from_netcdf(
     // postprocessed-shaped classic tape failed here with "expected
     // numeric type, got Char".  `read_strings` answers on both
     // containers.
-    let raw_labels = nc
+    let mut raw_labels = nc
         .read_strings("Times")
         .map_err(|err| ImportError::TimeAxis(format!("Times could not be read as text: {err}")))?;
+    if let Some(width) = width {
+        if width > 1 && raw_labels.len() == record_count * width {
+            // NetCDF-4 char: one element per character.  Each must be one
+            // character (or an empty NUL pad); anything longer is not a
+            // char matrix and is refused rather than spliced into a label.
+            if let Some(index) = raw_labels
+                .iter()
+                .position(|element| element.trim_end_matches('\0').len() > 1)
+            {
+                return Err(ImportError::TimeAxis(format!(
+                    "Times decoded {} elements for a [{record_count}, {width}] char matrix, and element {index} holds {} bytes instead of one character",
+                    raw_labels.len(),
+                    raw_labels[index].len()
+                )));
+            }
+            raw_labels = raw_labels
+                .chunks(width)
+                .map(|characters| characters.concat())
+                .collect();
+        }
+    }
     if raw_labels.len() != record_count {
         return Err(ImportError::TimeAxis(format!(
             "Times decoded {} records, expected {record_count}",
             raw_labels.len()
         )));
     }
-    let labels = raw_labels
-        .into_iter()
-        .map(|label| label.trim_end_matches('\0').trim().to_string())
-        .collect::<Vec<_>>();
-    source_records_from_labels(labels, record_count, "Times").map(Some)
+    Ok(Some(
+        raw_labels
+            .into_iter()
+            .map(|label| label.trim_end_matches('\0').trim().to_string())
+            .collect(),
+    ))
 }
 
 fn cf_time_unit(units: &str) -> Result<(f64, i64), ImportError> {
@@ -2277,15 +2324,7 @@ pub(crate) fn netcdf_source_times(nc: &NcFile, path: &Path) -> Result<SourceTime
                 advertised.join(", ")
             )));
         }
-        let timestamp = timestamp_from_path(path)
-            .and_then(|value| parse_utc_timestamp(&value))
-            .or(reference_unix);
-        let valid_unix = timestamp.ok_or_else(|| {
-            ImportError::TimeAxis(format!(
-                "{} has no time dimension and no exact WRF timestamp in its filename",
-                path.display()
-            ))
-        })?;
+        let valid_unix = valid_unix_from_file_name(path, "has no time dimension")?;
         return Ok(SourceTimeAxis {
             records: vec![SourceTimeRecord {
                 time_index: 0,
@@ -2330,15 +2369,10 @@ pub(crate) fn netcdf_source_times(nc: &NcFile, path: &Path) -> Result<SourceTime
         (Err(times_err), Ok(None)) => return Err(times_err),
         (_, Err(cf_err)) => return Err(cf_err),
         (Ok(None), Ok(None)) if record_count == 1 => {
-            let timestamp = timestamp_from_path(path)
-                .and_then(|value| parse_utc_timestamp(&value))
-                .or(reference_unix);
-            let valid_unix = timestamp.ok_or_else(|| {
-                ImportError::TimeAxis(format!(
-                    "{} has one time record but no Times/CF coordinate or exact filename timestamp",
-                    path.display()
-                ))
-            })?;
+            let valid_unix = valid_unix_from_file_name(
+                path,
+                "has one time record but no Times or CF time coordinate",
+            )?;
             vec![SourceTimeRecord {
                 time_index: 0,
                 valid_unix,
@@ -2568,9 +2602,24 @@ pub(crate) fn wrf_source_times(file: &WrfFile, path: &Path) -> Result<SourceTime
             file.nt
         ));
     }
-    let labels = file
-        .times()
-        .map_err(|err| format!("Read WRF Times from {} failed: {err}", path.display()))?;
+    let labels = match file.times() {
+        Ok(labels) => labels,
+        // wrf-core reads Times only as a char matrix; a NetCDF-4 cut whose
+        // Times is NC_STRING[Time] fails there ("Unsupported datatype
+        // class 9") and is read through netcrust's text decode instead.
+        Err(core_err) => netcrust::open(path)
+            .map_err(|err| err.to_string())
+            .and_then(|nc| {
+                wrf_time_labels_from_netcdf(&nc, "Time", file.nt).map_err(|err| err.to_string())
+            })
+            .and_then(|labels| labels.ok_or_else(|| "Times is absent".to_string()))
+            .map_err(|err| {
+                format!(
+                    "Read WRF Times from {} failed: {core_err}; the text decode failed too: {err}",
+                    path.display()
+                )
+            })?,
+    };
     let records = source_records_from_labels(labels, file.nt, "WRF Times")
         .map_err(|err| format!("{}: {err}", path.display()))?;
     let mut attributes = Vec::<(&str, String)>::new();
@@ -3850,7 +3899,7 @@ fn plane_from_last_record(
     }))
 }
 
-fn variable_units(nc: &NcFile, name: &str) -> Option<String> {
+pub(crate) fn variable_units(nc: &NcFile, name: &str) -> Option<String> {
     nc.variable(name)
         .and_then(|variable| {
             variable
@@ -4037,16 +4086,41 @@ fn global_attr_f64(nc: &NcFile, name: &str) -> Option<f64> {
     nc.attribute(name).and_then(|attr| attr.as_f64())
 }
 
-fn timestamp_from_path(path: &Path) -> Option<String> {
+/// The first WRF-shaped timestamp (`YYYY-MM-DD_HH:MM:SS` or
+/// `YYYY-MM-DD_HH_MM_SS`) in a path's file name, exactly as spelled there.
+fn wrf_timestamp_in_file_name(path: &Path) -> Option<&str> {
     let name = path.file_name()?.to_str()?;
     let bytes = name.as_bytes();
     for start in 0..bytes.len().saturating_sub(18) {
         let slice = name.get(start..start + 19)?;
         if is_wrf_timestamp(slice) {
-            return Some(normalize_wrf_timestamp(slice));
+            return Some(slice);
         }
     }
     None
+}
+
+/// The valid time of a single-record file with no `Times` and no CF time
+/// coordinate, read from the WRF timestamp in its file name.
+///
+/// The file's `START_DATE` is never used as the valid time: it is the run's
+/// start, so a forecast frame labelled with it is drawn as the initial time
+/// (an hour-12 frame valid at 00Z read "Valid 12Z F000" with no warning).
+/// A name with no timestamp, or with one that is not a real UTC time, is
+/// refused by name instead.
+fn valid_unix_from_file_name(path: &Path, context: &str) -> Result<i64, ImportError> {
+    let Some(stamp) = wrf_timestamp_in_file_name(path) else {
+        return Err(ImportError::TimeAxis(format!(
+            "{} {context} and no WRF timestamp (YYYY-MM-DD_HH:MM:SS or YYYY-MM-DD_HH_MM_SS) in its file name; its START_DATE is the run's start, not this frame's valid time, so the frame is refused rather than labelled with the start time",
+            path.display()
+        )));
+    };
+    parse_utc_timestamp(stamp).ok_or_else(|| {
+        ImportError::TimeAxis(format!(
+            "{} {context}, and the timestamp {stamp:?} in its file name is not a valid UTC time; the frame is refused rather than labelled with another time",
+            path.display()
+        ))
+    })
 }
 
 fn is_wrf_timestamp(value: &str) -> bool {
@@ -4060,18 +4134,6 @@ fn is_wrf_timestamp(value: &str) -> bool {
         && b.iter()
             .enumerate()
             .all(|(idx, byte)| matches!(idx, 4 | 7 | 10 | 13 | 16) || byte.is_ascii_digit())
-}
-
-fn normalize_wrf_timestamp(value: &str) -> String {
-    let date = value[..10]
-        .chars()
-        .filter(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    let time = value[11..]
-        .chars()
-        .filter(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    format!("{date}_{time}")
 }
 
 fn display_name(path: &Path) -> String {
@@ -6736,15 +6798,25 @@ mod tests {
 
     #[test]
     fn wrf_timestamp_accepts_colon_and_underscore_time() {
+        // Both spellings must resolve to the same exact UTC time.  The old
+        // assertion stopped at a normalised "19740403_090000" string that
+        // the timestamp parser could not read, so this test passed while
+        // every file-name time fell through to the run's start.
         let colon = Path::new("wrfout_d02_1974-04-03_09:00:00");
         let underscore = Path::new("wrfout_d02_1974-04-03_09_00_00");
+        let expected = parse_utc_timestamp("1974-04-03T09:00:00Z").unwrap();
         assert_eq!(
-            timestamp_from_path(colon).as_deref(),
-            Some("19740403_090000")
+            wrf_timestamp_in_file_name(colon),
+            Some("1974-04-03_09:00:00")
         );
         assert_eq!(
-            timestamp_from_path(underscore).as_deref(),
-            Some("19740403_090000")
+            wrf_timestamp_in_file_name(underscore),
+            Some("1974-04-03_09_00_00")
+        );
+        assert_eq!(valid_unix_from_file_name(colon, "test").unwrap(), expected);
+        assert_eq!(
+            valid_unix_from_file_name(underscore, "test").unwrap(),
+            expected
         );
     }
 
@@ -7291,4 +7363,153 @@ pub(crate) enum ImportError {
     Core(#[from] rustwx_core::RustwxError),
     #[error(transparent)]
     Store(#[from] rw_store::RwStoreError),
+}
+
+/// Time-axis reads on tiny wrfout cuts made by NCO (regenerated by
+/// `tests/time_axis_fixtures/make_fixtures.sh`).  Every fixture's run starts
+/// at 2025-03-15 12:00Z and its one record is valid at 2025-03-16 00:00Z, so
+/// a reader that falls back to the start time is visibly wrong.
+#[cfg(test)]
+mod source_time_fixture_tests {
+    use super::*;
+
+    const START: &str = "2025-03-15T12:00:00Z";
+    const VALID: &str = "2025-03-16T00:00:00Z";
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("time_axis_fixtures")
+            .join(name)
+    }
+
+    /// A copy of `source` under `file_name` in a fresh folder, because the
+    /// file name is what these tests are about.
+    fn named_copy(source: &str, tag: &str, file_name: &str) -> (PathBuf, PathBuf) {
+        let folder = std::env::temp_dir().join(format!(
+            "rw-time-axis-{tag}-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(file_name);
+        std::fs::copy(fixture(source), &path).unwrap();
+        (folder, path)
+    }
+
+    fn source_times(path: &Path) -> Result<SourceTimeAxis, ImportError> {
+        let nc = netcrust::open(path).expect("netcrust opens the fixture");
+        netcdf_source_times(&nc, path)
+    }
+
+    fn refusal(result: Result<SourceTimeAxis, ImportError>) -> String {
+        match result {
+            Ok(axis) => panic!(
+                "expected a refusal, but the frame was labelled valid at {}",
+                axis.records[0].label
+            ),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_wrfout_with_no_times_reads_its_valid_time_from_an_underscore_file_name() {
+        let (folder, path) = named_copy(
+            "no_times_cut.nc",
+            "underscore",
+            "wrfout_d01_2025-03-16_00_00_00",
+        );
+        let result = source_times(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        let axis = result.expect("the file name carries the valid time");
+        assert_eq!(axis.records.len(), 1);
+        assert_eq!(
+            axis.records[0].valid_unix,
+            parse_utc_timestamp(VALID).unwrap(),
+            "the frame was labelled valid at {}, not at its file-name time",
+            axis.records[0].label
+        );
+        assert_eq!(axis.reference_unix, parse_utc_timestamp(START));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_wrfout_with_no_times_reads_its_valid_time_from_a_colon_file_name() {
+        let (folder, path) =
+            named_copy("no_times_cut.nc", "colon", "wrfout_d01_2025-03-16_00:00:00");
+        let result = source_times(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        let axis = result.expect("the file name carries the valid time");
+        assert_eq!(
+            axis.records[0].valid_unix,
+            parse_utc_timestamp(VALID).unwrap(),
+            "the frame was labelled valid at {}, not at its file-name time",
+            axis.records[0].label
+        );
+    }
+
+    #[test]
+    fn a_wrfout_with_no_times_and_no_file_name_time_is_refused_by_name() {
+        let (folder, path) = named_copy("no_times_cut.nc", "unnamed", "hour12_cut.nc");
+        let result = source_times(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        let message = refusal(result);
+        assert!(
+            message.contains("hour12_cut.nc") && message.contains("START_DATE"),
+            "the refusal must name the file and say why the start time is not used: {message}"
+        );
+    }
+
+    #[test]
+    fn a_file_name_time_that_is_not_a_real_time_is_refused_by_name() {
+        let (folder, path) = named_copy(
+            "no_times_cut.nc",
+            "badname",
+            "wrfout_d01_2025-13-16_00_00_00",
+        );
+        let result = source_times(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        let message = refusal(result);
+        assert!(
+            message.contains("wrfout_d01_2025-13-16_00_00_00")
+                && message.contains("not a valid UTC time"),
+            "the refusal must name the file and its unreadable timestamp: {message}"
+        );
+    }
+
+    fn assert_hour_twelve(axis: &SourceTimeAxis, what: &str) {
+        assert_eq!(axis.records.len(), 1, "{what}");
+        assert_eq!(
+            axis.records[0].valid_unix,
+            parse_utc_timestamp(VALID).unwrap(),
+            "{what}: labelled valid at {}",
+            axis.records[0].label
+        );
+        assert_eq!(axis.reference_unix, parse_utc_timestamp(START), "{what}");
+    }
+
+    #[test]
+    fn an_ncks_netcdf4_cut_with_char_times_reads_its_valid_time() {
+        let path = fixture("times_char_netcdf4_cut.nc");
+        let axis = source_times(&path).expect("NetCDF-4 char Times decodes");
+        assert_hour_twelve(&axis, "NetCDF-4 char Times");
+    }
+
+    #[test]
+    fn an_ncks_netcdf4_cut_with_string_times_reads_its_valid_time() {
+        let path = fixture("times_string_netcdf4_cut.nc");
+        let axis = source_times(&path).expect("NetCDF-4 string Times decodes");
+        assert_hour_twelve(&axis, "NetCDF-4 string Times");
+    }
+
+    #[test]
+    fn the_raw_wrfout_route_reads_both_netcdf4_times_forms() {
+        for name in ["times_char_netcdf4_cut.nc", "times_string_netcdf4_cut.nc"] {
+            let path = fixture(name);
+            let file = WrfFile::open(&path)
+                .unwrap_or_else(|err| panic!("{name}: the raw-wrfout reader opens it: {err}"));
+            let axis = wrf_source_times(&file, &path).unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_hour_twelve(&axis, name);
+        }
+    }
 }

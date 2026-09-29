@@ -172,6 +172,13 @@
      "category": 1,
      "parameter": 82,
      "level_type": 100
+    },
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 6,
+     "parameter": 0,
+     "level_type": 100
     }
    ],
    "units": {

@@ -346,16 +346,15 @@ def test_actual_cuda_scalar_stage_consumes_aerosol_tables_and_preserves_number_f
 
 
 @pytest.mark.gpu
-def test_specified_finalizer_forces_supplied_aerosol_back_to_its_boundary_table():
-    """spec_bdy_final covers every SUPPLIED scalar, not just water vapour.
+def test_specified_finalizer_forces_water_vapour_back_and_leaves_the_aerosol_ring_to_its_tendency():
+    """spec_bdy_final on a SPECIFIED domain covers the moist-array scalars.
 
     A specified mp=28 domain supplies nwfa/nifa as boundary scalars (WRF
-    v4.6.1 solve_em.F:2904-2930).  Their spec zone integrates a boundary
-    TENDENCY through the RK stages and is only brought back onto the
-    boundary VALUE here; when this finalizer skipped them the spec row and
-    the relax zone beside it fed each other and the aerosol number at the
-    outermost corner ran away geometrically, 74x in the first forecast
-    hour, while qv in that same cell moved 1.2 percent over that hour.
+    v4.6.1 solve_em.F:2904-2930), and WRF keeps them in its scalar array,
+    whose spec_bdy_final runs only on a nested domain.  Their ring moves by
+    the boundary tendency alone, which the RK update integrates onto the
+    table (tests/test_specified_ring_scalar_update.py).  Water vapour is a
+    moist-array species and is put back on its value here.
     """
     cp = pytest.importorskip('cupy')
     from gpuwm.core.grid import make_base_state, make_vertical_coord
@@ -378,8 +377,8 @@ def test_specified_finalizer_forces_supplied_aerosol_back_to_its_boundary_table(
     assert {'nwfa', 'nifa'} <= set(table)
     bc = build_lateral_boundaries([table, table], [0., 60.])
     attach_lateral_boundaries(state, bc)
-    # A drift only this finalizer can undo, planted on every supplied
-    # scalar at once so a per-field omission is what the assertion reads.
+    # A drift planted on every supplied scalar at once, so what the
+    # finalizer puts back and what it leaves are both read.
     for name, _ in settled:
         getattr(state, name)[:] *= 4.
     apply_state_boundary_values(state, cfg, elapsed_seconds=0.)
@@ -388,5 +387,36 @@ def test_specified_finalizer_forces_supplied_aerosol_back_to_its_boundary_table(
     frame[:, :cfg.spec_zone] = frame[:, cfg.nx - cfg.spec_zone:] = True
     for name, value in settled:
         got = cp.asnumpy(getattr(state, name))
-        np.testing.assert_allclose(got[:, frame], value, rtol=3e-6)
+        ring = value if name == 'qv' else 4. * value
+        np.testing.assert_allclose(got[:, frame], ring, rtol=3e-6)
         np.testing.assert_allclose(got[:, ~frame], 4. * value, rtol=3e-6)
+
+
+def test_nested_finalizer_still_forces_every_supplied_scalar_back():
+    """A nested domain's spec_bdy_final covers the scalar array as well."""
+    from gpuwm.boundary_fields import SCALAR_ARRAY_BOUNDARY_FIELDS
+    from gpuwm.ingest import lateral_bc
+
+    assert set(SCALAR_ARRAY_BOUNDARY_FIELDS) == {'nwfa', 'nifa'}
+    fields = {'u': 0, 'v': 0, 'theta': 0, 'phi': 0, 'mu': 0,
+              'qv': 0, 'nwfa': 0, 'nifa': 0}
+    forced = []
+    for specified in (True, False):
+        cfg = SimpleNamespace(specified=specified, nested=not specified,
+                              spec_zone=1)
+        state = SimpleNamespace(
+            qv=object(), lateral_boundaries=object(),
+            _lateral_boundary_device=SimpleNamespace(clock=object()))
+        calls = []
+        interval = SimpleNamespace(fields=fields)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(lateral_bc, '_active_device_interval',
+                       lambda *a: (interval, 0., None, None))
+            mp.setattr(lateral_bc, '_launch_mu_boundary_values',
+                       lambda *a: None)
+            mp.setattr(lateral_bc, '_launch_finalize_field',
+                       lambda s, name, *a: calls.append(name))
+            lateral_bc.apply_state_boundary_values(state, cfg)
+        forced.append(calls)
+    assert forced[0] == ['u', 'v', 'theta', 'phi', 'qv']
+    assert forced[1] == ['u', 'v', 'theta', 'phi', 'qv', 'nwfa', 'nifa']

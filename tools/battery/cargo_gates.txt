@@ -13,7 +13,7 @@
 #   thing the battery ever asked of these workspaces was that the
 #   renderer BINARY existed.
 #
-#   Drew's ruling, 2026-08-12 ("probably we would want tests right"),
+#   project ruling, 2026-08-12 ("probably we would want tests right"),
 #   makes the Rust crate tests a battery leg.  This file is that leg's
 #   list, and it is a CURATED ENUMERATION for the same reason
 #   tools/battery/stage1_files.txt is: a gate nobody can enumerate is a
@@ -104,7 +104,7 @@
 #   reported; the runner prints that number.
 
 # ---------------------------------------------------------- tools/rustwx
-# The vendored Rusty Weather renderer workspace (VENDOR.md).  Drew's own
+# The vendored Rusty Weather renderer workspace (VENDOR.md).  The project's own
 # crates, carried at the state that produced the campaign renderer, plus
 # rw-wrfbatch, which is this project's.  Every product plot the model
 # publishes is drawn by this workspace, and a release ships its binary.
@@ -181,7 +181,7 @@ cpu  tools/rustwx  rustwx-products  295
 # The raster/vector renderer, basemaps, fonts and layout.
 cpu  tools/rustwx  rustwx-render  159
 
-# The library half of Drew's top-level crate (the eleven command-line
+# The library half of the project's top-level crate (the eleven command-line
 # bins and their 9.8 MB of fixtures are deliberately not vendored --
 # VENDOR.md), which is why this floor is small next to the crate's name.
 cpu  tools/rustwx  rusty-weather  30
@@ -201,6 +201,16 @@ cpu  tools/rustwx  rw-fetch  44
 # these tests pin.  Floor is this package's first green run, 43 across
 # the lib, `runscore_contract` and `table_contract`.
 cpu  tools/rustwx  rw-fieldcmp  43
+
+# Host memory: how much this process may use, MemAvailable capped by
+# every memory cgroup limit from the process's own cgroup up to its
+# mount.  The renderer sizes its volumes and workers from it and the
+# MPAS static builder admits its build against its limit; a reader that
+# misses a limit on a systemd scope sizes work to the whole host and is
+# killed at the scope's limit.  Floor is its first green run,
+# 2026-09-28: 2 across the lib, one of them the case table the Python
+# readers share.
+cpu  tools/rustwx  rw-host-memory  2
 
 # Ingest: decode and normalise into the store's field model.  Half of
 # "everything data-to-model-input converges on Rust" lives here.
@@ -227,7 +237,7 @@ cpu  tools/rustwx  rw-nexrad  125
 # provenance and the argv contract each gained tests (25 lib + 12 in
 # tests/cli.rs), and a `#[cfg]` that stopped compiling either binary
 # must not leave the leg green.  Raised from 37 to 43 when the held
-# non-UTC-offset refusal was replaced by real offset arithmetic (Drew's
+# non-UTC-offset refusal was replaced by real offset arithmetic (the project's
 # 2026-08-31 ruling): the offset/UTC equivalence, both shift directions,
 # the +/-18:00 and 59-minute bounds, the named malformed refusals, and
 # the writer-path round trip each pin what the old refusal left silent
@@ -235,7 +245,14 @@ cpu  tools/rustwx  rw-nexrad  125
 cpu  tools/rustwx  rw-netcdf  43
 
 # Surface and upper-air observations.
-cpu  tools/rustwx  rw-obs  53
+cpu  tools/rustwx  rw-obs  115
+
+# The ATMS front door: HDF5 inventory, SDR/GEO decode and the ring-cell
+# thinning the global microwave leg reads.  Its own tests hold the stamp
+# the bundle pinner reads (a pub static nothing reads is dropped by the
+# linker), the ABI's three schemas, ring selection in both directions and
+# the fill and time conversions.
+cpu  tools/rustwx  rw-atms  5
 
 # ODIM polar volumes: the European counterpart of rw-nexrad, and the
 # decoder `gpuwm obs radar` drives.  It carries the two-sentinel rule
@@ -251,10 +268,10 @@ cpu  tools/rustwx  rw-odim  52
 # the whole crate EXCEPT tests/cloud_products.rs, which is the entry
 # below; the split is by target, not by subject, so nothing is dropped
 # quietly.
-cpu  tools/rustwx  rw-sat  65  --lib
+cpu  tools/rustwx  rw-sat  66  --lib
 
 # The GOES reader proper.
-cpu  tools/rustwx  rw-goes  41
+cpu  tools/rustwx  rw-goes  55
 
 # The run store: the on-disk format every renderer and every diagnostic
 # reads a finished run out of.  A format change that nothing catches
@@ -299,11 +316,16 @@ cpu  tools/rustwx  rw-mpas  418
 # functional waiver; see docs/dev/static-platform-qualification.md.
 cpu  tools/rustwx  static-fields  43  --lib --test geotiff_envelope --test geotiff_malformed --test highres_parity --test seam_probe
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- grid_refusals_name_the_breakage --exact
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- wps32_twin_states_bit_equal --exact
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- translated_twin_delegates_bit_equal --exact
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- portable_sampling_surfaces_bit_equal --exact
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- sampling_surfaces_bit_equal --exact
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- portable_arrays_remain_bounded_by_numpy --exact
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- corridor_crop_bit_equal_and_refuses_off_corridor --exact
 # Complete unchanged Windows-reference lane1 comparisons, including both
 # functional controls above. The dedicated CI qualification job runs these
 # on Windows and Linux, retains every result, and labels Linux UNQUALIFIED.
-qualification  tools/rustwx  static-fields  14  --test lane1_goldens -- --test-threads=1 --show-output
+qualification  tools/rustwx  static-fields  16  --test lane1_goldens -- --test-threads=1 --show-output
 
 # THE FIXTURE-DEPENDENT HALF OF rw-sat, LISTED AND NOT RUN BY DEFAULT.
 # tests/cloud_products.rs decodes four REAL GOES-19 granules -- COD, CPS,
@@ -364,7 +386,7 @@ cpu  tools/grib1_bridge  grib-core  162
 # to 114 when the hybrid_sigma_pressure closure landed (pv harvest,
 # hybrid pressure, hydrostatic height -- the derivations a hybrid
 # initialization is read off); raised to 121 when its CF time parse got
-# the same offset arithmetic rw-netcdf got under Drew's 2026-08-31
+# the same offset arithmetic rw-netcdf got under the 2026-08-31
 # ruling -- the offset/UTC equivalence, both shift directions, the
 # +/-18:00 and 59-minute bounds, and the named malformed refusals
 # replace the retired refuses-rather-than-shifting guard.  The

@@ -1,0 +1,378 @@
+{
+  "reference": "Independent Windows NumPy 2.2.6 lane1 arrays",
+  "cases": {
+    "lam_d03": {
+      "surface_lat_c": {
+        "max_ulps": 21,
+        "max_abs": 8.0108642578125e-05,
+        "changed": 928
+      },
+      "surface_lat_e": {
+        "max_ulps": 21,
+        "max_abs": 8.0108642578125e-05,
+        "changed": 868
+      },
+      "surface_lat_integer_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_lower_e": {
+        "max_ulps": 21,
+        "max_abs": 8.0108642578125e-05,
+        "changed": 868
+      },
+      "surface_lon_boundary_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_c": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_lat": {
+        "max_ulps": 21,
+        "max_abs": 8.0108642578125e-05,
+        "changed": 868
+      },
+      "twin_llij_x": {
+        "max_ulps": 9437184,
+        "max_abs": 0.004337310791015625,
+        "changed": 868
+      },
+      "twin_llij_y": {
+        "max_ulps": 989855744,
+        "max_abs": 0.0029296875,
+        "changed": 601
+      },
+      "twin_lon": {
+        "max_ulps": 4,
+        "max_abs": 3.0517578125e-05,
+        "changed": 23
+      }
+    },
+    "lam_parent": {
+      "surface_lat_c": {
+        "max_ulps": 4,
+        "max_abs": 1.52587890625e-05,
+        "changed": 1876
+      },
+      "surface_lat_e": {
+        "max_ulps": 4,
+        "max_abs": 1.52587890625e-05,
+        "changed": 1821
+      },
+      "surface_lat_integer_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_lower_e": {
+        "max_ulps": 4,
+        "max_abs": 1.52587890625e-05,
+        "changed": 1821
+      },
+      "surface_lon_boundary_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_c": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_e": {
+        "max_ulps": 4,
+        "max_abs": 5.684341886080802e-14,
+        "changed": 6
+      },
+      "twin_lat": {
+        "max_ulps": 4,
+        "max_abs": 1.52587890625e-05,
+        "changed": 1821
+      },
+      "twin_llij_x": {
+        "max_ulps": 1811939329,
+        "max_abs": 0.00029850006103515625,
+        "changed": 1079
+      },
+      "twin_llij_y": {
+        "max_ulps": 1904214017,
+        "max_abs": 0.00030517578125,
+        "changed": 1813
+      },
+      "twin_lon": {
+        "max_ulps": 4,
+        "max_abs": 3.0517578125e-05,
+        "changed": 10
+      }
+    },
+    "lam_sh": {
+      "twin_lat": {
+        "max_ulps": 5,
+        "max_abs": 1.9073486328125e-05,
+        "changed": 1342
+      },
+      "twin_llij_x": {
+        "max_ulps": 1905655809,
+        "max_abs": 0.000232696533203125,
+        "changed": 867
+      },
+      "twin_llij_y": {
+        "max_ulps": 956301312,
+        "max_abs": 0.000244140625,
+        "changed": 1227
+      },
+      "twin_lon": {
+        "max_ulps": 2,
+        "max_abs": 3.0517578125e-05,
+        "changed": 12
+      }
+    },
+    "merc": {
+      "surface_lat_c": {
+        "max_ulps": 4,
+        "max_abs": 7.62939453125e-06,
+        "changed": 48
+      },
+      "surface_lat_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_integer_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_lower_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_boundary_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_c": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_lat": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_llij_x": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_llij_y": {
+        "max_ulps": 1870659585,
+        "max_abs": 6.103515625e-05,
+        "changed": 329
+      },
+      "twin_lon": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      }
+    },
+    "merc_subkm": {
+      "surface_lat_c": {
+        "max_ulps": 4,
+        "max_abs": 7.62939453125e-06,
+        "changed": 72
+      },
+      "surface_lat_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_integer_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_lower_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_boundary_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_c": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_lat": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_llij_x": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_llij_y": {
+        "max_ulps": 5120,
+        "max_abs": 0.0009765625,
+        "changed": 140
+      },
+      "twin_lon": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      }
+    },
+    "polar": {
+      "twin_lat": {
+        "max_ulps": 2,
+        "max_abs": 7.62939453125e-06,
+        "changed": 226
+      },
+      "twin_llij_x": {
+        "max_ulps": 1832910849,
+        "max_abs": 6.866455078125e-05,
+        "changed": 194
+      },
+      "twin_llij_y": {
+        "max_ulps": 18874368,
+        "max_abs": 0.0001220703125,
+        "changed": 229
+      },
+      "twin_lon": {
+        "max_ulps": 1,
+        "max_abs": 1.52587890625e-05,
+        "changed": 18
+      }
+    },
+    "polar_sh": {
+      "twin_lat": {
+        "max_ulps": 2,
+        "max_abs": 7.62939453125e-06,
+        "changed": 148
+      },
+      "twin_llij_x": {
+        "max_ulps": 1866465281,
+        "max_abs": 6.4849853515625e-05,
+        "changed": 135
+      },
+      "twin_llij_y": {
+        "max_ulps": 943718401,
+        "max_abs": 0.0001068115234375,
+        "changed": 151
+      },
+      "twin_lon": {
+        "max_ulps": 1,
+        "max_abs": 1.52587890625e-05,
+        "changed": 14
+      }
+    },
+    "polar_subkm": {
+      "surface_lat_c": {
+        "max_ulps": 2,
+        "max_abs": 7.62939453125e-06,
+        "changed": 132
+      },
+      "surface_lat_e": {
+        "max_ulps": 2,
+        "max_abs": 7.62939453125e-06,
+        "changed": 127
+      },
+      "surface_lat_integer_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lat_lower_e": {
+        "max_ulps": 2,
+        "max_abs": 7.62939453125e-06,
+        "changed": 127
+      },
+      "surface_lon_boundary_band": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_c": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "surface_lon_e": {
+        "max_ulps": 0,
+        "max_abs": 0.0,
+        "changed": 0
+      },
+      "twin_lat": {
+        "max_ulps": 2,
+        "max_abs": 7.62939453125e-06,
+        "changed": 127
+      },
+      "twin_llij_x": {
+        "max_ulps": 1572864,
+        "max_abs": 0.00113677978515625,
+        "changed": 133
+      },
+      "twin_llij_y": {
+        "max_ulps": 1950351361,
+        "max_abs": 0.001953125,
+        "changed": 127
+      },
+      "twin_lon": {
+        "max_ulps": 1,
+        "max_abs": 1.52587890625e-05,
+        "changed": 6
+      }
+    },
+    "translated": {
+      "twin_lat": {
+        "max_ulps": 5,
+        "max_abs": 1.9073486328125e-05,
+        "changed": 1853
+      },
+      "twin_llij_x": {
+        "max_ulps": 905969665,
+        "max_abs": 0.00029850006103515625,
+        "changed": 1074
+      },
+      "twin_llij_y": {
+        "max_ulps": 1895825409,
+        "max_abs": 0.00030517578125,
+        "changed": 1851
+      },
+      "twin_lon": {
+        "max_ulps": 4,
+        "max_abs": 3.0517578125e-05,
+        "changed": 6
+      }
+    }
+  }
+}

@@ -84,7 +84,8 @@ def test_wrf_preparation_reuses_documents_without_rewriting_or_changes_generatio
     raw = {name: np.zeros((2,2),np.float32) for name in
            ('LU_INDEX','ISLTYP','LANDMASK','SNOW','XICE','TSLB','SST','MAPFAC_M','MAPFAC_U','MAPFAC_V','F','E','HGT')}
     monkeypatch.setattr(wrfinput, 'read_wrfinput', lambda path, **kw: SimpleNamespace(
-        path=path, global_attributes=attrs, raw=raw, surface_input_dispositions={}))
+        path=path, global_attributes=attrs, raw=raw, surface_input_dispositions={},
+        soil_unit_conversions={}))
     monkeypatch.setattr(wrfinput, 'read_wrfbdy', lambda *a, **kw: object())
     monkeypatch.setattr(landuse, 'initialize_landuse', lambda *a, **kw: object())
     monkeypatch.setattr(projection, 'grids_from_projection_config', lambda exp: [object() for _ in exp.domains])

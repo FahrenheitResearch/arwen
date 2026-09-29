@@ -785,6 +785,25 @@ def test_snow_beyond_the_overshoot_band_still_refuses_with_its_numbers():
         preprocess_noah_soil(fields, soil_type=soil_type)
 
 
+def test_snow_band_sits_at_the_overlapping_parabolas_reach():
+    """Everything the parabola can make is repaired; one step past refuses.
+
+    A 2x2 patch holding a trace of snow inside snow at the field maximum
+    maps to about -17/64 of that maximum at the patch centre: one quarter,
+    the band that used to sit here, refused it.  The operator's whole
+    negative weight is 9/32, and the band sits there.
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    fields, soil_type = _snow_case([1.0, -17.0 / 64.0, -0.28125])
+    soil = preprocess_noah_soil(fields, soil_type=soil_type)
+    np.testing.assert_array_equal(soil.snow_depth, [[1.0, 0.0, 0.0]])
+
+    fields, soil_type = _snow_case([1.0, -0.2813, 0.0])
+    with pytest.raises(ValueError, match="overshoot band, 0.28125"):
+        preprocess_noah_soil(fields, soil_type=soil_type)
+
+
 def test_snow_above_the_plausibility_ceiling_refuses_with_its_numbers():
     """Negative control on the other side of the band.
 

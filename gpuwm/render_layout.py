@@ -118,6 +118,19 @@ FLAT = "flat"
 #: The vocabulary of ``gpuwm render --layout``.
 LAYOUTS = (NESTED, FLAT)
 
+#: What ``gpuwm render`` draws when nobody passes ``--products``
+#: (``gpuwm/render.py``'s own default), and so what a front door draws
+#: when its caller names none.  The forecast doors read it through
+#: :data:`gpuwm.first_products.DEFAULT_RENDER_PRODUCTS`.  It is spelled
+#: here because the preparation stage prints a ``gpuwm sim`` line that
+#: carries it, and the standalone preparation wheel stages this module
+#: but not :mod:`gpuwm.first_products`.
+#:
+#: ``all`` is every NAMED product the frames can draw: the renderer leaves
+#: out the stored variables (``variables`` asks for those) and every window
+#: the run's last frame does not close.
+DEFAULT_RENDER_PRODUCTS = "all"
+
 #: What ``--layout`` is when nobody says otherwise.
 DEFAULT_LAYOUT = NESTED
 
@@ -770,6 +783,17 @@ def deliver(root, source, *, domain: str | None, product: str | None,
                     f"place ({first}): {target.name}")
 
 
+#: A render's working scratch sits beside its delivery as ``<delivery><SCRATCH_SUFFIX>/`` (``gpuwm.render``
+#: spells it from here), and holds working stores that carry stray PNGs of their own.
+SCRATCH_SUFFIX = ".render-scratch"
+
+
+def is_scratch_dir(name: str) -> bool:
+    """A folder no reader lists pictures from: dot-prefixed temporaries and a render's working scratch."""
+
+    return name.startswith(".") or name.endswith(SCRATCH_SUFFIX)
+
+
 def iter_rendered(root) -> list[Path]:
     """Every rendered PNG under ``root``, flat layout or nested.
 
@@ -777,7 +801,9 @@ def iter_rendered(root) -> list[Path]:
     a consumer that globbed ``*.png`` saw nothing after this layout
     landed, and a consumer that recursed naively saw the early render's
     ``.first-products-scratch`` temporaries as though they had been
-    published.  Both mistakes are made once, here.
+    published (and a page scanning a run folder counted the render's
+    sibling ``<delivery>.render-scratch/`` as a grid).  Both mistakes
+    are made once, here.
 
     Sorted by path so two directories walk in the same order, which is
     what ``--pair`` needs to line frames up.
@@ -796,7 +822,9 @@ def iter_rendered(root) -> list[Path]:
     found = []
     for path in walk_root.rglob("*.png"):
         relative = path.relative_to(walk_root)
-        if any(part.startswith(".") for part in relative.parts[:-1]):
+        # A run folder holds its delivery AND the delivery's sibling scratch (``png`` beside
+        # ``png.render-scratch/rwstore-*/png``): the scratch's pictures are the renderer's working copies.
+        if any(is_scratch_dir(part) for part in relative.parts[:-1]):
             continue
         if not path.is_file():
             continue
@@ -840,7 +868,7 @@ def describe(root: str = "<--out>", *, sep: str | None = None,
 
 
 __all__ = [
-    "DEFAULT_LAYOUT", "EPISODE_PREFIX", "FLAT", "LAYOUTS", "NATIVE_GRID",
+    "DEFAULT_LAYOUT", "DEFAULT_RENDER_PRODUCTS", "EPISODE_PREFIX", "FLAT", "LAYOUTS", "NATIVE_GRID",
     "NESTED", "UNCLASSIFIED", "UNDATED", "HistoryFrame", "deliver",
     "delivered_name", "describe", "engine_name", "engine_output_time",
     "episode_number", "episode_segment", "fs_path", "history_frames",

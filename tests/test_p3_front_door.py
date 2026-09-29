@@ -395,6 +395,7 @@ def test_a_p3_radiation_call_consumes_the_scheme_radii_and_asks_for_no_snow():
         "tsk": cp.full((ny, nx), 288.0, cp.float32),
         "albedo": cp.full((ny, nx), 0.18, cp.float32),
         "emiss": cp.full((ny, nx), 0.96, cp.float32),
+        "xland": cp.ones((ny, nx), cp.float32),
     }
 
     def call(effc_um, effi_um):
@@ -518,9 +519,21 @@ def test_no_existing_profile_changed_its_microphysics():
     assert len(aggregate_kf) == 1
     assert single_domain_runtime_switches(aggregate_kf[0])["mp_physics"] == 6
 
+    # And the two Thompson members of the MYNN + RUC pair, each its WSM6
+    # row with the microphysics moved: new rows, so they are named here
+    # rather than folded into ``before``, and they move nothing in it.
+    from gpuwm.physics_compat import (
+        THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)
+    thompson_mynn_ruc = {THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+                         THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}
+    for profile in thompson_mynn_ruc:
+        assert single_domain_runtime_switches(profile)["mp_physics"] == 8
+
     assert (set(SINGLE_DOMAIN_PHYSICS_PROFILES)
             == set(before) | {P3_LEGACY_RRTMG_PROFILE_ID}
-            | set(COMPOSITION_SUITE_PROFILE_IDS) | set(aggregate_kf))
+            | set(COMPOSITION_SUITE_PROFILE_IDS) | set(aggregate_kf)
+            | thompson_mynn_ruc)
     # ...and none of those six moved an EXISTING profile's microphysics,
     # which is what this test is named for: each is its own row.
     assert not set(COMPOSITION_SUITE_PROFILE_IDS) & set(before)

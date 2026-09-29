@@ -93,10 +93,12 @@ _POST_NTIEDTKE_CHILD_DIGEST = \
 #: keeps working.  A lane that changes the checkpoint FORMAT cannot be
 #: absorbed here at all, which is the whole point of the file.
 # eta_levels was appended by the later offline-child ladder change
-# (80a3009c2, moved to the dataclass end in 06c29b747). This is a field
-# addition to unwind, not a reason to move either historical digest.
+# (80a3009c2, moved to the dataclass end in 06c29b747), and the downscaled
+# child's relax_timescale_s / relax_w pair after it. Field additions to
+# unwind, not reasons to move either historical digest.
 _KEYS_APPENDED_SINCE: tuple[str, ...] = (
-    ADAPTIVE_TIMESTEP_RUN_FIELDS + ("eta_levels",))
+    ADAPTIVE_TIMESTEP_RUN_FIELDS
+    + ("eta_levels", "relax_timescale_s", "relax_w"))
 
 
 def _write(monkeypatch, tmp_path):

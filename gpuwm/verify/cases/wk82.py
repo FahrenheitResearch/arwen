@@ -236,7 +236,7 @@ def mass_sample_steps(n_total: int) -> range:
 #: secondary flanking-line cells (5 cores by 7200 s) and the two-strongest
 #: mover picker can swap cells between snapshots while the same-cell-tracked
 #: movers keep separating (adjudicated GATE_ARTIFACT, 2026-07-16 --
-#: .superpowers/sdd/codex/wk82-hdiab-adjudication.md: tracked separation
+#: the wk82 hdiab adjudication: tracked separation
 #: 41445 -> 70329 m over the interval whose picker metric measured -8339 m).
 GATES = {
     "n_cores_3600": (1, None),

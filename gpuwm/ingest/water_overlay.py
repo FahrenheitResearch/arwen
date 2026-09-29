@@ -409,8 +409,8 @@ def cached_water_temperature_overlay(
 
 
 def masked_bilinear_sample(
-        overlay: WaterTemperatureOverlay, target_lat, target_lon
-        ) -> tuple[np.ndarray, np.ndarray]:
+        overlay: WaterTemperatureOverlay, target_lat, target_lon, *,
+        workers: int | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Sample the overlay at target points; invalid corners are excluded.
 
     Returns ``(values, covered)``: bilinear temperatures with weights
@@ -436,23 +436,14 @@ def masked_bilinear_sample(
     x0 = np.clip(np.floor(x).astype(np.intp), 0, longitude.size - 2)
     fy = np.clip(y - y0, 0.0, 1.0)
     fx = np.clip(x - x0, 0.0, 1.0)
-    total = np.zeros(target_lat.shape, dtype=np.float64)
-    accumulated = np.zeros(target_lat.shape, dtype=np.float64)
-    for dj, di, weight in (
-            (0, 0, (1.0 - fy) * (1.0 - fx)),
-            (0, 1, (1.0 - fy) * fx),
-            (1, 0, fy * (1.0 - fx)),
-            (1, 1, fy * fx)):
-        corner_valid = overlay.valid[y0 + dj, x0 + di]
-        corner_value = overlay.temperature_k[y0 + dj, x0 + di]
-        contribution = np.where(corner_valid, weight, 0.0)
-        total += contribution
-        accumulated += contribution * np.where(corner_valid,
-                                               corner_value, 0.0)
-    covered = inside & (total > 0.0)
-    values = np.full(target_lat.shape, np.nan, dtype=np.float64)
-    np.divide(accumulated, total, out=values, where=covered)
-    return values, covered
+    # The corner blend runs in the Rust preprocessing library
+    # (gpuwm_overlay_bilinear_sample_f64), byte-identical to the NumPy
+    # loop kept as its test oracle (gpuwm/verify/water_blend_oracle.py).
+    from gpuwm.ingest.cpu_backend import water_blend_backend
+
+    return water_blend_backend().overlay_bilinear_sample(
+        overlay.temperature_k, overlay.valid, y0, x0, fy, fx, inside,
+        workers=workers)
 
 
 def _source_cell_coordinates(snapshot, rows, cols):
@@ -490,7 +481,7 @@ def _source_cell_coordinates(snapshot, rows, cols):
     return source.ij_to_latlon(i, j)
 
 
-def apply_water_temperature_overlay(snapshot, overlay):
+def apply_water_temperature_overlay(snapshot, overlay, *, workers=None):
     """Replace SST/SKINTEMP over covered WATER source cells.
 
     Returns ``(new_snapshot, receipt)``.  Land cells, uncovered water
@@ -513,7 +504,8 @@ def apply_water_temperature_overlay(snapshot, overlay):
     water = np.asarray(fields["LANDSEA"], dtype=np.float64) < 0.5
     rows, cols = np.nonzero(water)
     values, covered = masked_bilinear_sample(
-        overlay, *_source_cell_coordinates(snapshot, rows, cols))
+        overlay, *_source_cell_coordinates(snapshot, rows, cols),
+        workers=workers)
     replacements = {}
     for name in replaced_names:
         updated = np.array(fields[name], dtype=np.float64)
@@ -537,7 +529,7 @@ def apply_water_temperature_overlay(snapshot, overlay):
     return rebuilt, receipt
 
 
-def overlay_snapshots(snapshots, overlay):
+def overlay_snapshots(snapshots, overlay, *, workers=None):
     """Apply the overlay to a snapshot sequence; None is the identity.
 
     Returns ``(snapshots, receipt_or_None)``.  With ``overlay=None`` the
@@ -552,7 +544,7 @@ def overlay_snapshots(snapshots, overlay):
     receipts = []
     for snapshot in snapshots:
         replaced, receipt = apply_water_temperature_overlay(
-            snapshot, overlay)
+            snapshot, overlay, workers=workers)
         rebuilt.append(replaced)
         receipts.append(receipt)
     if not receipts:
@@ -586,11 +578,13 @@ def overlay_file_identity(path):
 class OverlaySnapshotSequence(Sequence):
     """Apply an analysis on access, retaining metadata and no weather copies."""
 
-    def __init__(self, snapshots, overlay, *, binding=None):
+    def __init__(self, snapshots, overlay, *, binding=None, workers=None):
         if not len(snapshots):
             raise WaterOverlayError("a water overlay has no source snapshots to apply to")
         self._snapshots = snapshots
         self.overlay = overlay
+        #: The preparation's host-step threads for the corner blend.
+        self.workers = workers
         self.binding = overlay_file_identity(overlay.path)
         if binding is not None and self.binding != binding:
             raise WaterOverlayError("water-temperature overlay changed after it was loaded")
@@ -617,7 +611,8 @@ class OverlaySnapshotSequence(Sequence):
             index += len(self)
         if not 0 <= index < len(self):
             raise IndexError(index)
-        result, receipt = apply_water_temperature_overlay(self._snapshots[index], self.overlay)
+        result, receipt = apply_water_temperature_overlay(
+            self._snapshots[index], self.overlay, workers=self.workers)
         self._receipts[index] = receipt
         if len(self._receipts) == len(self) and not self._verified:
             self.verify_complete()
@@ -652,10 +647,12 @@ def load_bound_water_overlay(path):
     return overlay, binding
 
 
-def overlay_snapshot_sequence(snapshots, overlay, *, binding=None):
+def overlay_snapshot_sequence(snapshots, overlay, *, binding=None,
+                              workers=None):
     """The absent declaration is identity; an active one stays lazy."""
     return (snapshots if overlay is None else
-            OverlaySnapshotSequence(snapshots, overlay, binding=binding))
+            OverlaySnapshotSequence(snapshots, overlay, binding=binding,
+                                    workers=workers))
 
 
 def verify_overlay_sequence(snapshots):

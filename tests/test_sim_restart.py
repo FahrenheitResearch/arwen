@@ -1,5 +1,4 @@
 """Public prepared-tree continuation forwards to the existing strict runner."""
-import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +7,7 @@ from conftest import requires_cupy
 
 from gpuwm import stage_cli
 from gpuwm.cli import main as cli_main
+from host_shell_words import host_shell_words
 from test_stage_seams import _authority, _single_domain_bundle, _tree_bundle
 
 
@@ -38,7 +38,7 @@ def test_public_printed_restart_command_uses_actual_parser_and_spends_nothing(tm
     assert cli_main(["sim", str(root), "--experiment-config", str(config),
         "--outdir", str(output), "--restart", str(checkpoint),
         "--sealed-forcing-extension", "--print-command"]) == 0
-    command = shlex.split(capsys.readouterr().out.strip())
+    command = host_shell_words(capsys.readouterr().out.strip())
     parsed = runner.build_parser().parse_args(command[3:])
     assert parsed.restart == checkpoint and parsed.sealed_forcing_extension
     assert parsed.experiment_config == config

@@ -45,6 +45,7 @@ import pytest
 
 from gpuwm import go_cli, stage_cli
 from gpuwm.cli import build_parser, main as cli_main
+from host_shell_words import host_shell_words
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +697,52 @@ def test_every_command_the_contract_names_is_a_real_subcommand():
         "this CLI does not have")
 
 
+def test_the_contract_continues_both_prepared_layouts_through_the_real_parser(tmp_path):
+    """The contract said the single prepared runner had no checkpoint
+    restore and `gpuwm go` no checkpoint operand; both exist, so a reader
+    of the contract believed a single-domain forecast could not resume.
+    Every continuation command the section documents must reach its
+    runner with --restart intact, and the single-domain one must exist."""
+
+    import re
+
+    text = _CONTRACT.read_text(encoding="utf-8")
+    heading = "### Continuing a prepared forecast"
+    assert heading in text, f"{_CONTRACT.name} has no prepared continuation section"
+    section = text.split(heading, 1)[1].split("\n### ", 1)[0]
+    sims = [" ".join(block.replace("\\\n", " ").split())
+            for block in re.findall(r"```sh\n(.*?)```", section, flags=re.S)
+            if block.lstrip().startswith("gpuwm sim ")]
+    single, tree = _single_domain_bundle(tmp_path / "single"), _tree_bundle(tmp_path / "tree")
+    config, wps = _authority(tmp_path / "authority")
+    checkpoint = tmp_path / "previous" / "gpuwmrst_d01_2026-01-01_03:00:00.npz"
+    layouts = set()
+    for command in sims:
+        tokens = shlex.split(command)[2:]
+        assert "--restart" in tokens, command
+        layout = "single" if "--wps-namelist" in tokens else "tree"
+        layouts.add(layout)
+        values = {"--experiment-config": str(config), "--wps-namelist": str(wps),
+                  "--restart": str(checkpoint), "--outdir": str(tmp_path / layout / "out")}
+        argv = [str(single if layout == "single" else tree)]
+        for flag in tokens[1::2]:
+            argv += [flag, values[flag]]
+        result = subprocess.run(
+            [sys.executable, "-m", "gpuwm.cli", "sim", *argv, "--print-command"],
+            capture_output=True, text=True, check=False)
+        assert result.returncode == 0, (command, result.stderr)
+        printed = host_shell_words(result.stdout.strip().splitlines()[-1])
+        runner = (stage_cli.SINGLE_DOMAIN_RUNNER if layout == "single"
+                  else stage_cli.TREE_RUNNER)
+        assert printed[1:3] == ["-m", runner], printed
+        assert printed[printed.index("--restart") + 1] == str(checkpoint)
+    assert layouts == {"single", "tree"}, sims
+    go = next(line for line in section.split("`")
+              if line.startswith("gpuwm go ") and "--restart" in line)
+    parsed = build_parser().parse_args(go.split()[1:])
+    assert parsed.prepared_root is not None and parsed.restart is not None
+
+
 def test_the_readme_points_at_the_contract():
     readme = (Path(__file__).resolve().parent.parent / "README.md"
               ).read_text(encoding="utf-8")
@@ -703,7 +750,9 @@ def test_the_readme_points_at_the_contract():
 
 
 def test_the_printed_command_is_a_line_a_shell_can_run(tmp_path):
-    """``--print-command`` output round-trips through ``shlex``."""
+    """``--print-command`` output round-trips through the shell it is
+    printed for: ``shlex`` for a POSIX line, PowerShell's own parser for
+    the Windows one."""
 
     root = _single_domain_bundle(tmp_path / "prepared")
     config, wps = _authority(tmp_path / "authority")
@@ -713,6 +762,6 @@ def test_the_printed_command_is_a_line_a_shell_can_run(tmp_path):
          "--outdir", str(tmp_path / "run"), "--print-command"],
         capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
-    tokens = shlex.split(result.stdout.strip())
+    tokens = host_shell_words(result.stdout.strip())
     assert tokens[1:3] == ["-m", stage_cli.SINGLE_DOMAIN_RUNNER]
     assert "--outdir" in tokens

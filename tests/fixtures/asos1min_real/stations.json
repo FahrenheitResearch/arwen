@@ -1,0 +1,57 @@
+{
+  "schema": "gpuwm-obs.asos-stations.v1",
+  "status": "READY",
+  "archive": "https://mesonet.agron.iastate.edu",
+  "networks": [
+    "IA_ASOS"
+  ],
+  "frozen_at": "2026-09-28T10:37:31",
+  "content_sha256": "e390b9b1875d0926646f4761a654622ebf10edeba87d65c2ec508581b29e70e4",
+  "stations": [
+    {
+      "station_id": "AMW",
+      "name": "Ames",
+      "latitude": 41.9904,
+      "longitude": -93.6185,
+      "elevation_m": 280.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "BNW",
+      "name": "BOONE MUNI",
+      "latitude": 42.0486,
+      "longitude": -93.8486,
+      "elevation_m": 349.3,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "DSM",
+      "name": "Des Moines",
+      "latitude": 41.534,
+      "longitude": -93.6531,
+      "elevation_m": 294.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "IKV",
+      "name": "ANKENY",
+      "latitude": 41.6878,
+      "longitude": -93.5695,
+      "elevation_m": 270.7,
+      "network": "IA_ASOS",
+      "state": "IA"
+    },
+    {
+      "station_id": "PRO",
+      "name": "Perry",
+      "latitude": 41.8241,
+      "longitude": -94.1606,
+      "elevation_m": 306.0,
+      "network": "IA_ASOS",
+      "state": "IA"
+    }
+  ]
+}

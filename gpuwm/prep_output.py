@@ -14,6 +14,10 @@ import time
 
 from gpuwm.explain import explain_enabled, split
 from gpuwm.command_output import AdapterOutputError, DiagnosticLog, text_chunks
+# From the render layout, which the standalone preparation wheel stages,
+# and at import rather than inside forecast_command: that call runs while
+# the preparation's output is still held.
+from gpuwm.render_layout import DEFAULT_RENDER_PRODUCTS
 
 HEARTBEAT_SECONDS = 20.0
 TAIL_SIZE = 32768
@@ -39,24 +43,75 @@ def failure_summary(diagnostic):
     return "\n".join(lines[-8:])
 
 
-def shell_command(words):
-    """Display argv for PowerShell on Windows and a POSIX shell elsewhere."""
-    if os.name == "nt":
-        # A relative name beginning with # or @ is a comment/splat in
-        # PowerShell, even when it contains no whitespace.
-        def quote(word):
-            word = str(word)
-            if word and all(c.isalnum() or c in "_./\\:=-" for c in word):
-                return word
-            return "'" + word.replace("'", "''") + "'"
-        quoted = [quote(word) for word in words]
+#: Characters a PowerShell word may carry unquoted.  Anything else is
+#: quoted: # starts a comment, @ a splat, $ a variable, a comma builds an
+#: array, and ~ is expanded for a native command on some hosts.
+_POWERSHELL_BARE = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./\\:=-")
+
+#: What PowerShell reads as a single quote: the ASCII one and the four
+#: typographic ones.  Each is doubled inside a single-quoted string to
+#: stand for itself, so a folder named with a curly apostrophe does not
+#: end the string early.
+_POWERSHELL_SINGLE_QUOTES = "'‘’‚‛"
+
+
+def host_shell() -> str:
+    """The shell a line printed on this machine is pasted into.
+
+    PowerShell on Windows, the shell a Windows terminal opens and the one
+    the install guide uses there; a POSIX shell everywhere else.
+    """
+
+    return "powershell" if os.name == "nt" else "posix"
+
+
+def _powershell_word(word) -> str:
+    word = str(word)
+    # A word PowerShell could read as a number is quoted too: an
+    # unquoted 0x10, 1kb or 1.10 reaches a native program as 16, 1024 or
+    # 1.1.  "--" alone is the end-of-parameters token, and a dash word
+    # holding a colon is a parameter that takes the next word as its
+    # value.
+    dash = word[:1] == "-"
+    if (word and word != "--" and set(word) <= _POWERSHELL_BARE
+            and not word[0].isdigit() and word[0] != "."
+            and not (dash and (":" in word or word[1:2].isdigit()
+                               or word[1:2] == "."))):
+        return word
+    for quote in _POWERSHELL_SINGLE_QUOTES:
+        word = word.replace(quote, quote + quote)
+    return "'" + word + "'"
+
+
+def shell_command(words, *, shell: str | None = None) -> str:
+    """Display argv as one line for PowerShell on Windows and a POSIX shell elsewhere.
+
+    ``shell`` names the other one explicitly (``"powershell"`` or
+    ``"posix"``); omitted, it is :func:`host_shell`.  In PowerShell a
+    quoted program is a string, not a command, so a line whose program
+    needs quoting starts with the call operator ``&``.
+    """
+
+    shell = host_shell() if shell is None else shell
+    if shell == "powershell":
+        quoted = [_powershell_word(word) for word in words]
         prefix = "& " if quoted and quoted[0].startswith("'") else ""
         return prefix + " ".join(quoted)
+    if shell != "posix":
+        raise ValueError(f"no command-line spelling for shell {shell!r}")
     return shlex.join(map(str, words))
 
 
 def forecast_command(args):
-    """Use the existing schema-aware sim boundary; never ask users for hashes."""
+    """Use the existing schema-aware sim boundary; never ask users for hashes.
+
+    The line draws pictures: ``--render-products`` with the same default
+    set ``gpuwm go`` draws, so each output frame of every grid is drawn
+    as it lands while the forecast runs.  Without it the printed line ran
+    the forecast and drew nothing, although both runners draw frames as
+    they land when asked.
+    """
     from gpuwm import stage_cli
 
     root = Path(args.output_root)
@@ -71,11 +126,13 @@ def forecast_command(args):
         wps = getattr(args, "wps_namelist", None)
     outdir = root.with_name(root.name + "-forecast")
     stage_cli.sim_command(bundle, experiment_config=Path(config),
-                          wps_namelist=wps, outdir=outdir)
+                          wps_namelist=wps, outdir=outdir,
+                          render_products=DEFAULT_RENDER_PRODUCTS)
     words = ["gpuwm", "sim", str(root), "--experiment-config", str(config)]
     if bundle["layout"] == "single":
         words.extend(("--wps-namelist", str(wps)))
-    words.extend(("--outdir", str(outdir)))
+    words.extend(("--outdir", str(outdir),
+                  "--render-products", DEFAULT_RENDER_PRODUCTS))
     return shell_command(words)
 
 
@@ -111,8 +168,14 @@ def _run_preparation(args, launch):
     lock = threading.RLock()
     started = time.monotonic()
     finished = threading.Event()
-    from gpuwm.prep_progress import PrepProgress
+    from gpuwm.prep_progress import PrepProgress, step_record
+    from gpuwm.progress import PREP_EVENT_PARENT_ENV, relay_prep_record
     progress = PrepProgress()
+    # A parent that reads step records off this program's output (a `gpuwm go`
+    # stage, which runs `python -m gpuwm.source_cli` on the GFS chain) is told
+    # each step line as it is written.  Kept to the log, the steps never left
+    # this process, and the run page of a plain GFS run showed none of them.
+    to_parent = os.environ.get(PREP_EVENT_PARENT_ENV) == "1"
 
     class Output(io.TextIOBase):
         def __init__(self, destination, channel, log):
@@ -120,22 +183,37 @@ def _run_preparation(args, launch):
             self.pending = ""
 
         def write(self, text):
+            steps = []
             with lock:
                 for chunk in text_chunks(text):
                     self.log.write(chunk)
                     tails[self.channel] = (tails[self.channel] + chunk)[-TAIL_SIZE:]
                     if explain:
                         self.destination.write(chunk)
-                    else:
-                        self.pending += chunk
-                        while "\n" in self.pending:
-                            line, self.pending = self.pending.split("\n", 1)
-                            message = progress.line(line)
-                            if message is not None:
-                                print(f"prep: {message}", file=terminal, flush=True)
-                            elif line.lstrip().lower().startswith(("warning:", "note:")):
-                                print(split(line.strip())[0], file=errors, flush=True)
-                        self.pending = self.pending[-TAIL_SIZE:]
+                    self.pending += chunk
+                    while "\n" in self.pending:
+                        line, self.pending = self.pending.split("\n", 1)
+                        record = step_record(line)
+                        if record is not None:
+                            steps.append(record)
+                            if to_parent and not explain:
+                                # Under --explain the line was passed on whole above.
+                                print(line, file=errors, flush=True)
+                        if explain:
+                            continue
+                        message = None if record is None else progress.event(record)
+                        if message is not None:
+                            print(f"prep: {message}", file=terminal, flush=True)
+                        elif record is None and line.lstrip().lower().startswith(("warning:", "note:")):
+                            print(split(line.strip())[0], file=errors, flush=True)
+                    self.pending = self.pending[-TAIL_SIZE:]
+            # The preparer is its own program, so its steps reached no
+            # listener in this process: a run that hosts this preparation
+            # (the staged route of `gpuwm run-plan`) hears each one here
+            # and puts it on the run's stream.  Said outside the lock, so a
+            # listener that writes cannot wait on this output.
+            for record in steps:
+                relay_prep_record(record)
             return len(text)
 
         def flush(self):

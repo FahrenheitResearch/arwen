@@ -180,6 +180,82 @@ fn inventory_confesses_size_inferred_metadata() {
     assert_eq!(document["metadata"]["dimension_lengths_ambiguous"], true);
 }
 
+/// A CDF-2 history shaped like a wrfout: an unlimited `Time`, a record
+/// character `Times`, a record field and a fixed field, two records.
+fn write_record_history(path: &Path) {
+    use netcdf_writer::{NcFormat, NcType, NcWriter, Schema, VarData};
+    let mut schema = Schema::new(NcFormat::Offset64);
+    let time = schema.def_dim("Time", 0, true).expect("dim");
+    let chars = schema.def_dim("DateStrLen", 19, false).expect("dim");
+    let y = schema.def_dim("south_north", 3, false).expect("dim");
+    let x = schema.def_dim("west_east", 4, false).expect("dim");
+    let times = schema
+        .def_var("Times", NcType::Char, &[time, chars])
+        .expect("var");
+    let hgt = schema.def_var("HGT", NcType::Float, &[y, x]).expect("var");
+    let t = schema
+        .def_var("T", NcType::Float, &[time, y, x])
+        .expect("var");
+    let mut writer = NcWriter::create(path, schema).expect("create");
+    writer
+        .write_var(hgt, VarData::F32(&[250.0; 12]))
+        .expect("write HGT");
+    for (record, stamp) in ["2026-09-26_00:00:00", "2026-09-26_01:00:00"]
+        .iter()
+        .enumerate()
+    {
+        writer
+            .write_record(record as u64, times, VarData::Char(stamp.as_bytes()))
+            .expect("write Times");
+        writer
+            .write_record(record as u64, t, VarData::F32(&[300.0 + record as f32; 12]))
+            .expect("write T");
+    }
+    writer.finish().expect("finish");
+}
+
+/// A classic file cut short keeps its header and still opens; the C
+/// library then reads the missing values as zeros.  The inventory is
+/// where the cut is caught, whatever part of the data it took.
+#[test]
+fn inventory_refuses_a_classic_file_that_ends_before_its_data() {
+    let dir = scratch("truncated");
+    let whole = dir.join("wrfout_d01_2026-09-26_00_00_00");
+    write_record_history(&whole);
+    let output = run(&["inventory", whole.to_str().expect("path")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("inventory JSON");
+    assert_eq!(document["extent_checked"], true);
+    assert_eq!(document["format"], "Offset64");
+
+    let bytes = std::fs::read(&whole).expect("read");
+    // One byte short, one record short, and cut inside the fixed field
+    // the records follow.  The header is intact in every case.
+    let record_bytes = 19 + 12 * 4 + 1; // Times + T, Times padded to 20
+    for keep in [bytes.len() - 1, bytes.len() - record_bytes, bytes.len() - 2 * record_bytes - 8] {
+        let cut = dir.join(format!("cut-{keep}"));
+        std::fs::write(&cut, &bytes[..keep]).expect("write cut");
+        let output = run(&["inventory", cut.to_str().expect("path")]);
+        assert_eq!(output.status.code(), Some(2), "keep {keep}: {output:?}");
+        let text = stderr(&output);
+        assert!(text.contains("the file ends before its data does"), "keep {keep}: {text}");
+        assert!(text.contains("cut short"), "keep {keep}: {text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A NetCDF-4 file's end is checked by its own library at open; the
+/// inventory says it did not check, rather than claiming it did.
+#[test]
+fn inventory_says_a_netcdf4_file_was_not_extent_checked() {
+    let output = run(&["inventory", &fixture("times.nc4")]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("inventory JSON");
+    assert_eq!(document["extent_checked"], false);
+}
+
 #[test]
 fn inventory_refuses_a_missing_file_with_exit_2() {
     let output = run(&["inventory", "no-such-file.nc"]);

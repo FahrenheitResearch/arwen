@@ -12,7 +12,10 @@ the shape of the path will not.
 
 ## 0. What you need
 
-- Python 3.11+, a Rust toolchain (`cargo`), git.
+- Python 3.11+, git, and a Rust toolchain (`cargo`), Rust 1.94 or newer
+  (`rustc --version`). The terminal and Zarr reader workspaces refuse an
+  older compiler, and a distribution's packaged Rust can be older;
+  `rustup update stable` brings a rustup install up to date.
 - For the GPU forecast loop: an NVIDIA card with CUDA 12.x/13.x
   (tested through 13.0) and the CuPy extra that matches the box's CUDA
   major -- `[gpu-cu12]` on CUDA 12.x, `[gpu-cu13]` where CUDA is 13-only
@@ -26,36 +29,44 @@ the shape of the path will not.
   (~1.3 GB one-time download, ~16 GB unpacked; see
   [DATA.md](DATA.md#static-geography-wps_geog)).
 
-## 1. Install (measured: under 2 minutes with a warm cache)
+## 1. Install (measured: a few minutes from clean)
 
 | step | measured wall |
 |---|---|
 | `git clone` (local) | 3.0 s |
-| `python -m venv` + `pip install -e '.[gpu-cu12,render]'` | ~25 s cached; a fresh machine downloads ~150 MB (numpy, matplotlib, netCDF4, CuPy) |
+| `python -m venv` + `pip install -e gpuwm-data` + `pip install -e '.[gpu-cu12,render]'` | ~25 s cached; a fresh machine downloads ~150 MB (numpy, matplotlib, netCDF4, CuPy) |
 | `gpuwm fetch-tables` (externalized Thompson tables, a one-time ~243 MiB release-asset download from a checkout, SHA-256 verified; a no-op once staged) | connection-speed bound; instant when already present |
 | `cargo build --release --locked --offline` in `tools/grib1_bridge` | ~8 s (vendored workspace, no network) |
 | `cargo build --release --locked --offline` in `tools/rustwx` (the production render engine; `--no-render` skips it) | 67 s from clean (measured 2026-07-29, same box; vendored workspace, no network) |
+| `cargo build --release --locked --offline` in `tools/arwen-tui`, `tools/zarr_bridge`, `tools/rw_wps` and `tools/region_global_dealias` (terminal, Zarr reader, mapped decode engine, dealiasing library) | 114 s together from clean, 78 s of it the Zarr reader (measured 2026-09-27 on a Linux node; vendored, no network) |
 | `gpuwm doctor` | seconds |
 
 One command does all of it -- `bash install.sh` (POSIX; the universal
 form, mode-bit independent) or `.\install.ps1`
-(PowerShell) from the checkout root: venv, `[gpu-cu12,render]` extras, the
-offline Rust builds (the `tools/grib1_bridge` GRIB bridges and the
-`tools/rustwx` render engine; `--no-render` / `-NoRender` skips the
-renderer, the long pole of install), and a closing `gpuwm doctor`; it
-offers rustup if `cargo` is missing and is safe to re-run. The
-equivalent manual steps:
+(PowerShell) from the checkout root: venv, the checkout's `gpuwm-data`
+companion, `[gpu-cu12,render]` extras, the offline Rust builds of all six
+vendored workspaces (the `tools/grib1_bridge` GRIB bridges, the
+`tools/rustwx` render engine, the `tools/arwen-tui` terminal, the
+`tools/zarr_bridge` Zarr reader, the `tools/rw_wps` mapped decode engine
+and the `tools/region_global_dealias` dealiasing library; `--no-render` /
+`-NoRender` skips the renderer, the long pole of install), and a closing
+`gpuwm doctor`; it offers rustup if `cargo` is missing and is safe to
+re-run. The equivalent manual steps install the checkout's own
+`gpuwm-data` first, because the engine requires the companion of its own
+version:
 
 POSIX:
 
 ```bash
 git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv && source .venv/bin/activate
+python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
-(cd tools/grib1_bridge && cargo build --release --locked --offline)
-(cd tools/rustwx && cargo build --release --locked --offline)
+for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
+  (cd "$workspace" && cargo build --release --locked --offline)
+done
 gpuwm doctor
 ```
 
@@ -64,11 +75,13 @@ Windows (PowerShell):
 ```powershell
 git clone https://github.com/FahrenheitResearch/arwen gpuwm; cd gpuwm
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
+python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
 gpuwm fetch-tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
-cd tools\grib1_bridge; cargo build --release --locked --offline; cd ..\..
-cd tools\rustwx; cargo build --release --locked --offline; cd ..\..
+foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
+  Push-Location $workspace; cargo build --release --locked --offline; Pop-Location
+}
 gpuwm doctor
 ```
 
@@ -82,11 +95,13 @@ assumes it is.
 You do not have to build the render engine to have one. On a supported
 platform `gpuwm fetch-bridges` downloads this release's prebuilt
 artifacts and verifies every byte against the pinned SHA-256 digests
-packaged in the wheel; `gpuwm setup` runs it as its first step. That bundle also carries
-the renderer's map assets -- the coastline, border, state and county
-shapefiles -- staged beside the binary where it finds them on its own.
-Take the binary without them and plots come out with the weather drawn
-over a blank rectangle, which is why they travel together.
+packaged in the wheel; `gpuwm setup` runs it as its first step. The
+renderer's map assets -- the coastline, border, state and county
+shapefiles -- arrive with the `gpuwm-data` package every install pulls,
+and `gpuwm` hands them to the renderer. Without them plots come out with
+the weather drawn over a blank rectangle, so a run that finds none says so
+in a `render_basemap_missing` warning event with the command that
+restores them.
 
 (The `tools/rustwx` build remains skippable, and doctor labels its
 absence `info`, not a gap -- but `gpuwm render` then REFUSES rather than
@@ -115,7 +130,7 @@ fits your card's budget. Output on the 24 GB tier (Windows):
   peak envelope: footprint 10.52 x 1.75 WDDM floor = 18.41 GiB, which is above the affine form (estimate 6.40 + non-pool 2.30 (CUDA context + local-memory backing store) + 0.50 unmodelled + 5% of the estimate x 3 nest(s) = 10.16 GiB) and therefore binds
     envelope basis: windows; measured, 1 WDDM run
   ingest (preprocessing): root 2 forcing times x 0.22 GiB each, 2 resident at a time + 3 nest initial state(s) 2.30 GiB, all resident for the single export transaction = 2.75 GiB resident; peak envelope 5.72 GiB
-    ingest envelope basis: measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context
+    ingest envelope basis: itemized analysis, model state and vertical setup, x1.10 setup residual and x1.20 pool headroom, measured on four CUDA preparations (1792x1024x55 to a 3:1 nest, H100, 2026-09-28), + CUDA context
   BINDING PHASE: the forecast is the memory-binding phase at 18.41 GiB peak envelope (forecast 18.41 GiB, ingest 5.72 GiB); it fits the 19.57 GiB budget with 1.16 GiB to spare
   budget 19.57 GiB (24 GiB card presents about 22.56 GiB free, minus this suite's 2.99 GiB reserve); headroom 1.16 GiB
 ```
@@ -201,20 +216,26 @@ verified ([VERIFICATION.md](VERIFICATION.md)).
 Two routes, accurately distinguished (details and disk sizing:
 [DATA.md](DATA.md)):
 
-- **ERA5 (the GPU forecast route).** `gpuwm fetch --source era5` emits
-  the exact two-part CDS request template plus instructions; you
-  retrieve with your own Copernicus account, then validate with
-  `gpuwm fetch --source era5 --validate FILE...` (seconds, catches a
-  wrong retrieval before anything expensive).
-- **GFS / HRRR (the native preprocessor route, measured: 9.7 s).**
+- **ERA5 (the GPU forecast route).** `gpuwm fetch --source era5 --era5-provider arco --cycle 1999-05-03T00 --hours 24 --area 30,-105,42,-90 --out data/era5-arco`
+  downloads, validates and publishes `era5-combined.nc` with no account.
+  The default CDS provider instead emits the two-part CDS request template;
+  you retrieve it with your own Copernicus account, then validate with
+  `gpuwm fetch --source era5 --validate FILE...` (seconds, catches a wrong
+  retrieval before anything expensive).
+- **GFS / HRRR (the native preprocessor route, measured: 14.5 s).**
 
 ```bash
 gpuwm fetch --source gfs --cycle latest --hours 6 \
-  --point 35.2,-97.4 --radius-km 350 --out data/gfs-latest
+  --point 35.2,-97.4 --radius-km 350 --p-top-pa 5000 --out data/gfs-latest
 ```
 
-resolved the newest complete cycle, downloaded three ~127 KB subset
-files, and wrote a SHA-256 manifest and the series inventory in 9.7 s.
+resolved the newest complete cycle (2026-09-27 12Z), downloaded three
+~146 KB subset files, and wrote a SHA-256 manifest and the series
+inventory in 14.5 s. `--p-top-pa 5000` is the 50 hPa model top every
+`gpuwm domain` config carries: it adds the 70 and 50 hPa levels to the
+100 hPa ladder the fetch takes without it, and preparation refuses a
+folder that stops short of the config's top. The fetch line
+`gpuwm domain --explain` prints carries it already.
 Every fetch is resumable; re-running with a different area or cycle
 into the same directory refuses with the exact difference rather than
 silently keeping the old files.
@@ -284,7 +305,10 @@ When you already have input files, `gpuwm prep` and `rw-wps` report
 preparation stages and the selected backend while they run. They save full
 diagnostics to a uniquely named `*-prep-*.log` beside the prepared directory.
 Successful preparation prints a `gpuwm sim` command with the configuration
-paths filled in; you do not need to copy checksums. A failure prints its
+paths filled in; you do not need to copy checksums. That command carries
+`--render-products all`, so it draws every product from each output frame
+as it lands while the forecast runs; name fewer products there, or `none`
+for no pictures. A failure prints its
 reason and the log path. Add `--explain` to also show the full diagnostic
 output on the terminal. Inventory and `--dry-run` commands do not create logs.
 Companion WRF export progress explicitly says whether files were written,
@@ -305,10 +329,13 @@ theirs.
 #    switch for switch.  Without it you get the product default suite,
 #    which runs as written too -- the receipts state its verification
 #    status ("supported, not yet WRF-verified") and the run continues.
-#    Add --explain to a COMPLETE domain command (it is a modifier, not
-#    a query: `gpuwm domain --explain` on its own is a usage error) and
-#    it prints what the profile you chose actually runs.
-gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle latest --hours 6     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --out configs/myarea.toml
+#    --explain is what makes the wizard print the separate fetch line
+#    step 3 runs; without it the wizard ends with the one `gpuwm go`
+#    line that runs every step itself.  It also prints what the profile
+#    you chose actually runs.  It is a modifier on a COMPLETE domain
+#    command, not a query: `gpuwm domain --explain` on its own is a
+#    usage error.  --data-dir points that fetch line at data/myarea.
+gpuwm domain --point=35.3,-97.5 --card 24gb --ladder 12     --source gfs --cycle latest --hours 6     --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1     --out configs/myarea.toml --data-dir data/myarea --explain
 
 # 2. Materialize the exact physics authority.  BEFORE rw-wps, not after.
 #    The profile SUPPLIES every physics key your config is silent about.
@@ -332,7 +359,12 @@ python -m gpuwm.prepared_single_domain_forecast --materialize-authorities     --
 #    (`gpuwm fetch --author-front-door-manifest` still authors the
 #    manifest standalone -- a tail series, or a different
 #    namelist/config pairing -- and prints the bound rw-wps line.)
-gpuwm fetch --source gfs --cycle <RESOLVED> --hours 6     --area=<THE BOX THE WIZARD PRINTED> --out data/myarea
+#    --p-top-pa 5000 is the config's own 50 hPa model top: it fetches
+#    the 70 and 50 hPa levels above the 100 hPa ladder the fetch takes
+#    without it, and rw-wps refuses a folder that stops short of the
+#    top.  The fetch line step 1 printed already carries it, and the
+#    area, cycle and folder below; paste that line.
+gpuwm fetch --source gfs --cycle <RESOLVED> --hours 6     --area=<THE BOX THE WIZARD PRINTED> --p-top-pa 5000 --out data/myarea
 
 # 4. Run the front door (paste the line step 3 printed, plus these).
 rw-wps ... --geog-root $GPUWM_CASE_DATA_ROOT/WPS_GEOG     --output-root out/myarea-init

@@ -290,12 +290,12 @@ def _prepare_hourly(plan, *, config_path, exp, observer, run_dir, prepare_only):
 
 def _prepare_native(plan, *, config_path, exp, observer, run_dir, prepare_only):
     from gpuwm import go_cli, runplan
-    from gpuwm.fetch import GFS_INPUT_MANIFEST_NAME
     go = go_cli.plan_from_config(config_path, outdir=run_dir, run_stamp=False,
                                   data_dir=Path(plan.run_options['data_dir']))
     bridge = go_cli.resolve_bridge()
-    manifest = go['data'] / GFS_INPUT_MANIFEST_NAME
     go_cli.claim_run_root(go)
+    # Regions prepared from one shared download each bind their own manifest.
+    manifest = go_cli.front_door_manifest(go)
     for name, command in (('authority', go_cli.authority_command(go)),
                           ('fetch', go_cli.fetch_command(go)),
                           ('manifest', go_cli.manifest_command(go, bridge))):
@@ -305,6 +305,7 @@ def _prepare_native(plan, *, config_path, exp, observer, run_dir, prepare_only):
     command = go_cli.prepare_command(go, bridge, manifest=manifest,
         manifest_sha256=_files([manifest])[0]['sha256'], cycle_stamp=go_cli._cycle_stamp(go['cycle']),
         geog_root=plan.run_options['geog_root'])
+    go_cli.announce_policy_backend(command)
     runplan._prepare_stage(go['prepared'], arguments=command, stated={},
                           run=lambda: go_cli._run_stage('prepare', command, explain=False))
     return runplan._prepared_chain_result(go['prepared'], go['authority'] / 'experiment.toml',
@@ -387,10 +388,13 @@ def _prepare_new_background(plan, root, exp, *, geog, selected):
     namelist = authority / 'experiment.namelist.wps'
     write_document(config, (root / 'experiment.toml').read_bytes(), reused=config.exists())
     write_document(namelist, (root / 'experiment.namelist.wps').read_bytes(), reused=namelist.exists())
-    from gpuwm.go_cli import managed_download_dir
+    from gpuwm.go_cli import fetch_request, managed_download_dir
+    # Keyed on the request the chain's fetch stage makes, which carries the
+    # model top this configuration's ladder needs.
     options = dict(geog_root=str(geog), supplement=background['supplements'],
                    data_dir=(binding['root'] if binding['kind'] == 'local' else
-                             str(managed_download_dir(root, background['fetch_hints']))))
+                             str(managed_download_dir(root, fetch_request(
+                                 background['fetch_hints'], p_top=exp.vertical.p_top)))))
     prepared_plan = SimpleNamespace(run_options=options, config_intent={}, sha256=plan['review_sha256'])
     events = runplan.EventStream(root / 'background-events.jsonl', mirror=None)
     try:
@@ -583,7 +587,7 @@ def renew_background(plan, root, original, *, previous, end_time, directory, geo
     from gpuwm.background_contract import from_record, plan as select
     from gpuwm.ensemble.manifest import write_json_atomically
     from gpuwm.experiment import load_experiment
-    from gpuwm.go_cli import managed_download_dir
+    from gpuwm.go_cli import fetch_request, managed_download_dir
     from gpuwm.prepared_documents import write_document
     from gpuwm.starter_template import render_tables
     background = plan.get('background')
@@ -623,7 +627,8 @@ def renew_background(plan, root, original, *, previous, end_time, directory, geo
     chain = runplan.prepared_chain_for_source(selected.source)
     owner = preparation_chains()[chain]
     options = dict(geog_root=str(geog), supplement=background['supplements'],
-                   data_dir=str(managed_download_dir(root, hints)))
+                   data_dir=str(managed_download_dir(root, fetch_request(
+                       hints, p_top=exp.vertical.p_top))))
     prepared_plan = SimpleNamespace(run_options=options, config_intent={}, sha256=plan['review_sha256'])
     attempt = 0
     while True:

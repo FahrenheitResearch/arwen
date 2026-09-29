@@ -1,0 +1,50 @@
+{
+ "tornado-1999-466/16": {
+  "rung": "nest-12-3-1-400x400",
+  "start": "1999-08-11T12:00Z",
+  "est_minutes": 35,
+  "basis": "measured: this row ran to the end of its 12 hours on an RTX 5070 Ti (16 GB) on 2026-09-25, started from the event page's button; from the press to the last picture took 44.7 minutes: the download 80 s, preparation 0.7 minutes, the forecast 34.4 and the pictures 8.4, drawn after the forecast; it wrote 42.1 GiB, at most 42.9 GiB while running",
+  "source": {
+   "kind": "computed",
+   "title": "Measured run of the 16 GB recipe",
+   "method": "the event page's 'Run the best simulation for this event' button on this row, which runs gpuwm run-plan on the row's plan keeping one checkpoint, on an RTX 5070 Ti (16 GB), engine commit c9f655ea6; the disk was sampled every 50 s; the stage times and sizes were entered from the run's events and disk samples before its folder was deleted, and are kept as runs/slc1999-16gb-full/",
+   "code": "gpuwm/runplan.py: run",
+   "inputs": [
+    "computed-fit-tornado-1999-466-16gb"
+   ],
+   "result": "exit 0 at hour 12 of 12; forecast 2061 s, preparation 40 s, download 80 s, pictures 502 s (12,882 pictures on the three grids); disk 31.06 GiB history, 2.71 GiB for the one kept checkpoint, 8.24 GiB pictures, 0.08 GiB download, 42.1 GiB at the end and 42.9 GiB at the highest sample against the row's 45.4 GiB; estimated 35 minutes for 12 hours"
+  }
+ },
+ "tornado-2023-2303241857-01/16": {
+  "rung": "nest-3-1-488x406",
+  "start": "2023-03-24T18:00Z",
+  "est_minutes": 42,
+  "basis": "measured: the first 4 of 12 hours of this row ran on an RTX 5070 Ti (16 GB) on 2026-09-25; the forecast took 13.4 minutes and preparation 1.5; scaled to 12 hours; the nests wrote hourly instead of every 15 minutes, to fit the node's disk",
+  "source": {
+   "kind": "computed",
+   "title": "Measured run of the 16 GB recipe",
+   "method": "gpuwm run-plan on this row's plan with hours set to 4, on an RTX 5070 Ti (16 GB); forecast stage wall time scaled linearly to the full length; the run's log and summary are kept as runs/ms2023-16gb/",
+   "code": "gpuwm/runplan.py: run",
+   "inputs": [
+    "computed-fit-tornado-2023-2303241857-01-16gb"
+   ],
+   "result": "exit 0; forecast 807 s for 4 simulated hours, preparation 89 s, download 1 s; d01: vertical wind to 21.36 m/s, 10 m wind to 16.66 m/s, rain to 60.94 mm, no NaN; d02: vertical wind to 33.64 m/s, 10 m wind to 30.33 m/s, rain to 68.31 mm, no NaN; estimated 42 minutes for 12 hours; the nests wrote hourly instead of every 15 minutes, to fit the node's disk"
+  }
+ },
+ "tc-2019063s18038/16": {
+  "rung": "static-12-3key-1-360",
+  "start": "2019-03-12T06:00Z",
+  "est_minutes": 395,
+  "basis": "measured: the first 6 of 78 hours of this row ran on an RTX 5070 Ti (16 GB) on 2026-09-25; the forecast took 30.3 minutes and preparation 0.6; scaled to 78 hours",
+  "source": {
+   "kind": "computed",
+   "title": "Measured run of the 16 GB recipe",
+   "method": "gpuwm run-plan on this row's plan with hours set to 6, on an RTX 5070 Ti (16 GB); forecast stage wall time scaled linearly to the full length; the run's log and summary are kept as runs/idai2019-16gb/",
+   "code": "gpuwm/runplan.py: run",
+   "inputs": [
+    "computed-fit-tc-2019063s18038-16gb"
+   ],
+   "result": "exit 0; forecast 1821 s for 6 simulated hours, preparation 36 s, download 109 s; d01: vertical wind to 4.35 m/s, 10 m wind to 38.84 m/s, rain to 224.49 mm, no NaN; d02: vertical wind to 10.26 m/s, 10 m wind to 34.93 m/s, rain to 192.51 mm, no NaN; d03: vertical wind to 5.22 m/s, 10 m wind to 13.52 m/s, rain to 7.54 mm, no NaN; estimated 395 minutes for 78 hours"
+  }
+ }
+}

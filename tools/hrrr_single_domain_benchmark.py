@@ -67,6 +67,8 @@ from gpuwm.physics_compat import (  # noqa: E402
     P3_LEGACY_RRTMG_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+    THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+    THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     THOMPSON_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
@@ -93,6 +95,7 @@ from gpuwm.core.nssl2_contract import (  # noqa: E402
     resolve_nssl2_mode,
 )
 from gpuwm import explain  # noqa: E402
+from gpuwm.progress import prep_progress, prep_stage  # noqa: E402
 from gpuwm.hrrr_forecast import (  # noqa: E402
     hrrr_source_window, resolve_cycle_flags)
 from gpuwm.namelist_seal import namelist_extension_invariant  # noqa: E402
@@ -342,6 +345,23 @@ def runner_capabilities() -> dict[str, object]:
                 "runtime_guards": [],
                 "radiation_solver": "RTE+RRTMGP",
             },
+            # The Thompson members of the pair above: the staged Thompson
+            # table block, because the microphysics is Thompson, and the
+            # readiness of the composition, which the registry ranks at
+            # the implemented-unverified ceiling MYNN and RUC set.
+            THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID: {
+                "selector": 8,
+                **staged_thompson,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+            },
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID: {
+                "selector": 8,
+                **staged_thompson,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "RTE+RRTMGP",
+            },
             RUC_PROFILE_ID: {
                 "selector": 6,
                 "readiness": "IMPLEMENTED_UNVERIFIED",
@@ -554,7 +574,15 @@ def _partition_preprocess_worker_budget(
 
 
 class _PreprocessWorkerBudget:
-    """Deterministic accounting for concurrent native CPU transform jobs."""
+    """Deterministic accounting for concurrent native CPU transform jobs.
+
+    Under the CUDA backend the budget has no slots to partition, but it is
+    not empty: the masked surface fields (soil, snow, skin temperature and
+    sea ice) and the native route's soil stencil run in the Rust library
+    on the host, on ``host_workers`` threads (``--preprocess-workers``, or
+    every CPU the process may use).  They run in the controller's mapping
+    of one forcing time at a time, so that count is also the peak.
+    """
 
     schema = "gpuwm-preprocess-worker-budget-v1"
     _phase_order = {
@@ -565,7 +593,8 @@ class _PreprocessWorkerBudget:
 
     def __init__(self, *, backend: str, requested_total,
                  effective_total: int | None, requested_job_slots: int,
-                 future_job_count: int, clock_origin: float):
+                 future_job_count: int, clock_origin: float,
+                 host_workers: int | None = None):
         self.backend = backend
         self.requested_total = requested_total
         self.effective_total = effective_total
@@ -586,7 +615,16 @@ class _PreprocessWorkerBudget:
                 raise ValueError(f"unsupported preprocessing backend {backend!r}")
             if effective_total is not None:
                 raise ValueError("CUDA preprocessing has no native CPU budget")
+            if (isinstance(host_workers, bool)
+                    or not isinstance(host_workers, int) or host_workers < 1):
+                # A receipt without it would say the host steps took no
+                # threads, which is what the CUDA budget said before they
+                # moved to the Rust library.
+                raise ValueError(
+                    "CUDA preprocessing needs the worker count of its host "
+                    "steps (the masked surface fields)")
             self.slot_workers = ()
+        self.host_workers = host_workers if backend == "cuda" else None
 
     @property
     def concurrent_job_slots(self) -> int:
@@ -698,17 +736,29 @@ class _PreprocessWorkerBudget:
             if peak_workers > int(self.effective_total):
                 raise RuntimeError(
                     "native preprocessing exceeded its total worker budget")
+        if self.backend == "cuda":
+            peak_workers = int(self.host_workers)
         public_jobs = []
         for job in ordered:
             public_jobs.append({
                 key: value for key, value in job.items()
                 if not key.startswith("_")
             })
+        host_steps = {}
+        if self.backend == "cuda":
+            host_steps = {
+                "host_step_native_workers": int(self.host_workers),
+                "host_step_scope": (
+                    "masked surface fields in the Rust preprocessing "
+                    "library, one forcing time at a time in the "
+                    "controller"),
+            }
         return {
             "schema": self.schema,
             "backend": self.backend,
             "applicable": self.backend == "cpu",
             "scope": "native CPU horizontal and WRF-real transforms",
+            **host_steps,
             "requested_total_native_workers": self.requested_total,
             "effective_total_native_workers": self.effective_total,
             "requested_prepare_job_slots": self.requested_job_slots,
@@ -721,7 +771,10 @@ class _PreprocessWorkerBudget:
             "peak_active_preprocessing_jobs": peak_jobs,
             "peak_policy": (
                 "sum of reserved native-worker allocations across "
-                "overlapping controller job intervals"),
+                "overlapping controller job intervals"
+                if self.backend == "cpu" else
+                "the host steps' worker count: they run one forcing time "
+                "at a time"),
             "pipeline_decoder_workers_included": False,
         }
 
@@ -1026,6 +1079,49 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    # The Thompson members of the two rows above, TRANSCRIBED rather than
+    # aliased for the reason the Shin-Hong row gives: this table is a hard
+    # per-field equality gate, and each moves one field it pins
+    # (mp_physics 6.0 -> 8.0).  They differ from their WSM6 rows in that
+    # field and no other.
+    THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 8.0,
+            "ra_lw_physics": 0.0,
+            "ra_sw_physics": 1.0,
+            "radt": 1.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 8.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
     RUC_PROFILE_ID: MappingProxyType({
         "physics": MappingProxyType({
             "mp_physics": 6.0,
@@ -1248,7 +1344,9 @@ _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
     for profile in NATIVE_BENCHMARK_PHYSICS_PROFILES
 })
 
-from gpuwm.ingest.microphysics_cold_start import source_absent_microphysics
+from gpuwm.ingest.microphysics_cold_start import (
+    cold_start_seeded_numbers, source_absent_microphysics,
+)
 
 # Compatibility views for old receipt callers. The species/default authority is
 # shared and selector-based; production passes the actual RunConfig below.
@@ -1299,6 +1397,11 @@ _INITIALIZATION_CONTRACT_ALIASES = MappingProxyType({
     MYNN_RTE_RRTMGP_PROFILE_ID: MYNN_PROFILE_ID,
     MYNN_RUC_RTE_RRTMGP_PROFILE_ID: MYNN_RUC_PROFILE_ID,
     MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: MYNN_NOAHMP_PROFILE_ID,
+    # The Thompson members of the MYNN + RUC pair: the species HRRR
+    # supplies and the cold start of the absent ones are Thompson's, so
+    # both read the Thompson validation row's tables.
+    THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID: THOMPSON_PROFILE_ID,
+    THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID: THOMPSON_PROFILE_ID,
 })
 
 
@@ -1778,7 +1881,11 @@ def _validate_native_hrrr_physics_profile(
             # The route default's engine twin, at its composition ceiling
             # for the same reason: every component is measured and no
             # receipt covers the composed suite on this engine.
-            THOMPSON_RTE_RRTMGP_PROFILE_ID):
+            THOMPSON_RTE_RRTMGP_PROFILE_ID,
+            # The Thompson members of the MYNN + RUC pair, at the ceiling
+            # MYNN and RUC set.
+            THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID):
         receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
     if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID,
                    THOMPSON_RTE_RRTMGP_PROFILE_ID):
@@ -2330,20 +2437,79 @@ def _initial_hrrr_microphysics_receipt(
         "nc", "nr", "ni", "ns", "ng", "qndrop", "qnr", "qni",
         "qns", "qng", "qnh", "qnn", "nn", "nh",
     })
+    # The Thompson numbers (nr and ni, and mp=28's nc) are not held to
+    # "exact zero everywhere": that premise, real.exe leaving a
+    # source-absent number at zero, was retired by A99's port of real.exe's
+    # make_DropletNumber, make_RainNumber and make_IceNumber
+    # (module_initialize_real.F:4829-4852), after which the old check
+    # refused every native Thompson preparation whose analysis carried
+    # rain or ice (A110).  They are held to that rule instead: the exact
+    # allocation zero where the paired mass is zero, finite and above zero
+    # where it is above zero, and exactly the seeded cell count the
+    # cold-start closure's seed receipt records.
+    seeded_numbers = cold_start_seeded_numbers(cfg)
+    closure = (initialization.get("cold_start_moment_closure")
+               if seeded_numbers else None)
     for name, raw_expected in defaults.items():
         value = getattr(state, name, None)
         expected = np.float32(raw_expected)
         dtype = None if value is None else np.dtype(value.dtype)
+        if name in seeded_numbers:
+            mass_name, seed_key = seeded_numbers[name]
+            label = (f"native HRRR selection {selection_label!r} Thompson "
+                     f"number moment {name}")
+            mass = getattr(state, mass_name, None)
+            if (value is None or dtype != np.dtype(np.float32)
+                    or mass is None
+                    or tuple(mass.shape) != tuple(value.shape)):
+                raise ValueError(
+                    f"{label} is missing, is not FP32, or is not shaped "
+                    f"like its mass {mass_name}")
+            has_mass = mass > 0
+            if not bool(scalar((has_mass | (value == expected)).all())):
+                raise ValueError(
+                    f"{label} must be exact FP32 {float(expected)!r} where "
+                    f"{mass_name} is zero")
+            if not bool(scalar(
+                    (~has_mass | ((value > 0) & (value < np.inf))).all())):
+                raise ValueError(
+                    f"{label} must be finite and above zero where "
+                    f"{mass_name} is above zero, as real.exe seeds it")
+            seeded_cells = int(scalar(has_mass.sum()))
+            seed = (closure.get(seed_key)
+                    if isinstance(closure, Mapping) else None)
+            recorded = (seed.get("seeded_cells")
+                        if isinstance(seed, Mapping) else None)
+            if (not isinstance(closure, Mapping)
+                    or closure.get("mp_physics") != int(cfg.mp_physics)
+                    or isinstance(recorded, bool)
+                    or recorded != seeded_cells):
+                raise ValueError(
+                    f"{label} holds {seeded_cells} seeded cell(s) where "
+                    f"{mass_name} is above zero, but the cold-start "
+                    f"closure's {seed_key} records {recorded!r}")
+            exact_fields[name] = {
+                "expected_float32": float(expected),
+                "expected_uint32_bits": int(expected.view(np.uint32)),
+                "all_exact_expected_where_mass_is_zero": True,
+                "paired_mass_field": mass_name,
+                "seed_receipt": seed_key,
+                "seeded_cells": seeded_cells,
+                "seeded_all_finite_above_zero": True,
+            }
+            numbers[name] = {
+                "all_exact_zero_where_mass_is_zero": True,
+                "paired_mass_field": mass_name,
+                "seed_receipt": seed_key,
+                "seeded_cells": seeded_cells,
+            }
+            continue
         matches = (
             value is not None
             and dtype == np.dtype(np.float32)
             and bool(scalar((value == expected).all()))
         )
         if not matches:
-            if profile == THOMPSON_PROFILE_ID and name in number_names:
-                raise ValueError(
-                    "native HRRR Thompson source-absent number moment "
-                    f"{name} must initialize to exact zero")
             raise ValueError(
                 f"native HRRR selection {selection_label!r} source-absent state "
                 f"{name} must initialize to exact FP32 "
@@ -2363,11 +2529,18 @@ def _initial_hrrr_microphysics_receipt(
                     "all_exact_expected": True,
                 }
             )
-    if not isinstance(profile, str):
+    if seeded_numbers:
+        makers = {"nc": "make_DropletNumber", "nr": "make_RainNumber",
+                  "ni": "make_IceNumber"}
+        number_policy = (
+            "real.exe Thompson cold start: "
+            + "/".join(sorted(seeded_numbers))
+            + " exact zero where the paired mass is zero and seeded by "
+            + "/".join(makers[name] for name in sorted(seeded_numbers))
+            + " where it is above zero")
+    elif not isinstance(profile, str):
         number_policy = ("exact active-scheme source-absent FP32 initial values"
                          if defaults else "not applicable")
-    elif profile == THOMPSON_PROFILE_ID:
-        number_policy = "real.exe exact-zero QNICE/QNRAIN"
     elif profile == MORRISON_PROFILE_ID:
         number_policy = (
             "exact-zero Morrison QNRAIN/QNICE/QNSNOW/QNGRAUPEL; "
@@ -2460,8 +2633,8 @@ def _load_static(
     if receipt.get("schema") == "gpuwm-native-hrrr-static-v2":
         if receipt.get("target_domain_sha256") != target.identity_sha256():
             raise ValueError("native static target-domain identity mismatch")
-        expected_window = required_hrrr_source_window(target).to_dict()
-        if receipt.get("hrrr_source_coverage") != expected_window:
+        if not required_hrrr_source_window(target).matches_record(
+                receipt.get("hrrr_source_coverage")):
             raise ValueError("native static HRRR source-coverage receipt mismatch")
     expected = receipt.get("cache", {}).get("sha256")
     actual = sha256_file(cache)
@@ -2544,8 +2717,8 @@ def _crop_horizontal_snapshot(snapshot, *, y0, y1, x0, x1,
 def _crop_boundary_static(static, *, y0, y1, x0, x1, full_shape):
     ny, nx = map(int, full_shape)
     result = {}
-    for name in ("HGT_M", "MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E",
-                 "SINALPHA", "COSALPHA"):
+    for name in ("HGT_M", "LANDMASK", "MAPFAC_M", "MAPFAC_U", "MAPFAC_V",
+                 "F", "E", "SINALPHA", "COSALPHA"):
         value = static[name]
         if value.shape == (ny, nx):
             result[name] = value[y0:y1, x0:x1]
@@ -2691,8 +2864,16 @@ def _compact_boundary_static(static, run_cfg, *, width):
 def _initialize_boundary_sides(
         compact_mets, run_cfg, static_sides, eta, *, p_top, width,
         preprocess_backend="cuda", preprocess_workers=None,
-        cpu_preprocess_bridge=None, sfcp_to_sfcp=True):
-    """Initialize one hour's four side rectangles on one explicit backend."""
+        cpu_preprocess_bridge=None, sfcp_to_sfcp=True,
+        preprocess_selection=None):
+    """Initialize one hour's four side rectangles on one explicit backend.
+
+    ``preprocess_selection`` is the controller's record of how its
+    backend was chosen.  A spawned worker resolves the backend again by
+    name, which is the controller's choice and not a second one, so its
+    receipt carries the controller's selection rather than "named by the
+    caller" about a backend auto chose.
+    """
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
     from gpuwm.core.grid import make_vertical_coord
@@ -2703,6 +2884,8 @@ def _initialize_boundary_sides(
     preprocess = resolve_preprocess_backend(
         preprocess_backend, workers=preprocess_workers,
         cpu_bridge=cpu_preprocess_bridge)
+    if preprocess_selection is not None:
+        preprocess.selection = dict(preprocess_selection)
     xp = preprocess.array_module
     is_cuda = getattr(preprocess, "name", None) == "cuda"
 
@@ -2786,6 +2969,7 @@ def _initialize_boundary_sides(
             # honour the request with.
             result = initialize_real(
                 strip_met, strip_cfg, coord, strip_static["HGT_M"],
+                landmask=strip_static["LANDMASK"],
                 p_top=p_top, sfcp_to_sfcp=sfcp_to_sfcp,
                 preprocess_backend=preprocess,
                 state_backend="preprocess",
@@ -2826,13 +3010,24 @@ _PREPARE_WORKER_CONTEXT = None
 
 def _prepare_worker_init(
         run_cfg, static_sides, eta, p_top, width,
-        preprocess_backend, cpu_preprocess_bridge, sfcp_to_sfcp=True):
-    """Install immutable per-domain inputs in one spawned worker process."""
+        preprocess_backend, cpu_preprocess_bridge, sfcp_to_sfcp=True,
+        host_workers=None, preprocess_selection=None):
+    """Install immutable per-domain inputs in one spawned worker process.
+
+    ``host_workers`` is ``--preprocess-workers`` under the CUDA backend:
+    the thread count of the host steps that backend runs in the Rust
+    library, which every worker's backend must carry so its receipt is
+    the controller's.  Under the CPU backend each job's count comes
+    with the job, from its slot of the budget.  ``preprocess_selection``
+    is the controller backend's ``selection``, which every worker's
+    backend carries for the same reason.
+    """
     global _PREPARE_WORKER_CONTEXT
     _PREPARE_WORKER_CONTEXT = (
         run_cfg, static_sides, tuple(float(value) for value in eta),
         float(p_top), int(width), preprocess_backend,
-        cpu_preprocess_bridge, sfcp_to_sfcp)
+        cpu_preprocess_bridge, sfcp_to_sfcp, host_workers,
+        None if preprocess_selection is None else dict(preprocess_selection))
 
 
 def _prepare_boundary_hour(
@@ -2841,14 +3036,18 @@ def _prepare_boundary_hour(
     if _PREPARE_WORKER_CONTEXT is None:
         raise RuntimeError("boundary preparation worker was not initialized")
     (run_cfg, static_sides, eta, p_top, width, preprocess_backend,
-     cpu_preprocess_bridge, sfcp_to_sfcp) = _PREPARE_WORKER_CONTEXT
+     cpu_preprocess_bridge, sfcp_to_sfcp, host_workers,
+     preprocess_selection) = _PREPARE_WORKER_CONTEXT
     started = time.perf_counter()
     sides, side_timings, memory, preprocess_receipt = _initialize_boundary_sides(
         compact_mets, run_cfg, static_sides, eta,
         p_top=p_top, width=width,
         preprocess_backend=preprocess_backend,
-        preprocess_workers=preprocess_workers,
-        cpu_preprocess_bridge=cpu_preprocess_bridge, sfcp_to_sfcp=sfcp_to_sfcp)
+        preprocess_workers=(
+            preprocess_workers if preprocess_workers is not None
+            else host_workers),
+        cpu_preprocess_bridge=cpu_preprocess_bridge, sfcp_to_sfcp=sfcp_to_sfcp,
+        preprocess_selection=preprocess_selection)
     finished = time.perf_counter()
     return {
         "forecast_hour": int(hour),
@@ -2865,6 +3064,19 @@ def _prepare_boundary_hour(
     }
 
 
+def _prep_step(args, stage: str, *, label: str):
+    """A step record for a preparation, and nothing for a forecast run.
+
+    A ``--prepare-only`` run is a preparer program: its parent
+    (``tools/prepare_hrrr_wrf.py`` under ``gpuwm go``) reads each step's
+    ``GPUWM_PREP_EVENT`` line off its stderr and puts it on the run's
+    stream.  A forecast run's stderr is a person's terminal.
+    """
+
+    return (prep_stage(stage, label=label) if args.prepare_only
+            else nullcontext())
+
+
 def _initialize_state(
         snapshot, dc, grid, static, eta, mapping_report, *,
         p_top, column_workers=1, surface_fallback_radius: int = 8,
@@ -2879,8 +3091,11 @@ def _initialize_state(
         surface_fallback_radius=surface_fallback_radius,
         preprocess_backend=preprocess_backend)
     if water_temperature_statics is not None:
+        from gpuwm.ingest.cpu_backend import host_step_workers
         from gpuwm.ingest.water_temperature import assemble_horizontal_water_temperature
-        met = assemble_horizontal_water_temperature(met, water_temperature_statics)
+        met = assemble_horizontal_water_temperature(
+            met, water_temperature_statics,
+            workers=host_step_workers(preprocess_backend))
     started = time.perf_counter()
     coord = make_vertical_coord(
         dc.run.nz, hybrid_opt=dc.run.hybrid_opt, etac=dc.run.etac,
@@ -2888,6 +3103,7 @@ def _initialize_state(
     state_timing = {}
     result = initialize_real(
         met, dc.run, coord, static["HGT_M"], grid=grid, p_top=p_top,
+        landmask=static["LANDMASK"],
         sfcp_to_sfcp=sfcp_to_sfcp, column_workers=column_workers,
         preprocess_backend=preprocess_backend,
         state_backend=state_backend,
@@ -2966,38 +3182,172 @@ def _validated_namelist_extension_identity(args, *, cycle: datetime):
         run_seconds=int(horizon_seconds))
 
 
-def run(args):
+def _carry_vertical_routes(expected, actual, context):
+    """Check a job's vertical routes against the controller's by depth.
+
+    Pops ``vertical_interpolation`` from both receipt copies.  A job's
+    route for a source level count the controller has recorded must be
+    the controller's route for that count (the same engine, tier and
+    reason); a route for a count the controller has not met is appended
+    to the controller's record, which is the backend's own shared list.
+    """
+
+    controller_routes = expected.pop("vertical_interpolation", None)
+    job_routes = actual.pop("vertical_interpolation", None)
+    if controller_routes is None and job_routes is None:
+        return
+    if not isinstance(controller_routes, list) or not isinstance(
+            job_routes, list):
+        raise RuntimeError(
+            f"{context} preprocessing backend receipt differs from the "
+            "resolved public selector in vertical_interpolation")
+    by_depth = {}
+    for route in controller_routes:
+        if isinstance(route, dict):
+            by_depth.setdefault(route.get("source_levels"), []).append(route)
+    for route in job_routes:
+        if not isinstance(route, dict) or "source_levels" not in route:
+            raise RuntimeError(
+                f"{context} preprocessing backend receipt carries a "
+                f"malformed vertical route {route!r}")
+        known = by_depth.get(route["source_levels"])
+        if known is None:
+            controller_routes.append(dict(route))
+            by_depth[route["source_levels"]] = [route]
+        elif route not in known:
+            raise RuntimeError(
+                f"{context} preprocessing backend receipt differs from the "
+                "resolved public selector in vertical_interpolation: it "
+                f"routed {route['source_levels']} source levels as "
+                f"{route!r}, the controller as {known[0]!r}")
+
+
+def _require_preprocess_receipt(
+        controller_receipt, observed, context, *,
+        expected_native_workers=None):
+    """Refuse a job whose backend receipt is not the controller's.
+
+    Under the CPU backend every job runs on its slot's share of the
+    worker budget, so the counts are the one place a job's receipt may
+    differ from the controller's, and they are checked against the
+    job's allocation instead: the top-level ``workers`` and the masked
+    surface chain's ``workers``.  The chain's count used to be compared
+    as part of the receipt, where the controller's names the whole
+    budget and a slot's its share, so a CPU preparation with two or more
+    boundary hours was refused at its first boundary hour.
+
+    The vertical routes are the other place: a spawned boundary worker
+    keeps its own route record, one entry per source level count it
+    prepared, where the controller's names the counts the controller and
+    its in-process slots met.  A boundary hour whose source level count
+    differs from f00's was refused on that difference although both
+    backends route that depth the same way.  So a route is checked
+    against the controller's route for the same source level count, and
+    a depth the controller has not met is carried into the controller's
+    record (the list its receipt shares), so the written receipt names
+    every route that ran.
+    """
+
+    if not isinstance(observed, dict):
+        raise RuntimeError(
+            f"{context} omitted its preprocessing backend receipt")
+    expected = dict(controller_receipt)
+    actual = dict(observed)
+    _carry_vertical_routes(expected, actual, context)
+    if expected["backend"] == "cpu":
+        expected.pop("workers")
+        observed_workers = actual.pop("workers", None)
+        if observed_workers != expected_native_workers:
+            raise RuntimeError(
+                f"{context} used {observed_workers!r} native workers; "
+                f"expected {expected_native_workers!r}")
+        expected_chain = expected.get("masked_surface_chain")
+        if isinstance(expected_chain, dict):
+            expected["masked_surface_chain"] = {
+                key: value for key, value in expected_chain.items()
+                if key != "workers"}
+        observed_chain = actual.get("masked_surface_chain")
+        if isinstance(observed_chain, dict):
+            observed_chain = dict(observed_chain)
+            chain_workers = observed_chain.pop("workers", None)
+            if chain_workers != expected_native_workers:
+                raise RuntimeError(
+                    f"{context} ran the masked surface fields on "
+                    f"{chain_workers!r} native workers; expected "
+                    f"{expected_native_workers!r}")
+            actual["masked_surface_chain"] = observed_chain
+    elif expected_native_workers is not None:
+        raise RuntimeError(
+            f"{context} assigned native workers to CUDA preprocessing")
+    if actual != expected:
+        differing = sorted(
+            key for key in set(expected) | set(actual)
+            if expected.get(key) != actual.get(key))
+        raise RuntimeError(
+            f"{context} preprocessing backend receipt differs from the "
+            f"resolved public selector in {', '.join(differing)}")
+
+
+def _budgeted_preprocess_backend(args, price=None):
+    """The resolved backend and, for the CPU, its explicit worker total.
+
+    ``price`` is the preparation's device price
+    (:func:`native_preparation_price`): a CUDA answer that does not fit
+    the card's free memory becomes the CPU under auto and is refused by
+    name when cuda was named, before anything is allocated.
+
+    Implicit CPU auto-selection is resolved to one explicit total budget,
+    so every later concurrent job receives a deterministic partition of
+    this one value rather than independently expanding "auto".  Pinning
+    the budget re-resolves the CPU backend, which is not a second choice
+    of backend: the receipt keeps the first resolution's selector and
+    reason.  It used to say "named by the caller" about a CPU nobody
+    named, once auto had fallen to it because no card was usable.
+    """
+
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
     preprocess = resolve_preprocess_backend(
         args.preprocess_backend, workers=args.preprocess_workers,
-        cpu_bridge=args.cpu_preprocess_bridge)
-    preprocess_is_cuda = getattr(preprocess, "name", None) == "cuda"
+        cpu_bridge=args.cpu_preprocess_bridge, price=price)
+    if getattr(preprocess, "name", None) == "cuda":
+        return preprocess, None
+    effective_preprocess_workers = (
+        int(args.preprocess_workers)
+        if args.preprocess_workers is not None
+        else int(os.cpu_count() or 1))
+    if getattr(preprocess, "workers", None) != effective_preprocess_workers:
+        chosen = getattr(preprocess, "selection", None)
+        preprocess = resolve_preprocess_backend(
+            "cpu", workers=effective_preprocess_workers,
+            cpu_bridge=(
+                args.cpu_preprocess_bridge
+                if args.preprocess_backend == "cpu" else None))
+        if chosen is not None:
+            preprocess.selection = dict(chosen)
+    return preprocess, effective_preprocess_workers
+
+
+def native_preparation_price(run_cfg, *, forcing_times, prepare_workers):
+    """The device price of this preparation: the f00 build, then the kept
+    f00 state beside ``min(prepare_workers, forcing_times - 1)`` spawned
+    boundary workers, each with its own CUDA context and one side strip.
+    """
+    from gpuwm.ingest.preparation_price import (
+        NOMINAL_SOURCE_INVENTORIES, price_preparation)
+
+    workers = max(0, min(int(prepare_workers), int(forcing_times) - 1))
+    return price_preparation(
+        "hrrr-native", [run_cfg], NOMINAL_SOURCE_INVENTORIES["hrrr-native"],
+        boundary_workers=workers)
+
+
+def run(args):
+    from gpuwm.ingest.cpu_backend import host_step_workers
+
     requested_preprocess_workers = (
         "auto" if args.preprocess_workers is None
         else int(args.preprocess_workers))
-    effective_preprocess_workers = None
-    if not preprocess_is_cuda:
-        effective_preprocess_workers = (
-            int(args.preprocess_workers)
-            if args.preprocess_workers is not None
-            else int(os.cpu_count() or 1))
-        # Resolve implicit CPU auto-selection to an explicit total budget.
-        # Every later concurrent job receives a deterministic partition of
-        # this one value rather than independently expanding "auto".
-        if getattr(preprocess, "workers", None) != effective_preprocess_workers:
-            preprocess = resolve_preprocess_backend(
-                "cpu", workers=effective_preprocess_workers,
-                cpu_bridge=(
-                    args.cpu_preprocess_bridge
-                    if args.preprocess_backend == "cpu" else None))
-    preprocess_receipt = preprocess.receipt()
-    # CPU-only preparation/export must not import CuPy.  A benchmark that
-    # continues into the GPU forecast still needs CuPy even when its mapping
-    # and vertical transforms use the native CPU backend.
-    cp = preprocess.array_module if preprocess_is_cuda else None
-    if not args.prepare_only and cp is None:
-        import cupy as cp
 
     from gpuwm.ingest.hrrr import (
         load_hrrr_native_series, load_hrrr_pipeline_ready_window)
@@ -3059,8 +3409,8 @@ def run(args):
         load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
     water_overlay, water_overlay_binding = load_bound_water_overlay(
         None if declared_case is None else declared_case.water_temperature_overlay)
-    from gpuwm.static.highres_production import (parse_static_table, static_highres_identity)
-    static_highres = parse_static_table(experiment_tables.get("static"),
+    from gpuwm.static.highres_production import (resolve_static_highres, static_highres_identity)
+    static_highres = resolve_static_highres(experiment_tables,
         source=str(companion_source), base_dir=Path(companion_source).parent)
     physics_profile = _configured_physics_receipt(
         exp.root.run, args.physics_profile, acknowledgements=tuple(args.ack))
@@ -3081,6 +3431,24 @@ def run(args):
     soil_mesh = _configured_soil_mesh(grid, experiment_tables)
     if grid.latlon_mass()[0].shape != (target.ny, target.nx):
         raise ValueError("target Lambert geometry shape drift")
+
+    # THE BACKEND, PRICED, BEFORE THE FIRST DEVICE ALLOCATION.  Everything
+    # above is host work.  A restored prepared cache builds nothing on the
+    # card, so it is not priced (A65).
+    preparing = not (args.prepared_cache is not None
+                     and args.prepared_cache.exists())
+    preprocess, effective_preprocess_workers = _budgeted_preprocess_backend(
+        args, price=(native_preparation_price(
+            dc.run, forcing_times=len(model_forcing_hours),
+            prepare_workers=args.prepare_workers) if preparing else None))
+    preprocess_is_cuda = getattr(preprocess, "name", None) == "cuda"
+    preprocess_receipt = preprocess.receipt()
+    # CPU-only preparation/export must not import CuPy.  A benchmark that
+    # continues into the GPU forecast still needs CuPy even when its mapping
+    # and vertical transforms use the native CPU backend.
+    cp = preprocess.array_module if preprocess_is_cuda else None
+    if not args.prepare_only and cp is None:
+        import cupy as cp
 
     static, attrs, static_load = _load_static(
         args.static_cache, args.static_receipt, target)
@@ -3130,6 +3498,8 @@ def run(args):
         requested_job_slots=int(args.prepare_workers),
         future_job_count=(0 if restore_cached else len(requested_hours) - 1),
         clock_origin=total_started,
+        host_workers=(preprocess.effective_host_workers
+                      if preprocess_is_cuda else None),
     )
     if args.prepared_cache is not None:
         from gpuwm.ingest.prepared_cache import prepared_cache_identity as identity
@@ -3164,11 +3534,10 @@ def run(args):
             return preprocess
         workers = int(workers)
         if workers not in preprocess_backends_by_workers:
-            preprocess_backends_by_workers[workers] = resolve_preprocess_backend(
-                "cpu", workers=workers,
-                cpu_bridge=(
-                    args.cpu_preprocess_bridge
-                    if args.preprocess_backend == "cpu" else None))
+            # The controller's backend at the slot's share, not a second
+            # resolution: its receipt must be the controller's.
+            preprocess_backends_by_workers[workers] = preprocess.at_workers(
+                workers)
         return preprocess_backends_by_workers[workers]
 
     def record_setup_memory():
@@ -3190,25 +3559,9 @@ def run(args):
 
     def require_preprocess_receipt(
             observed, context, *, expected_native_workers=None):
-        if not isinstance(observed, dict):
-            raise RuntimeError(
-                f"{context} omitted its preprocessing backend receipt")
-        expected = dict(preprocess_receipt)
-        actual = dict(observed)
-        if expected["backend"] == "cpu":
-            expected.pop("workers")
-            observed_workers = actual.pop("workers", None)
-            if observed_workers != expected_native_workers:
-                raise RuntimeError(
-                    f"{context} used {observed_workers!r} native workers; "
-                    f"expected {expected_native_workers!r}")
-        elif expected_native_workers is not None:
-            raise RuntimeError(
-                f"{context} assigned native workers to CUDA preprocessing")
-        if actual != expected:
-            raise RuntimeError(
-                f"{context} preprocessing backend receipt differs from the "
-                "resolved public selector")
+        _require_preprocess_receipt(
+            preprocess_receipt, observed, context,
+            expected_native_workers=expected_native_workers)
 
     root_result = root_met = initial_snapshot = None
     # WHICH AEROSOL SOURCE THE f00 STATE CAME FROM, held across both
@@ -3344,13 +3697,18 @@ def run(args):
                 return raw_acquire(requested_hours[index])
 
         overlay_series = overlay_snapshot_sequence(
-            ForcingSequence(), water_overlay, binding=water_overlay_binding)
+            ForcingSequence(), water_overlay, binding=water_overlay_binding,
+            workers=host_step_workers(preprocess))
 
         def acquire_snapshot(hour):
             return overlay_series[requested_hours.index(hour)]
 
     if not restore_cached:
+        from gpuwm.ingest.boundary_stream import say_prepared_sealed
         from gpuwm.ingest.water_temperature import WaterTemperatureStatics
+        # Every boundary hour is built before the forecast starts; say
+        # so, the way a chained route says why it declined.
+        say_prepared_sealed("native_hrrr")
         water_statics = WaterTemperatureStatics.for_route(
             route="native preparation", policy=case_policy["water_temperature_policy"],
             landmask=static["LANDMASK"], lu_index=static["LU_INDEX"], landuse_attrs=attrs)
@@ -3378,16 +3736,18 @@ def run(args):
             f00_preprocess = preprocess_backend_for_workers(
                 f00_native_workers)
             f00_job_started = time.perf_counter()
-            result, met, horizontal, vertical, state_timing = _initialize_state(
-                snapshot, dc, grid, static, eta, mapping,
-                p_top=p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
-                water_temperature_statics=water_statics,
-                column_workers=args.prepare_workers,
-                surface_fallback_radius=(
-                    target.surface_fallback_radius_cells),
-                preprocess_backend=f00_preprocess,
-                state_backend=(
-                    "preprocess" if args.prepare_only else "cuda"))
+            with _prep_step(args, "root_initialize",
+                            label="Initialize the start state"):
+                result, met, horizontal, vertical, state_timing = _initialize_state(
+                    snapshot, dc, grid, static, eta, mapping,
+                    p_top=p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
+                    water_temperature_statics=water_statics,
+                    column_workers=args.prepare_workers,
+                    surface_fallback_radius=(
+                        target.surface_fallback_radius_cells),
+                    preprocess_backend=f00_preprocess,
+                    state_backend=(
+                        "preprocess" if args.prepare_only else "cuda"))
             f00_job_finished = time.perf_counter()
             if not preprocess_is_cuda:
                 preprocess_worker_budget.record(
@@ -3544,6 +3904,12 @@ def run(args):
                         time.perf_counter() - total_started),
                 })
                 completed_hours.add(hour)
+                if args.prepare_only:
+                    # "Boundary times k of m" on a run page while the
+                    # preparation builds them (the start state is f00).
+                    prep_progress("root_boundaries", label="Boundary times",
+                                  done=len(completed_hours) - 1,
+                                  count=len(requested_hours) - 1)
                 _atomic_json(progress_path, {
                     "status": "PREPARING",
                     "completed_model_forcing_hours": sorted(completed_hours),
@@ -3610,7 +3976,10 @@ def run(args):
                         preprocess_receipt["backend"],
                         (str(args.cpu_preprocess_bridge)
                          if args.cpu_preprocess_bridge is not None else None),
-                        case_policy["sfcp_to_sfcp"]))
+                        case_policy["sfcp_to_sfcp"],
+                        (args.preprocess_workers if preprocess_is_cuda
+                         else None),
+                        getattr(preprocess, "selection", None)))
                 futures = {}
                 slot_futures = [None] * schedule_slots
 
@@ -3730,6 +4099,13 @@ def run(args):
             root_surface = resolve_prepared_noah_surface(
                 root_met, dc.run, static, soil_mesh=soil_mesh)
             canonical_surface = root_surface.fields
+            # real.exe's TSLB reasonableness rebuild, recorded only when it
+            # touched a land column, so a healthy cycle's cache and proof
+            # are byte for byte what they were; the bundle relays it into
+            # the proof (SOIL_PREPARATION_RECEIPTS).
+            from gpuwm.ingest.soil import soil_temperature_repair_proof
+            soil_temperature_repair = soil_temperature_repair_proof(
+                root_surface, grid)
 
             started = time.perf_counter()
             prepared_cache_receipt = write_prepared_cache(
@@ -3746,6 +4122,9 @@ def run(args):
                     "mapping_reports": _strict_json(mapping_reports),
                     "soil_texture_downscale": _strict_json(
                         root_surface.soil_texture_downscale),
+                    **({"soil_temperature_repair": _strict_json(
+                        soil_temperature_repair)}
+                       if soil_temperature_repair is not None else {}),
                 }, sealed_forcing_extension=args.sealed_prepared_cache)
             timing["write_prepared_state_and_all_lbc_cache"] = (
                 time.perf_counter() - started)
@@ -3989,7 +4368,7 @@ def run(args):
             execution = execute_experiment(
                 model, history_handler=history_handler,
                 progress_callback=progress_callback, validate_state=True,
-                skip_feedback_path=True, pool_trim_per_period=True)
+                skip_feedback_path=True)
             cp.cuda.Stream.null.synchronize()
             timing["forecast_execution"] = time.perf_counter() - forecast_started
         else:
@@ -3997,7 +4376,7 @@ def run(args):
                 execution = execute_experiment(
                     model, history_handler=history_handler,
                     progress_callback=progress_callback, validate_state=True,
-                    skip_feedback_path=True, pool_trim_per_period=True)
+                    skip_feedback_path=True)
                 cp.cuda.Stream.null.synchronize()
                 timing["forecast_execution_with_async_io"] = (
                     time.perf_counter() - forecast_started)
@@ -4121,6 +4500,7 @@ def run(args):
         # separate the two populations a short run mixes together.
         **warmed,
         "executor": {
+            "pool_trim": getattr(model, "_pool_trim_policy", None),
             "steps": int(execution.steps), "forces": int(execution.forces),
             "feedback_calls": int(execution.feedback_calls),
         },
@@ -4383,7 +4763,7 @@ def _parse_args(argv=None):
     parser.add_argument("--pipeline-workers", default="8")
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
-        default="cuda")
+        default="auto")
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--source-root", type=Path)
@@ -4481,9 +4861,6 @@ def _parse_args(argv=None):
         parser.error("--prepare-workers must be between 1 and 32")
     if args.preprocess_workers is not None and args.preprocess_workers < 1:
         parser.error("--preprocess-workers must be positive")
-    if args.preprocess_backend == "cuda" and args.preprocess_workers is not None:
-        parser.error(
-            "--preprocess-workers requires --preprocess-backend cpu or auto")
     if (args.preprocess_backend != "cpu"
             and args.cpu_preprocess_bridge is not None):
         parser.error(

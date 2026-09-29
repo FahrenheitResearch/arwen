@@ -1,9 +1,15 @@
 """The FTZ claim census covers the tree, and it can be made to fail.
 
-Three mutations drive the three ways a census goes stale: a claim sentence
-nobody registered, a token that contradicts the receipt, and an anchor whose
-quoted text was edited underneath the record.  A census gate that survives
-any of them is decoration.
+The mutations below drive the ways a census goes stale: a claim sentence
+nobody registered, a registered one removed, reworded, copied or moved to
+another file, a token that contradicts the receipt, a hash edited by hand,
+and a stated total that disagrees with the records.  A census gate that
+survives any of them is decoration.
+
+Lines added or removed above a claim must NOT fail it.  A row added to
+CHANGELOG.md moves every claim below it and changes none of them; while the
+line number was part of a site's key that failed the gate, so every branch
+that added a row rewrote the census and two such branches conflicted in it.
 """
 from __future__ import annotations
 
@@ -166,4 +172,165 @@ def test_control_token_for_a_cell_the_receipt_lacks_fails(tiny):
         root, document, _stub_receipt("R1", probe.MECHANISMS[0][0],
                                       probe.VERDICT_IEEE))
     assert any("the receipt does not carry" in problem
+               for problem in problems), problems
+
+
+# ---- line movement: the census follows the text, not the line -------------
+
+ROW_ABOVE = ("## 9.9.9\n"
+             "\n"
+             "- A new release row that makes no claim.\n"
+             "\n")
+
+
+def _git_add(root: Path) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=str(root), check=True,
+                   capture_output=True)
+
+
+def _claims(root: Path) -> Path:
+    return root / "docs" / "claims.md"
+
+
+def test_control_row_added_above_the_claims_passes(tiny):
+    # A release-note row landing above registered claims moves each of them
+    # down and changes none.  Keyed on line numbers this failed the gate, so
+    # every branch that added a CHANGELOG row had to regenerate the census
+    # and every merge of two such branches conflicted in it.
+    root, document = tiny
+    path = _claims(root)
+    path.write_text(ROW_ABOVE + path.read_text(encoding="utf-8"),
+                    encoding="utf-8")
+    _git_add(root)
+    assert cc.check_census(root, document) == []
+
+
+def test_control_line_removed_above_a_claim_passes(tiny):
+    root, document = tiny
+    path = _claims(root)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[1] == "Nothing here mentions the other thing."
+    del lines[1]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _git_add(root)
+    assert cc.check_census(root, document) == []
+
+
+def test_moved_claim_keeps_its_token_and_regeneration_moves_its_hint(tiny):
+    root, document = tiny
+    verdicts = [item for item in probe.VERDICTS
+                if item != probe.VERDICT_NOT_APPLICABLE]
+    record = document["sites"][1]
+    record["route"] = "R1"
+    record["mechanism"] = probe.MECHANISMS[0][0]
+    record["asserted_token"] = verdicts[0]
+    record["attribution"] = cc.ATTRIBUTION_SET
+    agreeing = _stub_receipt("R1", probe.MECHANISMS[0][0], verdicts[0])
+    path = _claims(root)
+    path.write_text(ROW_ABOVE + path.read_text(encoding="utf-8"),
+                    encoding="utf-8")
+    _git_add(root)
+
+    notes: list[str] = []
+    assert cc.check_census(root, document, agreeing, notes=notes) == []
+    assert notes and notes[0].startswith("2 of 2 sites"), notes
+
+    rebuilt = cc.build_census(root, document)
+    assert cc.check_census(root, rebuilt, agreeing) == []
+    moved = [item for item in rebuilt["sites"]
+             if item["anchor"] == record["anchor"]]
+    assert [item["line"] for item in moved] == [record["line"] + 4]
+    assert moved[0]["asserted_token"] == verdicts[0]
+
+    record["asserted_token"] = verdicts[1]
+    problems = cc.check_census(root, document, agreeing)
+    assert any("but the receipt's cell says" in problem
+               for problem in problems), problems
+
+
+def test_control_removed_claim_fails(tiny):
+    root, document = tiny
+    path = _claims(root)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[2] == "A subnormal survives the multiply."
+    del lines[2]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _git_add(root)
+    problems = cc.check_census(root, document)
+    assert any("registered claim no longer present" in problem
+               for problem in problems), problems
+
+
+def test_control_reworded_claim_below_a_new_row_fails(tiny):
+    root, document = tiny
+    path = _claims(root)
+    text = path.read_text(encoding="utf-8")
+    assert "A subnormal survives the multiply." in text
+    text = text.replace("A subnormal survives the multiply.",
+                        "A subnormal is flushed by the multiply.")
+    path.write_text(ROW_ABOVE + text, encoding="utf-8")
+    _git_add(root)
+    problems = cc.check_census(root, document)
+    assert any("A subnormal is flushed by the multiply." in problem
+               for problem in problems), problems
+
+
+def test_control_second_copy_of_a_registered_claim_fails(tiny):
+    # The sentence is registered once and now appears twice.  Matching on
+    # text as a set rather than counting copies would pass this.
+    root, document = tiny
+    path = _claims(root)
+    path.write_text(path.read_text(encoding="utf-8")
+                    + "A subnormal survives the multiply.\n",
+                    encoding="utf-8")
+    _git_add(root)
+    problems = cc.check_census(root, document)
+    assert any("unregistered claim" in problem
+               for problem in problems), problems
+
+
+def test_control_claim_moved_to_another_file_fails(tiny):
+    root, document = tiny
+    path = _claims(root)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    moved = lines.pop(2)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (root / "docs" / "other.md").write_text(moved + "\n", encoding="utf-8")
+    _git_add(root)
+    problems = cc.check_census(root, document)
+    assert any(problem.startswith("unregistered claim docs/other.md:1")
+               for problem in problems), problems
+    assert any(problem.startswith(
+        "registered claim no longer present docs/claims.md")
+        for problem in problems), problems
+
+
+def test_control_anchor_hash_edited_by_hand_fails(tiny):
+    root, document = tiny
+    document["sites"][0]["anchor_sha256"] = "0" * 64
+    problems = cc.check_census(root, document)
+    assert any("anchor hash stale" in problem
+               for problem in problems), problems
+
+
+def test_control_total_left_short_by_a_clean_merge_fails(tiny):
+    # Two branches each register one claim and each write a total one above
+    # their base.  Git takes two identical edits of the same line without a
+    # conflict, so the merged register heads four records with a total of
+    # three.
+    root, document = tiny
+    path = _claims(root)
+    path.write_text(path.read_text(encoding="utf-8")
+                    + "One branch adds an FTZ sentence.\n"
+                    + "The other adds a subnormal sentence.\n",
+                    encoding="utf-8")
+    _git_add(root)
+    merged = cc.build_census(root, document)
+    assert cc.check_census(root, merged) == []
+    merged["site_count"] = document["site_count"] + 1
+    merged["site_count_by_kind"] = {"prose": document["site_count"] + 1}
+    problems = cc.check_census(root, merged)
+    assert any(problem.startswith("site_count says")
+               for problem in problems), problems
+    assert any(problem.startswith("site_count_by_kind says")
                for problem in problems), problems

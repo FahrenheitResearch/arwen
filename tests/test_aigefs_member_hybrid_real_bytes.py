@@ -5,10 +5,12 @@ levels, PDT 1 on every record, NO land-surface state of any kind) and
 the contributing source is the same 00Z cycle's physical 0.25-degree
 analysis, decoded through the PACKAGED donor mapping.  The composed
 decode must materialize the complete WRF-real canonical field set with
-the six borrowed fields held at their analysis values; a deterministic
-file claimed as a member primary must refuse (PDT 0 matches no pinned
-selector); an ensemble MEAN claimed as a member primary must refuse the
-same way (PDT 2) -- the statistic decodes cleanly as plausible fields,
+the six borrowed fields held at their analysis values and surface
+pressure reduced from each lead's own mean-sea-level pressure; a deterministic
+file claimed as a member primary must refuse (its PDT 0 comes with the
+master and local table versions 2 and 1 that no selector admits); an
+ensemble MEAN claimed as a member primary must refuse the same way
+(PDT 2) -- the statistic decodes cleanly as plausible fields,
 which is exactly why the template pin exists.
 
 Staged inputs (see each staging README for provenance and hashes):
@@ -118,7 +120,9 @@ def test_a_real_member_composes_the_complete_field_set(tmp_path):
         datetime(2026, 8, 17, 0), datetime(2026, 8, 17, 6)]
     first, second = bundle.frames
     for frame in (first, second):
-        assert len(frame.fields) == 16
+        # The sixteen canonical fields and the member's own MSLP, which
+        # its surface pressure is reduced from.
+        assert len(frame.fields) == 17
         assert frame.fields["air_temperature"].values.shape == (13, 721, 1440)
         assert frame.fields["soil_temperature"].values.shape == (4, 721, 1440)
         land = frame.fields["land_fraction"].values
@@ -134,6 +138,13 @@ def test_a_real_member_composes_the_complete_field_set(tmp_path):
         first.fields["air_temperature_2m"].values,
         second.fields["air_temperature_2m"].values,
     )
+    # Surface pressure is not borrowed: it follows the member's own lead.
+    assert not np.array_equal(
+        first.fields["surface_pressure"].values,
+        second.fields["surface_pressure"].values,
+    )
+    assert first.fields["surface_pressure"].source_references[0] == (
+        "@derived.sea_level_reduction")
 
     receipt = mapped_composition_receipt(bundle)
     entry = receipt["contributing_sources"][0]
@@ -147,7 +158,9 @@ def test_a_real_member_composes_the_complete_field_set(tmp_path):
 
 @requires_staged_bytes
 def test_a_deterministic_file_claimed_as_member_primary_refuses(tmp_path):
-    """PDT 0 bytes match no pinned selector: no ensemble identity."""
+    """Deterministic PDT 0 bytes match no selector: the only PDT 0 form
+    the mapping admits is the mirror rewrite's, which pins master table 4
+    and local table 0, and GDAS stamps 2 and 1."""
 
     with pytest.raises(ValueError, match="match this mapping's selectors"):
         _decode(tmp_path, (DONOR,))

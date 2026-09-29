@@ -2,7 +2,7 @@
 
 The cross-lane proof — a real KNMI Den Helder volume through the real
 ``rw_odim`` writer, through this stage, onto a real wrfout — is recorded in
-``Downloads/intl-da-odim/front-door.md``. It needs a 26 MB volume off a
+the ODIM front-door lane record. It needs a 26 MB volume off a
 24-hour feed and a 700 MB wrfout, so it cannot live in the suite. What lives
 here is what would otherwise be exercised only by that file.
 

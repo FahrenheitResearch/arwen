@@ -182,3 +182,20 @@ def test_failed_conversion_can_retry_after_the_native_processor_changes(native, 
     monkeypatch.setattr(rp, "_processor_identity", lambda: {"path": "new-native-processor", "stamp": [1, 2, 3, 4, 6]})
     rp._work_job(c.tmp_path, c.record["id"])
     assert not rp.catalog(request(c), c.tmp_path)["waiting"]
+
+
+def test_a_wheel_install_hands_the_native_processor_its_map_files(native, tmp_path, monkeypatch):
+    """Every call of the renderer binary gets one environment, the one
+    rustwx.renderer_env builds, so an installed renderer has its map files."""
+    from test_render_basemap_delivery import wheel_with_companion
+    companion = wheel_with_companion(tmp_path, monkeypatch)
+    environments = []
+    inner = rp.subprocess.run
+    def run(command, **kwargs):
+        environments.append(kwargs.get("env"))
+        return inner(command, **kwargs)
+    monkeypatch.setattr(rp.subprocess, "run", run)
+    c = native.case
+    rp._work_job(c.tmp_path, c.record["id"])
+    assert native.calls and len(environments) == len(native.calls)
+    assert all(env is not None and env["RUSTWX_BASEMAP_DIR"] == str(companion) for env in environments)

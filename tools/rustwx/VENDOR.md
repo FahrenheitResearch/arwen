@@ -3,7 +3,7 @@
 ## Source
 
 Everything under `crates/` and `vendor/` (except `crates/rw-wrfbatch`
-and `vendor/crates-io`, below) is Drew's own **rusty-weather**
+and `vendor/crates-io`, below) is the project's own **rusty-weather**
 workspace (MIT -- `LICENSE` in this directory is its license file),
 vendored from the RW-Studio worktree at
 
@@ -91,23 +91,34 @@ both orientations, with and without titles and timestamps, at three sizes.
    asserting `stored_run_hours` rejects exact-time axes (already
    contradicted by the source tree's own working-tree diff) is updated
    to the completed contract -- ordinal slots are listable, per-frame
-   rendering proceeds, and fixed-hour WINDOWED accumulations alone
-   remain refused on exact-time axes.
+   rendering proceeds, and fixed-hour windows are served from each
+   frame's exact lead (`RwsExactTime`).  A window ends only on a frame
+   whose lead is a whole hour and needs the stored frames at both of its
+   whole-hour ends; accumulations difference those two frames, and the
+   UH and 10 m wind maxima fold every stored frame inside the window.
+   A maximum folded from the frames between the hours needs them
+   evenly spaced from the window's start and the frame at its start
+   (a window starting with the run needs none), and a 10 m wind read
+   from U10 and V10 also needs a frame at each whole hour: a fold of
+   fewer frames than the run stored reads low.  The source tree
+   refused every window on an exact-time axis.
 5. The workspace root `Cargo.toml` lists only the vendored subset.
 6. Windowed products are axis-gated, not model-gated:
    `batch_render::inspect_renderable_products` and the "all"-keyword
    clear list/run the windowed lane for ANY model whose store has more
-   than one whole-hour frame (`windowed_store::windowed_axis_ready`),
-   with per-plane availability proven at compute time as ever.  The
-   source tree gated the lane on `ModelId::Hrrr`.
+   than one stored frame (`windowed_store::windowed_axis_ready`), on
+   either axis, with per-plane availability proven at compute time as
+   ever.  The source tree gated the lane on `ModelId::Hrrr`.
    Windowed exports also follow the requested frame scope: all stored
    whole-hour anchors for `--frames all`, or the selected stored anchor
    for `--frames N`. `batch_render` reports each anchor's output or
    blocker and includes it in work limits; `render_all` passes the
    stored prefix through that anchor to the unchanged native window
    computation. Earlier unselected frames remain baseline context and
-   later frames cannot replace the requested valid time. Fixed-hour
-   windows remain refused on exact-time ordinal axes.
+   later frames cannot replace the requested valid time. On an
+   exact-time axis only the frames on whole hours are anchors; a frame
+   between hours closes no window, and a series render plans none
+   there (item 4).
 7. `windowed_store::read_source_plane` accepts the wrfout import
    lane's names for physically identical planes: `apcp` (run-total
    APCP) behind `apcp_run_total`, `relative_humidity_2m` behind
@@ -116,8 +127,12 @@ both orientations, with and without titles and timestamps, at three sizes.
    source: the GRIB lane's `uh_2to5km` snapshot keeps its accurate
    "lower bound" note, while `updraft_helicity_2to5km` (WRF
    UP_HELI_MAX, reset each history frame) is labeled what it is --
-   the exact per-history-interval max, i.e. the exact trailing 1 h
-   max at the hourly cadence the whole-hour windowed axis folds.
+   the exact per-history-interval max.  That is the trailing 1 h max
+   only on an hourly history; a sub-hourly history puts the store on
+   the exact-time axis, where every frame of a window is folded
+   (item 4), and the whole-hour axis's note says a run with sub-hourly
+   history is exact only when rendered with its frames between the
+   hours.
 8. The wrfout import publishes per-level canonical selector planes:
    the sounding volumes' 200/250/300/500/700/850 hPa levels
    (height/temperature/dewpoint/u/v -- byte-identical to the volume
@@ -477,8 +492,8 @@ both orientations, with and without titles and timestamps, at three sizes.
     because they share substance: one pack container, one seam time
     spelling, one HTTP agent, one fetch-receipt shape.
 
-    **`rw_asos` is not a crate of Drew's that was copied in, and this
-    entry exists so a later reader does not go looking for one.**  Drew's
+    **`rw_asos` is not a crate of the project's that was copied in, and this
+    entry exists so a later reader does not go looking for one.**  The project's
     `rusty-weather` workspace has no ASOS crate, module or binary -- the
     only METAR code in it is `vendor/metrust/src/io/metar.rs`, a report
     parser this lane does not call.  What `rw_asos` retells headlessly is
@@ -490,13 +505,13 @@ both orientations, with and without titles and timestamps, at three sizes.
     by a frozen station list rather than pulling every station on Earth
     and filtering locally; the station table is frozen and hashed at
     registration rather than re-read from each fetch; `mslp` and `p01i`
-    are additionally requested).  So the lineage is Drew's stack by
+    are additionally requested).  So the lineage is the project's stack by
     pattern and gpuwm's by authorship, exactly as `rw-nexrad` is.
 
     Provenance of the code in *this* tree: authored in gpuwm on
     `integration/obs-battery` (`00461023`, 2026-08-03, "three
     observation front doors, decided against real bytes"), ported here
-    from that branch's tip `326aa23f` on 2026-08-06 under Drew's "yes
+    from that branch's tip `326aa23f` on 2026-08-06 under the "yes
     vendor" authorisation of the same date -- the surface-obs DA lane
     consumes `{case}/surface-obs/surface.v1.json` and could not produce
     one on this line.  MIT, the workspace license, as gpuwm-authored
@@ -578,7 +593,7 @@ both orientations, with and without titles and timestamps, at three sizes.
     probability-matched mean with both tie rules, the disc-neighbourhood
     geometry, the missingness bookkeeping, and the paintball palette.  It
     is a direct transcription of `gpuwm/da/enprod.py`'s reduction layer,
-    which CLAUDE.md's 2.5.0 Python boundary puts on the Rust side of the
+    which the 2.5.0 Python boundary puts on the Rust side of the
     line.  Kept I/O-free so every documented policy is unit-testable
     against the exact probes that module's docstrings name, and the
     twenty-one tests are those probes: the `[10, NaN, 0]` NMEP monotonicity
@@ -884,7 +899,7 @@ both orientations, with and without titles and timestamps, at three sizes.
     byte-for-byte equality against all three, which is what pins the
     CDF-5 field widths the published grammar leaves ambiguous.
 
-    Upstream reconciliation, for Drew: this is a gpuwm-authored
+    Upstream reconciliation: this is a gpuwm-authored
     addition to a vendored crate, so it is a candidate to hand back to
     the Studio workspace rather than to carry as a fork forever.  It
     has no gpuwm-specific coupling -- no case names, no wrfout
@@ -912,7 +927,7 @@ both orientations, with and without titles and timestamps, at three sizes.
     windows with published specifications, and the field map is WRF
     variable names against MPAS variable names.
 
-    Upstream reconciliation, for Drew: this is gpuwm-authored, in a new
+    Upstream reconciliation: this is gpuwm-authored, in a new
     crate, and it depends only on `netcrust` and `rw-store` -- so it
     hands back to the Studio workspace cleanly if he wants it there.
     Whether MPAS support belongs in his renderer workspace at all is his
@@ -924,7 +939,7 @@ both orientations, with and without titles and timestamps, at three sizes.
 git dependency in `Cargo.lock`, checked in so a clean clone builds with
 `--offline` (source replacement in `.cargo/config.toml`).  The three
 git dependencies (wrf-core from wrf-rust, ecape-rs, metrust-py) are all
-FahrenheitResearch -- Drew's own -- repositories pinned to the exact
+FahrenheitResearch -- the project's own -- repositories pinned to the exact
 revisions the campaign renderer used; wrf-core rev `93bd2ca6` is the
 same pure-Rust wrfout reader lineage as the pip `wrf-rust` package the
 matplotlib engine uses.
@@ -959,7 +974,7 @@ run against real Copernicus DEM windows in
 `generate_goldens.py` there for the provenance of every expected
 byte).
 
-## crates/obs-regrid — seeded from Drew's rustwx-regrid (2026-08-18)
+## crates/obs-regrid — seeded from the project's rustwx-regrid (2026-08-18)
 
 `crates/obs-regrid` is the Rust half of `gpuwm/verify/obs/regrid.py`,
 the observation battery's remap.  It declares **no dependencies at
@@ -967,7 +982,7 @@ all**, so it adds nothing to the vendor closure and nothing to
 `Cargo.lock` beyond its own entry.
 
 It is not a verbatim vendoring.  Its seed is `crates/rustwx-regrid` in
-Drew's consolidated workspace
+the project's consolidated workspace
 (`%USERPROFILE%\rusty-weather-consolidated`), and what was taken is
 the SHAPE rather than the arithmetic:
 
@@ -1002,7 +1017,7 @@ Nothing under `vendor/` changed for this crate.
 
 ## crates/rustwx-cross-section and the render theme seam (2026-09-02)
 
-`crates/rustwx-cross-section` is a verbatim copy of Drew's
+`crates/rustwx-cross-section` is a verbatim copy of the project's
 `rustwx-cross-section` crate (100k-tor workspace, main at 7232ee4,
 2026-04-29; byte-identical to the copy in the rustwx-mod checkout at
 570a3c1): great-circle section paths, count or spacing sampling, pressure
@@ -1084,3 +1099,142 @@ The scoped controls include retained, unmodified public GEFS/AIGEFS GRIB
 envelopes and actual cached member/statistical RWS round trips, wrong member,
 cycle and product rejection before writing, and operational RRFS wind parity
 against the existing direct normalization. No GPU forecast is required.
+
+
+## wx-core download: a stall limit, bounded chunk streams, resumed chunks (2026-09-26)
+
+`vendor/wx-core/src/download/client.rs` diverges from the source in how a
+ranged transfer uses the network.  The breakage it answers: fresh full-file
+HRRR fetches of a 36 h cycle (74 files, 44.3 GB) failed three times in four
+when one 16 MiB chunk stream sat until the client's 300 s whole-request
+timeout; with the chunk retry already on this line such a chunk cost 300 s
+and then started again from its first byte.
+
+- **A stall limit instead of a whole-request timeout.** The agent carried
+  `timeout_global(300 s)`, which cannot tell a stalled stream from a slow
+  one: a chunk still arriving at 50 KiB/s was cut off, and a stream that had
+  stopped was waited on for the whole 300 s.  Opening a connection and
+  sending a request are now bounded (`DownloadConfig::connect_timeout`,
+  30 s), and every connection is wrapped by a `StallGuard` transport that
+  sits outside TLS: a connection that delivers fewer than 64 KiB within 30 s
+  of its request going out, or of the last time 64 KiB had arrived, fails as
+  a timed-out read.  `RUSTWX_DOWNLOAD_TIMEOUT_SECONDS` went with the limit it
+  set; `RUSTWX_DOWNLOAD_STALL_SECONDS` sets the window.
+- **A chunk resumes.** `get_range` reads the body incrementally, keeps what
+  arrived when the body breaks off, stalls or comes up short, and asks for
+  the rest of the span only, holding the answer to that span (a 200 or a
+  foreign span is still refused at once).  An attempt that delivered bytes
+  does not spend the retry budget; attempts that deliver nothing spend
+  `max_retries`, and 32 attempts end any chunk.  An object of one chunk now
+  goes by range too, so it can resume.
+- **Bounded streams.** `get_ranges` ran its chunks on rayon's global pool:
+  one stream per CPU thread per object, 24 on a 24-thread machine, times
+  every object a caller moved at once (ArWen moves six, so 144).  It now
+  runs a scoped pool of `DownloadConfig::streams` (16 by default,
+  `RUSTWX_DOWNLOAD_STREAMS`), NOMADS still serial, and the first failed
+  chunk stops new ones from starting.  ArWen splits one 48-stream budget
+  over the files it has in flight and passes each `rw_fetch` its share.
+  Both numbers are measured: from a link about 100 ms from S3 one stream
+  carried about 1 MB/s, and six files in flight reached the link's 24 to
+  34 MB/s from 36 streams up, the same as with 144.
+- **Byte progress.** `TransferProgress` counts body bytes as they arrive on
+  any stream and carries the object's size once known.  `rw_fetch fetch`
+  prints it as `rw_fetch-progress fHHH RECEIVED TOTAL` on stderr about once
+  a second, because a whole object is assembled in memory and published in
+  one rename, so nothing on disk grows while it moves and ArWen's progress
+  line read 0 B for every file in flight.
+- **A retry opens a new connection.** `with_retry` sent every attempt
+  through the agent's connection pool, so a retry after a dead pooled
+  connection could take the next pooled connection, dead for the same
+  reason.  Behind a proxy that reads ahead of a slow link, the origin
+  finishes each 16 MiB answer long before the client has read it and
+  closes the idle connection, and the client reuses it and reads
+  `io: Peer disconnected`.  Through a local proxy holding the link to
+  6 MB/s, 194 chunk requests met a dead pooled connection, and two
+  objects (420 MB and 728 MB) failed when four attempts in a row did and
+  were moved again from their first byte.  The first attempt still
+  reuses the pool; every retry goes through a second agent that keeps no
+  idle connection (`DownloadClient::fresh`).
+
+Measured on a 24-thread Linux machine against the 2026-09-26 12Z HRRR
+objects on S3, `gpuwm fetch` full-file of f00 to f02 (six whole files,
+3.40 GB, all six in flight), integrate/2.8 before and this tree after:
+
+- Through a local proxy that froze every seventh connection after 4 MiB
+  and left it open, both trees at once: before, each of 24 frozen
+  connections was held 298 to 323 s until `timeout: global`, its chunk
+  started again at byte 0, and the six files took 358 to 660 s; after,
+  each of 8 frozen connections was dropped 29.9 to 30.3 s after it froze,
+  its chunk resumed at the byte it had reached (4.17 MB of 16.8 MB kept),
+  and the six files took 112 to 154 s.
+- Through a local proxy holding the link to 6 MB/s: before, no file
+  landed in 905 s, 280 chunk requests hit the 300 s limit and started
+  again at byte 0, and 5.20 GB crossed the link for nothing; after, the
+  six files landed within 571 s against a 567 s transfer floor, with
+  3.41 GB across the link and 83 dead pooled connections each met once
+  and left behind.
+- Unthrottled, three fresh 36 h fetches in a row (74 files, 44.26 GB
+  each) completed in 1410, 1088 and 1302 s.  In the first, one chunk
+  stalled at S3 itself (52 KB in 30 s, 13.4 MB of its 16.8 MB kept) and
+  was resumed, and one retry met a dead pooled connection and went out
+  on a new one.
+
+## wx-core download: a HEAD with no answer is not an absent object (2026-09-27)
+
+`vendor/wx-core/src/download/client.rs` gains `DownloadClient::head_status`,
+which answers `Present`, `Absent` (404, 403, or a refusal) or
+`Unreachable(reason)` (a network error, 429 or 5xx on both attempts);
+`head_ok` is now `head_status(url) == Present`, so its callers are
+unchanged.  NOMADS is asked with a one-byte range GET instead of a HEAD
+(`probe_nomads_range`, which was `probe_nomads_range_ok` and returned a
+bool): it answers the same three cases, and a redirect with no usable
+Location on both attempts, the over-rate-limit answer NOMADS gives
+through Akamai, is `Unreachable` too.
+The breakage it answers: `rw_fetch`'s existence probe used `head_ok`,
+which folds a connection that failed twice into "absent" (and, on NOMADS,
+a throttled answer as well), so a dropped link during the probe made
+`rw_fetch fetch` refuse the hour as "no source served this object"
+(exit 1).  ArWen never retries an exit 1, so a whole fetch ended on one
+dropped link without another attempt or another host.
+The probe now records the unreachable case, and a fetch hour whose sources
+could not be reached exits 3, which ArWen asks again within its retry
+budget.
+
+## rw-wrfbatch: the pressure-level volume ceiling reads the host (2026-09-28)
+
+`crates/rusty-weather/src/lib.rs` makes `host_memory` public (since
+2026-09-28 a re-export of `crates/rw-host-memory`, below), and
+`crates/rw-wrfbatch/src/wrf_volumes.rs` reads `host_memory::available_bytes`
+in `preflight_iso_volume_shape`.  The owned working set of one isobaric
+volume build may be as large as the memory the host has available when the
+build is admitted, and never less than the 4 GiB that used to be the whole
+ceiling, so every grid under 4 GiB builds exactly as before on every host.
+A host that does not report its memory stays at 4 GiB.
+`try_interpolate_iso_volumes` repeats the shape, store-volume and overflow
+checks but not the host comparison, because its inputs are already resident.
+The breakage it answers: a 3 km frame of about 1,000,000 columns at 55
+levels passes 4 GiB (1132x906x55 needs 4,389,533,760 bytes), so such a frame
+drew none of its pressure-level charts even on a worker with the memory to
+spare.
+On Linux `host_memory::available_bytes` is also capped by the room left
+under the process's own memory cgroup and every cgroup above it (limit minus
+working set), so a capped container sizes the build to its own room and the
+refusal says what this process has available, not the whole host.  The
+cases the Rust and the Python readers are held to are in
+`crates/rw-host-memory/src/host_memory_cgroup_cases.json`.
+
+## crates/rw-host-memory: one host-memory reader for the workspace (2026-09-28)
+
+A new crate of THIS project, not vendored, with no dependencies.  It is
+`rusty-weather`'s `src/host_memory.rs` moved whole, and `rusty-weather`
+re-exports it as `host_memory`, so `rusty_weather::host_memory` and every
+caller of it are unchanged.  `rw-mpas` depends on it too: its
+`static_memory` reads the cgroup limit `rw_mpas_static` admits a build
+against through `cgroup_memory_limits`, the same walk the renderer's
+`available_bytes` makes, without depending on the renderer and the network
+stack its crates carry.
+The breakage it answers: `rw_mpas_static` read only the cgroup mount root's
+`memory.max`, so inside a systemd scope with `MemoryMax=2G` on a 30 GiB
+worker it read no limit and admitted a build against none.  It now reads
+the smallest limit on the path from its own cgroup up to the mount
+(`cgroup_memory_limit`), held to the same case table.

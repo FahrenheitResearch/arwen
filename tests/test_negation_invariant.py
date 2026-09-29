@@ -26,9 +26,11 @@ from tools.check_negation_invariant import check, documents, scan_text
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The published page that carries the negated claim the mutants edit.
-#: README.md stopped naming resolved tornado structure when the release
-#: documentation was refreshed on 2026-09-09; the disclaimer of record is
-#: VERIFICATION.md's "Not claimed" section.
+#: The disclaimer lives in two places: VERIFICATION.md's "Not claimed"
+#: section, which these mutants edit, and README.md's "Resolved scale."
+#: item, whose three mutants the public receipt records
+#: (tools/report_resolved_scale_disclaimer.py), so each page has a
+#: discriminating mutant set of its own.
 MUTANT_PAGE = Path("docs/public/VERIFICATION.md")
 
 #: (name, exact source text, exact replacement) for each mutant.

@@ -1,6 +1,6 @@
 //! `nc_rewrite IN.nc OUT.nc [--format cdf2|cdf5|auto]`
 //!
-//! Read a NetCDF file with Drew's Rust readers and write it back out
+//! Read a NetCDF file with the project's Rust readers and write it back out
 //! through `netcdf-writer`. This is the PARITY instrument for the writer:
 //! a real wrfout goes in, a classic-format file comes out, and the two
 //! are compared variable by variable, attribute by attribute, and

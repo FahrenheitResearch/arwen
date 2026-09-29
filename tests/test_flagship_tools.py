@@ -25,6 +25,13 @@ pytest.importorskip(
     "wrf", reason="wrf-rust is required by tools.flagship.products")
 
 from tools.flagship import evidence_pack, products  # noqa: E402
+from _release_export import private_input  # noqa: E402
+
+#: The close-out pack binds the nesting ledger's two documents, which live
+#: under docs/superpowers/**.  The public export drops them, so there the
+#: tool refuses before it reads a rung, and a case that builds a pack cannot
+#: run; the public-tree refusal itself is pinned by the case that fakes one.
+ledger_documents = private_input(nest_gates.ARCHITECTURE_DOC, nest_gates.PLAN_DOC)
 
 
 def _variable(ds, name, dims, values, units=""):
@@ -458,6 +465,7 @@ def test_real_wrf_rust_core_if_fixture_is_available():
     assert uvmet10.shape == (2, 400, 500) and np.isfinite(uvmet10).all()
 
 
+@ledger_documents
 def test_evidence_pack_binds_hashes_pins_ledger_and_portable_paths(tmp_path):
     root = tmp_path / "rungs"
     _complete_evidence_root(root)
@@ -502,6 +510,7 @@ def _rewrite_evidence_row(root: Path, milestone: str, metric: str,
     _write_manifest(root / milestone, milestone, [report])
 
 
+@ledger_documents
 def test_evidence_pack_refuses_a_verdict_its_own_number_contradicts(tmp_path):
     """Negative control: the close-out pack must run the comparator itself.
 
@@ -537,6 +546,7 @@ def test_evidence_pack_refuses_a_verdict_its_own_number_contradicts(tmp_path):
     assert "**CONTRADICTED**" in markdown
 
 
+@ledger_documents
 def test_evidence_pack_refuses_a_numeric_gate_that_measured_nothing(tmp_path):
     """A blocking numeric row with no number is INCOMPLETE, never PASS."""
     root = tmp_path / "rungs"
@@ -599,6 +609,60 @@ def test_evidence_pack_recomputes_every_numeric_comparator(
         "CONTRADICTED", expected)
 
 
+def _tree_without_ledger_documents(root: Path, exclusions: str) -> Path:
+    """A repository root that carries no ledger document, with its rules."""
+    root.mkdir(parents=True)
+    (root / "RELEASE-EXCLUDE.txt").write_text(exclusions, encoding="utf-8")
+    return root
+
+
+def test_evidence_pack_on_a_public_tree_says_the_ledger_is_development_only(
+        tmp_path, monkeypatch):
+    """A public install refuses up front, naming the ledger documents.
+
+    The pack binds ``docs/superpowers/**`` documents the public export drops.
+    It used to find that out only when binding the ledger, after hashing every
+    rung artifact, and called the absent document a missing "manifest
+    artifact", a rung file the user was never asked to supply.
+    """
+    shipped_rules = (Path(evidence_pack.REPOSITORY_ROOT)
+                     / "RELEASE-EXCLUDE.txt").read_text(encoding="utf-8")
+    public = _tree_without_ledger_documents(tmp_path / "public", shipped_rules)
+    monkeypatch.setattr(evidence_pack, "REPOSITORY_ROOT", public)
+    root = tmp_path / "rungs"
+    _complete_evidence_root(root)
+    for mode in (False, True):
+        with pytest.raises(evidence_pack.EvidencePackError) as refused:
+            evidence_pack.build_evidence_pack(
+                root, tmp_path / "out", diagnostic_incomplete=mode)
+        message = str(refused.value)
+        assert "manifest artifact" not in message
+        assert "a public install does not include" in message
+        assert "development checkout" in message
+        for document in (nest_gates.ARCHITECTURE_DOC, nest_gates.PLAN_DOC):
+            assert f"{document} (RELEASE-EXCLUDE.txt: docs/superpowers/**)" in message
+        assert not (tmp_path / "out").exists()
+
+
+def test_evidence_pack_missing_ledger_the_release_keeps_is_not_called_public(
+        tmp_path, monkeypatch):
+    """Negative control: only an exclusion rule earns the public-install text.
+
+    A ledger document missing from a tree whose rules keep it is a broken
+    ledger, not a public install, and must not be explained away as one.
+    """
+    broken = _tree_without_ledger_documents(tmp_path / "broken", "work/**\n")
+    monkeypatch.setattr(evidence_pack, "REPOSITORY_ROOT", broken)
+    root = tmp_path / "rungs"
+    _complete_evidence_root(root)
+    with pytest.raises(evidence_pack.EvidencePackError,
+                       match="nesting ledger's documents named by") as refused:
+        evidence_pack.build_evidence_pack(root, tmp_path / "out")
+    assert "public install" not in str(refused.value)
+    assert nest_gates.PLAN_DOC in str(refused.value)
+
+
+@ledger_documents
 def test_evidence_pack_rejects_hash_substitution_escape_and_missing_pin(tmp_path):
     root = tmp_path / "rungs"
     _complete_evidence_root(root)
@@ -638,6 +702,7 @@ def test_evidence_pack_rejects_hash_substitution_escape_and_missing_pin(tmp_path
             bad, tmp_path / "escape-out", diagnostic_incomplete=True)
 
 
+@ledger_documents
 def test_evidence_conflicts_and_blockers_never_publish_closeout(tmp_path):
     root = tmp_path / "rungs"
     _complete_evidence_root(root)
@@ -670,6 +735,7 @@ def test_evidence_conflicts_and_blockers_never_publish_closeout(tmp_path):
     ]) == 2
 
 
+@ledger_documents
 def test_undeclared_conflicting_verdict_never_publishes_closeout(tmp_path):
     root = tmp_path / "rungs"
     _complete_evidence_root(root)

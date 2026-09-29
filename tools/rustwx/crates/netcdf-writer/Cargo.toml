@@ -1,6 +1,6 @@
 # The Rust NetCDF WRITER the stack did not have.
 #
-# Everything in Drew's Rust that touches NetCDF today READS: netcrust,
+# Everything in the project's Rust that touches NetCDF today READS: netcrust,
 # hdf5-reader and netcdf-reader are read-only by design, and rw-netcdf is
 # `inventory` plus `dump`.  The one write capability was
 # rw-store/src/netcdf3.rs, a CDF-2 emitter with no record dimension and

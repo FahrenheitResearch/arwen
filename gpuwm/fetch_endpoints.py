@@ -56,9 +56,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import errno
 import functools
+from http.client import IncompleteRead
 import json
 from pathlib import Path
+import socket
 from types import MappingProxyType
 from typing import Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -340,11 +343,16 @@ def object_available(url: str, *, opener=None, timeout: float = 60.0) -> bool:
 
     True only for a 2xx.  Every other answer -- a 404 because the
     mirror has not caught up, a 503 because it is throttling, a refused
-    connection -- is False, because all of them mean the same thing to
-    the caller: this rung has not earned the transfer.  None of them is
-    an endpoint FAILURE in the ladder's sense, and none is recorded as
-    one; a probe that says no simply leaves the ladder in retention
-    order, with every rung still behind it.
+    connection -- is False, because to the ladder's promotion all of
+    them mean the same thing: this rung has not earned the transfer.
+    None of them is an endpoint FAILURE in the ladder's sense, and none
+    is recorded as one; a probe that says no simply leaves the ladder
+    in retention order, with every rung still behind it.
+
+    Whether a cycle is PUBLISHED is a different question, and there a
+    probe that was not answered is not a no: that question is
+    :func:`object_answer` (and :func:`settled_object_answer`, which
+    asks again before giving up).
     """
 
     from urllib.request import Request
@@ -362,6 +370,76 @@ def object_available(url: str, *, opener=None, timeout: float = 60.0) -> bool:
         raise
     except BaseException:                     # noqa: BLE001 - see docstring
         return False
+
+
+def object_answer(url: str, *, timeout: float, max_wait_s: float | None = None,
+                  opener=None) -> bool | None:
+    """:func:`object_available`'s question with a third answer: no answer.
+
+    True for a 2xx and False for a 404 or 410 -- the host said the
+    object is not there.  None for everything that is not an answer
+    about the object: a timeout, a refused connection, a throttling
+    status, or a NOMADS turn further away than ``max_wait_s`` (nothing
+    is sent then; see :func:`gpuwm.nomads_governor.pace`).  A caller
+    that must not wait long, such as a page listing which sources hold
+    a start, can then say "not checked" instead of "not published".
+    """
+
+    from urllib.error import HTTPError
+    from urllib.request import Request
+    from gpuwm.nomads_governor import PaceBudgetExceeded, paced_urlopen
+
+    request = Request(url, method="HEAD",
+                      headers={"User-Agent": PROBE_USER_AGENT})
+    try:
+        with paced_urlopen(
+                request, timeout=timeout, max_wait_s=max_wait_s,
+                **({"opener": opener} if opener is not None else {})
+        ) as response:
+            return 200 <= int(response.status) < 300
+    except (KeyboardInterrupt, SystemExit, MemoryError):
+        raise
+    except PaceBudgetExceeded:
+        return None
+    except HTTPError as error:
+        return False if int(error.code) in (404, 410) else None
+    except BaseException:                     # noqa: BLE001 - see docstring
+        return None
+
+
+#: Pauses before each further ask of an object a publication check had
+#: no answer about.  A connect timeout on a busy link is usually gone a
+#: few seconds later: three of about 170 HEADs timing out once was
+#: enough to refuse a published start as "not published yet".
+SETTLE_BACKOFF_S = (2.0, 8.0)
+#: How long one of those further asks waits for its NOMADS turn.  A
+#: cooldown the host asked for is far longer, and then the object stays
+#: unanswered rather than holding the fetch for the whole cooldown.
+SETTLE_PACE_BUDGET_S = 30.0
+
+
+def settled_object_answer(url: str, *, timeout: float = 60.0,
+                          backoff_s: Sequence[float] | None = None,
+                          opener=None, sleep=None) -> bool | None:
+    """:func:`object_answer`, asked again after each pause in ``backoff_s`` while it has no answer.
+
+    True or False as soon as the host answers either way; None only when
+    every ask went unanswered.  The first ask waits for its NOMADS turn
+    as long as the governor says, as every fetch probe does; the ones
+    after it wait at most :data:`SETTLE_PACE_BUDGET_S`.  ``backoff_s``
+    defaults to :data:`SETTLE_BACKOFF_S`, read when called.
+    """
+
+    import time
+
+    pause = time.sleep if sleep is None else sleep
+    answer = object_answer(url, timeout=timeout, opener=opener)
+    for seconds in (SETTLE_BACKOFF_S if backoff_s is None else backoff_s):
+        if answer is not None:
+            break
+        pause(seconds)
+        answer = object_answer(url, timeout=timeout, max_wait_s=SETTLE_PACE_BUDGET_S, opener=opener)
+    return answer
 
 
 # --------------------------------------------------------------------------
@@ -440,6 +518,10 @@ def fault_reason(error: BaseException) -> str | None:
         return "the connection timed out"
     if isinstance(error, OSError):
         return f"the connection failed -- {error}"
+    if getattr(error, "transient", False) is True:
+        # The Rust backbone's transfer the network cut off after its own
+        # retries: the next endpoint serves the same key.
+        return f"the connection failed -- {getattr(error, 'reason', error)}"
     if isinstance(error, ValueError):
         # A payload that does not verify: an error page served with 200,
         # a truncated object, a declared length the host did not
@@ -449,19 +531,96 @@ def fault_reason(error: BaseException) -> str | None:
     return None
 
 
-def ladder_refusal(label: str, attempts: Sequence[tuple[Endpoint, str]]
-                   ) -> str:
+#: Rounds of asking for one file before a transient network fault ends
+#: the fetch: the first try and four more, 2, 4, 8 and 16 s apart (30 s
+#: in all), or longer where the host's own ``Retry-After`` asks for it.
+#:
+#: The concrete breakage it prevents: an IFS fetch pinned to the AWS
+#: mirror met HTTP 503 on 3 of its 5 files, gave up after three tries 2
+#: and 4 s apart, and the same command run 20 s later completed.  A
+#: throttling or restarting host answers like that for longer than 6 s;
+#: 30 s outlasts that episode and still ends a fetch from a host that
+#: stays down in well under a minute.  Every source's fetch reads this
+#: one number (:func:`ask_along_ladder`).
+TRANSIENT_ATTEMPTS = 5
+
+#: The longest ``Retry-After`` a host may ask for and still be waited
+#: out inside one fetch.  A longer ask ends that endpoint's turn at once,
+#: because the other endpoint, or a fetch started later, serves sooner.
+TRANSIENT_WAIT_LIMIT_S = 30.0
+
+
+def retry_delay(error: BaseException, attempt: int, *,
+                wait_limit_s: float) -> float | None:
+    """Seconds to wait before asking again after a transient transfer fault.
+
+    ``None`` means the fault is not worth another attempt: an HTTP
+    status that will not change (a missing object, a refused client), a
+    host name that does not resolve, a ``Retry-After`` longer than
+    ``wait_limit_s``, or anything that is not the network at all.  A
+    reset or aborted connection, a timeout, a response that ended early
+    and a 408/429/5xx answer wait ``2 ** attempt`` seconds, or the
+    host's own ``Retry-After`` when that is longer.  Every download
+    route that retries reads this one classification, so a fault one of
+    them waits out is never a refusal on another.
+    """
+
+    if isinstance(error, HTTPError):
+        if error.code not in {408, 429, 500, 502, 503, 504}:
+            return None
+        from gpuwm.nomads_governor import retry_after_seconds
+        requested = retry_after_seconds(error) or 0.0
+        if requested > wait_limit_s:
+            return None
+        return max(2.0 ** attempt, requested)
+    if isinstance(error, URLError):
+        reason = error.reason
+        if (isinstance(reason, socket.gaierror)
+                and reason.errno != socket.EAI_AGAIN):
+            return None
+        return 2.0 ** attempt
+    if isinstance(error, (TimeoutError, ConnectionError, IncompleteRead)):
+        return 2.0 ** attempt
+    if isinstance(error, OSError) and error.errno in {
+            errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNABORTED,
+            errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH}:
+        return 2.0 ** attempt
+    if getattr(error, "transient", False) is True:
+        # The Rust backbone's transfer the network cut off once its own
+        # sub-second retries were spent (``RwFetchError.transient``).
+        return 2.0 ** attempt
+    return None
+
+
+def ladder_refusal(label: str, attempts: Sequence[tuple[Endpoint, str]],
+                   *, rounds: int = 1, waited_s: float = 0.0) -> str:
     """The refusal when every endpoint failed: each one, and why.
 
     The concrete breakage this prevents: a two-host fetch that failed
     on both used to report only the last host's error, so a reader saw
     "403 from the archive" and never learned the operational server had
     been rate limiting them for fifteen minutes.
+
+    An endpoint asked more than once is one line with its last reason
+    and how many times it was asked, and a request that retried says
+    how many rounds it took and how long it waited between them.
     """
 
-    lines = [f"{label}: every endpoint refused.  Tried, in order:"]
+    order: list[Endpoint] = []
+    reasons: dict[Endpoint, list[str]] = {}
     for endpoint, reason in attempts:
-        lines.append(f"  {endpoint.name} ({endpoint.host}): {reason}")
+        if endpoint not in reasons:
+            order.append(endpoint)
+            reasons[endpoint] = []
+        reasons[endpoint].append(reason)
+    retried = (f" in {rounds} rounds over {waited_s:g} s" if rounds > 1
+               else "")
+    lines = [f"{label}: every endpoint refused{retried}.  Tried, in order:"]
+    for endpoint in order:
+        asked = reasons[endpoint]
+        times = f" (asked {len(asked)} times)" if len(asked) > 1 else ""
+        lines.append(
+            f"  {endpoint.name} ({endpoint.host}): {asked[-1]}{times}")
         if endpoint.why:
             lines.append(f"    what it is for: {endpoint.why}")
     lines.append(
@@ -470,10 +629,137 @@ def ladder_refusal(label: str, attempts: Sequence[tuple[Endpoint, str]]
     return "\n".join(lines)
 
 
+class TransferRefusal(ValueError):
+    """One file no endpoint served once every transient retry was spent.
+
+    ``str()`` is :func:`ladder_refusal`'s text: the file, each endpoint
+    with its last reason, how many rounds were asked and how long was
+    waited.  ``name`` is the file, ``attempts`` every
+    ``(endpoint, reason)`` in the order they happened.
+    """
+
+    def __init__(self, message: str, *, name: str,
+                 attempts: Sequence[tuple[Endpoint, str]], rounds: int,
+                 waited_s: float) -> None:
+        super().__init__(message)
+        self.name = name
+        self.attempts = tuple(attempts)
+        self.rounds = rounds
+        self.waited_s = waited_s
+
+
+def transfer_reason(error: BaseException) -> str | None:
+    """:func:`fault_reason`, with the two faults a transfer names itself."""
+
+    if isinstance(error, IncompleteRead):
+        return "the response ended early"
+    if isinstance(error, HTTPError) and error.code == 408:
+        return "HTTP 408 -- the request timed out"
+    return fault_reason(error)
+
+
+def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
+                     name: str, progress, delay=None, discard=None,
+                     attempts: int = TRANSIENT_ATTEMPTS, pause=None,
+                     tail: str = "") -> tuple[Endpoint, object]:
+    """Move one file, asking each endpoint in turn and in rounds.
+
+    ``transfer(endpoint)`` moves the file from one endpoint and returns
+    what the caller records; the result comes back with the endpoint
+    that served it.  The endpoints publish the same key with the same
+    bytes, so a host that refuses, throttles, or serves something that
+    does not verify is a reason to ask the next one, not a reason to
+    end the fetch.
+
+    This is the one retry every source's fetch runs through: the table
+    routes' transfers and the Rust backbone's GFS and HRRR transfers.
+    After a round in which every endpoint failed, the ones whose fault
+    ``delay(error, attempt)`` calls transient (default
+    :func:`retry_delay`: a reset or dropped connection, a timeout, a
+    body cut short, HTTP 408, 429 or 5xx) are asked again after the
+    longest of their waits, for at most ``attempts`` rounds
+    (:data:`TRANSIENT_ATTEMPTS`).  A permanent refusal falls through
+    once and is not asked again.  Faults that are not an endpoint's (an
+    interrupt, a full disk) propagate unchanged, because the next
+    endpoint would fail identically and walking the ladder over them
+    would bury the real refusal.  ``discard(endpoint)`` removes what a
+    failed attempt staged.  ``pause(seconds)`` waits between rounds and
+    by default stops early once another file has failed the request.
+
+    When every round is spent, :class:`TransferRefusal` names the file,
+    each endpoint and why, the rounds and the seconds waited, followed
+    by ``tail``.
+    """
+
+    if delay is None:
+        def delay(error, attempt):
+            return retry_delay(error, attempt,
+                               wait_limit_s=TRANSIENT_WAIT_LIMIT_S)
+    if pause is None:
+        def pause(seconds):
+            import time
+            from gpuwm import fetch_pool
+            fetch_pool.sleep_unless_stopped(seconds, sleep=time.sleep)
+    active = tuple(ladder)
+    if not active:
+        raise ValueError(f"{label}: {name} has no endpoint to ask")
+    tried: list[tuple[Endpoint, str]] = []
+    last_error: BaseException | None = None
+    waited = 0.0
+    rounds = 0
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        rounds = attempt
+        again: list[Endpoint] = []
+        wait = 0.0
+        for position, endpoint in enumerate(active):
+            try:
+                return endpoint, transfer(endpoint)
+            except BaseException as error:        # noqa: BLE001 - classified
+                seconds = delay(error, attempt)
+                # A failure on this computer (a full disk, an unwritable
+                # folder) cannot be repaired by another endpoint.
+                if (isinstance(error, OSError)
+                        and not isinstance(error, (URLError, TimeoutError,
+                                                   ConnectionError))
+                        and seconds is None):
+                    raise
+                reason = transfer_reason(error)
+                if reason is None:
+                    raise
+                last_error = error
+                tried.append((endpoint, reason))
+                if seconds is not None:
+                    again.append(endpoint)
+                    wait = max(wait, seconds)
+                if discard is not None:
+                    discard(endpoint)
+                remaining = active[position + 1:]
+                progress(
+                    f"{label}: {endpoint.name} did not serve {name} "
+                    f"({reason})"
+                    + (f"; asking {remaining[0].name}" if remaining else ""))
+        if not again or attempt >= attempts:
+            break
+        progress(f"{label}: retrying {name} in {wait:g} s (attempt "
+                 f"{attempt + 1}/{attempts}); completed files are kept")
+        pause(wait)
+        waited += wait
+        active = tuple(again)
+    raise TransferRefusal(
+        ladder_refusal(f"{label}: {name}", tried, rounds=rounds,
+                       waited_s=waited) + tail,
+        name=name, attempts=tried, rounds=rounds,
+        waited_s=waited) from last_error
+
+
 __all__ = [
     "Endpoint", "FALLTHROUGH_STATUSES", "PROBE_USER_AGENT", "TABLE_NAME",
     "cycle_age_hours", "document", "endpoint_named", "fault_reason",
-    "has_ladder", "host_cap_why", "host_caps", "host_worker_cap", "ladder",
-    "ladder_refusal", "object_available", "promote", "serving_ladder",
-    "transfer_ladder", "transfer_order", "transfer_probes",
+    "has_ladder", "host_cap_why", "host_caps", "host_worker_cap", "ladder", "object_answer",
+    "ladder_refusal", "object_available", "promote", "retry_delay",
+    "serving_ladder",
+    "SETTLE_BACKOFF_S", "SETTLE_PACE_BUDGET_S", "settled_object_answer",
+    "TRANSIENT_ATTEMPTS", "TRANSIENT_WAIT_LIMIT_S", "TransferRefusal",
+    "ask_along_ladder", "transfer_ladder", "transfer_order",
+    "transfer_probes", "transfer_reason",
 ]

@@ -1549,6 +1549,155 @@ fn a_subtitle_that_does_not_fit_reports_that_it_was_cut() {
     assert_eq!(whole, text);
 }
 
+const NEST_SUBTITLE: &str = "Init 09/27 12Z | +000:15 | Valid 09/27 12:15Z | WRF | dx 1 km";
+const NEST_SOURCE: &str = "source: ArWen";
+
+fn operational_header_opts(width: u32, height: u32, subtitle_left: &str, colorbar: bool) -> RenderOpts {
+    let mut opts = RenderOpts::default();
+    opts.width = width;
+    opts.height = height;
+    opts.colorbar = colorbar;
+    opts.cmap = sample_cmap();
+    opts.colorbar_units = Some("degF".into());
+    opts.presentation = RenderPresentation::for_mode_with_style(
+        ProductVisualMode::FilledMeteorology,
+        StaticPlotStyle::Operational,
+    );
+    // A title with no descenders, so nothing of it reaches the subtitle row.
+    opts.title = Some("Bulk Shear 0-6 km".into());
+    opts.subtitle_left = Some(subtitle_left.into());
+    opts.subtitle_right = Some(NEST_SOURCE.into());
+    opts.domain_frame = Some(DomainFrame::model_data_default());
+    opts
+}
+
+/// The chrome of `opts` over a full-height frame `frame_w` pixels wide in
+/// the middle of the map: a tall nest on a wide canvas.
+fn draw_narrow_frame_header(opts: &RenderOpts, frame_w: u32) -> (RgbaImage, Layout, LocalRect) {
+    let layout = compute_layout(
+        opts.width,
+        opts.height,
+        opts.colorbar,
+        true,
+        opts.presentation,
+        opts.chrome_scale,
+    );
+    let left = layout.map_w.saturating_sub(frame_w) / 2;
+    let rect = LocalRect {
+        min_x: left,
+        max_x: left + frame_w,
+        min_y: 0,
+        max_y: layout.map_h.saturating_sub(1),
+    };
+    let mut img = RgbaImage::from_pixel(opts.width, opts.height, Rgba::WHITE.to_image_rgba());
+    draw_chrome_and_colorbar(&mut img, &layout, opts, None, Some(rect), None, false, true);
+    (img, layout, rect)
+}
+
+/// The width the left subtitle gets on a header row `row_width` wide.
+fn left_subtitle_room(layout: &Layout, row_width: u32) -> u32 {
+    let scale = layout.text_scale;
+    subtitle_left_width(row_width.saturating_sub(18 * scale), Some(NEST_SOURCE), scale, 6 * scale)
+}
+
+/// Whether `img` shows `text` drawn from `x`, `y`: every pixel the text
+/// alone paints there is painted the same in `img`.
+fn shows_text_at(img: &RgbaImage, opts: &RenderOpts, layout: &Layout, text: &str, x: u32, y: u32) -> bool {
+    let mut alone = RgbaImage::from_pixel(opts.width, opts.height, Rgba::WHITE.to_image_rgba());
+    text::draw_text_with_factor(
+        &mut alone,
+        text,
+        x as i32,
+        y as i32,
+        opts.presentation.chrome.subtitle_color,
+        layout.text_scale,
+        layout.label_factor,
+    );
+    let width = measure_text_width_with_factor(text, layout.text_scale, layout.label_factor, false);
+    let height = text::regular_line_height(layout.text_scale);
+    let expected = crop_imm(&alone, x, y, width, height).to_image();
+    assert!(
+        expected.pixels().any(|pixel| pixel.0 != [255, 255, 255, 255]),
+        "the reference text drew nothing"
+    );
+    let actual = crop_imm(img, x, y, width, height).to_image();
+    expected
+        .enumerate_pixels()
+        .filter(|(_, _, pixel)| pixel.0 != [255, 255, 255, 255])
+        .all(|(px, py, pixel)| actual.get_pixel(px, py) == pixel)
+}
+
+/// Where on `row` the whole `text` is drawn, searching from the canvas
+/// row's left edge to `last_x`.
+fn whole_text_x(img: &RgbaImage, opts: &RenderOpts, layout: &Layout, text: &str, row: u32, last_x: u32) -> Option<u32> {
+    (layout.map_x..=last_x).find(|&x| shows_text_at(img, opts, layout, text, x, row))
+}
+
+#[test]
+fn a_narrow_nest_keeps_its_valid_time_on_a_wide_canvas() {
+    // A tall nest drawn at 1200x900 or 2400x900 gets a frame about 380 px
+    // wide at either width.  Anchored to that frame the subtitle came out
+    // "Init 09/27 12Z | +000:15 | Vali..." with most of the header row
+    // unused, and widening the image could not help.  The header row
+    // widens, centred on the frame, until its text fits.
+    for width in [1200u32, 2400] {
+        let opts = operational_header_opts(width, 900, NEST_SUBTITLE, false);
+        let (img, layout, rect) = draw_narrow_frame_header(&opts, 380);
+        let (_, row) = chrome_anchor_rows(&layout, opts.domain_frame, Some(rect));
+        let frame_left = layout.map_x + rect.min_x;
+        let needed = measure_text_width(NEST_SUBTITLE, layout.text_scale, false);
+        assert!(needed > left_subtitle_room(&layout, rect.max_x - rect.min_x), "{width}: must not fit the frame");
+        assert!(needed <= left_subtitle_room(&layout, layout.map_w), "{width}: must fit the canvas row");
+        let x = whole_text_x(&img, &opts, &layout, NEST_SUBTITLE, row, frame_left);
+        assert!(x.is_some(), "{width}x900: the whole subtitle, valid time included, must be drawn");
+        // Only as wide as its text needs, centred on the frame: it starts
+        // left of the map, never at the canvas's edge when there is room.
+        let x = x.unwrap();
+        assert!(x > layout.map_x && x < frame_left, "{width}: the header hugs its map, at {x}");
+    }
+}
+
+#[test]
+fn a_narrow_nest_header_stops_at_the_colour_bar_beside_it() {
+    // The operational colour bar follows the frame and stands just right of
+    // it, inside the canvas row, so the widened header grows to the left of
+    // the frame and ends at the frame's right edge.
+    let opts = operational_header_opts(1200, 900, NEST_SUBTITLE, true);
+    let (img, layout, rect) = draw_narrow_frame_header(&opts, 380);
+    let (_, row) = chrome_anchor_rows(&layout, opts.domain_frame, Some(rect));
+    let frame_left = layout.map_x + rect.min_x;
+    let frame_right = layout.map_x + rect.max_x;
+    let (bar_x, _, _) = colorbar_anchor_rect(
+        &layout,
+        ColorbarOrientation::VerticalRight,
+        opts.domain_frame,
+        Some(rect),
+    );
+    assert!(bar_x > frame_right && bar_x < layout.map_x + layout.map_w, "the bar stands beside the frame");
+    let needed = measure_text_width(NEST_SUBTITLE, layout.text_scale, false);
+    assert!(needed > left_subtitle_room(&layout, rect.max_x - rect.min_x), "must not fit the frame");
+    assert!(needed <= left_subtitle_room(&layout, frame_right - layout.map_x), "must fit up to the frame's edge");
+    assert!(
+        whole_text_x(&img, &opts, &layout, NEST_SUBTITLE, row, frame_left).is_some(),
+        "the whole subtitle, valid time included, must be drawn"
+    );
+    let source_w = measure_text_width_with_factor(NEST_SOURCE, layout.text_scale, layout.label_factor, false);
+    assert!(
+        shows_text_at(&img, &opts, &layout, NEST_SOURCE, frame_right - source_w, row),
+        "the source label ends at the frame's right edge, clear of the bar"
+    );
+}
+
+#[test]
+fn a_subtitle_that_fits_over_its_frame_stays_anchored_to_it() {
+    let opts = operational_header_opts(1200, 900, "Valid 09/27 12:15Z", true);
+    let (img, layout, rect) = draw_narrow_frame_header(&opts, 380);
+    let (left, _, _) = chrome_anchor_bounds(&layout, opts.domain_frame, Some(rect));
+    let (_, row) = chrome_anchor_rows(&layout, opts.domain_frame, Some(rect));
+    assert!(left > layout.map_x, "the frame must sit inside the canvas row");
+    assert!(shows_text_at(&img, &opts, &layout, "Valid 09/27 12:15Z", left, row));
+}
+
 /// A regular latitude/longitude mesh, projected into the presentation
 /// projection the direct lane picks for a CONUS-sized window.
 ///
@@ -1719,4 +1868,284 @@ fn native_projected_domain_frame_still_inscribes_the_rectangle() {
             .expect("frame");
 
     assert_eq!(inscribed, bounded);
+}
+
+// A 480 px map inside a 560 x 600 canvas, the extent spanning 0..1 on both
+// axes: one extent unit is 479 px, so y = -40/479 lies 40 px below the map's
+// bottom row, inside the 10 % slack `MapExtent::to_pixel` keeps for lines
+// that leave the map.
+fn frame_test_layout() -> Layout {
+    Layout {
+        map_x: 40,
+        map_y: 40,
+        map_w: 480,
+        map_h: 480,
+        ..contour_test_layout()
+    }
+}
+
+fn unit_extent() -> MapExtent {
+    MapExtent {
+        x_min: 0.0,
+        x_max: 1.0,
+        y_min: 0.0,
+        y_max: 1.0,
+    }
+}
+
+fn test_polyline(points: Vec<(f64, f64)>, width: u32) -> ProjectedPolyline {
+    ProjectedPolyline {
+        points,
+        color: Rgba::BLACK,
+        width,
+        role: crate::presentation::LineworkRole::Generic,
+    }
+}
+
+fn is_ink(pixel: &image::Rgba<u8>) -> bool {
+    pixel.0 != [255, 255, 255, 255]
+}
+
+fn ink_outside_map(img: &RgbaImage, layout: &Layout) -> Vec<(u32, u32)> {
+    let right = layout.map_x + layout.map_w;
+    let bottom = layout.map_y + layout.map_h;
+    img.enumerate_pixels()
+        .filter(|(x, y, pixel)| {
+            let inside = *x >= layout.map_x && *x < right && *y >= layout.map_y && *y < bottom;
+            !inside && is_ink(pixel)
+        })
+        .map(|(x, y, _)| (x, y))
+        .collect()
+}
+
+/// Ink in the map's last three rows within 3 px of canvas column `x`.
+fn ink_on_bottom_edge(img: &RgbaImage, layout: &Layout, x: u32) -> usize {
+    let bottom = layout.map_y + layout.map_h - 1;
+    (bottom - 2..=bottom)
+        .flat_map(|y| (x - 3..=x + 3).map(move |x| (x, y)))
+        .filter(|&(x, y)| is_ink(img.get_pixel(x, y)))
+        .count()
+}
+
+#[test]
+fn basemap_lines_that_cross_the_frame_draw_nothing_outside_it() {
+    // F13: county lines leaving the bottom of a 12 km map were drawn in the
+    // margin below the frame, because a segment that touched the clip mask
+    // kept its outside endpoint. Every mask the renderer can pass is tried:
+    // none, one covering the map, and a domain frame inset inside the map.
+    let layout = frame_test_layout();
+    let extent = unit_extent();
+    let presentation = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
+    let below = -40.0 / 479.0;
+    let whole_map = build_rect_clip_mask(
+        480,
+        480,
+        LocalRect {
+            min_x: 0,
+            max_x: 479,
+            min_y: 0,
+            max_y: 479,
+        },
+    );
+    let domain_frame = build_rect_clip_mask(
+        480,
+        480,
+        LocalRect {
+            min_x: 5,
+            max_x: 474,
+            min_y: 5,
+            max_y: 474,
+        },
+    );
+    let leaving_x = layout.map_x + (0.30_f64 * 479.0).round() as u32;
+    let entering_x = layout.map_x + (0.70_f64 * 479.0).round() as u32;
+    let mut problems = Vec::new();
+    for (label, mask) in [
+        ("no mask", None),
+        ("whole-map mask", Some(&whole_map)),
+        ("domain-frame mask", Some(&domain_frame)),
+    ] {
+        for width in [1u32, 3] {
+            let mut img = RgbaImage::from_pixel(560, 600, Rgba::WHITE.to_image_rgba());
+            let lines = vec![
+                // From inside the frame to 40 px below it.
+                test_polyline(vec![(0.30, 0.5), (0.30, 0.1), (0.30, below)], width),
+                // The same crossing drawn in the other direction.
+                test_polyline(vec![(0.70, below), (0.70, 0.1), (0.70, 0.5)], width),
+                // Out through the left side, 38 px past it.
+                test_polyline(vec![(0.5, 0.8), (-0.08, 0.8)], width),
+                // Wholly below the map.
+                test_polyline(vec![(0.2, below), (0.8, below)], width),
+            ];
+
+            draw_projected_lines(&mut img, &layout, &extent, &lines, presentation, mask);
+
+            let outside = ink_outside_map(&img, &layout);
+            if !outside.is_empty() {
+                let below = outside.iter().filter(|&&(_, y)| y >= 520).count();
+                problems.push(format!(
+                    "{label}, width {width}: {} px drawn outside the frame ({below} below it), \
+                     first at {:?}",
+                    outside.len(),
+                    outside.first()
+                ));
+            }
+            if ink_on_bottom_edge(&img, &layout, leaving_x) == 0 {
+                problems.push(format!(
+                    "{label}, width {width}: the line leaving the map stops short of the frame"
+                ));
+            }
+            if ink_on_bottom_edge(&img, &layout, entering_x) == 0 {
+                problems.push(format!(
+                    "{label}, width {width}: the line entering the map stops short of the frame"
+                ));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn basemap_lines_inside_the_frame_draw_exactly_as_before() {
+    // The cut only touches segments that reach the map's edge: a polyline
+    // wholly inside it is the same stroke, pixel for pixel.
+    let layout = frame_test_layout();
+    let extent = unit_extent();
+    let presentation = RenderPresentation::for_mode(ProductVisualMode::FilledMeteorology);
+    let points = vec![(0.1, 0.1), (0.4, 0.73), (0.62, 0.35), (0.9, 0.88)];
+    for width in [1u32, 2, 3] {
+        let mut drawn = RgbaImage::from_pixel(560, 600, Rgba::WHITE.to_image_rgba());
+        draw_projected_lines(
+            &mut drawn,
+            &layout,
+            &extent,
+            &[test_polyline(points.clone(), width)],
+            presentation,
+            None,
+        );
+        let mut expected = RgbaImage::from_pixel(560, 600, Rgba::WHITE.to_image_rgba());
+        let canvas: Vec<(f64, f64)> = points
+            .iter()
+            .map(|&(x, y)| {
+                let (px, py) = extent.to_pixel(x, y, layout.map_w, layout.map_h).unwrap();
+                (layout.map_x as f64 + px, layout.map_y as f64 + py)
+            })
+            .collect();
+        draw::draw_polyline_aa(&mut expected, &canvas, Rgba::BLACK, width);
+        assert!(
+            drawn == expected,
+            "width {width}: an interior polyline changed"
+        );
+    }
+}
+
+#[test]
+fn clip_segment_to_rect_keeps_only_the_inside_stretch() {
+    let clip = |a, b| clip_segment_to_rect(a, b, 0.0, 4.0, 0.0, 4.0);
+    // (from, to, expected, what the case is)
+    let cases = [
+        ((1.0, 1.0), (3.0, 3.0), Some((0.0, 1.0)), "inside"),
+        ((2.0, 2.0), (2.0, 6.0), Some((0.0, 0.5)), "leaves"),
+        ((2.0, 6.0), (2.0, 2.0), Some((0.5, 1.0)), "enters"),
+        ((-2.0, 2.0), (6.0, 2.0), Some((0.25, 0.75)), "crosses"),
+        ((5.0, 5.0), (6.0, 6.0), None, "outside"),
+        ((-1.0, 0.0), (-1.0, 4.0), None, "parallel, outside"),
+        ((0.0, 1.0), (0.0, 3.0), Some((0.0, 1.0)), "on an edge"),
+        ((3.0, 5.0), (5.0, 3.0), None, "touches a corner only"),
+        // A repeated vertex stays a (zero-length) segment, as it always drew.
+        ((2.0, 2.0), (2.0, 2.0), Some((0.0, 1.0)), "repeat inside"),
+        ((6.0, 2.0), (6.0, 2.0), None, "repeat outside"),
+        ((f64::NAN, 1.0), (2.0, 2.0), None, "non-finite end"),
+    ];
+    for (a, b, expected, what) in cases {
+        assert_eq!(clip(a, b), expected, "{what}");
+    }
+}
+
+#[test]
+fn clipped_polyline_stroke_writes_nothing_outside_its_rect() {
+    // The stroke half of the cut: a line ending exactly on the rect's edge
+    // still has width and antialiasing past it.
+    for width in [1u32, 2, 3, 5] {
+        let mut img = blank_test_image();
+        draw::draw_polyline_aa_clipped(
+            &mut img,
+            &[(40.0, 40.0), (10.0, 10.0), (10.0, 69.0), (69.0, 69.0)],
+            Rgba::BLACK,
+            width,
+            (10, 10, 69, 69),
+        );
+        let (min_x, max_x, min_y, max_y) = non_white_bounds(&img).expect("the stroke draws");
+        assert!(
+            min_x >= 10 && max_x <= 69 && min_y >= 10 && max_y <= 69,
+            "width {width}: ink spans x {min_x}..={max_x}, y {min_y}..={max_y}"
+        );
+        assert!(
+            min_x == 10 && max_y == 69,
+            "width {width}: the stroke reaches the rect"
+        );
+    }
+}
+
+/// The tick set a narrow colour bar gets: `pick_ticks` over ten evenly cut
+/// levels spanning `lo..hi`, the levels a generic stored-plane ramp cuts.
+fn narrow_bar_ticks(lo: f64, hi: f64) -> Vec<f64> {
+    let levels: Vec<f64> = (0..=9).map(|i| lo + (hi - lo) * i as f64 / 9.0).collect();
+    pick_ticks(&levels, None)
+}
+
+/// Every drawn label must parse back to its own tick to within a hundredth
+/// of the spacing between ticks, and no two drawn labels may be the same.
+fn assert_labels_read_as_ticks(drawn: &[(f64, i32, String)], spacing: f64, bar: &str) {
+    assert!(drawn.len() >= 3, "{bar}: only {} label(s) drawn", drawn.len());
+    for (value, _, label) in drawn {
+        let shown: f64 = label.parse().unwrap_or(f64::NAN);
+        assert!(
+            (shown - value).abs() <= spacing * 0.01,
+            "{bar}: tick {value} is labelled {label:?}"
+        );
+    }
+    let unique: std::collections::HashSet<_> = drawn.iter().map(|row| &row.2).collect();
+    assert_eq!(unique.len(), drawn.len(), "{bar}: repeated labels in {drawn:?}");
+}
+
+#[test]
+fn a_narrow_colour_bar_labels_every_tick_with_its_own_value() {
+    // Measured on a real 3 km forecast frame: 200 hPa height spans
+    // 12200.066 to 12228.032 gpm, drawn against `1e3 gpm`, and every tick
+    // of the bar read `12.2`; mean sea level pressure 100282.9 to
+    // 100986.8 Pa, against `1e3 Pa`, read `100.4` twice and `100.5` three
+    // times.
+    for (bar, lo, hi, spacing) in [
+        ("200 hPa height", 12.20006640625, 12.2280322265625, 0.002),
+        ("mean sea level pressure", 100.282859375, 100.98675, 0.05),
+    ] {
+        let ticks = narrow_bar_ticks(lo, hi);
+        let range = hi - lo;
+        let horizontal =
+            filter_tick_labels_to_fit(&ticks, lo, range, 100, 1400, 50, 1550, 1600, 1);
+        assert_labels_read_as_ticks(&horizontal, spacing, bar);
+        let vertical = filter_vertical_tick_labels_to_fit(
+            &ticks, lo, range, 100, 900, 100, 1000, 1100, 1,
+        );
+        assert_labels_read_as_ticks(&vertical, spacing, bar);
+    }
+}
+
+#[test]
+fn a_colour_bar_crossing_zero_labels_its_zero_tick_zero() {
+    // Ticks are stepped by repeated addition, so on a 0.1 step from -0.5
+    // the zero tick arrives as about -3e-17 and used to print `-0`.
+    let ticks = pick_ticks(&[-0.5, 0.5], None);
+    let zero = ticks
+        .iter()
+        .position(|value| value.abs() < 1e-9)
+        .expect("a zero tick");
+    assert_ne!(ticks[zero], 0.0, "the accumulated tick is not exactly zero");
+    let drawn = filter_tick_labels_to_fit(&ticks, -0.5, 1.0, 100, 1400, 50, 1550, 1600, 1);
+    let label = drawn
+        .iter()
+        .find(|row| row.0 == ticks[zero])
+        .map(|row| row.2.as_str());
+    assert_eq!(label, Some("0"));
 }

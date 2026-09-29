@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Refuse if a forecast is running.  RUN THIS IMMEDIATELY BEFORE EVERY COMMIT.
 #
-# WHY, and the part that is easy to get half-right.  CLAUDE.md says "never
+# WHY, and the part that is easy to get half-right.  The project rules say "never
 # git commit -- or edit tracked source -- while a forecast is running".  The
 # obvious reading is that EDITING is the hazard and a commit is incidental.
 # That reading is wrong and it cost a run.

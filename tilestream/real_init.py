@@ -239,9 +239,10 @@ def open_analysis(prepared_cache, *, cfg, grid, static, valid_time,
     per-array digests and the inventory before returning a byte.  Reading the
     payload here rather than through ``restore_prepared_cache`` is not a way
     around those checks -- it is the same reader -- it is a way around
-    ``restore_prepared_cache``'s unconditional ``import cupy`` and its
-    allocation of the WHOLE domain on one device, which is precisely what a
-    decomposed run must not do.
+    ``restore_prepared_cache`` building a ``DomainState`` for the WHOLE
+    domain at once (on one device by default, or in host memory with
+    ``array_module=numpy``), which is precisely what a decomposed run must
+    not do.
     """
     from gpuwm.ingest.prepared_cache import PreparedCacheReader
     from gpuwm.prepared_single_domain_forecast import _LANDUSE_IDENTITY

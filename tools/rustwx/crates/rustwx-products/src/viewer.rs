@@ -119,8 +119,8 @@ impl UnitConvert {
 /// `rustwx_render::build_colormap(&style.scale, style.colormap_options)`,
 /// color CONVERTED values with `cmap.map(...)` (NaN and masked values map
 /// to transparent), and label ticks from
-/// `rustwx_render::colorbar_ticks(&cmap, style.cbar_tick_step)` +
-/// `rustwx_render::format_tick`.
+/// `rustwx_render::colorbar_ticks(&cmap, style.cbar_tick_step)`, labelled
+/// as one set with `rustwx_render::format_tick_labels`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoreVariableStyle {
     /// Production product title (recipe/preset title, no time suffixes).
@@ -211,18 +211,21 @@ pub fn scaled_units(units: &str, exponent: i32) -> String {
 /// ranges use an explicit 0..1 placeholder so renderers still have ordered
 /// levels.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a colorbar whose
-/// every tick reads `0`. The tick formatter carries one decimal
-/// (`rustwx_render::format_tick`), so a plane whose whole range sits below
-/// 0.05 printed the same character at every tick and the panel reported no
-/// number at all. Measured on a real stored 2-D mixing-ratio plane
-/// (`kg kg-1`, finite range 1.0071e-3 to 3.8782e-3): fourteen ticks, all
-/// fourteen labelled `0`. The remedy is the one the mesh lane already
-/// carries and is driven by the RANGE, never by a variable's name: the
-/// values move onto the power-of-a-thousand decade that puts the largest
-/// of them in 1-1000, and the decade is stated in the units and the title
-/// so a reader can put it back. A range already in 1-1000 is untouched,
-/// exponent 0, and its style is byte-unchanged.
+/// The decade: a plane far from 1-1000 is drawn on the power-of-a-thousand
+/// decade that puts the largest of its values in 1-1000, and the decade is
+/// stated in the units and the title so a reader can put it back. It was
+/// first installed against a colorbar whose every tick read `0` (a real
+/// stored 2-D mixing-ratio plane, `kg kg-1`, finite range 1.0071e-3 to
+/// 3.8782e-3: fourteen ticks, all fourteen labelled `0`) when the tick
+/// labels carried one decimal. The colour bar now labels its ticks as one
+/// set (`rustwx_render::format_tick_labels`) with the places the set needs,
+/// so telling ticks apart no longer rests on the decade; what the decade
+/// still does is keep each label a few characters long, where a plane of
+/// order 1e-6 would otherwise print eight or more characters at every tick
+/// and the bar keeps only as many labels as its width fits. It is driven
+/// by the RANGE, never by a variable's name, the same rule the mesh lane
+/// carries. A range already in 1-1000 is untouched, exponent 0, and its
+/// style is byte-unchanged.
 ///
 /// A caller that has ALREADY moved its own values onto a decade must use
 /// [`generic_style_for_prescaled_store_variable`] instead, or the decade
@@ -232,6 +235,9 @@ pub fn generic_style_for_store_variable(
     stored_units: &str,
     finite_range: Option<(f32, f32)>,
 ) -> StoreVariableStyle {
+    if let Some(style) = category_style_for_store_variable(var_name, stored_units, finite_range) {
+        return style;
+    }
     let range = usable_generic_range(finite_range);
     // A mass mixing ratio is drawn in grams per kilogram before any
     // decade is taken: the units decide, never the name.
@@ -263,7 +269,7 @@ pub fn generic_style_for_store_variable(
 /// The same neutral full-range style for a caller that has already moved
 /// its values onto the decade `display_units` states.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): one panel's levels
+/// WHAT BREAKAGE THIS PREVENTS (gate law): one panel's levels
 /// cut on a different decade from the cells they colour. The mesh lane
 /// moves its own decade, because it also masks cells below a named floor
 /// and has a diverging branch of its own, and it then asked
@@ -310,14 +316,14 @@ fn usable_generic_range(finite_range: Option<(f32, f32)>) -> (f64, f64) {
     }
 }
 
-/// Levels, palette and legend over a range that is already final: no
-/// decade is taken here, and `convert` is always [`UnitConvert::None`].
-fn generic_style_on_a_settled_range(
-    var_name: &str,
-    display_units: &str,
-    range: (f64, f64),
-) -> StoreVariableStyle {
-    const COLORS: [[u8; 4]; 9] = [
+/// The generic ramp's band count.
+const GENERIC_RAMP_BANDS: usize = 9;
+
+/// The one ramp this lane invents itself, so the one ramp a theme may
+/// replace wholesale: the theme's sequential colours stepped onto `bands`.
+/// No theme, the viridis anchors stepped onto the same count.
+fn generic_ramp_colors(bands: usize) -> Vec<Color> {
+    const COLORS: [[u8; 4]; GENERIC_RAMP_BANDS] = [
         [68, 1, 84, 255],
         [72, 40, 120, 255],
         [62, 74, 137, 255],
@@ -328,25 +334,147 @@ fn generic_style_on_a_settled_range(
         [109, 205, 89, 255],
         [253, 231, 37, 255],
     ];
+    rustwx_render::active_theme()
+        .sequential_colors(bands)
+        .unwrap_or_else(|| {
+            if bands == GENERIC_RAMP_BANDS {
+                return COLORS
+                    .iter()
+                    .map(|[r, g, b, a]| Color::rgba(*r, *g, *b, *a))
+                    .collect();
+            }
+            let anchors: Vec<rustwx_render::Rgba> = COLORS
+                .iter()
+                .map(|[r, g, b, a]| rustwx_render::Rgba::with_alpha(*r, *g, *b, *a))
+                .collect();
+            rustwx_render::theme::resample(&anchors, bands)
+        })
+}
 
-    let levels = (0..=COLORS.len())
-        .map(|index| range.0 + (range.1 - range.0) * index as f64 / COLORS.len() as f64)
+/// The headline a generic or category row carries: the variable's name, its
+/// units riding along when it has any.
+fn generic_title(var_name: &str, display_units: &str) -> String {
+    if display_units.trim().is_empty() {
+        var_name.to_string()
+    } else {
+        format!("{var_name} [{display_units}]")
+    }
+}
+
+/// Stored planes whose values are category codes: a class number (land use,
+/// vegetation, soil, slope, crop, urban type, growing stage) or a mask
+/// value.  Matched on the plane's own name with or without the `wrf_` prefix
+/// the store gives a raw WRF plane, case-insensitively, so a stored plane
+/// and a mesh field of the same name agree.  Adding a code plane is a row
+/// here, never a code path.
+///
+/// Deliberately absent: `SNOWC` and `SEAICE` (land-surface and sea-ice
+/// options write fractions into both), `ISNOW`, `KPBL` and other integer
+/// counts and level indices (a quantity, not an identity), and every
+/// fraction-per-class plane (`LANDUSEF`, `SOILCTOP`), which is a continuous
+/// quantity per class.
+const CATEGORY_CODE_PLANES: [&str; 14] = [
+    "lu_index",
+    "ivgtyp",
+    "isltyp",
+    "sct_dom",
+    "scb_dom",
+    "soilcat",
+    "vegcat",
+    "slopecat",
+    "cropcat",
+    "utype_urb2d",
+    "pgs",
+    "landmask",
+    "lakemask",
+    "xland",
+];
+
+/// More codes than this is not a legend a reader can use, and a plane that
+/// wide is not carrying class numbers.
+const MAX_CATEGORY_BANDS: f64 = 256.0;
+
+/// True when `name` is a stored plane of category codes.
+pub fn is_category_code_plane(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let bare = lower.strip_prefix("wrf_").unwrap_or(&lower);
+    CATEGORY_CODE_PLANES.contains(&bare)
+}
+
+/// The category style for a plane of category codes: one legend band per
+/// integer code from the smallest to the largest present, each band centred
+/// on its code and labelled with it, a colour of its own per code, nearest
+/// sampling and no densification (both carried by
+/// [`LegendMode::Categories`]).
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): category maps drawn as if their
+/// codes were a continuous quantity.  A land mask holding only 0 and 1 was
+/// interpolated into lake shores of 0.3 and 0.7 and drawn against a
+/// continuous 0 to 1 bar; a soil plane holding codes 2, 3 and 14 painted
+/// thousands of pixels in colours of codes no cell holds.  `None` when the
+/// name is not a code plane, or its finite range does not start and end on
+/// whole codes or spans more than [`MAX_CATEGORY_BANDS`] codes: those keep
+/// the generic ramp.
+pub fn category_style_for_store_variable(
+    var_name: &str,
+    display_units: &str,
+    finite_range: Option<(f32, f32)>,
+) -> Option<StoreVariableStyle> {
+    if !is_category_code_plane(var_name) {
+        return None;
+    }
+    let (lo, hi) = finite_range?;
+    let (lo, hi) = (f64::from(lo), f64::from(hi));
+    let whole = |value: f64| value.is_finite() && (value - value.round()).abs() <= 1.0e-6;
+    if !whole(lo) || !whole(hi) || hi < lo || hi - lo >= MAX_CATEGORY_BANDS {
+        return None;
+    }
+    let first = lo.round();
+    let bands = (hi.round() - first) as usize + 1;
+    let levels = (0..=bands).map(|band| first + band as f64 - 0.5).collect();
+    let legend = LegendControls {
+        density: LevelDensity::default(),
+        mode: LegendMode::Categories,
+    };
+    Some(StoreVariableStyle {
+        title: generic_title(var_name, display_units),
+        display_units: display_units.to_string(),
+        convert: UnitConvert::None,
+        scale: ColorScale::Discrete(DiscreteColorScale {
+            levels,
+            colors: generic_ramp_colors(bands),
+            extend: ExtendMode::Neither,
+            mask_below: None,
+        }),
+        colormap_options: ColormapBuildOptions {
+            render_density: RenderDensity {
+                fill: LevelDensity::default(),
+                palette_multiplier: 1,
+            },
+            legend,
+        },
+        cbar_tick_step: None,
+        legend_mode: legend.mode,
+    })
+}
+
+/// Levels, palette and legend over a range that is already final: no
+/// decade is taken here, and `convert` is always [`UnitConvert::None`].
+fn generic_style_on_a_settled_range(
+    var_name: &str,
+    display_units: &str,
+    range: (f64, f64),
+) -> StoreVariableStyle {
+    let levels = (0..=GENERIC_RAMP_BANDS)
+        .map(|index| {
+            range.0 + (range.1 - range.0) * index as f64 / GENERIC_RAMP_BANDS as f64
+        })
         .collect();
     let legend = LegendControls {
         density: LevelDensity::default(),
         mode: LegendMode::SmoothRamp,
     };
-    // The one ramp this lane invents itself, so the one ramp a theme may
-    // replace wholesale: the theme's sequential colours stepped onto the
-    // same band count.  No theme, the viridis anchors above.
-    let colors: Vec<Color> = rustwx_render::active_theme()
-        .sequential_colors(COLORS.len())
-        .unwrap_or_else(|| {
-            COLORS
-                .iter()
-                .map(|[r, g, b, a]| Color::rgba(*r, *g, *b, *a))
-                .collect()
-        });
+    let colors = generic_ramp_colors(GENERIC_RAMP_BANDS);
 
     StoreVariableStyle {
         // The clean headline other rows get: the variable's name (its
@@ -354,11 +482,7 @@ fn generic_style_on_a_settled_range(
         // nature of the ramp is visible in the legend itself and logged
         // per variable at render time; spelling it in the headline made
         // uncurated rows read like errors next to curated ones.
-        title: if display_units.trim().is_empty() {
-            var_name.to_string()
-        } else {
-            format!("{var_name} [{display_units}]")
-        },
+        title: generic_title(var_name, display_units),
         display_units: display_units.to_string(),
         convert: UnitConvert::None,
         scale: ColorScale::Discrete(DiscreteColorScale {
@@ -520,6 +644,10 @@ pub fn operational_style_for_store_variable(
 ) -> Option<StoreVariableStyle> {
     if let Some(slug) = stored_selector.get("derived").and_then(|v| v.as_str()) {
         let slug = normalize_wrf_store_slug(slug);
+        // A derived product's plane in a unit its colour bar cannot be
+        // reached from claims no production palette at all: the fallback
+        // below would put the same numbers on a bar in another unit.
+        crate::derived::store_plane_conversion(&slug, stored_units).ok()?;
         return derived_style(&slug, stored_units)
             .or_else(|| weather_product_style(&slug, stored_units));
     }
@@ -577,14 +705,27 @@ pub fn operational_style_for_store_variable(
 }
 
 /// Derived/heavy slugs: styling read off a real render request built by the
-/// production builders (see `derived_store_variable_style`). Stored grids
-/// already carry display units, so no conversion applies.
+/// production builders (see `derived_store_variable_style`).  The palette
+/// is calibrated in the product's own units, so a plane stored in another
+/// unit is converted into them the way the named picture converts it
+/// ([`crate::derived::store_plane_conversion`]); one the product's units
+/// cannot be reached from gets no production style.
 fn derived_style(slug: &str, stored_units: &str) -> Option<StoreVariableStyle> {
+    use crate::derived::StoreUnitConversion;
+
     let lane = crate::derived::derived_store_variable_style(slug).ok()?;
+    let (convert, display_units) =
+        match crate::derived::store_plane_conversion(slug, stored_units).ok()? {
+            StoreUnitConversion::Same => (UnitConvert::None, stored_units.to_string()),
+            StoreUnitConversion::MetresPerSecondToKnots => (
+                UnitConvert::MsToKnots,
+                crate::derived::derived_product_units(slug)?.to_string(),
+            ),
+        };
     Some(StoreVariableStyle {
         title: lane.title,
-        display_units: stored_units.to_string(),
-        convert: UnitConvert::None,
+        display_units,
+        convert,
         scale: lane.scale,
         colormap_options: filtered_options(lane.render_density, lane.legend),
         cbar_tick_step: lane.cbar_tick_step,
@@ -633,10 +774,15 @@ pub fn operational_style_templates(model: ModelId) -> Vec<StoreVariableStyleTemp
     }
 
     for entry in crate::derived::supported_derived_recipe_inventory() {
+        // A derived template is labelled in the units its palette is
+        // calibrated in; the slug-shape guess below is for the weather
+        // products, which name no units of their own.
+        let units = crate::derived::derived_product_units(entry.slug)
+            .unwrap_or_else(|| template_units_for_slug(entry.slug));
         if let Some(mut style) = operational_style_for_store_variable(
             entry.slug,
             &serde_json::json!({ "derived": entry.slug }),
-            template_units_for_slug(entry.slug),
+            units,
             model,
         ) {
             style.title = entry.title.to_string();
@@ -880,6 +1026,9 @@ const ALL_WEATHER_PRODUCTS: &[WeatherProduct] = &[
     WeatherProduct::EcapeStpExperimental,
 ];
 
+/// Units for a weather-product or heavy template, which name none of their
+/// own.  A derived recipe's template takes its product's units instead
+/// ([`crate::derived::derived_product_units`]).
 fn template_units_for_slug(slug: &str) -> &'static str {
     let slug = normalize_wrf_store_slug(slug);
     if slug.contains("cape") || slug.contains("cin") || slug.contains("ncape") || slug == "dcape" {
@@ -888,8 +1037,6 @@ fn template_units_for_slug(slug: &str) -> &'static str {
         "m"
     } else if slug.contains("srh") || slug.contains("uhel") || slug == "uh" {
         "m^2/s^2"
-    } else if slug.contains("shear") {
-        "kt"
     } else if slug.contains("stp")
         || slug.contains("scp")
         || slug.contains("ehi")
@@ -898,15 +1045,6 @@ fn template_units_for_slug(slug: &str) -> &'static str {
         || slug.contains("ratio")
     {
         "dimensionless"
-    } else if slug.contains("temperature")
-        || slug.contains("apparent")
-        || slug.contains("heat_index")
-        || slug.contains("wind_chill")
-        || slug.contains("wetbulb")
-    {
-        "degF"
-    } else if slug.contains("vpd") {
-        "hPa"
     } else {
         ""
     }
@@ -1160,10 +1298,10 @@ mod tests {
         assert_eq!(style.convert, UnitConvert::ScaleByDecade(-3));
 
         let cmap = rustwx_render::build_colormap(&style.scale, style.colormap_options);
-        let labels: Vec<String> = rustwx_render::colorbar_ticks(&cmap, style.cbar_tick_step)
-            .iter()
-            .map(|tick| rustwx_render::format_tick(*tick))
-            .collect();
+        let labels = rustwx_render::format_tick_labels(&rustwx_render::colorbar_ticks(
+            &cmap,
+            style.cbar_tick_step,
+        ));
         assert!(
             !labels.is_empty(),
             "a colorbar with no tick reports nothing either"
@@ -1174,6 +1312,71 @@ mod tests {
         );
         assert!(
             labels.iter().collect::<std::collections::BTreeSet<_>>().len() == labels.len(),
+            "two ticks that print the same string are one tick: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn every_production_colour_bar_labels_its_ticks_with_their_own_values() {
+        // Every label must parse back to its tick to within a hundredth of
+        // the tick spacing. Where the usual one-decimal labels already do
+        // that, the bar keeps them unchanged; a quarter-step table (0,
+        // 0.25, 0.5, ...) used to print 0.25 as `0.2` and 0.75 as `0.8`.
+        let templates = operational_style_templates(ModelId::WrfGdex);
+        assert!(!templates.is_empty());
+        let reads = |labels: &[String], ticks: &[f64], tolerance: f64| {
+            labels.iter().zip(ticks).all(|(label, tick)| {
+                label
+                    .parse::<f64>()
+                    .is_ok_and(|shown| (shown - tick).abs() <= tolerance)
+            })
+        };
+        for template in templates {
+            let style = &template.style;
+            let cmap = rustwx_render::build_colormap(&style.scale, style.colormap_options);
+            let ticks = rustwx_render::colorbar_ticks(&cmap, style.cbar_tick_step);
+            let spacing = ticks
+                .windows(2)
+                .map(|pair| (pair[1] - pair[0]).abs())
+                .filter(|gap| *gap > 0.0)
+                .fold(f64::INFINITY, f64::min);
+            let labels = rustwx_render::format_tick_labels(&ticks);
+            let usual: Vec<String> =
+                ticks.iter().map(|tick| rustwx_render::format_tick(*tick)).collect();
+            let context = format!("{} ({}) ticks {ticks:?}", template.id, template.label);
+            if !spacing.is_finite() {
+                // Fewer than two different ticks: nothing to tell apart.
+                assert_eq!(labels, usual, "{context}");
+                continue;
+            }
+            let tolerance = spacing * 0.01;
+            assert!(reads(&labels, &ticks, tolerance), "{context}: {labels:?}");
+            if reads(&usual, &ticks, tolerance) {
+                assert_eq!(labels, usual, "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_generic_plane_gets_a_colour_bar_whose_ticks_differ() {
+        // Measured on a real 3 km forecast frame: 200 hPa height spans
+        // 12200.066 to 12228.032 gpm; the bar is drawn against `1e3 gpm`
+        // and printed `12.2` at all fourteen ticks.
+        let style = generic_style_for_store_variable(
+            "geopotential_height_200hpa",
+            "gpm",
+            Some((12200.066, 12228.032)),
+        );
+        assert_eq!(style.display_units, "1e3 gpm");
+        let cmap = rustwx_render::build_colormap(&style.scale, style.colormap_options);
+        let ticks = rustwx_render::colorbar_ticks(&cmap, style.cbar_tick_step);
+        let labels = rustwx_render::format_tick_labels(&ticks);
+        assert_eq!(labels.len(), 14, "{labels:?}");
+        assert_eq!(labels.first().map(String::as_str), Some("12.202"));
+        assert_eq!(labels.last().map(String::as_str), Some("12.228"));
+        assert_eq!(
+            labels.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            labels.len(),
             "two ticks that print the same string are one tick: {labels:?}"
         );
     }
@@ -1324,17 +1527,78 @@ mod tests {
             .into_iter()
             .chain(store_heavy_recipe_slugs())
         {
+            // The units the store holds each grid in when its writer
+            // stores the product's own units.
+            let units = crate::derived::derived_product_units(slug).unwrap_or("units");
             let style = operational_style_for_store_variable(
                 slug,
                 &derived_marker(slug),
-                "units",
+                units,
                 ModelId::Hrrr,
             )
             .unwrap_or_else(|| panic!("derived slug '{slug}' must resolve"));
             assert!(!style.title.is_empty(), "'{slug}' carries a title");
             assert!(
                 style.convert.is_none(),
-                "derived grids are stored in display units ('{slug}')"
+                "a grid stored in its product's units draws as stored ('{slug}')"
+            );
+            assert_eq!(style.display_units, units, "'{slug}' is labelled as stored");
+        }
+    }
+
+    #[test]
+    fn stored_shear_in_metres_per_second_wears_the_knot_palette_in_knots() {
+        for slug in ["bulk_shear_0_1km", "bulk_shear_0_6km", "wrf_shear_0_6km"] {
+            let style = operational_style_for_store_variable(
+                slug,
+                &derived_marker(slug),
+                "m/s",
+                ModelId::WrfGdex,
+            )
+            .unwrap_or_else(|| panic!("'{slug}' in m/s must resolve"));
+            assert_eq!(style.display_units, "kt", "{slug}");
+            assert_eq!(style.convert, UnitConvert::MsToKnots, "{slug}");
+            assert!((style.convert.apply(22.689_922) - 44.105_68).abs() < 1.0e-3);
+            let knots = operational_style_for_store_variable(
+                slug,
+                &derived_marker(slug),
+                "kt",
+                ModelId::WrfGdex,
+            )
+            .expect("shear in knots resolves");
+            assert_eq!(knots.convert, UnitConvert::None, "knots are not converted twice");
+            assert_eq!(knots.scale, style.scale, "one palette whatever the stored unit");
+        }
+    }
+
+    #[test]
+    fn every_derived_template_is_labelled_in_its_palettes_units() {
+        let templates = operational_style_templates(ModelId::Hrrr);
+        for slug in store_derived_recipe_slugs() {
+            let template = templates
+                .iter()
+                .find(|template| template.id == format!("derived:{slug}"))
+                .unwrap_or_else(|| panic!("no template for derived '{slug}'"));
+            assert_eq!(
+                Some(template.style.display_units.as_str()),
+                crate::derived::derived_product_units(slug),
+                "'{slug}' template"
+            );
+        }
+    }
+
+    #[test]
+    fn a_derived_plane_in_a_foreign_unit_claims_no_production_palette() {
+        for (slug, units) in [("bulk_shear_0_6km", "K"), ("sbcape", "m/s"), ("srh_0_1km", "kt")] {
+            assert!(
+                operational_style_for_store_variable(
+                    slug,
+                    &derived_marker(slug),
+                    units,
+                    ModelId::WrfGdex,
+                )
+                .is_none(),
+                "'{slug}' stored in {units} must not borrow its product's palette"
             );
         }
     }
@@ -1713,5 +1977,128 @@ mod tests {
         assert_eq!(UnitConvert::MsToKnots.apply(10.0), 10.0_f32 * 1.943_844_5);
         assert_eq!(UnitConvert::KgM3ToUgM3.apply(1.0e-9), 1.0);
         assert!(UnitConvert::KelvinToFahrenheit.apply(f32::NAN).is_nan());
+    }
+}
+
+/// Category planes through the generic `var:` style, drawn the way the store
+/// route draws them: the style's scale, legend, density and tick step on a
+/// projected request.  Written against the style resolver's existing entry
+/// points only, so it states the behaviour rather than the mechanism.
+#[cfg(test)]
+mod category_plane_regression {
+    use super::*;
+    use rustwx_core::{Field2D, GridShape, LatLonGrid, ProductKey};
+    use rustwx_render::{
+        ProjectedDomain, ProjectedExtent, build_colormap, colorbar_ticks, legend_color_at_rel,
+        legend_tick_rel, render_image,
+    };
+
+    /// The colormap the renderer builds for `style` under the active plot
+    /// style, exactly as the render path builds it.
+    fn rendered_colormap(style: &StoreVariableStyle) -> rustwx_render::LeveledColormap {
+        build_colormap(
+            &style.scale,
+            ColormapBuildOptions {
+                render_density: StaticPlotStyle::from_env()
+                    .render_density(style.colormap_options.render_density),
+                legend: style.colormap_options.legend,
+            },
+        )
+    }
+
+    fn rgba(color: rustwx_render::Rgba) -> [u8; 4] {
+        [color.r, color.g, color.b, color.a]
+    }
+
+    #[test]
+    fn a_soil_plane_holding_two_codes_draws_no_third() {
+        // Codes 2 and 14 only, in a checkerboard, on a regular mesh and on a
+        // skewed one: every code from 3 to 13 on the map was invented.
+        for skew in [0.0, 0.35] {
+            let (ny, nx) = (4usize, 5usize);
+            let values: Vec<f32> = (0..ny * nx)
+                .map(|cell| if (cell / nx + cell % nx) % 2 == 0 { 2.0 } else { 14.0 })
+                .collect();
+            let lat: Vec<f32> = (0..ny * nx).map(|cell| 40.0 + (cell / nx) as f32).collect();
+            let lon: Vec<f32> = (0..ny * nx).map(|cell| -100.0 + (cell % nx) as f32).collect();
+            let grid = LatLonGrid::new(GridShape::new(nx, ny).unwrap(), lat, lon).unwrap();
+            let field =
+                Field2D::new(ProductKey::named("var_wrf_isltyp"), "", grid, values).unwrap();
+            let style = generic_style_for_store_variable("wrf_isltyp", "", Some((2.0, 14.0)));
+            let mut request = MapRenderRequest::from_core_field(field, style.scale.clone());
+            request.width = 420;
+            request.height = 360;
+            request.colorbar = false;
+            request.cbar_tick_step = style.cbar_tick_step;
+            request.render_density = style.colormap_options.render_density;
+            request.legend = style.colormap_options.legend;
+            request.projected_domain = Some(ProjectedDomain {
+                x: (0..ny * nx)
+                    .map(|cell| (cell % nx) as f64 + skew * (cell / nx) as f64)
+                    .collect(),
+                y: (0..ny * nx).map(|cell| (cell / nx) as f64).collect(),
+                extent: ProjectedExtent {
+                    x_min: 0.0,
+                    x_max: (nx - 1) as f64 + skew * (ny - 1) as f64,
+                    y_min: 0.0,
+                    y_max: (ny - 1) as f64,
+                },
+            });
+            let image = render_image(&request).unwrap();
+            let cmap = rendered_colormap(&style);
+            let held = [rgba(cmap.map(2.0)), rgba(cmap.map(14.0))];
+            let absent: Vec<[u8; 4]> = (3..=13)
+                .map(|code| rgba(cmap.map(f64::from(code))))
+                .filter(|color| !held.contains(color))
+                .collect();
+            assert!(!absent.is_empty());
+            let invented = image.pixels().filter(|px| absent.contains(&px.0)).count();
+            assert_eq!(invented, 0, "codes 3 to 13 drawn at skew {skew}");
+            for color in held {
+                assert!(image.pixels().any(|px| px.0 == color), "a held code vanished");
+            }
+        }
+    }
+
+    #[test]
+    fn category_legends_label_codes_in_their_own_map_colours() {
+        for (name, range) in [
+            ("wrf_landmask", (0.0_f32, 1.0_f32)),
+            ("wrf_lu_index", (1.0, 21.0)),
+            ("wrf_ivgtyp", (1.0, 17.0)),
+            ("wrf_isltyp", (2.0, 14.0)),
+        ] {
+            let style = generic_style_for_store_variable(name, "", Some(range));
+            assert!(style.convert.is_none(), "{name}");
+            let cmap = rendered_colormap(&style);
+            let codes: Vec<f64> =
+                (range.0 as i32..=range.1 as i32).map(f64::from).collect();
+            // Every code is a tick, and nothing between codes is.
+            assert_eq!(colorbar_ticks(&cmap, style.cbar_tick_step), codes, "{name}");
+            let mut seen: Vec<[u8; 4]> = Vec::new();
+            for &code in &codes {
+                let fill = cmap.map(code);
+                let rel = legend_tick_rel(&cmap, code).unwrap();
+                assert_eq!(
+                    legend_color_at_rel(&cmap, style.legend_mode, rel),
+                    fill,
+                    "{name} code {code}: the bar shows a colour the map does not"
+                );
+                assert!(!seen.contains(&rgba(fill)), "{name} code {code} shares a colour");
+                seen.push(rgba(fill));
+            }
+        }
+    }
+
+    #[test]
+    fn continuous_planes_and_ranges_that_are_not_codes_keep_the_ramp() {
+        let ramp = generic_style_for_store_variable("wrf_pblh", "m", Some((12.0, 1850.0)));
+        assert_eq!(ramp.legend_mode, LegendMode::SmoothRamp);
+        // A land-use name whose extremes are not whole codes is not
+        // carrying codes, and neither is one spanning more than 256 of them.
+        for range in [(1.0_f32, 20.5_f32), (0.0, 400.0)] {
+            let style = generic_style_for_store_variable("wrf_lu_index", "", Some(range));
+            assert_eq!(style.legend_mode, LegendMode::SmoothRamp, "{range:?}");
+        }
     }
 }

@@ -32,7 +32,7 @@ from fractions import Fraction
 import json
 from pathlib import Path
 
-from gpuwm.config import effective_radt_minutes
+from gpuwm.config import GRELL_FREITAS_CU_PHYSICS, effective_radt_minutes
 from gpuwm.core.microphysics_transition import PORTED_MP_PHYSICS
 from gpuwm.ingest.hrrr_target import TARGET_DOMAIN_SCHEMA
 
@@ -219,10 +219,13 @@ def validate_route_physics(exp) -> None:
             {switch: getattr(run, switch)
              for switch in ROUTE_GATED_SWITCHES},
             label=f"d{domain.grid_id:02d} "))
-    if exp.feedback != 0 or exp.smooth_option != 0:
-        problems.append(
-            f"feedback={exp.feedback}, smooth_option={exp.smooth_option} "
-            "(the route is one-way only; both must be 0)")
+    # No feedback clause.  Two-way feedback is a runtime coupling the
+    # tree executor runs (gpuwm.prepared_domain_tree_forecast
+    # resolve_execution_plan): this route's artifacts -- initial states,
+    # statics, boundary series -- are authored identically at feedback 0
+    # and 1, and the coupler still refuses, by name, the trees feedback
+    # cannot serve.  The one-way refusal that stood here outlived that
+    # and turned away every two-way layout before anything was fetched.
     if problems:
         raise HrrrRouteInputError(
             "this suite cannot drive the nested HRRR route: "
@@ -352,7 +355,21 @@ def render_target_domain(exp) -> str:
     if dt_rem:
         document["time_step_fract_num"] = dt_rem.numerator
         document["time_step_fract_den"] = dt_rem.denominator
+    document["surface_fallback_radius_cells"] = SURFACE_DONOR_RADIUS_CELLS
     return json.dumps(document, indent=2, sort_keys=True) + "\n"
+
+
+#: The soil donor search every emitted HRRR target carries, in HRRR cells.
+#: Breakage it prevents: a fixed radius of 8 cells (24 km), the value a
+#: document that omits the key still carries, refused a fitted 3 km root
+#: over the Gulf coast whose own refusal measured that 14 cells reach a
+#: donor for every land cell.  Donors are chosen nearest first, so every
+#: cell that found one within 8 cells keeps exactly the same donor.  The
+#: search box stops at HRRR's own edge
+#: (:func:`gpuwm.ingest.hrrr_target.required_hrrr_source_window`), so a
+#: domain anywhere on the grid takes this radius; it used to shrink toward
+#: 8 near an edge, where a wider box was refused.
+SURFACE_DONOR_RADIUS_CELLS = 24
 
 
 def target_domain(exp):
@@ -367,70 +384,34 @@ def target_domain(exp):
 def target_coverage_refusal(target) -> str | None:
     """Why HRRR cannot initialize this d01, or ``None`` when it can.
 
-    Two demands, not one.  The WINDOW demand is the root preparer's own
-    (``required_hrrr_source_window``): every interpolation and donor
-    cell inside the native 1799 x 1059 grid.  The MARGIN demand is the
-    wizard's promise: the required window must stay a further
-    ``surface_fallback_radius_cells`` clear of every native edge,
-    because a domain pinned exactly against the edge is one whose soil
-    donor searches have no remediation left -- the only knob the
-    mapping refusal can name (raising the radius) enlarges the required
-    window past the edge and is refused by this very guard.
-
-    Field 2026-08 (39,-98, 3 km root): the auto-fitted 1234x986 passed
-    the window demand exactly on the top edge (j=36..1058), soil
-    mapping then found two land cells with no donor within 8 cells, and
-    the recommended raise to 16 was refused (j=28..1066 against j max
-    1058).  Trimmed to 1186x938 -- 24 cells a side, exactly this margin
-    -- it prepared, ran, and rendered.
+    The root preparer's own demand (``required_hrrr_source_window``):
+    every source cell the atmospheric interpolation reads lies inside the
+    native 1799 x 1059 grid.  The soil donor search needs no margin past
+    that: its box stops at HRRR's edge, where no donor exists, and a
+    wider search can always be asked for.  A margin demanded past it
+    refused domains near an edge whose atmosphere HRRR covers.
     """
-    from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NX, HRRR_SOURCE_NY,
-                                          required_hrrr_source_window)
+    from gpuwm.ingest.hrrr_target import required_hrrr_source_window
 
     try:
-        window = required_hrrr_source_window(target)
+        required_hrrr_source_window(target)
     except ValueError as error:
         return str(error)
-    radius = window.surface_fallback_radius_cells
-    shortfalls = [
-        (side, gap) for side, gap in (
-            ("west", radius - window.i_start),
-            ("east", window.i_end + radius - (HRRR_SOURCE_NX - 1)),
-            ("south", radius - window.j_start),
-            ("north", window.j_end + radius - (HRRR_SOURCE_NY - 1)),
-        ) if gap > 0]
-    if not shortfalls:
-        return None
-    worst = max(gap for _side, gap in shortfalls)
-    named = ", ".join(f"the {side} side is short {gap} cell(s)"
-                      for side, gap in shortfalls)
-    return (
-        "this domain leaves no usable surface-donor margin: its required "
-        f"source window i={window.i_start}..{window.i_end}, "
-        f"j={window.j_start}..{window.j_end} must stay a further "
-        f"{radius} cells (its own surface_fallback_radius_cells) inside "
-        f"the native HRRR limits i=0..{HRRR_SOURCE_NX - 1}, "
-        f"j=0..{HRRR_SOURCE_NY - 1}, and {named}.  A land cell whose "
-        "donor search fails near that edge would have no acceptable "
-        "remedy -- every larger radius leaves HRRR coverage -- so trim "
-        f"the domain by at least {worst} HRRR cell(s) (~{3 * worst} km) "
-        "on the named side(s), or move it away from the edge")
+    return None
 
 
 def coverage_refusal(exp) -> str | None:
     """Why HRRR cannot force this d01, or ``None`` when it can.
 
-    HRRR's native grid is 1799 x 1059 cells, and the interpolation
-    stencil plus the surface-fallback halo need real source cells on
-    every side of the target.  A domain sized purely against VRAM can
+    HRRR's native grid is 1799 x 1059 cells, and the atmospheric
+    interpolation stencil needs real source cells on every side of the
+    target.  A domain sized purely against VRAM can
     therefore be a perfectly legal experiment that no HRRR fetch can
     ever force -- and that is what a card-filling ladder near the edge
     of HRRR's coverage produces.  Asked at sizing time, this makes the
     fit loop pick a domain HRRR can carry; asked at emission, it names
     the overflow instead of leaving it to a root preparation minutes
-    later.  The donor-search margin rides along
-    (:func:`target_coverage_refusal`), so what the fit loop accepts is
-    a domain whose soil mapping keeps a usable remediation.
+    later.
 
     This answers the COVERAGE question and nothing else.  A spec that
     cannot even be constructed (a non-Lambert projection, a malformed
@@ -450,31 +431,97 @@ def coverage_advisory(exp) -> list[str]:
 
     The sizing line reports headroom in GiB, so a domain the fit loop
     stopped growing for a reason that is not memory reads as an
-    unexplained shortfall.  When the required source window plus the
-    reserved donor-search margin reaches an edge of HRRR's native grid,
-    that IS the reason.
+    unexplained shortfall.  When the source cells the atmospheric
+    interpolation reads reach an edge of HRRR's native grid, that IS the
+    reason.  The soil donor search is not: its box stops at the edge.
     """
+    from dataclasses import replace
+
     from gpuwm.ingest.hrrr_target import (HRRR_SOURCE_NX, HRRR_SOURCE_NY,
                                           required_hrrr_source_window)
 
     if coverage_refusal(exp) is not None:
         return []
-    window = required_hrrr_source_window(target_domain(exp))
-    radius = window.surface_fallback_radius_cells
+    # Radius 0: the window of the atmospheric stencil alone.
+    window = required_hrrr_source_window(replace(
+        target_domain(exp), surface_fallback_radius_cells=0))
     touched = [name for name, at_edge in (
-        ("west", window.i_start - radius <= 0),
-        ("east", window.i_end + radius >= HRRR_SOURCE_NX - 1),
-        ("south", window.j_start - radius <= 0),
-        ("north", window.j_end + radius >= HRRR_SOURCE_NY - 1),
+        ("west", window.i_start <= 0),
+        ("east", window.i_end >= HRRR_SOURCE_NX - 1),
+        ("south", window.j_start <= 0),
+        ("north", window.j_end >= HRRR_SOURCE_NY - 1),
     ) if at_edge]
     if not touched:
         return []
     return [
         "this domain is bounded by HRRR's own grid, not by your card: "
-        f"its interpolation window plus the reserved {radius}-cell "
-        f"surface-donor margin reaches the {'/'.join(touched)} edge of "
-        f"the {HRRR_SOURCE_NX}x{HRRR_SOURCE_NY} HRRR grid, so headroom "
+        "the HRRR cells its interpolation reads reach the "
+        f"{'/'.join(touched)} edge of the "
+        f"{HRRR_SOURCE_NX}x{HRRR_SOURCE_NY} HRRR grid, so headroom "
         "left on the card cannot be spent here"]
+
+
+def _grell_family_scalars(domains) -> tuple[int, int] | None:
+    """``(clos_choice, ishallow)`` for the namelist pair, or None.
+
+    None when no domain runs Grell-Freitas: WRF's cumulus driver reads
+    neither key then, and the configuration holds both at 0.  WRF
+    declares each with one entry for the whole run, so the pair can state
+    one closure and one shallow arm; a tree whose Grell-Freitas domains
+    set different values is refused, because the stock-WRF namelist would
+    run one of those domains on another's closure while the gpuwm arm ran
+    the configured one.
+    """
+
+    grell = [domain for domain in domains
+             if domain.run.cu_physics == GRELL_FREITAS_CU_PHYSICS]
+    if not grell:
+        return None
+    values = {(int(domain.run.clos_choice), int(domain.run.ishallow))
+              for domain in grell}
+    if len(values) == 1:
+        return next(iter(values))
+    stated = "; ".join(
+        f"d{domain.grid_id:02d} clos_choice = {domain.run.clos_choice}, "
+        f"ishallow = {domain.run.ishallow}" for domain in grell)
+    raise HrrrRouteInputError(
+        "the Grell-Freitas domains of this tree set different closures "
+        f"({stated}), and WRF reads clos_choice and ishallow once for the "
+        "whole run, so the stock-WRF namelist beside this config would run "
+        "one of them on another's closure. Next: set clos_choice and "
+        "ishallow once in [shared], where they reach every Grell-Freitas "
+        "domain, or run this tree on a source whose route reads the "
+        "configuration itself")
+
+
+def _adaptive_clock_rows(runs) -> list[str]:
+    """The adaptive clock's &domains rows, from the resolved config.
+
+    Written at every value, defaults included, on the rule the turbulence
+    row follows: the hierarchy stage rebuilds the experiment from these
+    bytes and the stock twin runs them, so an omitted key hands both the
+    Registry default while the gpuwm forecast reads the TOML.  Omitted,
+    an adaptive tree was refused at emission by the round trip below
+    (config use_adaptive_time_step true, namelist false), and a tree
+    that got past it would have been prepared for a fixed clock.  The
+    three scope-1 keys come from the root, where the loader holds them
+    for the whole tree; the nine max_domains keys are columns.
+    """
+
+    from gpuwm.namelist_import import (ADAPTIVE_CLOCK_COLUMNS,
+                                       ADAPTIVE_CLOCK_SCALARS)
+
+    def spell(value) -> str:
+        if isinstance(value, bool):
+            return _logical(value)
+        return _f(value) if isinstance(value, float) else str(value)
+
+    rows = [f" {key:<35} = {spell(cast(getattr(runs[0], key)))},"
+            for key, _, cast in ADAPTIVE_CLOCK_SCALARS]
+    rows += [f" {key:<35} = "
+             f"{_column(spell(cast(getattr(run, key))) for run in runs)}"
+             for key, _, cast in ADAPTIVE_CLOCK_COLUMNS]
+    return rows
 
 
 def render_namelist_input(exp, *, stock: bool = False) -> str:
@@ -632,8 +679,13 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_column(d.parent_grid_ratio for d in domains)}",
         f" parent_time_step_ratio              = "
         f"{_column(d.parent_time_step_ratio for d in domains)}",
-        " feedback                            = 0,",
-        " smooth_option                       = 0,",
+        # From the config, never a literal: the hierarchy stage rebuilds
+        # the experiment from these bytes, so a literal 0 would prepare
+        # a two-way tree as one-way and the stock twin would run it so.
+        f" feedback                            = {int(exp.feedback)},",
+        f" smooth_option                       = "
+        f"{int(exp.smooth_option)},",
+        *_adaptive_clock_rows(runs),
         f" num_metgrid_levels                  = {NUM_METGRID_LEVELS},",
         f" num_metgrid_soil_levels             = "
         f"{NUM_METGRID_SOIL_LEVELS},",
@@ -687,6 +739,16 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         lines.extend([
             f" hail_opt                            = {root.run.wdm6_hail_opt},",
             f" ccn_conc                            = {_f(root.run.wdm6_ccn_conc)},",
+        ])
+    grell = _grell_family_scalars(domains)
+    if grell is not None:
+        # Written wherever a domain runs Grell-Freitas, defaults included:
+        # an omitted key hands the stock-WRF arm the Registry default 0
+        # while the gpuwm arm runs the configured closure.
+        clos_choice, ishallow = grell
+        lines.extend([
+            f" clos_choice                         = {clos_choice},",
+            f" ishallow                            = {ishallow},",
         ])
     # The two stock-only &physics keys, together: each is a setting the
     # native arm answers in code and the mirrored arm can only be told.
@@ -884,6 +946,40 @@ def route_shared_domain_keys(source) -> frozenset[str]:
     if candidate_route_chain(source) != "prepared:hrrr":
         return frozenset()
     return frozenset(ROUTE_SHARED_DOMAIN_KEYS)
+
+
+#: Switches of gpuwm's schema that no WRF namelist has a key for, which
+#: THIS route therefore does not read from the configuration: the
+#: importer answers each from
+#: :func:`gpuwm.physics_compat.implicit_runtime_switches` for the physics
+#: the namelists select.  ``top_lid`` is not one of them, because
+#: :func:`render_namelist_input` writes it into &dynamics.  A
+#: configuration stating another value is refused by
+#: :func:`verify_round_trip`, which names the value the namelists carry.
+ROUTE_IMPLICIT_SWITCHES = ("moist_cq",)
+
+
+def route_implicit_switches(source, switches) -> dict[str, object]:
+    """What this candidate's route runs for the switches its namelists cannot state.
+
+    ``switches`` is a resolved physics switch table: a suite's, or a
+    physics mix's as :mod:`gpuwm.physics_catalog` resolves it for the
+    root.  Empty on every route that reads the configuration itself.  On
+    this route it is physics_compat's answer for that selection, the
+    lookup the importer makes when it reads the namelists back, so a set
+    written with it runs as written.  A shipped profile answers its own
+    value; a set no profile matches takes gpuwm's RunConfig default,
+    whatever its microphysics row carries, because that is what the
+    namelists run.
+    """
+
+    from gpuwm.physics_compat import implicit_runtime_switches
+    from gpuwm.source_drivability import candidate_route_chain
+
+    if candidate_route_chain(source) != "prepared:hrrr":
+        return {}
+    implicit = implicit_runtime_switches(**{str(key): value for key, value in dict(switches).items()})
+    return {key: implicit[key] for key in ROUTE_IMPLICIT_SWITCHES}
 
 
 def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
@@ -1088,7 +1184,9 @@ __all__ = [
     "HrrrRouteInputError",
     "candidate_companions",
     "ROUTE_DEFAULT_PHYSICS_PROFILE",
+    "ROUTE_IMPLICIT_SWITCHES",
     "ROUTE_SHARED_DOMAIN_KEYS",
+    "route_implicit_switches",
     "route_shared_domain_keys",
     "SUPPORTED_MICROPHYSICS",
     "render_namelist_input",

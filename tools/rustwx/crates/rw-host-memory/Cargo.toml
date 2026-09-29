@@ -1,0 +1,19 @@
+# How much host memory this process may use: MemAvailable (Linux) or
+# GlobalMemoryStatusEx (Windows), and the memory cgroup limits on the path
+# from this process's own cgroup up to its mount.
+#
+# Its own crate so every reader in this workspace answers from one walk:
+# the renderer (`rusty_weather::host_memory`, re-exported from here) and
+# the MPAS static builder (`rw-mpas` `static_memory`) both need it, and
+# the builder has no other reason to depend on the renderer and the
+# network stack the renderer's crates carry.  No dependencies.
+[package]
+name = "rw-host-memory"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

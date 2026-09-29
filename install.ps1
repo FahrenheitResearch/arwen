@@ -26,7 +26,12 @@
 #   6. builds the vendored production render engine offline in
 #      tools\rustwx (skip with -NoRender or GPUWM_INSTALL_NO_RENDER=1);
 #   7. builds the terminal workspace offline in tools\arwen-tui;
-#   8. finishes with `gpuwm doctor` and exits with doctor's status.
+#   8. builds the regular-grid Zarr reader offline in tools\zarr_bridge,
+#      the mapped-source decode engine in tools\rw_wps and the velocity
+#      dealiasing library in tools\region_global_dealias (the default
+#      decode path and the default dealiasing engine);
+#   9. finishes with `gpuwm doctor`, with .venv\Scripts on its Path,
+#      and exits with doctor's status.
 #
 # Environment:
 #   GPUWM_REPO_URL     clone source when run outside a checkout
@@ -160,6 +165,41 @@ if (@('12', '13') -contains "$CudaMajor") {
     Say '-Cuda 13 in that case; gpuwm doctor judges the pairing at the'
     Say 'end of this script either way.'
 }
+# ------------------------------------------------ one CuPy build, not two
+# cupy-cuda12x and cupy-cuda13x both install the same `cupy` package
+# files, and pip treats them as unrelated distributions.  Re-running this
+# installer with another major into the reused .venv left BOTH registered
+# over one set of files: switching back then said "already satisfied"
+# while the other major's build answered, and uninstalling either broke
+# the other.  So when any CuPy other than the chosen one is present,
+# every CuPy is removed and the chosen one is installed clean below.
+$cupyWanted = 'cupy-cuda' + $gpuExtra.Substring(6) + 'x'
+# The list is read with 'Continue' in its own scope: under 'Stop',
+# Windows PowerShell 5.1 turns the first line pip writes to stderr (a
+# warning about a half-removed package, left when an uninstall hit a
+# locked DLL) into a thrown error, and the old catch read that as "no
+# CuPy" so both builds stayed.  A pip that cannot list the .venv now
+# stops the install instead.
+$cupyListed = & {
+    $ErrorActionPreference = 'Continue'
+    $lines = & $venvPython -m pip list --format=freeze --disable-pip-version-check 2>$null
+    [pscustomobject]@{ Lines = @($lines); Exit = $LASTEXITCODE }
+}
+if ($cupyListed.Exit -ne 0) {
+    Fail ("pip could not list the packages in .venv, so this install cannot tell which CuPy it holds " +
+          "(run $venvPython -m pip list to see why)")
+}
+$cupyHave = @()
+foreach ($line in $cupyListed.Lines) {
+    if ("$line" -match '^(cupy(-cuda\d+x)?)\s*[=@]') { $cupyHave += $Matches[1].ToLower() }
+}
+if (@($cupyHave | Where-Object { $_ -ne $cupyWanted }).Count -gt 0) {
+    Say ("this .venv holds another CUDA major's CuPy (" + ($cupyHave -join ', ') + ');')
+    Say "removing every CuPy build so $cupyWanted installs clean"
+    Invoke-Step 'pip uninstall cupy' {
+        & $venvPython -m pip uninstall -y @cupyHave
+    }
+}
 Say 'installing the matching gpuwm-data companion from this checkout (editable)'
 Invoke-Step 'pip install gpuwm-data' {
     & $venvPython -m pip install -e gpuwm-data
@@ -257,7 +297,6 @@ try {
     Pop-Location
 }
 
-# ------------------------------------------------------------------ doctor
 Say 'building the regular-grid Zarr reader (offline, locked)'
 Push-Location 'tools\zarr_bridge'
 try {
@@ -267,10 +306,43 @@ try {
 } finally {
     Pop-Location
 }
+# Every mapped source decodes in gpuwm_mapped_engine and every radar ingest
+# dealiases through region_global_dealias by default; a checkout that skips
+# either build reports both MISSING and cannot run those default routes.
+Say 'building the mapped-source decode engine in tools\rw_wps (offline, locked)'
+Push-Location 'tools\rw_wps'
+try {
+    Invoke-Step 'cargo build (rw_wps)' {
+        cargo build --release --locked --offline
+    }
+} finally {
+    Pop-Location
+}
+Say 'building the velocity dealiasing library (offline, locked)'
+Push-Location 'tools\region_global_dealias'
+try {
+    Invoke-Step 'cargo build (region_global_dealias)' {
+        cargo build --release --locked --offline
+    }
+} finally {
+    Pop-Location
+}
 
+# ------------------------------------------------------------------ doctor
+# Doctor judges the environment this script just made, as it stands once
+# activated: without .venv\Scripts on Path its console-script check reports
+# a gap this script created and the install exits nonzero for it.  The
+# caller's Path comes back afterwards, because the piped (iwr | iex) form
+# runs in the caller's own session.
 Say 'running gpuwm doctor'
-& (Join-Path '.venv' 'Scripts\gpuwm.exe') doctor
-$doctorExit = $LASTEXITCODE
+$callerPath = $env:Path
+try {
+    $env:Path = (Join-Path (Get-Location).Path '.venv\Scripts') + ';' + $callerPath
+    & (Join-Path '.venv' 'Scripts\gpuwm.exe') doctor
+    $doctorExit = $LASTEXITCODE
+} finally {
+    $env:Path = $callerPath
+}
 if ($doctorExit -eq 0) {
     Say 'done -- doctor is clean.  Activate with: .\.venv\Scripts\Activate.ps1'
 } else {

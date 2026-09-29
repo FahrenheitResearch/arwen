@@ -147,8 +147,9 @@ def test_one_picture_and_one_frame_are_counted_in_the_singular(tmp_path):
     _drawn(render_dir, 1)
     _keep(render_dir, frames=[_FRAMES[0]])
     text = _banner(render_dir)
-    assert ("1 picture is in this folder.  It was drawn before the "
-            "forecast stopped, from the frame below.") in text
+    assert ("1 picture is in this folder.  It is of a frame written "
+            "before the forecast stopped (the frame below), and it does "
+            "not show the state the forecast stopped in.") in text
     assert "1 frame was written before the stop" in text
     assert "(s)" not in text
     assert "Every one of them" not in text
@@ -160,8 +161,9 @@ def test_a_banner_over_several_pictures_keeps_the_plural_clause(tmp_path):
     _drawn(render_dir, 4)
     _keep(render_dir, frames=[_FRAMES[0]])
     text = _banner(render_dir)
-    assert ("4 pictures are in this folder.  Every one of them was drawn "
-            "before the forecast stopped, from the frame below.") in text
+    assert ("4 pictures are in this folder.  Every one of them is of a "
+            "frame written before the forecast stopped (the frame below), "
+            "and no picture shows the state the forecast stopped in.") in text
 
 
 def test_a_banner_over_no_pictures_says_there_are_none(tmp_path):
@@ -192,8 +194,8 @@ def test_a_banner_over_no_pictures_and_no_frames_does_not_contradict_itself(
     render_dir = tmp_path / "png"
     _keep(render_dir, frames=[])
     text = _banner(render_dir)
-    assert ("No pictures are in this folder: the early render had not "
-            "published one before the forecast stopped.") in text
+    assert ("No pictures are in this folder: none had been drawn before "
+            "the forecast stopped.") in text
     assert "No frames were written before the stop." in text
     assert "named below" not in text
     assert "below:" not in text

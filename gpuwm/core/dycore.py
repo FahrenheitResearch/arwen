@@ -38,7 +38,8 @@ import numpy as np
 from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
 from gpuwm.config import RunConfig, validate_km_opt
 from gpuwm.core import constants as c
-from gpuwm.core.acoustic import (prepare_acoustic_coefficients,
+from gpuwm.core.acoustic import (_mass_w_boundary_zone,
+                                 prepare_acoustic_coefficients,
                                  prepare_acoustic_substep_launch,
                                  prepare_moist_cq)
 from gpuwm.core.advection import (add_advection_tendencies,
@@ -382,6 +383,56 @@ def _boundary_mass_tendency_mapped(state: DomainState,
     return tendency
 
 
+def _boundary_mass_tendency_forced(state: DomainState,
+                                   cfg: RunConfig) -> cp.ndarray:
+    """Telescoped flux tendency of a specified or nested grid's active cells.
+
+    On a boundary-forced grid ``advance_mu_th`` and ``advance_mu_th_msf``
+    divergence-update only the cells inside the frame
+    :func:`gpuwm.core.acoustic._mass_w_boundary_zone` names (WRF's
+    ``ids+1..ide-2``); the frame row itself advances by ``rmu_t`` alone.
+    The divergence of the active cells therefore telescopes onto the
+    faces between the frame and the first active row, not onto the
+    domain's outer faces, and the face mass is the mean of the frame cell
+    and its active neighbour, as the kernel forms it.  Summing the outer
+    faces instead counted fluxes no cell ever receives: a real 720-step
+    specified forecast then reported a 4 percent dry-mass residual that
+    the model never had.  The frame's ``rmu_t`` and the specified-zone
+    reset stay separate budget terms, as for every forced domain.
+    """
+    z = _mass_w_boundary_zone(cfg)
+    ny, nx = state.mup.shape
+    rows, cols = slice(z, ny - z), slice(z, nx - z)
+    mu = state.total_mu()
+    dnw = state.dnw[:, None]
+    c1h = state.c1h[:, None]
+    c2h = state.c2h[:, None]
+    half = DTYPE(0.5)
+    faces = []
+    for wind, perturbation, mass_a, mass_b, factor in (
+            (state.u[:, rows, z], state.u_pp[:, rows, z],
+             mu[rows, z - 1], mu[rows, z],
+             state.msfu[rows, z] if state.has_msf else None),
+            (state.u[:, rows, nx - z], state.u_pp[:, rows, nx - z],
+             mu[rows, nx - z - 1], mu[rows, nx - z],
+             state.msfu[rows, nx - z] if state.has_msf else None),
+            (state.v[:, z, cols], state.v_pp[:, z, cols],
+             mu[z - 1, cols], mu[z, cols],
+             state.msfv[z, cols] if state.has_msf else None),
+            (state.v[:, ny - z, cols], state.v_pp[:, ny - z, cols],
+             mu[ny - z - 1, cols], mu[ny - z, cols],
+             state.msfv[ny - z, cols] if state.has_msf else None)):
+        reference = (c1h * (half * (mass_a + mass_b))[None] + c2h) * wind
+        if factor is not None:
+            reference = reference / factor[None]
+        faces.append(perturbation + reference)
+    west, east, south, north = faces
+    return (cp.sum((dnw * DTYPE(1.0 / cfg.dx) * (east - west))
+                   .astype(cp.float64), dtype=cp.float64)
+            + cp.sum((dnw * DTYPE(1.0 / cfg.dy) * (north - south))
+                     .astype(cp.float64), dtype=cp.float64))
+
+
 def boundary_mass_tendency_device(state: DomainState,
                                   cfg: RunConfig) -> cp.ndarray:
     """0-d FP64 device scalar form of :func:`boundary_mass_tendency`.
@@ -389,6 +440,8 @@ def boundary_mass_tendency_device(state: DomainState,
     Keeping the device scalar unread is what lets the accumulator observer
     run without a per-substep host synchronization.
     """
+    if _mass_w_boundary_zone(cfg):
+        return _boundary_mass_tendency_forced(state, cfg)
     if state.has_msf:
         return _boundary_mass_tendency_mapped(state, cfg)
     return _boundary_mass_tendency_flat(state, cfg)
@@ -406,7 +459,10 @@ def boundary_mass_tendency(state: DomainState, cfg: RunConfig) -> float:
     are intentionally excluded so a closure residual detects them.  Mapped
     domains take the ARW cell-area weighting
     (:meth:`DomainState.cell_area_weight`); the flat, map-factor-one
-    branch keeps the WK82 arithmetic unchanged.
+    branch keeps the WK82 arithmetic unchanged.  Open grids telescope to
+    their outer faces; specified and nested grids to the inner faces of
+    the frame the acoustic mass update leaves to ``rmu_t``
+    (:func:`_boundary_mass_tendency_forced`).
 
     Reading the result synchronizes the device; call
     :func:`boundary_mass_tendency_device` from a hot loop instead.
@@ -3202,7 +3258,8 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         microphysics_result = apply_microphysics(     # (WRF microphysics
             state, cfg, cfg.dt, refl_10cm_due=refl_10cm_due)
         if state.physics is not None:
-            state.physics.accept_microphysics(microphysics_result)
+            state.physics.accept_microphysics(
+                microphysics_result, dt=cfg.dt)
         update_diagnostics(state, cfg.hypsometric_opt)  # after the RK loop)
     close_periodic_alias(state, cfg)
     state.elapsed_seconds += cfg.dt
@@ -3224,9 +3281,10 @@ def stability_report(state: DomainState, cfg: RunConfig | None = None,
     its own live geopotential layer thickness.  NaNs propagate through the
     same maxima, so ``"nan"`` checks exactly the same fields as before; bad
     layer geometry makes the CFL non-finite and therefore fails the runner's
-    safety gate.  When ``boundary_width`` is supplied, the same traversal
-    also returns the first overall |w| argmax and boundary/free-interior |w|
-    maxima used by the real74 integration monitor.
+    safety gate.  The same traversal returns the flat index of the |w|
+    maximum (``w_argmax``, lowest index on a tie) on every call; when
+    ``boundary_width`` is supplied it also returns the boundary and
+    free-interior |w| maxima used by the real74 integration monitor.
     """
     if state.u.size == 0 or state.w.size == 0 or state.thp.size == 0:
         raise ValueError(
@@ -3304,15 +3362,25 @@ def decode_stability_record(host, cfg: RunConfig | None = None, *,
         # :func:`stability_gate_failed` tests for finiteness.
         cfl = (vertical_cfl if not math.isfinite(vertical_cfl)
                else max(horizontal_cfl, vertical_cfl))
+    # WHERE the |w| maximum is, on every record and not only when a
+    # boundary split was asked for: both health kernels (``health.cu`` and
+    # ``health_tile.cu``) reduce the argmax on every launch, so the index
+    # was always in the record and simply not read.  A run that climbs to
+    # a blow-up needs it -- the non-finite survey that runs afterwards can
+    # say only which box had already gone, and the last finite maximum's
+    # place is the nearest thing to where it started.  The index is into
+    # w's own (nz+1, ny, nx) grid; with every |w| non-finite it is the
+    # kernel's all-ones sentinel, which no reader uses because ``nan`` is
+    # then true.
+    index_words = np.asarray(host[6:8], dtype=np.float32).view(np.uint32)
+    w_argmax = int(index_words[0]) | (int(index_words[1]) << 32)
     report = {"u_max": u_max, "w_max": w_max, "th_max": th_max,
               "cfl": cfl, "horizontal_cfl": horizontal_cfl,
-              "vertical_cfl": vertical_cfl, "nan": nan}
+              "vertical_cfl": vertical_cfl, "nan": nan,
+              "w_argmax": w_argmax}
     if boundary_width is not None:
-        index_words = host[6:8].view(np.uint32)
-        w_argmax = int(index_words[0]) | (int(index_words[1]) << 32)
         report.update(
-            boundary_w_max=float(host[3]), interior_w_max=float(host[4]),
-            w_argmax=w_argmax)
+            boundary_w_max=float(host[3]), interior_w_max=float(host[4]))
     return report
 
 
@@ -3338,10 +3406,12 @@ def stability_gate_failed(report: dict, *, max_cfl: float,
 
 
 #: The state carriers a non-finite survey reads, each under the name the
-#: history file gives it.  The dynamics come first because that is where
-#: an ARW blow-up starts and the moisture species after, because they go
-#: non-finite as a consequence of it; a reader shown the list in that
-#: order reads the cause before the symptom.  A carrier the configuration
+#: history file gives it.  The ORDER is a reading order and nothing more:
+#: dynamics first, then the moisture species.  It is not the order the
+#: fields failed in, which nothing records -- the survey runs once, at the
+#: health check that found the record non-finite, so every carrier it
+#: lists was already gone by then, and one that failed a hundred steps
+#: after another is listed in the same place.  A carrier the configuration
 #: never allocated is simply absent from the state and skipped, which is
 #: why this is a table rather than a fixed sequence of reads.
 NONFINITE_SURVEY_CARRIERS = (
@@ -3358,32 +3428,77 @@ NONFINITE_SURVEY_CARRIERS = (
 #: (k, j, i) with a fabricated level.
 NONFINITE_SURVEY_AXES = {3: ("k", "j", "i"), 2: ("j", "i"), 1: ("k",)}
 
+#: The lateral edges a box can reach, in the order they are named, as
+#: (axis letter, which end, name).  j runs south to north and i west to
+#: east, as in every WRF grid.
+NONFINITE_SURVEY_EDGES = (("j", 0, "south"), ("j", 1, "north"),
+                          ("i", 0, "west"), ("i", 1, "east"))
+
+
+def nonfinite_box_edges(bounding_box, shape) -> list[str]:
+    """The lateral edges a surveyed box reaches, on its carrier's own grid.
+
+    Judged against the carrier's OWN extents, because a staggered carrier
+    is one wider along its stagger: U's last column is ``nx``, V's last
+    row is ``ny``, and a box that reaches either is on the domain's edge
+    exactly as a mass field's box that reaches ``nx - 1`` is.  A box with
+    no j or no i axis (a column-only carrier) reaches no lateral edge.
+    """
+
+    box = dict(bounding_box or {})
+    shape = [int(value) for value in (shape or ())]
+    if len(shape) < 2:
+        return []
+    extents = {"j": shape[-2], "i": shape[-1]}
+    edges = []
+    for axis, end, name in NONFINITE_SURVEY_EDGES:
+        bounds = box.get(axis)
+        if bounds is None:
+            continue
+        low, high = int(bounds[0]), int(bounds[1])
+        if (low == 0) if end == 0 else (high == extents[axis] - 1):
+            edges.append(name)
+    return edges
+
 
 def nonfinite_field_survey(state, *, carriers=NONFINITE_SURVEY_CARRIERS) -> dict:
-    """WHICH carriers stopped being finite, WHERE, and how many cells.
+    """WHICH carriers were non-finite, over WHAT box, and how many cells.
 
     :func:`decode_stability_record` answers "is anything non-finite" with
     one bit, because that is all its eight-word reduction can carry: its
     ``nan`` is a finiteness test on three MAXIMA (u, w, theta') and the
-    record holds no field name and no index at all -- ``w_argmax`` exists
-    only when a caller asks for ``boundary_width``, which the offline
-    child does not.  So a run that blew up could say the step it happened
-    on and nothing else about it, and "at step 6624" is the one sentence
-    that tells a reader to go and re-run the thing to find out more.
+    record holds no field name and no index of a non-finite value.  So a
+    run that blew up could say the step it happened on and nothing else
+    about it, and "at step 6624" is the one sentence that tells a reader
+    to go and re-run the thing to find out more.
 
     This is the survey taken ONCE, on the failure path, after that bit
     comes back true.  It is a full pass over the allocated carriers and
     it costs a bool temporary per field, which is why it is not on the
     per-step route: a run pays for it exactly when it is already over.
 
+    WHAT IT CANNOT SAY, and therefore does not: where a field went
+    non-finite FIRST.  The health check runs every health interval (60
+    model seconds, 48 to 144 steps of a downscaled child) and reads only
+    the u, w and theta' maxima, so by the time it fires the non-finite set
+    has spread for up to that many steps, and a carrier the check does not
+    read may have gone long before.  An earlier version reported the
+    lowest memory-order index of that set as the "first" cell; in
+    (k, j, i) order that is always the set's lowest level and its
+    southmost row, so a plume aloft that had spread down its column was
+    reported at k=0 on the south edge of its block.  The box and the count
+    are what the survey actually measured, so they are what it reports.
+
     Returns ``{"fields": [...], "surveyed": [names]}`` with one entry per
-    non-finite carrier carrying its cell count, the index of the FIRST
-    non-finite value in memory order, and the bounding box the whole set
-    of them falls inside -- the three numbers that distinguish one bad
-    cell from a column, a column from a plume, and a plume from a field
-    that has gone entirely.  A state whose carriers are all finite
-    returns an empty ``fields``, which is itself a reading: the record
-    said non-finite and the fields do not agree.
+    non-finite carrier carrying its cell count, the bounding box the
+    whole set falls inside, and the lateral edges that box reaches
+    (:func:`nonfinite_box_edges`) -- the numbers that distinguish one bad
+    cell from a column, a column from a plume, a plume from a field that
+    has gone entirely, and an interior blow-up from one at the boundary.
+    A carrier with exactly one bad cell also carries that ``cell``, which
+    is then a measurement rather than a choice.  A state whose carriers
+    are all finite returns an empty ``fields``, which is itself a
+    reading: the record said non-finite and the fields do not agree.
     """
 
     fields = []
@@ -3403,23 +3518,26 @@ def nonfinite_field_survey(state, *, carriers=NONFINITE_SURVEY_CARRIERS) -> dict
             continue
         axes = NONFINITE_SURVEY_AXES.get(
             array.ndim, tuple(f"a{rank}" for rank in range(array.ndim)))
-        index = np.unravel_index(int(xp.argmax(bad)), array.shape)
         box = {}
         for rank, label in enumerate(axes):
             other = tuple(n for n in range(array.ndim) if n != rank)
             present = bad.any(axis=other) if other else bad
             where = xp.nonzero(present)[0]
             box[label] = [int(where[0]), int(where[-1])]
-        fields.append({
+        shape = [int(value) for value in array.shape]
+        entry = {
             "field": name,
             "carrier": attribute,
-            "shape": [int(value) for value in array.shape],
+            "shape": shape,
             "size": int(array.size),
             "count": count,
-            "first_cell": {label: int(value)
-                           for label, value in zip(axes, index)},
             "bounding_box": box,
-        })
+            "edges": nonfinite_box_edges(box, shape),
+        }
+        if count == 1:
+            entry["cell"] = {label: bounds[0]
+                             for label, bounds in box.items()}
+        fields.append(entry)
         del bad
     return {"fields": fields, "surveyed": surveyed}
 

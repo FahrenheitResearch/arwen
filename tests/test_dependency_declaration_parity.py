@@ -242,7 +242,7 @@ _OPTIONAL_BY_DESIGN: dict[str, str] = {
 #: base ``dependencies``, with the extras that gate them and why.  Everything
 #: NOT listed here must be reachable from a bare ``pip install gpuwm``.
 #:
-#: This is the table Drew's rule lives in.  Adding a row is how you say "this
+#: This is the table the rule lives in.  Adding a row is how you say "this
 #: capability is genuinely optional"; it is deliberately more work than
 #: promoting the dependency.
 _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {

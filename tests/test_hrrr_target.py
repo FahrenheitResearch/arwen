@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -305,12 +306,17 @@ def _constant_earth_wind_snapshot(target: HrrrTargetDomain):
     ), u_earth, v_earth
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_grid_relative_winds_rotate_through_earth_basis(monkeypatch):
     # The interpolation kernels use only the NumPy-compatible CuPy surface in
     # this compact constant-vector test.
     monkeypatch.setattr(hrrr, "_cupy", lambda: np)
     monkeypatch.setattr(horiz, "_cupy", lambda: np)
     monkeypatch.setattr(np, "asnumpy", np.asarray, raising=False)
+    # The preparation receipt reads the CUDA runtime version through the
+    # array module; the NumPy stand-in answers it as no runtime.
+    monkeypatch.setattr(np, "cuda", SimpleNamespace(runtime=SimpleNamespace(
+        runtimeGetVersion=lambda: 0)), raising=False)
     target = _target(
         nx=16,
         ny=14,
@@ -394,6 +400,7 @@ def _mapped_with_landmask(landmask, *, source_land=True,
     return mapped, report
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_an_all_water_target_maps_its_soil_instead_of_refusing():
     """A coastal domain's ocean boundary strip is a legal configuration.
 
@@ -427,6 +434,7 @@ def test_an_all_water_target_maps_its_soil_instead_of_refusing():
         assert "all_target_minimum" in entry
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_a_land_target_with_no_reachable_source_land_refuses_by_name():
     """The case that genuinely cannot be mapped, named and remedied.
 
@@ -488,6 +496,7 @@ def _donor_truth(target, landsea, radius):
     return tuple(unresolved), required
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_soil_donor_refusal_recommends_a_radius_the_guard_accepts():
     """Remediation advice is validated before it is printed (half one).
 
@@ -538,17 +547,13 @@ def test_soil_donor_refusal_recommends_a_radius_the_guard_accepts():
         replace(target, surface_fallback_radius_cells=required))
 
 
-def test_soil_donor_refusal_computes_the_trim_when_no_radius_can_pass():
-    """Remediation advice is validated before it is printed (half two).
+def _top_edge_target_and_carve():
+    """A domain whose radius-8 window sits exactly on HRRR's top edge, and
+    a snapshot whose land ends ~10 cells below the domain's top rows.
 
-    The field shape: a fitter-maximum domain whose radius-8 window sits
-    exactly on HRRR's native top edge.  Unfillable land cells near the
-    top cannot be remedied by ANY radius the coverage guard accepts, so
-    the refusal must not recommend the knob -- it must compute the trim
-    that removes every unfillable cell, and say which side.
+    The field shape: a fitter-maximum 3 km root on the native top edge,
+    whose soil mapping found land cells with no donor within 8 cells.
     """
-    from dataclasses import replace
-
     source = hrrr.hrrr_source_grid()
     target = None
     for j_center in np.arange(1041.0, 1053.0, 0.25):
@@ -569,24 +574,80 @@ def test_soil_donor_refusal_computes_the_trim_when_no_radius_can_pass():
     snapshot, _, _ = _constant_earth_wind_snapshot(target)
     assert snapshot.j_start + snapshot.ny - 1 == HRRR_SOURCE_NY - 1
     # Water from just below the topmost target rows to the window top:
-    # their nearest donor sits ~10 cells south, and radius 10 needs
-    # source rows past the native edge -- the impossible raise.
+    # their nearest donor sits ~10 cells south.
     _sx, sy = source.latlon_to_ij(*target.grid().latlon_mass())
     y_top = float(np.asarray(sy)[-1, 8]) - 1.0 - snapshot.j_start
     band = [row for row in range(snapshot.ny) if row > y_top - 9.4]
-    carved = _snapshot_with_water_rows(target, band)
+    return target, snapshot, _snapshot_with_water_rows(target, band), band
 
+
+@pytest.mark.requires_capability("masked_stencil_bridge")
+def test_soil_donor_refusal_at_hrrrs_edge_recommends_a_radius_that_maps():
+    """At HRRR's top edge the measured radius is the remedy, and it maps.
+
+    The field root sat with its radius-8 window on the native top edge
+    and the refusal could not recommend the radius that reaches the
+    donors, because a larger radius asked for source rows past HRRR's
+    edge and the coverage test refused it; the wizard then demanded a
+    whole radius of margin from every edge.  The donor search's box now
+    stops at the edge, where no donor exists, so the raise is accepted,
+    its window stays on the edge, and the domain prepares with it.
+    """
+    from dataclasses import replace
+
+    target, snapshot, carved, band = _top_edge_target_and_carve()
     unresolved, required = _donor_truth(
         target, carved.fields["LANDSEA"], 8)
     assert unresolved and required is not None
-    growth = required - 8
-    assert (snapshot.j_start + snapshot.ny - 1 + growth
-            > HRRR_SOURCE_NY - 1), "the raise must be infeasible here"
-    # The knob setting that reaches the donors is refused by the guard
-    # -- this is the constraint the printed advice must respect.
-    with pytest.raises(ValueError, match="leaves HRRR coverage"):
-        required_hrrr_source_window(
-            replace(target, surface_fallback_radius_cells=required))
+    assert (snapshot.j_start + snapshot.ny - 1 + required - 8
+            > HRRR_SOURCE_NY - 1), "the raise reaches past HRRR's edge"
+
+    with pytest.raises(ValueError) as refusal:
+        interpolate_hrrr_to_lambert(
+            carved, target.grid(),
+            target_landmask=np.ones((target.ny, target.nx)),
+            backend=HostBackend(), target_name="domain 1")
+    message = str(refusal.value)
+    named = refusal.value.__cause__.required_radius_cells
+    assert f"Raising surface_fallback_radius_cells to {named}" in message
+    assert "stopping at HRRR's own edge" in message
+
+    # The advice is accepted and its window stops at the edge...
+    grown_target = replace(target, surface_fallback_radius_cells=named)
+    grown_window = required_hrrr_source_window(grown_target)
+    assert grown_window.j_end == HRRR_SOURCE_NY - 1
+    assert grown_window.j_start < snapshot.j_start
+    # ...and the domain maps every land cell on it, over the same land.
+    first_water_row = snapshot.j_start + min(band)
+    grown_band = [row for row in range(grown_window.ny)
+                  if grown_window.j_start + row >= first_water_row]
+    grown = _snapshot_with_water_rows(grown_target, grown_band)
+    report: dict = {}
+    interpolate_hrrr_to_lambert(
+        grown, grown_target.grid(),
+        target_landmask=np.ones((target.ny, target.nx)),
+        surface_fallback_radius=named, soil_mapping_report=report,
+        backend=HostBackend(), target_name="domain 1")
+    assert "north" in report["land_stencil"]["closed_window_edges"]
+
+
+@pytest.mark.requires_capability("masked_stencil_bridge")
+def test_soil_donor_refusal_computes_the_trim_when_no_radius_can_pass(
+        monkeypatch):
+    """Past the supported maximum radius the refusal computes a trim.
+
+    The field shape again, with the maximum held below the radius the
+    donors need, so no raise can be recommended: the refusal must not
+    name the knob, and the trim it names must remove every unfillable
+    cell and leave every remaining land cell a donor.
+    """
+    from gpuwm.ingest import hrrr_target
+
+    target, snapshot, carved, _band = _top_edge_target_and_carve()
+    unresolved, required = _donor_truth(
+        target, carved.fields["LANDSEA"], 8)
+    assert unresolved and required is not None and required > 8
+    monkeypatch.setattr(hrrr_target, "SURFACE_FALLBACK_RADIUS_MAX", 8)
 
     with pytest.raises(ValueError) as refusal:
         interpolate_hrrr_to_lambert(
@@ -596,13 +657,124 @@ def test_soil_donor_refusal_computes_the_trim_when_no_radius_can_pass():
     message = str(refusal.value)
     assert "Raising surface_fallback_radius_cells to" not in message
     assert "cannot work here" in message
+    assert "exceeds the supported maximum of 8" in message
+    # The search goes past radius 8, and the window's top IS HRRR's top:
+    # no land lies beyond it, so most of the cells radius 8 left without
+    # a donor get their nearest one.  What still refuses is the few whose
+    # nearest land is farther than the window reaches east or west.
+    refused = refusal.value.__cause__.unresolved_targets
+    assert refused and set(refused) < set(unresolved)
     # The trim is computed, not guessed: exactly the rows that carry
     # unfillable cells, counted from the north (j-max) side.
-    trim = target.ny - min(row for row, _col in unresolved)
+    trim = target.ny - min(row for row, _col in refused)
     assert f"trim {trim} cell(s) from its north (j-max) side" in message
-    assert all(row >= target.ny - trim for row, _col in unresolved)
+    assert all(row >= target.ny - trim for row, _col in refused)
+
+    # And the trim it names works: the trimmed domain, on its own smaller
+    # window (whose top is no longer HRRR's), maps every land cell.  (A
+    # LambertGrid, because 12 rows is under the target document's floor;
+    # the mapping itself has no such floor.)
+    from gpuwm.static.lambert import LambertGrid
+
+    ref_lat, ref_lon = target.grid().ij_to_latlon(
+        (target.nx + 1) / 2.0, (target.ny - trim + 1) / 2.0)
+    trimmed = LambertGrid(
+        float(ref_lat), float(ref_lon), target.truelat1, target.truelat2,
+        target.stand_lon, target.dx_m, target.dy_m, target.nx + 1,
+        target.ny - trim + 1)
+    np.testing.assert_allclose(
+        trimmed.latlon_mass()[0], target.grid().latlon_mass()[0][:-trim],
+        rtol=0.0, atol=1e-9)
+    window = required_hrrr_source_window(trimmed)
+    rows = slice(window.j_start - carved.j_start,
+                 window.j_end - carved.j_start + 1)
+    cols = slice(window.i_start - carved.i_start,
+                 window.i_end - carved.i_start + 1)
+    cropped = HrrrNativeSnapshot(
+        valid_time=carved.valid_time, forecast_hour=carved.forecast_hour,
+        i_start=window.i_start, j_start=window.j_start,
+        ny=window.ny, nx=window.nx,
+        fields={name: np.asarray(value)[..., rows, cols]
+                for name, value in carved.fields.items()})
+    interpolate_hrrr_to_lambert(
+        cropped, trimmed,
+        target_landmask=np.ones((target.ny - trim, target.nx)),
+        backend=HostBackend(), target_name="domain 1")
 
 
+def _edge_target(center_i, center_j):
+    """A 13x13 3 km target centred at a native HRRR (i, j), one-based."""
+    source = hrrr.hrrr_source_grid()
+    lat, lon = source.ij_to_latlon(center_i, center_j)
+    return _target(nx=13, ny=13, dx_m=source.dx, dy_m=source.dy,
+                   ref_lat=float(lat), ref_lon=float(lon),
+                   truelat1=38.5, truelat2=38.5, stand_lon=-97.5)
+
+
+@pytest.mark.requires_capability("masked_stencil_bridge")
+@pytest.mark.parametrize("center_i,center_j,edge", [
+    (10.49, 500.0, "west"),
+    (HRRR_SOURCE_NX - 9.49, 500.0, "east"),
+    (900.0, 10.49, "south"),
+    (900.0, HRRR_SOURCE_NY - 9.49, "north"),
+])
+def test_a_domain_whose_atmosphere_hrrr_covers_is_not_refused_at_an_edge(
+        center_i, center_j, edge):
+    """Its interpolation reads only HRRR cells; only its donor box would
+    reach past the edge, where no donor exists.
+
+    Each of these was refused as "leaves HRRR coverage" (the west one
+    with a window of i=-4..23) because the soil donor search's box was
+    demanded whole.  The box now stops at the edge, the mapper treats
+    that edge as closed, and every land cell maps.
+    """
+    from gpuwm.hrrr_route_inputs import target_coverage_refusal
+
+    target = _edge_target(center_i, center_j)
+    assert target_coverage_refusal(target) is None
+    window = required_hrrr_source_window(target)
+    assert 0 <= window.i_start <= window.i_end <= HRRR_SOURCE_NX - 1
+    assert 0 <= window.j_start <= window.j_end <= HRRR_SOURCE_NY - 1
+    snapshot, _, _ = _constant_earth_wind_snapshot(target)
+    assert edge in hrrr._native_edges_of(snapshot)
+    report: dict = {}
+    mapped = interpolate_hrrr_to_lambert(
+        snapshot, target.grid(),
+        target_landmask=np.ones((target.ny, target.nx)),
+        soil_mapping_report=report, backend=HostBackend(),
+        target_name="domain 1")
+    assert report["land_stencil"]["unresolved_target_count"] == 0
+    assert edge in report["land_stencil"]["closed_window_edges"]
+    np.testing.assert_allclose(mapped.fields["TT"], 280.0, rtol=0.0, atol=1e-3)
+
+
+def test_an_atmosphere_past_hrrrs_edge_is_still_refused():
+    """The interpolation's own cells past the edge are a refusal: nothing
+    there can be interpolated from."""
+    with pytest.raises(ValueError, match="leaves HRRR coverage") as refusal:
+        required_hrrr_source_window(_edge_target(6.0, 500.0))
+    assert "i=-" in str(refusal.value)
+
+
+def test_the_donor_box_clipped_at_an_edge_is_not_called_hrrrs_bound(
+        monkeypatch):
+    """The sizing advisory names HRRR's grid as the bound only when the
+    interpolation reaches an edge, not when the donor box alone does."""
+    from gpuwm import hrrr_route_inputs
+
+    near = _edge_target(13.0, 500.0)
+    assert required_hrrr_source_window(near).i_start == 0
+    monkeypatch.setattr(hrrr_route_inputs, "target_domain",
+                        lambda exp: near)
+    assert hrrr_route_inputs.coverage_advisory(None) == []
+    on_edge = _edge_target(9.0, 500.0)
+    monkeypatch.setattr(hrrr_route_inputs, "target_domain",
+                        lambda exp: on_edge)
+    advisory = hrrr_route_inputs.coverage_advisory(None)
+    assert advisory and "west edge" in advisory[0]
+
+
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_a_mixed_land_water_target_still_reports_land_statistics():
     """Negative control: land present, so the diagnostics are not skipped."""
     landmask = np.ones((14, 16))
@@ -614,6 +786,7 @@ def test_a_mixed_land_water_target_still_reports_land_statistics():
     assert "land_window_statistics" not in entry
 
 
+@pytest.mark.requires_capability("masked_stencil_bridge")
 def test_full_hrrr_host_backend_is_deterministic_and_device_free():
     class HostBackend:
         name = "cpu-test"

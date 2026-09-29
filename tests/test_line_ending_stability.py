@@ -174,10 +174,12 @@ _BYTE_PRESERVED_PREFIXES = (
 #: repository stamps with its own source revision is a crate it wrote.
 #: Everything else under `tools/rustwx/crates/` is the verbatim subset of
 #: the upstream rusty-weather workspace that `tools/rustwx/Cargo.toml`
-#: documents, vendored at an exact working-tree state.
+#: documents, vendored at an exact working-tree state.  `rw-host-memory`
+#: stamps no revision but is authored here: the host-memory walk moved out
+#: of rusty-weather into its own crate.
 _AUTHORED_RUSTWX_CRATES = (
     "rw-fetch", "rw-wrfbatch", "rw-nexrad", "rw-odim", "rw-obs",
-    "rw-goes", "rw-netcdf", "rw-mpas",
+    "rw-goes", "rw-netcdf", "rw-mpas", "rw-host-memory",
 )
 
 #: The 62 files that already carried CR when this gate was widened,

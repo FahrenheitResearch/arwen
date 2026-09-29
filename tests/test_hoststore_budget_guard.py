@@ -216,3 +216,44 @@ def test_nothing_is_pinned_when_the_slabbed_builder_refuses(monkeypatch):
         hoststore.check_allocatable(int(87.8 * GIB))
     assert allocations == [], (
         "pinned memory was taken despite the refusal")
+
+
+# --------------------------------------------------------------------------
+# the reserve scales with the machine or the memory limit
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("total_gib, available_gib", [(8, 7.5), (20, 12)])
+def test_a_store_the_planner_sized_inside_a_small_limit_is_admitted(
+        monkeypatch, total_gib, available_gib):
+    """THE BREAKAGE: a fixed 8 GiB reserve came out of the room under a
+    memory limit, so an 8 GiB container refused every store and a 20 GiB
+    one refused a store sized to 0.47 of its limit with 12 GiB still free.
+    The reserve is now an eighth of the machine or limit below 64 GiB."""
+    monkeypatch.setattr(
+        hoststore, "host_memory",
+        lambda: {"total": int(total_gib * GIB),
+                 "available": int(available_gib * GIB),
+                 "free": int(available_gib * GIB)})
+    request = int(0.9 * hoststore.DEFAULT_MAX_TOTAL_FRACTION * total_gib * GIB)
+    assert request > available_gib * GIB - hoststore.DEFAULT_RESERVE_BYTES
+    assert hoststore.host_reserve_bytes() == total_gib * GIB // 8
+    hoststore.check_allocatable(request)
+
+
+def test_the_scaled_reserve_still_refuses_and_names_itself(monkeypatch):
+    """The reserve is smaller on a small machine, not gone: a 3.5 GiB
+    store with 4 GiB available on an 8 GiB machine leaves less than the
+    1 GiB reserve and is refused before a page is taken."""
+    monkeypatch.setattr(
+        hoststore, "host_memory",
+        lambda: {"total": 8 * GIB, "available": 4 * GIB, "free": 4 * GIB})
+    with pytest.raises(hoststore.HostMemoryExhausted) as excinfo:
+        hoststore.check_allocatable(int(3.5 * GIB))
+    assert "1.00 GiB is reserved" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("total_gib", [64, 96, 512])
+def test_a_machine_of_64_gib_or_more_keeps_the_8_gib_reserve(total_gib):
+    assert (hoststore.host_reserve_bytes(total_gib * GIB)
+            == hoststore.DEFAULT_RESERVE_BYTES)

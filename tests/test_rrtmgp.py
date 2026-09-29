@@ -26,6 +26,22 @@ from gpuwm import data_assets
 DATA_DIR = data_assets.rrtmgp_data_dir()
 
 
+def _rfmip(name):
+    """A pinned RFMIP file, fetched from upstream at test time.
+
+    The five RFMIP NetCDFs are not in the tree or in any artifact
+    (gpuwm/core/rfmip_upstream.py says why), so a test that reads one
+    fetches it, SHA-256 verified, into the RFMIP cache.  Without network
+    and without a cached copy the test skips and says so.
+    """
+    from gpuwm.core.rfmip_upstream import RfmipUnavailable, fetch_rfmip
+
+    try:
+        return fetch_rfmip(name)
+    except RfmipUnavailable as error:
+        pytest.skip(f"RFMIP upstream file unavailable: {error}")
+
+
 _RFMIP_NAMES = {
     "co2": "carbon_dioxide", "n2o": "nitrous_oxide",
     "co": "carbon_monoxide", "ch4": "methane", "o2": "oxygen",
@@ -88,7 +104,7 @@ def _rfmip_columns(tables, sites=(0, 17), experiment=0):
     from netCDF4 import Dataset
 
     sites = np.asarray(sites, dtype=np.intp)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-inputs.nc") as nc:
+    with Dataset(_rfmip("rfmip-clear-sky-inputs.nc")) as nc:
         play = np.asarray(nc["pres_layer"][sites], np.float64)
         plev = np.asarray(nc["pres_level"][sites], np.float64)
         tlay = np.asarray(nc["temp_layer"][experiment, sites], np.float64)
@@ -117,21 +133,20 @@ def test_vendored_rrtmgp_v19_data_and_provenance():
         "rrtmgp-gas-sw-g224.nc": "584f1dd41ea9fc07d4ee3754eb1dafbd46ad3161cd6fd20fa06b6922b6f0702e",
         "rrtmgp-clouds-lw-bnd.nc": "09d6704c5b863b4c3ceb417d20bb3076ec492e6bf2dfbcc9f3c5996a3706f0b0",
         "rrtmgp-clouds-sw-bnd.nc": "7671835992a45afe66244b591a02c0b3df73d7d59ecb746bbffd9763497651cd",
-        "rfmip-clear-sky-inputs.nc": "b8dc05d7cd2e0e6354b4a6198771ddf3bc09f18d72b49f20a41e2024e2fd51f4",
-        "rfmip-clear-sky-reference-lw-down.nc": "8629ec4b1caaea5a5c1756f25b432637369725ee684c61af0dad5c9ca37556b5",
-        "rfmip-clear-sky-reference-lw-up.nc": "254569d9bb0934fb510306c3e22e13ea826bd918727b477fc20600213923493c",
-        "rfmip-clear-sky-reference-sw-down.nc": "f9b0313fdf74598859a7caf27a5d1395b7fe1e445c9620a66856cc19eaf5e5b9",
-        "rfmip-clear-sky-reference-sw-up.nc": "0ea3f4272d9ef088db6ffd07153587863a052e3cf8b3bf04bfb7c9288ed8b324",
+        "rrtmgp-trace-gas-climatology.json": "71d7f85758fda8cf05df66100ccd0a974fed71216a1b7facad2083bc3dd3b70e",
         "cloud-optics-reference-driver.F90": "3996197f0e712f4f0cb881d954140e63b527a2f4eb207d031d4ce3853b4906cc",
         "cloud-optics-reference-lw.csv": "654ee18ac84d92d0471bc80862af389f85506882a730d18e6ed920e24b97043d",
         "cloud-optics-reference-sw.csv": "3f065cba7546a783d3736e5ef17a42ebfa8e3c08c42f25ae529c4385a1603399",
     }
-    expected_licenses = {
-        "LICENSE", "LICENSE-CC-BY-4.0", "LICENSE-CC-BY-SA-4.0",
-        "LICENSE-CC-BY-NC-SA-4.0",
-    }
+    expected_licenses = {"LICENSE", "LICENSE-CC-BY-SA-4.0"}
+    present = {p.name for p in DATA_DIR.iterdir()}
     assert expected_hashes.keys() | expected_licenses | {"PROVENANCE.md"} \
-        <= {p.name for p in DATA_DIR.iterdir()}
+        <= present
+    # The RFMIP files, and the two licences only they needed, are fetched
+    # from upstream by the tests that read them and never carried here.
+    from gpuwm.core.rfmip_upstream import RFMIP_FILES
+    assert not present & (set(RFMIP_FILES) | {
+        "LICENSE-CC-BY-4.0", "LICENSE-CC-BY-NC-SA-4.0"})
     for name, expected in expected_hashes.items():
         assert hashlib.sha256((DATA_DIR / name).read_bytes()).hexdigest() \
             == expected
@@ -143,15 +158,12 @@ def test_vendored_rrtmgp_v19_data_and_provenance():
     assert 'Attribution "Share Alike" 4.0 International License' in provenance
     assert "http://creativecommons.org/licenses/by/4.0/" in provenance
     assert "genuinely ambiguous" in provenance
-    assert "CC-BY-4.0" in provenance
     assert "CC-BY-SA-4.0" in provenance
     assert "CC-BY-NC-SA-4.0" in provenance
     assert "Fast math" in provenance and "OFF" in provenance
     assert "FMA" in provenance and "Reduction order" in provenance
-    assert "Creative Commons Attribution 4.0 International Public License" \
-        in (DATA_DIR / "LICENSE-CC-BY-4.0").read_text(encoding="utf8")
-    assert "NonCommercial" in (DATA_DIR / "LICENSE-CC-BY-NC-SA-4.0").read_text(
-        encoding="utf8")
+    assert "Attribution-ShareAlike 4.0 International Public License" \
+        in (DATA_DIR / "LICENSE-CC-BY-SA-4.0").read_text(encoding="utf8")
 
 
 def test_load_gas_tables_dimensions_names_and_packed_indices():
@@ -819,7 +831,6 @@ def test_real74_model_top_downward_flux_cpu_reference(monkeypatch):
     """Independent float64 RRTMGP mirror pins the 100-hPa downward flux."""
     import sys
     from datetime import datetime
-    from netCDF4 import Dataset
     from gpuwm.core import rrtmgp
     from gpuwm.verify.npref import (
         np_rrtmgp_delta_scale, np_rrtmgp_gas_optics,
@@ -845,16 +856,10 @@ def test_real74_model_top_downward_flux_cpu_reference(monkeypatch):
     qv = np.geomspace(8.0e-3, 2.0e-6, nz).astype(np.float32)[None]
 
     radiation = object.__new__(rrtmgp.RRTMGPRadiation)
-    radiation.trace_vmr = {}
-    with Dataset(rrtmgp.DATA_DIR / "rfmip-clear-sky-inputs.nc") as nc:
-        nc.set_auto_mask(False)
-        for gas, rfmip_name in rrtmgp._RFMIP_GAS_NAMES.items():
-            variable = nc[rfmip_name + "_GM"]
-            scale = float(getattr(variable, "units", "1").replace(" ", ""))
-            radiation.trace_vmr[gas] = float(variable[0]) * scale
-        pressure = np.median(np.asarray(nc["pres_layer"][:], np.float64),
-                             axis=0)
-        ozone = np.median(np.asarray(nc["ozone"][0], np.float64), axis=0)
+    climatology = rrtmgp.load_trace_climatology()
+    radiation.trace_vmr = dict(climatology.trace_vmr)
+    pressure = climatology.pressure_layer_pa
+    ozone = climatology.ozone_vmr
     radiation.trace_vmr.update(rrtmgp.trace_gases(
         datetime(1974, 4, 3), {"co2": 330.0e-6}))
     order = np.argsort(pressure)
@@ -1911,7 +1916,7 @@ def test_rrtmgp_planck_sources_cuda_match_float64_mirror():
     tables = load_gas_tables("lw")
     sites = np.array([3, 44, 79])
     play, plev, tlay, vmr = _rfmip_columns(tables, sites=sites)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-inputs.nc") as nc:
+    with Dataset(_rfmip("rfmip-clear-sky-inputs.nc")) as nc:
         tlev = np.asarray(nc["temp_level"][0, sites], np.float64)
         tsfc = np.asarray(nc["surface_temperature"][0, sites], np.float64)
     ref = np_rrtmgp_planck_sources(
@@ -1969,20 +1974,20 @@ def test_rfmip_clear_sky_full_profile_acceptance():
     from gpuwm.core.rrtmgp import rfmip_clear_sky
 
     nsite, nexperiment, nlevel = 100, 18, 61
-    got = rfmip_clear_sky()
-    with Dataset(DATA_DIR / "rfmip-clear-sky-reference-lw-down.nc") as nc:
+    got = rfmip_clear_sky(inputs=_rfmip("rfmip-clear-sky-inputs.nc"))
+    with Dataset(_rfmip("rfmip-clear-sky-reference-lw-down.nc")) as nc:
         nc.set_auto_mask(False)
         lw_dn = np.asarray(nc["rld"][:], np.float64)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-reference-lw-up.nc") as nc:
+    with Dataset(_rfmip("rfmip-clear-sky-reference-lw-up.nc")) as nc:
         nc.set_auto_mask(False)
         lw_up = np.asarray(nc["rlu"][:], np.float64)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-reference-sw-down.nc") as nc:
+    with Dataset(_rfmip("rfmip-clear-sky-reference-sw-down.nc")) as nc:
         nc.set_auto_mask(False)
         sw_dn = np.asarray(nc["rsd"][:], np.float64)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-reference-sw-up.nc") as nc:
+    with Dataset(_rfmip("rfmip-clear-sky-reference-sw-up.nc")) as nc:
         nc.set_auto_mask(False)
         sw_up = np.asarray(nc["rsu"][:], np.float64)
-    with Dataset(DATA_DIR / "rfmip-clear-sky-inputs.nc") as nc:
+    with Dataset(_rfmip("rfmip-clear-sky-inputs.nc")) as nc:
         nc.set_auto_mask(False)
         plev = np.asarray(nc["pres_level"][:], np.float64)
     refs = {"lw_dn": lw_dn, "lw_up": lw_up, "sw_dn": sw_dn, "sw_up": sw_up}
@@ -3396,6 +3401,7 @@ def test_mp28_ice_cloud_is_radiatively_visible_and_matches_mp8():
         "tsk": cp.full((ny, nx), 288.0, cp.float32),
         "albedo": cp.full((ny, nx), 0.18, cp.float32),
         "emiss": cp.full((ny, nx), 0.96, cp.float32),
+        "xland": cp.ones((ny, nx), cp.float32),
     }
     # The mp=8/mp=28 state contract: micron effective radii written every
     # step by launch_effective_radius / launch_aerosol_effective_radius.
@@ -3678,6 +3684,7 @@ def test_preflight_prices_radius_columns_for_exactly_the_schemes_that_use_them()
         "tsk": cp.full((ny, nx), 288.0, cp.float32),
         "albedo": cp.full((ny, nx), 0.18, cp.float32),
         "emiss": cp.full((ny, nx), 0.96, cp.float32),
+        "xland": cp.ones((ny, nx), cp.float32),
     }
 
     def flux(mp_physics, effi_um):

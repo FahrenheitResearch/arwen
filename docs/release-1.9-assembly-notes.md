@@ -72,8 +72,11 @@ every claim below the edit moved by the number of lines the edit added.
 5. Every remaining prose and code edit of the assembly, including
    `CHANGELOG.md`, `docs/public/PHYSICS.md` and this file.
 6. LAST, after step 5 is final: `python -m tools.ftz_receipt.claim_census`.
-   The census records file:line for every FTZ claim site in the tree, so
-   ANY text edit anywhere above it invalidates it. Verify with
+   Since schema v2 the census keys each FTZ claim site on its file and line
+   text, so an edit that adds, removes or rewords a claim line invalidates
+   it (step 1 rewrites the registry's one claim line). A line that only
+   moved does not: its line number is a hint `--check` does not fail on,
+   and regenerating last keeps those hints exact. Verify with
    `python -m tools.ftz_receipt.claim_census --check` (rc 0).
 
 Steps 1 to 4 are idempotent; re-running them after step 5 is safe and is

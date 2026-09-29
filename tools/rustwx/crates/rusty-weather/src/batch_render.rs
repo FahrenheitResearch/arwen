@@ -211,58 +211,104 @@ pub fn inspect_renderable_products(
     run_slug: &str,
     hour: u16,
 ) -> Result<BatchRenderCatalog, String> {
+    inspect_renderable_products_over(store_root, model_slug, run_slug, &[hour])
+}
+
+/// [`inspect_renderable_products`] over several stored hours: every product
+/// at least one of `hours` can draw.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a series store was cataloged
+/// from its FIRST stored frame alone.  A forecast's analysis frame stores
+/// no `REFL_10CM`, so a whole-hour frame drawn beside its hour's earlier
+/// frames (the baselines its windows fold) lost composite reflectivity
+/// although it stored the field itself: on a 3 km CONUS run the lead-1 h
+/// frame was published without it, and a render of a whole run from its
+/// analysis frame drew it on no frame at all.  An instantaneous product is
+/// drawn frame by frame and skipped by name on a frame that lacks its
+/// fields, so the catalog of several frames is the union of theirs.
+/// Windowed products are decided by the run's time axis, once, as before.
+pub fn inspect_renderable_products_over(
+    store_root: &Path,
+    model_slug: &str,
+    run_slug: &str,
+    hours: &[u16],
+) -> Result<BatchRenderCatalog, String> {
     validate_store_component("model", model_slug)?;
     validate_store_component("run", run_slug)?;
-    let store = StoreFieldSource::open(store_root, model_slug, run_slug, hour)
-        .map_err(|err| err.to_string())?;
-    let mut products = Vec::new();
-
-    for slug in store_direct_recipe_slugs() {
-        let Ok(requirements) = plot_recipe_store_requirements(&slug) else {
-            continue;
-        };
-        let mut source_fields = Vec::new();
-        let mut renderable = true;
-        for requirement in requirements {
-            let resolved = requirement
-                .selector
-                .and_then(|selector| store.resolve(&selector));
-            let Some(name) = resolved else {
-                renderable = false;
-                break;
-            };
-            if !source_fields.iter().any(|existing| existing == name) {
-                source_fields.push(name.to_string());
-            }
-        }
-        if renderable {
-            products.push(BatchProductOption {
-                slug,
-                kind: BatchProductKind::Direct,
-                source_fields,
-                units: None,
-            });
-        }
+    if hours.is_empty() {
+        return Err(format!(
+            "run {model_slug}/{run_slug}: a catalog needs at least one stored frame"
+        ));
     }
-
+    let mut products = Vec::new();
+    let mut named: HashSet<String> = HashSet::new();
+    // Every stored 2-D variable of any of the hours, first seen first:
+    // (name, units).
+    let mut variables: Vec<(String, String)> = Vec::new();
+    let mut variable_names: HashSet<String> = HashSet::new();
+    let direct_slugs = store_direct_recipe_slugs();
     let known_derived: HashSet<&str> = store_derived_recipe_slugs()
         .into_iter()
         .chain(store_heavy_recipe_slugs())
         .collect();
-    for slug in store.derived_slugs() {
-        if !known_derived.contains(slug.as_str()) {
-            continue;
+
+    for &hour in hours {
+        let store = StoreFieldSource::open(store_root, model_slug, run_slug, hour)
+            .map_err(|err| err.to_string())?;
+        for slug in &direct_slugs {
+            if named.contains(slug) {
+                continue;
+            }
+            let Ok(requirements) = plot_recipe_store_requirements(slug) else {
+                continue;
+            };
+            let mut source_fields = Vec::new();
+            let mut renderable = true;
+            for requirement in requirements {
+                let resolved = requirement
+                    .selector
+                    .and_then(|selector| store.resolve(&selector));
+                let Some(name) = resolved else {
+                    renderable = false;
+                    break;
+                };
+                if !source_fields.iter().any(|existing| existing == name) {
+                    source_fields.push(name.to_string());
+                }
+            }
+            if renderable {
+                named.insert(slug.clone());
+                products.push(BatchProductOption {
+                    slug: slug.clone(),
+                    kind: BatchProductKind::Direct,
+                    source_fields,
+                    units: None,
+                });
+            }
         }
-        products.push(BatchProductOption {
-            slug: slug.clone(),
-            kind: if is_heavy_derived_recipe_slug(slug) {
-                BatchProductKind::Heavy
-            } else {
-                BatchProductKind::Derived
-            },
-            source_fields: vec![slug.clone()],
-            units: store.surface_variable(slug).map(|var| var.units.clone()),
-        });
+
+        for slug in store.derived_slugs() {
+            if !known_derived.contains(slug.as_str()) || named.contains(slug) {
+                continue;
+            }
+            named.insert(slug.clone());
+            products.push(BatchProductOption {
+                slug: slug.clone(),
+                kind: if is_heavy_derived_recipe_slug(slug) {
+                    BatchProductKind::Heavy
+                } else {
+                    BatchProductKind::Derived
+                },
+                source_fields: vec![slug.clone()],
+                units: store.surface_variable(slug).map(|var| var.units.clone()),
+            });
+        }
+
+        for variable in store.surface_variables() {
+            if variable_names.insert(variable.name.clone()) {
+                variables.push((variable.name.clone(), variable.units.clone()));
+            }
+        }
     }
 
     // Every remaining stored 2-D variable is renderable through the generic
@@ -277,27 +323,26 @@ pub fn inspect_renderable_products(
             _ => None,
         })
         .collect();
-    for variable in store.surface_variables() {
-        if let Err(reason) = crate::render_all::validate_generic_variable_name(&variable.name) {
+    for (name, units) in variables {
+        if let Err(reason) = crate::render_all::validate_generic_variable_name(&name) {
             eprintln!(
                 "GENERIC_EXCLUDED\t{}\tname is not request-safe: {reason}",
-                variable.name.escape_debug()
+                name.escape_debug()
             );
             continue;
         }
-        if sole_source_of_named.contains(&variable.name) {
+        if sole_source_of_named.contains(&name) {
             eprintln!(
-                "GENERIC_EXCLUDED\t{}\talready rendered by a named product using exactly \
-                 this stored grid",
-                variable.name
+                "GENERIC_EXCLUDED\t{name}\talready rendered by a named product using exactly \
+                 this stored grid"
             );
             continue;
         }
         products.push(BatchProductOption {
-            slug: format!("var:{}", variable.name),
+            slug: format!("var:{name}"),
             kind: BatchProductKind::Generic,
-            source_fields: vec![variable.name.clone()],
-            units: Some(variable.units.clone()),
+            source_fields: vec![name],
+            units: Some(units),
         });
     }
 
@@ -305,17 +350,34 @@ pub fn inspect_renderable_products(
         crate::render_all::windowed_store::stored_run_hours(store_root, model_slug, run_slug)
             .map_err(|err| err.to_string())?;
     // Windowed products are axis-gated, not model-gated: any run with more
-    // than one WHOLE-hour stored frame lists them, and each product's
-    // per-plane availability is proven (or blocked with a reason) when the
-    // windows compute.  Exact-time ordinal axes stay out -- fixed-hour
-    // windows are undefined on them.
+    // than one stored frame lists them, and each product's per-plane
+    // availability is proven (or blocked with a reason) when the windows
+    // compute.  An exact-time run qualifies too: its windows are served
+    // from its frames' leads and close on its whole-hour frames.
     let windowed_ready =
         crate::render_all::windowed_store::windowed_axis_ready(store_root, model_slug, run_slug)
             .map_err(|err| err.to_string())?;
+    //
+    // And only the windows this run can close.  A window whose last hour
+    // lies past the run's last stored frame blocks on EVERY frame, so it
+    // is not a product this run can draw and it is not a candidate: a
+    // catalog keyword that expanded to it asked an 18 h run for 41
+    // windowed families, each skipped on all 19 frames (805 skip lines).
+    // Named explicitly it is still refused per frame, with a reason that
+    // says the run is too short (`windowed_store::compute_windowed_products`).
+    let last_stored_hour = crate::render_all::windowed_store::last_window_hour(
+        &crate::render_all::windowed_store::stored_window_frames(store_root, model_slug, run_slug)
+            .map_err(|err| err.to_string())?,
+    );
     if windowed_ready {
         products.extend(
             HrrrWindowedProduct::supported_products()
                 .iter()
+                .filter(|product| {
+                    last_stored_hour.is_some_and(|last| {
+                        crate::render_all::windowed_store::window_fits_run(**product, last)
+                    })
+                })
                 .map(|product| BatchProductOption {
                     slug: product.slug().to_string(),
                     kind: BatchProductKind::Windowed,
@@ -452,7 +514,7 @@ pub fn run_batch_render(
     )
     .map_err(|err| err.to_string())?;
     // The "all" keyword only pulls the windowed lane onto runs whose axis
-    // can serve it (multiple WHOLE-hour frames); explicit windowed slug
+    // can serve it (more than one stored frame); explicit windowed slug
     // requests are left to fail loudly with the axis reason.
     if product_request.windowed_auto
         && !crate::render_all::windowed_store::windowed_axis_ready(
@@ -463,6 +525,26 @@ pub fn run_batch_render(
         .map_err(|err| err.to_string())?
     {
         product_request.windowed.clear();
+    }
+    // A keyword (`all`, `windowed`) stands for what the run can draw, so
+    // it keeps only the windows the run's last stored frame closes; the
+    // same cut `inspect_renderable_products` makes for the catalog.  An
+    // explicit slug list is left alone and each window it names that the
+    // run cannot close is refused per frame with the run's length.
+    let window_frames = crate::render_all::windowed_store::stored_window_frames(
+        &request.store_root,
+        &request.model_slug,
+        &request.run_slug,
+    )
+    .map_err(|err| err.to_string())?;
+    if !product_request.strict {
+        if let Some(last) = crate::render_all::windowed_store::last_window_hour(&window_frames) {
+            product_request.windowed.retain(|slug| {
+                HrrrWindowedProduct::from_slug(slug).is_some_and(|product| {
+                    crate::render_all::windowed_store::window_fits_run(product, last)
+                })
+            });
+        }
     }
     let hours = match request.hours {
         BatchHourScope::Current(hour) => vec![hour],
@@ -510,10 +592,42 @@ pub fn run_batch_render(
         )
     })?;
 
-    let planned = per_hour
+    // Where the windowed products are drawn: every selected frame whose
+    // lead is a whole hour.  A frame between hours ends no window, so a
+    // whole run, or a keyword, plans none there: a 15-minute history
+    // would otherwise add three skip lines per windowed product per hour.
+    // A frame picked by itself for a NAMED window keeps its anchor, and
+    // its skip line says why it has none.
+    let window_frame = |slot: u16| {
+        window_frames
+            .iter()
+            .find(|frame| frame.slot == slot)
+            .copied()
+    };
+    let frame_label = |slot: u16| {
+        window_frame(slot)
+            .map(|frame| frame.label())
+            .unwrap_or_else(|| format!("F{slot:03}"))
+    };
+    let picked_by_name =
+        product_request.strict && matches!(request.hours, BatchHourScope::Current(_));
+    let window_anchors: Vec<u16> = hours
+        .iter()
+        .copied()
+        .filter(|&slot| {
+            picked_by_name || window_frame(slot).is_none_or(|frame| frame.closes_windows())
+        })
+        .collect();
+
+    let planned = hours
         .len()
-        .checked_add(product_request.windowed.len())
-        .and_then(|products| hours.len().checked_mul(products))
+        .checked_mul(per_hour.len())
+        .and_then(|per_frame| {
+            window_anchors
+                .len()
+                .checked_mul(product_request.windowed.len())
+                .and_then(|windowed| per_frame.checked_add(windowed))
+        })
         .ok_or_else(|| "batch work-item count overflowed usize".to_string())?;
     let all_products = per_hour
         .iter()
@@ -636,9 +750,10 @@ pub fn run_batch_render(
     }
 
     // Windowed products follow the same selected anchors as ordinary
-    // products. The complete earlier store remains baseline context; a
-    // selected hour must never silently become the latest stored hour.
-    for &anchor_hour in &hours {
+    // products, less the frames between hours (`window_anchors`). The
+    // complete earlier store remains baseline context; a selected hour
+    // must never silently become the latest stored hour.
+    for &anchor_hour in &window_anchors {
         if cancel.load(Ordering::Relaxed) || product_request.windowed.is_empty() {
             break;
         }
@@ -713,7 +828,7 @@ pub fn run_batch_render(
                                     emit(BatchRenderEvent::ItemSkipped {
                                         hour: Some(anchor_hour),
                                         slug,
-                                        reason: format!("F{anchor_hour:03}: {reason}"),
+                                        reason: format!("{}: {reason}", frame_label(anchor_hour)),
                                         completed,
                                         total: planned,
                                     });
@@ -728,7 +843,7 @@ pub fn run_batch_render(
                             emit(BatchRenderEvent::ItemFailed {
                                 hour: Some(anchor_hour),
                                 slug: slug.clone(),
-                                error: format!("F{anchor_hour:03}: {error}"),
+                                error: format!("{}: {error}", frame_label(anchor_hour)),
                                 completed,
                                 total: planned,
                             });
@@ -753,7 +868,7 @@ pub fn run_batch_render(
                     emit(BatchRenderEvent::ItemFailed {
                         hour: Some(anchor_hour),
                         slug: slug.clone(),
-                        error: format!("open window anchor F{anchor_hour:03}: {error}"),
+                        error: format!("open window anchor {}: {error}", frame_label(anchor_hour)),
                         completed,
                         total: planned,
                     });
@@ -770,15 +885,10 @@ pub fn run_batch_render(
 
 /// How many of an hour's products render at the same time.
 ///
-/// [`std::thread::available_parallelism`] counts LOGICAL processors.  A
-/// product render is dominated by field decode, projection and
-/// rasterization -- memory-bandwidth work whose hyperthread sibling buys
-/// little while costing cache -- so the default is half of it, which is
-/// the physical core count on an SMT machine.  Deliberately the same
-/// arithmetic and the same `RUSTWX_RENDER_THREADS` variable the derived
-/// lane's own render fan-out already reads
-/// (`rustwx_products::derived::store_render`), so one variable still
-/// sets the renderer's width everywhere it fans out;
+/// Ordinary batch renders use half the logical processors, as the derived
+/// lane does. Live frames reserve one processor for the foreground forecast
+/// and divide the remainder between `RUSTWX_LIVE_RENDER_SLOTS` processes.
+/// The existing `RUSTWX_RENDER_THREADS` variable still overrides the default;
 /// `RUSTWX_BATCH_RENDER_THREADS` narrows this loop alone, which is the
 /// knob for a memory-tight box (each concurrent product holds its own
 /// decoded planes, so peak RAM scales with this number).
@@ -804,7 +914,8 @@ pub fn run_batch_render(
 ///
 /// ```text
 /// cap = (available_physical_bytes * BUDGET_FRACTION) / PRODUCT_WORKER_BYTES
-/// width = min(physical cores, products in the hour, cap), at least 1
+/// cores = logical processors / 2, or (logical processors - 1) / live slots
+/// width = min(cores, products in the hour, cap), at least 1
 /// ```
 ///
 /// [`BUDGET_FRACTION`] is half: a render is a guest on the box, and the
@@ -831,12 +942,14 @@ fn product_worker_count_within(item_count: usize, available_bytes: Option<u64>) 
     if let Some(width) = override_threads {
         return width.min(item_count);
     }
+    let live_slots = live_render_slots();
     let detected = std::thread::available_parallelism()
-        .map(|count| (count.get() / 2).max(1))
+        .map(|count| default_product_worker_count(count.get(), live_slots))
         .unwrap_or(1);
     let affordable = match available_bytes {
         Some(bytes) => {
-            let budget = (bytes as f64 * BUDGET_FRACTION) as u64;
+            let budget = (bytes as f64 * BUDGET_FRACTION) as u64
+                / live_slots.unwrap_or(1) as u64;
             let for_workers = budget.saturating_sub(PRODUCT_LOOP_BASE_BYTES);
             usize::try_from(for_workers / PRODUCT_WORKER_BYTES)
                 .unwrap_or(usize::MAX)
@@ -847,10 +960,26 @@ fn product_worker_count_within(item_count: usize, available_bytes: Option<u64>) 
     detected.min(item_count).min(affordable)
 }
 
+/// Simultaneous live frame imports share the existing CPU and memory budget.
+fn live_render_slots() -> Option<usize> {
+    std::env::var("RUSTWX_LIVE_RENDER_SLOTS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+}
+
+fn default_product_worker_count(processors: usize, live_slots: Option<usize>) -> usize {
+    match live_slots {
+        Some(slots) => processors.saturating_sub(1) / slots.max(1),
+        None => processors / 2,
+    }
+    .max(1)
+}
+
 /// Fixed cost of the loop itself: the store handle, the basemap, the
 /// process.  Measured as the peak resident set of the width-1 render
 /// phase, where the ladder starts.
-const PRODUCT_LOOP_BASE_BYTES: u64 = 470 * 1024 * 1024;
+const PRODUCT_LOOP_BASE_BYTES: u64 = 470 * 1024 * 1024 + rustwx_render::PROJECTED_MAP_CACHE_BYTES;
 
 /// What one more concurrent product costs at peak: the slope of that
 /// ladder, rounded UP past the steeper of the two grids measured,
@@ -877,7 +1006,7 @@ fn advise_if_memory_bound(width: usize, item_count: usize, available_bytes: Opti
         return;
     }
     let uncapped = std::thread::available_parallelism()
-        .map(|count| (count.get() / 2).max(1))
+        .map(|count| default_product_worker_count(count.get(), live_render_slots()))
         .unwrap_or(1)
         .min(item_count);
     if width >= uncapped {
@@ -1120,6 +1249,16 @@ fn render_hour_item(
         let variable = slug.strip_prefix("var:").ok_or_else(|| {
             format!("internal generic product identity {slug:?} is missing the 'var:' prefix")
         })?;
+        // Skipped by name on a frame that does not store it, as the direct
+        // and derived lanes skip theirs: a catalog of several frames lists
+        // a variable any of them stores
+        // ([`inspect_renderable_products_over`]), and one frame without it
+        // failed the whole invocation, every other frame's pictures with it.
+        if store.surface_variable(variable).is_none() {
+            return Ok(ProductOutcome::Skipped(format!(
+                "not stored in this frame: 2-D variable {variable:?}"
+            )));
+        }
         let rendered = crate::render_all::store_render::render_generic_store_variable(
             store, config, hour, variable,
         )
@@ -1936,8 +2075,139 @@ mod tests {
             output.display()
         );
         let name = output.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.contains("var_mystery_plane_"), "{name}");
+        // The variable's own name, with no hash beside it.
+        assert!(name.ends_with("_var_mystery_plane.png"), "{name}");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// One hour whose two bulk-shear planes hold `values` in `units`.
+    fn write_shear_store(root: &std::path::Path, run: &str, units: &str, values: &[f32]) {
+        let shape = GridShape::new(4, 3).unwrap();
+        let grid = LatLonGrid::new(
+            shape,
+            (0..12).map(|cell| 35.0 + (cell / 4) as f32).collect(),
+            (0..12).map(|cell| -100.0 + (cell % 4) as f32).collect(),
+        )
+        .unwrap();
+        let temperature = SelectedField2D::new(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            "K",
+            grid,
+            vec![290.0; 12],
+        )
+        .unwrap();
+        write_hour_from_fields_with_derived(
+            root,
+            "wrf",
+            run,
+            0,
+            &[("temperature_2m", &temperature)],
+            &[
+                DerivedFieldInput {
+                    name: "bulk_shear_0_1km",
+                    units,
+                    values,
+                },
+                DerivedFieldInput {
+                    name: "bulk_shear_0_6km",
+                    units,
+                    values,
+                },
+            ],
+            &[],
+            "shear-units-test",
+            1_800_000_000,
+        )
+        .unwrap();
+    }
+
+    /// Every picture of one store's shear products, by slug, plus the
+    /// skipped slugs with their reasons.
+    fn render_shear_store(
+        label: &str,
+        units: &str,
+        values: &[f32],
+    ) -> (
+        std::collections::BTreeMap<String, Vec<u8>>,
+        std::collections::BTreeMap<String, String>,
+    ) {
+        let root = test_dir(label);
+        let run = "local_wrf_20200102_030000";
+        write_shear_store(&root, run, units, values);
+        let products = "bulk_shear_0_1km,bulk_shear_0_6km,var:bulk_shear_0_1km,var:bulk_shear_0_6km";
+        let mut request =
+            BatchRenderRequest::conservative(&root, "wrf", run, 0, products, root.join("out"));
+        request.output_width = 480;
+        request.output_height = 360;
+        let mut drawn = std::collections::BTreeMap::new();
+        let mut skipped = std::collections::BTreeMap::new();
+        let summary = run_batch_render(request, &AtomicBool::new(false), |event| match event {
+            BatchRenderEvent::ItemRendered {
+                slug, output_path, ..
+            } => {
+                drawn.insert(slug, std::fs::read(output_path).unwrap());
+            }
+            BatchRenderEvent::ItemSkipped { slug, reason, .. } => {
+                skipped.insert(slug, reason);
+            }
+            _ => {}
+        })
+        .unwrap();
+        assert_eq!(summary.failed, 0, "{summary:?}");
+        let _ = std::fs::remove_dir_all(root);
+        (drawn, skipped)
+    }
+
+    #[test]
+    fn stored_bulk_shear_is_drawn_in_knots_whatever_unit_the_store_holds() {
+        // A raw-wrfout import stores bulk shear in m/s, the GRIB ingest in
+        // kt; the named products and their `var:` pictures are drawn in kt.
+        let metres_per_second: Vec<f32> = (0..12).map(|cell| 2.0 + 2.0 * cell as f32).collect();
+        // The named products convert in f64 with the compute lane's factor,
+        // the `var:` pictures in f32 with the viewer's; each is compared
+        // against a knot store holding exactly the numbers it should draw.
+        let knots_f64: Vec<f32> = metres_per_second
+            .iter()
+            .map(|value| (f64::from(*value) * 1.943_844_5) as f32)
+            .collect();
+        let knots_f32: Vec<f32> = metres_per_second
+            .iter()
+            .map(|value| *value * 1.943_844_5)
+            .collect();
+
+        let (from_ms, ms_skips) = render_shear_store("shear-ms", "m/s", &metres_per_second);
+        let (from_kt, _) = render_shear_store("shear-kt", "kt", &knots_f64);
+        let (from_kt_f32, _) = render_shear_store("shear-kt-f32", "kt", &knots_f32);
+        let (as_if_knots, _) = render_shear_store("shear-raw", "kt", &metres_per_second);
+        assert!(ms_skips.is_empty(), "{ms_skips:?}");
+        for slug in ["bulk_shear_0_1km", "bulk_shear_0_6km"] {
+            let var = format!("var:{slug}");
+            assert!(
+                from_ms[slug] == from_kt[slug],
+                "{slug}: shear stored in m/s must be drawn in knots"
+            );
+            assert!(
+                from_ms[var.as_str()] == from_kt_f32[var.as_str()],
+                "{var}: shear stored in m/s must be drawn in knots"
+            );
+            assert!(
+                from_ms[slug] != as_if_knots[slug],
+                "{slug}: m/s numbers must not be read off the knot colour bar"
+            );
+            assert!(
+                from_ms[var.as_str()] != as_if_knots[var.as_str()],
+                "{var}: m/s numbers must not be read off the knot colour bar"
+            );
+        }
+
+        // A unit with no way to knots draws no named picture and says why.
+        let (from_kelvin, kelvin_skips) =
+            render_shear_store("shear-kelvin", "K", &metres_per_second);
+        for slug in ["bulk_shear_0_1km", "bulk_shear_0_6km"] {
+            assert!(!from_kelvin.contains_key(slug), "{slug} drawn from a K plane");
+            let reason = &kelvin_skips[slug];
+            assert!(reason.contains("\"K\"") && reason.contains("\"kt\""), "{reason}");
+        }
     }
 
     /// The parallel product loop's two determinism claims, on the
@@ -2088,13 +2358,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn live_frames_alone_share_the_forecast_cpu_budget() {
+        for (processors, batch, single_live, three_live) in [
+            (1, 1, 1, 1),
+            (2, 1, 1, 1),
+            (8, 4, 7, 2),
+            (16, 8, 15, 5),
+            (64, 32, 63, 21),
+        ] {
+            assert_eq!(default_product_worker_count(processors, None), batch);
+            assert_eq!(default_product_worker_count(processors, Some(1)), single_live);
+            assert_eq!(default_product_worker_count(processors, Some(3)), three_live);
+        }
+    }
+
+    #[test]
+    fn ordinary_batch_keeps_half_the_logical_processors() {
+        let processors = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+        assert_eq!(
+            product_worker_count_within(usize::MAX, None),
+            (processors / 2).max(1)
+        );
+    }
+
     /// The width a box can afford is the width it gets.  Driven through
     /// `product_worker_count_within` with the host query supplied, so the
     /// rule is tested at memory sizes this machine does not have.
     #[test]
     fn the_default_width_is_capped_by_free_memory() {
         let cores = std::thread::available_parallelism()
-            .map(|count| (count.get() / 2).max(1))
+            .map(|count| default_product_worker_count(count.get(), live_render_slots()))
             .unwrap_or(1);
         let plenty = PRODUCT_LOOP_BASE_BYTES * 8 + PRODUCT_WORKER_BYTES * 4096;
 
@@ -2128,7 +2424,7 @@ mod tests {
     #[test]
     fn a_memory_bound_width_advises_and_an_unbound_one_does_not() {
         let cores = std::thread::available_parallelism()
-            .map(|count| (count.get() / 2).max(1))
+            .map(|count| default_product_worker_count(count.get(), live_render_slots()))
             .unwrap_or(1);
         if cores < 2 {
             return; // Nothing to be capped below.

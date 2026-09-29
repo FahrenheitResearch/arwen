@@ -13,7 +13,7 @@ or no-op default, and importing this module does not unlock ``mp_physics=18``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 import numpy as np
@@ -236,6 +236,31 @@ class NSSL2ProductionBinding:
                     "canonical DomainState identity")
             _validate_scratch(value, shapes[name], name)
 
+    def with_step(self, dt_s: float, /) -> "NSSL2ProductionBinding":
+        """This binding at another model step, sharing every buffer.
+
+        The step is the only thing the fused GS callback and the
+        NUCOND+QVEXCESS hook take from construction; the workspace, the
+        fused-GS t0/t7 scratch and the supersaturation filter are all
+        named DomainState scratch that the kernels fully overwrite each
+        call.  A changed step (the adaptive clock moves it every root
+        step) therefore rebinds the two callbacks and keeps the buffers,
+        which costs two small Python objects and no device work.
+
+        Returns ``self`` when the float32 step is unchanged, so a fixed
+        clock never builds anything.
+        """
+        step = _step32(dt_s)
+        if step == self.dt_s:
+            return self
+        fused_gs = replace(self.fused_gs, dt_s=step)
+        hooks = make_nssl2_default_runtime_hooks(
+            self.state, step, fused_gs, validate_values=False,
+            mode=self.mode)
+        binding = replace(self, dt_s=step, fused_gs=fused_gs, hooks=hooks)
+        binding.validate(self.state, step)
+        return binding
+
 
 def make_nssl2_production_binding(
         state, dt_s: float, *,
@@ -246,7 +271,9 @@ def make_nssl2_production_binding(
     :func:`gpuwm.core.nssl2_contract.resolve_nssl2_mode`.  It is frozen into
     the binding, so a domain cannot change hail or CCN treatment mid-run:
     ``validate`` re-checks that the fused hook still carries the same hail
-    switch on every step.
+    switch on every step.  The step is not frozen: ``dt_s`` is the step the
+    domain starts on, and :meth:`NSSL2ProductionBinding.with_step` moves
+    the binding to any later one.
     """
     require_ported_nssl2_mode(mode)
     step = _step32(dt_s)

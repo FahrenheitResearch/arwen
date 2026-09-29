@@ -379,7 +379,7 @@ class TestArguments:
         assert argv[argv.index("--domain-polygon") + 1] == "box.json"
 
     def test_the_daemon_defaults_to_the_hrrr_background(self):
-        """HRRR is the background, permanently (Drew ruling, 2026-08-06).
+        """HRRR is the background, permanently (project ruling, 2026-08-06).
 
         GFS stays selectable for archival reproduction of pre-HRRR runs
         and for nothing else; the daemon forwards whichever was chosen

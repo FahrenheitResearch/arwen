@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the writer's render-parity evidence to Drew's gallery.
+"""Publish the writer's render-parity evidence to an evidence gallery.
 
 Four product plots, each rendered twice by ``rw_wrfbatch`` -- once from the
 original wrfout and once from the file the Rust writer produced -- copied

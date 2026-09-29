@@ -96,6 +96,7 @@ import numpy as np
 
 from gpuwm import perf_timing
 from gpuwm.checkpoint_identity import (
+    CONFIG_DIAGNOSTIC_FIELDS,
     CUMULUS_ALGORITHM_IDENTITIES,
     LAND_SURFACE_ALGORITHM_IDENTITIES,
     LAND_SURFACE_PARAMETER_SOURCES,
@@ -242,28 +243,12 @@ _HEADER_KEY = "__gpuwm_restart_header__"
 CONFIG_RUN_LENGTH_FIELDS = frozenset({
     "run_seconds", "output_interval_s", "restart_interval_s"})
 
-#: Trajectory-inert diagnostic toggles, restart-boundary-adjustable exactly
-#: like the run-length fields: flipping one cannot change the model
-#: trajectory (nwp_diagnostics inertness is pinned by
-#: tests/test_uh_lifecycle.py), and a header written before the knob
-#: existed simply lacks the key.  The accumulator payloads themselves stay
-#: tolerant in both directions (missing in file -> zeroed with a note;
-#: present in file under a diagnostics-off resume -> dropped with a note).
-#: ``tke_budget`` joins it on the same argument: the accumulator reads
-#: model state and writes only its own diagnostic scratch, so flipping it
-#: at a restart boundary cannot change the trajectory (inertness pinned by
-#: tests/test_tke_budget.py).
-#:
-#: ``sase_flux_diag`` joins on the same argument: it allocates four
-#: history buffers and fills them from arrays the SASE step already
-#: holds, reading no prognostic and writing none, so resuming with the
-#: diagnostic newly switched on continues the SAME model.  Its two
-#: siblings ``sase_moist_n2``, ``sase_stable_dissipation`` and
-#: ``sase_additive_dissipation`` are deliberately NOT here -- all three
-#: are physics selectors that move the trajectory, and a physics
-#: selector may not change under a resume.
-CONFIG_DIAGNOSTIC_FIELDS = frozenset(
-    {"nwp_diagnostics", "tke_budget", "sase_flux_diag"})
+# Output-only diagnostic toggles are restart-boundary-adjustable exactly
+# like the run-length fields: ``CONFIG_DIAGNOSTIC_FIELDS``, imported above
+# from :mod:`gpuwm.checkpoint_identity`, which holds the one table and the
+# inertness argument for each member.  The accumulator payloads stay
+# tolerant in both directions (missing in file -> zeroed with a note;
+# present in file under a diagnostics-off resume -> dropped with a note).
 
 #: An opt-in tree-checkpoint contract for restart-extend orchestration.  It
 #: admits exactly one setup change: appending future root LBC intervals after
@@ -372,7 +357,10 @@ PHYSICS_ASSET_PATHS = {
     "rrtmgp_gas_sw": Path("data/rrtmgp/rrtmgp-gas-sw-g224.nc"),
     "rrtmgp_cloud_lw": Path("data/rrtmgp/rrtmgp-clouds-lw-bnd.nc"),
     "rrtmgp_cloud_sw": Path("data/rrtmgp/rrtmgp-clouds-sw-bnd.nc"),
-    "rrtmgp_rfmip": Path("data/rrtmgp/rfmip-clear-sky-inputs.nc"),
+    # The key keeps its name: it is written into every restart manifest.
+    # Since 2.8.0 the bytes RRTMGP reads are the climatology derived from
+    # the RFMIP inputs (which no longer ship); see _active_asset_identity.
+    "rrtmgp_rfmip": Path("data/rrtmgp/rrtmgp-trace-gas-climatology.json"),
     "wrf_rrtm_data": Path("data/wrf_radiation/RRTM_DATA"),
     "wrf_rrtmg_lw_data": Path("data/wrf_radiation/RRTMG_LW_DATA"),
     "wrf_rrtmg_lw_statics": Path("data/wrf_radiation/rrtmg_lw_statics.npz"),
@@ -1888,12 +1876,30 @@ def _active_asset_identity(cfg, driver) -> dict[str, dict]:
             raise RestartManifestError(
                 f"active physics asset {role!r} is unreadable at {path}") \
                 from exc
-        identity[role] = {
-            "path": relative.as_posix(),
-            "bytes": int(size),
-            "sha256": sha256,
-        }
+        identity[role] = _recorded_asset_identity(
+            role, relative, int(size), sha256)
     return identity
+
+
+def _recorded_asset_identity(role: str, relative: Path, size: int,
+                             sha256: str) -> dict:
+    """The identity a restart manifest records for one active asset.
+
+    The bytes read, except for one role.  ``rrtmgp_rfmip`` named the RFMIP
+    input NetCDF until 2.8.0, when the driver switched to the climatology
+    derived from it (the NetCDF no longer ships).  The pinned table holds
+    exactly the float64 values the driver read from that file, so while
+    the table matches its pin the role keeps recording the source file and
+    every RRTMGP checkpoint written before 2.8.0 stays resumable.  Table
+    bytes that miss the pin keep their own identity, and a resume refuses.
+    """
+
+    if role == "rrtmgp_rfmip":
+        from gpuwm.core.rfmip_upstream import (
+            TRACE_CLIMATOLOGY_SHA256, TRACE_CLIMATOLOGY_SOURCE)
+        if sha256 == TRACE_CLIMATOLOGY_SHA256:
+            return dict(TRACE_CLIMATOLOGY_SOURCE)
+    return {"path": relative.as_posix(), "bytes": size, "sha256": sha256}
 
 
 def _scheme_algorithm(mapping: dict[int, str], scheme_id, label: str) -> str:
@@ -2246,10 +2252,36 @@ def _packed_parameters_identity(params, *, label: str,
     return payload
 
 
-def _configuration_fingerprint(cfg) -> str:
-    values = {key: value for key, value in dataclasses.asdict(cfg).items()
+#: The output-only switches the configuration digest has DROPPED since it
+#: first bound them.  Every other member of CONFIG_DIAGNOSTIC_FIELDS is
+#: held at its RunConfig default in the digest instead: dropping a key
+#: moves the digest of every configuration, which re-pins every checkpoint
+#: byte test for no change in any checkpoint's meaning, while holding it
+#: at its default leaves every configuration that leaves it off with the
+#: bytes it always had.  Either way the digest cannot tell two values of
+#: the switch apart, which is all the restart walk needs.
+_DIGEST_DROPPED_DIAGNOSTIC_FIELDS = frozenset(
+    {"nwp_diagnostics", "tke_budget", "sase_flux_diag"})
+
+
+def _configuration_digest_values(config: Mapping) -> dict:
+    """A RunConfig echo as the configuration digest reads it.
+
+    Run length and cadence are dropped; each output-only switch is dropped
+    or held at its default, as :data:`_DIGEST_DROPPED_DIAGNOSTIC_FIELDS`
+    records.
+    """
+    values = {key: value for key, value in dict(config).items()
               if key not in CONFIG_RUN_LENGTH_FIELDS
-              and key not in CONFIG_DIAGNOSTIC_FIELDS}
+              and key not in _DIGEST_DROPPED_DIAGNOSTIC_FIELDS}
+    for key in CONFIG_DIAGNOSTIC_FIELDS - _DIGEST_DROPPED_DIAGNOSTIC_FIELDS:
+        if key in values:
+            values[key] = _run_config_default(key)
+    return values
+
+
+def _configuration_fingerprint(cfg) -> str:
+    values = _configuration_digest_values(dataclasses.asdict(cfg))
     if values.get("use_adaptive_time_step"):
         # A LIVE dt is not part of what the run IS -- it is where the
         # controller happened to be at the instant the checkpoint was
@@ -2954,10 +2986,14 @@ def _validate_pbl_diagnostics(stored, header, state, driver) -> None:
         target = state.w if known[key] == "sase_flux_diag" else state.p
         _check_array(stored[key], target, key)
     for key in pbl_diagnostic_manifest(driver):
-        # This existing diagnostic toggle is trajectory-inert and can be
-        # enabled at restart; zero is then its established cold value.
-        newly_enabled = (key.startswith(prefix + "sase_flux_diag/")
-                         and not header["config"].get("sase_flux_diag", False))
+        # Every group here is an output-only toggle from
+        # CONFIG_DIAGNOSTIC_FIELDS, which the config walk lets a resume
+        # switch on; zero is then its cold value until the next due PBL
+        # step refills it.  A group the checkpoint had ON must still be
+        # carried, or the first off-cadence frame would publish zeros.
+        group = known[key]
+        newly_enabled = (group in CONFIG_DIAGNOSTIC_FIELDS
+                         and not header["config"].get(group, False))
         if key not in stored and not newly_enabled:
             raise RestartMismatchError(f"restart is missing held PBL diagnostic {key}")
 
@@ -3133,10 +3169,18 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
                    sealed_forcing_extension: bool = False,
                    preserved_forcing_prefix: bool = False) -> Path:
     path = Path(path)
+    # A root whose boundaries still stream from an unsealed preparation is
+    # checkpointed over its prepared intervals, under the preserved-prefix
+    # contract, and bound to the head it streams from.
+    stream = None if sealed_forcing_extension else _pre_seal_intervals(state)
+    view = state
+    if stream is not None:
+        preserved_forcing_prefix = True
+        view = _ReadyPrefixState(state, stream)
     if preserved_forcing_prefix:
         if sealed_forcing_extension:
             raise ValueError('A checkpoint cannot declare two forcing continuation modes')
-        _require_preservable_forcing_prefix(state, cfg, path=path,
+        _require_preservable_forcing_prefix(view, cfg, path=path,
             elapsed=_admissible_elapsed_seconds(state.elapsed_seconds, 'preserved restart write'))
     _validate_nssl2_live_restart_state(state, cfg)
     _validate_thompson_aerosol_live_restart_state(state, cfg)
@@ -3195,7 +3239,7 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         "elapsed_seconds": _admissible_elapsed_seconds(
             state.elapsed_seconds, "restart write"),
         "config": dataclasses.asdict(cfg),
-        "setup_fingerprint": setup_fingerprint(state),
+        "setup_fingerprint": setup_fingerprint(view),
         "physics_setup": physics_setup,
         "physics_setup_fingerprint": physics_setup_sha256,
         "driver": driver_header,
@@ -3207,9 +3251,12 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         header.update({
             "forcing_extension_mode": (PRESERVED_FORCING_PREFIX_MODE if preserved_forcing_prefix
                                        else SEALED_FORCING_EXTENSION_MODE),
-            "setup_core_fingerprint": setup_core_fingerprint(state),
-            "lateral_boundary_prefix": lateral_boundary_prefix_identity(state),
+            "setup_core_fingerprint": setup_core_fingerprint(view),
+            "lateral_boundary_prefix": lateral_boundary_prefix_identity(view),
         })
+    if stream is not None:
+        header[BOUNDARY_STREAM_HEADER_KEY] = {
+            "head_sha256": str(stream.head_sha256)}
     lbc_clock_identity = root_external_lbc_clock_identity(state, cfg)
     if lbc_clock_identity is not None:
         header["root_external_lbc_clock"] = lbc_clock_identity
@@ -3966,6 +4013,12 @@ def _identity_matches_under_current_rules(header, model) -> bool:
                 run = domain.get("run") if isinstance(domain, dict) else None
                 if not isinstance(run, dict):
                     continue
+                # Output-only toggles: the member walk and the
+                # configuration digest already let a resume change them,
+                # so the tree's outer identity must too, or the tree
+                # refuses the change each member accepts.
+                for name in CONFIG_DIAGNOSTIC_FIELDS:
+                    run.pop(name, None)
                 if run.get("use_adaptive_time_step") in (True, "True"):
                     for name in ADAPTIVE_POLICY_RUN_FIELDS:
                         run.pop(name, None)
@@ -4034,7 +4087,9 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     named = ", ".join(differing)
     reason = (
         f"{prefix}: {named} differ(s) from the checkpoint.  A restart "
-        "may change the forecast length and the output/restart cadence; "
+        "may change the forecast length, the output/restart cadence and "
+        "the output-only diagnostic switches "
+        f"({', '.join(sorted(CONFIG_DIAGNOSTIC_FIELDS))}); "
         "everything else -- geometry, timestep, physics, nesting, "
         "prepared inputs -- must be the run that wrote the checkpoint")
     # Same restart accuracy as the single-domain door: when the moved
@@ -4891,6 +4946,10 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
         raise
     root_id = int(model.root.cfg.grid_id)
     model._last_checkpoint = paths[root_id]
+    # Only after the whole new set is published: the sets it supersedes
+    # go when the run's retention says so (gpuwm.resume), never before.
+    from gpuwm.resume import retire_superseded_checkpoints
+    retire_superseded_checkpoints(directory)
     return paths[root_id]
 
 
@@ -5182,13 +5241,21 @@ def restore_tree_restart(path, model, *,
             "the stop, or raise [experiment] run_seconds to at least "
             f"{ticks / tick_den:g}")
 
+    # The set's own topology, for the ring migration below: a nest that
+    # rides inside a mover changes ground without ever being listed in
+    # ``moved_grid_ids`` (that list names the grids a resume must put
+    # back through a placement rebuild, which a carried nest does not
+    # need), and its ring holds rain the move shifted there.
+    parent_by_grid = {int(gid): int(header.get("parent_id") or 0)
+                      for gid, header in headers.items()}
     # All refusal checks over all members precede the first mutation.
     for gid, node in nodes.items():
         from tilestream.restart_stream import ValidatedStreamedRestart
         if isinstance(validated[gid], ValidatedStreamedRestart):
             node.state._streamed_domain.apply_restart(validated[gid])
         else:
-            _apply_validated_restart(validated[gid], node.state, node.cfg.run)
+            _apply_validated_restart(validated[gid], node.state, node.cfg.run,
+                                     parent_by_grid=parent_by_grid)
         clock = node.clock
         clock.ticks = ticks
         adaptive = headers[gid].get("adaptive_clock")
@@ -5601,6 +5668,48 @@ def _require_sealed_forcing_extension(header, state, *, path: Path,
             "checkpoint-boundary frame")
 
 
+#: Header key naming the prepared head a pre-seal checkpoint was written
+#: against (chained preparation, :mod:`gpuwm.ingest.boundary_stream`).
+BOUNDARY_STREAM_HEADER_KEY = "boundary_stream"
+
+
+def _pre_seal_intervals(state):
+    """The root's streamed boundary series while its preparation is unsealed.
+
+    ``None`` for every eager series and for a streamed one whose tree has
+    sealed: those checkpoints are written exactly as always.
+    """
+
+    boundaries = getattr(state, "lateral_boundaries", None)
+    intervals = getattr(boundaries, "intervals", None)
+    ready = getattr(intervals, "ready_prefix", None)
+    sealed = getattr(intervals, "sealed", None)
+    if not callable(ready) or not callable(sealed) or sealed():
+        return None
+    return intervals
+
+
+class _ReadyPrefixState:
+    """A state seen with only its prepared boundary intervals.
+
+    A checkpoint written while the preparation is still producing later
+    intervals is hashed over the intervals that exist (which always cover
+    the checkpoint clock) under the preserved-prefix contract.  Waiting
+    for the seal instead would stall the model at its first checkpoint
+    for the rest of the preparation.
+    """
+
+    def __init__(self, state, intervals, count=None):
+        count = int(intervals.ready_prefix() if count is None else count)
+        object.__setattr__(self, "_state", state)
+        object.__setattr__(self, "lateral_boundaries", dataclasses.replace(
+            state.lateral_boundaries,
+            intervals=tuple(intervals[index] for index in range(count))))
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_state"), name)
+
+
 def _require_preservable_forcing_prefix(state, cfg, *, path, elapsed):
     if not getattr(cfg, 'specified', False) or getattr(cfg, 'nested', False):
         raise RestartMismatchError(f'{path}: preserved forcing requires a specified root domain')
@@ -5609,6 +5718,29 @@ def _require_preservable_forcing_prefix(state, cfg, *, path, elapsed):
     if elapsed > float(intervals[-1]['end_seconds']):
         raise RestartMismatchError(f'{path}: the forcing inventory ends before the checkpoint clock')
     return controls, intervals
+
+
+def _stored_prefix_view(header, state, *, path):
+    """The live state seen with only the intervals the checkpoint recorded.
+
+    A checkpoint written before its preparation sealed records the
+    intervals prepared at that time.  Resumed on a series still being
+    prepared (the same head), the preserved-prefix check needs exactly
+    those intervals, which already exist; comparing the whole series would
+    wait for the seal before the first step, so a resume mid-preparation
+    would lose the head start the chain gives the first run.  Every other
+    live series is returned whole, as before.
+    """
+
+    intervals = _pre_seal_intervals(state)
+    if intervals is None:
+        return state
+    _, stored = _validated_forcing_prefix(
+        header.get('lateral_boundary_prefix'), label='stored preserved',
+        path=path)
+    if len(stored) > len(intervals):
+        return state
+    return _ReadyPrefixState(state, intervals, count=len(stored))
 
 
 def _require_preserved_forcing_prefix(header, state, cfg, *, path, elapsed):
@@ -5670,11 +5802,34 @@ def _validate_restart(path, state, cfg, *,
     except (TypeError, ValueError, KeyError, RestartManifestError) as exc:
         raise RestartMismatchError(
             f"restart file {path} has an invalid elapsed_seconds") from exc
-    live_setup_fingerprint = setup_fingerprint(state)
+    stream_header = header.get(BOUNDARY_STREAM_HEADER_KEY)
+    if isinstance(stream_header, dict) and not sealed_forcing_extension:
+        # A checkpoint written before its preparation sealed is validated
+        # under the preserved-prefix contract: every interval it recorded
+        # must be byte-identical in the live set.  A run streaming from
+        # another head is refused by name before that comparison.
+        live = getattr(getattr(getattr(state, "lateral_boundaries", None),
+                               "intervals", None), "head_sha256", None)
+        if live is not None and live != stream_header.get("head_sha256"):
+            raise RestartMismatchError(
+                f"restart file {path} was written against the prepared head "
+                f"{stream_header.get('head_sha256')}, and this run streams "
+                f"from the prepared head {live}")
+        preserved_forcing_prefix = True
+
+    def live_setup_fingerprint():
+        # Only the exact and the nested-extension checks compare the whole
+        # setup fingerprint.  It covers every forcing interval, so on a
+        # series still being prepared it waits for the seal, which the
+        # preserved-prefix check below does not need.
+        return setup_fingerprint(state)
+
     if preserved_forcing_prefix:
         if sealed_forcing_extension:
             raise ValueError('A restore cannot declare two forcing continuation modes')
-        _require_preserved_forcing_prefix(header, state, cfg, path=path, elapsed=elapsed)
+        _require_preserved_forcing_prefix(
+            header, _stored_prefix_view(header, state, path=path), cfg,
+            path=path, elapsed=elapsed)
     elif sealed_forcing_extension:
         if header.get("forcing_extension_mode") != \
                 SEALED_FORCING_EXTENSION_MODE:
@@ -5697,7 +5852,7 @@ def _validate_restart(path, state, cfg, *,
             if (header.get("setup_core_fingerprint")
                     != setup_core_fingerprint(state)
                     or header["setup_fingerprint"]
-                    != live_setup_fingerprint):
+                    != live_setup_fingerprint()):
                 raise RestartMismatchError(
                     f"restart file {path} changed immutable child/nest setup "
                     "while extending root forcing")
@@ -5706,7 +5861,7 @@ def _validate_restart(path, state, cfg, *,
                 f"restart file {path} cannot use sealed forcing extension: "
                 "the live domain is neither a specified root nor a nested "
                 "child")
-    elif header["setup_fingerprint"] != live_setup_fingerprint:
+    elif header["setup_fingerprint"] != live_setup_fingerprint():
         raise RestartMismatchError(
             f"restart file {path} was written on a different model setup "
             "(base state / coordinates / map factors fingerprint "
@@ -5804,12 +5959,23 @@ def _validate_restart(path, state, cfg, *,
         format_version=format_version, elapsed=elapsed)
 
 
-def _grid_relocated(header, cfg) -> bool:
+def _grid_relocated(header, cfg, *, parent_by_grid=None) -> bool:
     """Did THIS grid's ground move during the checkpointed run?
 
-    ``moved_grid_ids`` is the per-grid answer and is what a relocating
-    run records; a grid absent from it never moved, so its ring cannot
-    have been shifted and it keeps the migration unchanged.
+    ``moved_grid_ids`` lists the grids a relocating run moved itself.  A
+    grid's ground also moves when any ANCESTOR moves and carries it along
+    at the same parent-relative placement: the carried nest is rebuilt
+    shifted, its interior rain lands in its ring, and it is never in the
+    list, because the list is also what decides which grids a resume
+    puts back through a placement rebuild.  So the answer is "this grid
+    or one of its ancestors is listed", walked over ``parent_by_grid``
+    (the checkpoint set's grid -> parent map) with this member's own
+    ``parent_id`` as the fallback for the first step.  A nest that holds
+    its ground while its parent moves (an earth-fixed child) is read as
+    moved too, which keeps its accumulators exactly as stored: its ring
+    was never shifted, so the stored ring is already the zero the
+    migration would write.  A grid on another branch of the tree, or the
+    root, is not an ancestor of the mover and keeps the migration.
 
     An older checkpoint can carry the relocation block without the list.
     That is read as "moved", not as "did not move", and the fallback is
@@ -5829,11 +5995,23 @@ def _grid_relocated(header, cfg) -> bool:
         grid_id = getattr(cfg, "grid_id", None)
     if grid_id is None:
         return True
-    return any(int(gid) == int(grid_id) for gid in moved)
+    moved = {int(gid) for gid in moved}
+    parents = {int(gid): int(parent or 0)
+               for gid, parent in (parent_by_grid or {}).items()}
+    parents.setdefault(int(grid_id), int(header.get("parent_id") or 0))
+    seen: set[int] = set()
+    gid = int(grid_id)
+    while gid > 0 and gid not in seen:
+        if gid in moved:
+            return True
+        seen.add(gid)
+        gid = parents.get(gid, 0)
+    return False
 
 
 def _apply_validated_restart(validated: _ValidatedRestart,
-                             state, cfg) -> RestartInfo:
+                             state, cfg, *,
+                             parent_by_grid=None) -> RestartInfo:
     """Apply an already complete-set-validated member in place."""
     header = validated.header
     stored = validated.stored
@@ -5904,7 +6082,8 @@ def _apply_validated_restart(validated: _ValidatedRestart,
     # rest of the forecast never puts back.
     from gpuwm.core.microphysics import normalize_spec_zone_ring_after_restore
     normalize_spec_zone_ring_after_restore(
-        state, cfg, relocated=_grid_relocated(header, cfg))
+        state, cfg, relocated=_grid_relocated(
+            header, cfg, parent_by_grid=parent_by_grid))
     state.elapsed_seconds = elapsed
     return RestartInfo(elapsed_seconds=elapsed,
                        run_trackers=header.get("run_trackers"),
@@ -6141,7 +6320,8 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
 
 __all__ = [
     "ADVECTIVE_FORCING_STATE",
-    "CONFIG_RUN_LENGTH_FIELDS", "DRIVER_REBUILT_ATTRS",
+    "CONFIG_DIAGNOSTIC_FIELDS", "CONFIG_RUN_LENGTH_FIELDS",
+    "DRIVER_REBUILT_ATTRS",
     "DRIVER_CHECKPOINT_ONLY_ATTRS",
     "DRIVER_SERIALIZED_ATTRS", "DRIVER_TENDENCY_ATTRS",
     "DRIVER_HELD_FORCING_ATTRS",

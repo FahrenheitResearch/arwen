@@ -1,4 +1,4 @@
-"""The gridded observation products are WRITTEN on Drew's Rust by default.
+"""The gridded observation products are WRITTEN on the project's Rust by default.
 
 F3 of the 2026-08-18 boundary audit.  ``gpuwm-obs.radar-grid.v1`` and its
 satellite twin ``gpuwm-obs.goes-grid.v1`` -- the two files the DA lanes read
@@ -362,6 +362,40 @@ def test_a_missing_rust_library_refuses_and_names_the_workaround(
     assert "depends on which box" in message
     assert OBS_GRID_WRITER_ENV in message
     assert "cargo build --release --offline" in message
+
+
+#: The NetCDF writer's checkout build as each shell must receive it,
+#: written out rather than derived so a generator that loses its shell
+#: rule cannot also rewrite what it is judged against.  Windows
+#: PowerShell 5.1 rejects `&&` with a parser error.
+NC_WRITER_BUILD_FOR_SHELL = {
+    False: "cd tools/rustwx && cargo build --release --offline && cd ../..",
+    True: "cd tools/rustwx; cargo build --release --offline; cd ../..",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_missing_writer_refusal_spells_the_build_for_the_shell(
+        tmp_path: Path, monkeypatch, windows):
+    """The build line in this refusal is one a Windows user can paste.
+
+    It printed `cd tools/rustwx && cargo build ...` on every OS, which
+    Windows PowerShell 5.1 cannot parse.
+    """
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.delenv(OBS_GRID_WRITER_ENV, raising=False)
+    monkeypatch.setattr(nc_writer_bridge, "unavailable_reason",
+                        lambda: "FileNotFoundError: not built here")
+    with pytest.raises(ObsGridWriterUnavailable) as caught:
+        open_obs_grid_product(tmp_path / "radar-grid.nc")
+    message = str(caught.value)
+    assert NC_WRITER_BUILD_FOR_SHELL[windows] in message, message
+    if windows:
+        assert "&&" not in message, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {message}")
 
 
 def test_a_partially_written_variable_is_refused(tmp_path: Path):

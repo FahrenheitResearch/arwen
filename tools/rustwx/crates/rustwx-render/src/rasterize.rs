@@ -79,18 +79,31 @@ pub fn rasterize_grid(
 ///
 /// `pixel_points` contains local image coordinates in map space, one per grid
 /// point, or `None` when the projected point falls outside the valid extent.
+///
+/// `sample_mode` decides what a pixel between grid points shows: the
+/// interpolated value, or the value of the nearest grid point. Nearest is
+/// what a category field needs, because a value between two codes is not a
+/// code, so both the rectilinear and the triangle path honour it.
 pub fn rasterize_projected_grid(
     data: &[f64],
     ny: usize,
     nx: usize,
     pixel_points: &[Option<(f32, f32)>],
     cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode,
     img_w: u32,
     img_h: u32,
 ) -> RgbaImage {
-    if let Some(mut img) =
-        rasterize_rectilinear_projected_grid(data, ny, nx, pixel_points, cmap, img_w, img_h)
-    {
+    if let Some(mut img) = rasterize_rectilinear_projected_grid(
+        data,
+        ny,
+        nx,
+        pixel_points,
+        cmap,
+        sample_mode,
+        img_w,
+        img_h,
+    ) {
         feather_projected_raster_edges(&mut img);
         return img;
     }
@@ -123,8 +136,8 @@ pub fn rasterize_projected_grid(
             let p10 = projected_pixel_to_f64(p10);
             let p01 = projected_pixel_to_f64(p01);
             let p11 = projected_pixel_to_f64(p11);
-            rasterize_triangle(&mut img, p00, v00, p10, v10, p11, v11, cmap);
-            rasterize_triangle(&mut img, p00, v00, p11, v11, p01, v01, cmap);
+            rasterize_triangle(&mut img, p00, v00, p10, v10, p11, v11, cmap, sample_mode);
+            rasterize_triangle(&mut img, p00, v00, p11, v11, p01, v01, cmap, sample_mode);
         }
     }
 
@@ -226,6 +239,7 @@ fn rasterize_rectilinear_projected_grid(
     nx: usize,
     pixel_points: &[Option<(f32, f32)>],
     cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode,
     img_w: u32,
     img_h: u32,
 ) -> Option<RgbaImage> {
@@ -252,20 +266,31 @@ fn rasterize_rectilinear_projected_grid(
             let i1 = x_sample.upper;
             let fx = x_sample.fraction;
             let idx = |j: usize, i: usize| j * nx + i;
-            let cell_j0 = j0.min(ny - 2);
-            let cell_i0 = i0.min(nx - 2);
-            if !data[idx(cell_j0, cell_i0)].is_finite()
-                || !data[idx(cell_j0, cell_i0 + 1)].is_finite()
-                || !data[idx(cell_j0 + 1, cell_i0)].is_finite()
-                || !data[idx(cell_j0 + 1, cell_i0 + 1)].is_finite()
-            {
-                continue;
-            }
-            let v00 = data[idx(j0, i0)];
-            let v10 = data[idx(j0, i1)];
-            let v01 = data[idx(j1, i0)];
-            let v11 = data[idx(j1, i1)];
-            let value = bilinear(v00, v10, v01, v11, fx, fy);
+            let value = match sample_mode {
+                RasterSampleMode::Linear => {
+                    let cell_j0 = j0.min(ny - 2);
+                    let cell_i0 = i0.min(nx - 2);
+                    if !data[idx(cell_j0, cell_i0)].is_finite()
+                        || !data[idx(cell_j0, cell_i0 + 1)].is_finite()
+                        || !data[idx(cell_j0 + 1, cell_i0)].is_finite()
+                        || !data[idx(cell_j0 + 1, cell_i0 + 1)].is_finite()
+                    {
+                        continue;
+                    }
+                    let v00 = data[idx(j0, i0)];
+                    let v10 = data[idx(j0, i1)];
+                    let v01 = data[idx(j1, i0)];
+                    let v11 = data[idx(j1, i1)];
+                    bilinear(v00, v10, v01, v11, fx, fy)
+                }
+                // The grid point this pixel is closest to; a non-finite one
+                // maps to transparent and leaves the pixel empty.
+                RasterSampleMode::Nearest => {
+                    let j = if fy < 0.5 { j0 } else { j1 };
+                    let i = if fx < 0.5 { i0 } else { i1 };
+                    data[idx(j, i)]
+                }
+            };
             let color = cmap.map(value).to_image_rgba();
             if color.0[3] > 0 {
                 img.put_pixel(px as u32, py as u32, color);
@@ -607,6 +632,10 @@ pub fn rasterize_projected_coverage_mask(
     img
 }
 
+fn squared_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)
+}
+
 fn bilinear(v00: f64, v10: f64, v01: f64, v11: f64, fx: f64, fy: f64) -> f64 {
     if v00.is_finite() && v10.is_finite() && v01.is_finite() && v11.is_finite() {
         let south = v00 * (1.0 - fx) + v10 * fx;
@@ -640,8 +669,18 @@ fn rasterize_triangle(
     p2: (f64, f64),
     v2: f64,
     cmap: &LeveledColormap,
+    sample_mode: RasterSampleMode,
 ) {
-    if !v0.is_finite() || !v1.is_finite() || !v2.is_finite() {
+    // An interpolated triangle needs all three values. A nearest one needs
+    // only the vertex a pixel takes, and a non-finite one maps to
+    // transparent, so the finite vertices keep their share of the triangle
+    // exactly as the rectilinear path keeps theirs.
+    if matches!(sample_mode, RasterSampleMode::Linear)
+        && (!v0.is_finite() || !v1.is_finite() || !v2.is_finite())
+    {
+        return;
+    }
+    if !v0.is_finite() && !v1.is_finite() && !v2.is_finite() {
         return;
     }
 
@@ -680,7 +719,27 @@ fn rasterize_triangle(
                 continue;
             }
 
-            let value = v0 * w0 + v1 * w1 + v2 * w2;
+            let value = match sample_mode {
+                RasterSampleMode::Linear => v0 * w0 + v1 * w1 + v2 * w2,
+                // The vertex nearest the pixel centre in pixel space. Each
+                // grid quad is split along its p00-p11 diagonal, which is
+                // the perpendicular bisector of p10-p01 on a square cell, so
+                // the nearest of a triangle's three vertices is the nearest
+                // of the quad's four and every grid point keeps a whole
+                // cell around it.
+                RasterSampleMode::Nearest => {
+                    let d0 = squared_distance(p, p0);
+                    let d1 = squared_distance(p, p1);
+                    let d2 = squared_distance(p, p2);
+                    if d0 <= d1 && d0 <= d2 {
+                        v0
+                    } else if d1 <= d2 {
+                        v1
+                    } else {
+                        v2
+                    }
+                }
+            };
             let color = cmap.map(value).to_image_rgba();
             if color.0[3] > 0 {
                 img.put_pixel(px as u32, py as u32, color);
@@ -891,7 +950,16 @@ mod tests {
             None,
         );
 
-        let image = rasterize_projected_grid(&data, 2, 2, &pixel_points, &cmap, 4, 4);
+        let image = rasterize_projected_grid(
+            &data,
+            2,
+            2,
+            &pixel_points,
+            &cmap,
+            RasterSampleMode::Linear,
+            4,
+            4,
+        );
 
         assert!(
             image.pixels().all(|px| px.0[3] == 0),

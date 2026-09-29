@@ -37,8 +37,14 @@ _WIND_FIELDS = {"U", "V", "W", "U10", "V10"}
 _TEMPERATURE_FIELDS = {
     "T", "THM", "T_INIT", "T2", "TH2", "TSK", "TSLB", "TMN", "SST",
 }
+#: SH2O (soil liquid water, m3 m-3) is derived on the host by Noah's
+#: LSMINIT from the soil temperature the backend interpolated, which the
+#: temperature rule already bounds, so a frozen layer carries that
+#: temperature's last-bit backend rounding.  Held byte-exact it failed
+#: every CPU/CUDA pair on a case with frozen soil, CUDA 12 as well as
+#: CUDA 13, and the instrument could certify nothing.
 _MOISTURE_FIELDS = {
-    "Q2", "QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP",
+    "Q2", "QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP", "SH2O",
 }
 _PRESSURE_FIELDS = {"P_HYD", "PSFC"}
 _SEMANTIC_WRFINPUT_RAW = {"P", "PH", "MU"}

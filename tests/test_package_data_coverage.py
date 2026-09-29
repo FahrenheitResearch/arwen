@@ -46,7 +46,12 @@ renderer's assets that mechanism is the bridge bundle rather than the wheel
 (the wheel is 74.6 MiB against PyPI's 100 MB per-file cap and the assets
 deflate to 20.2 MiB), which
 :func:`test_the_renderer_asset_tree_is_delivered_by_a_declared_mechanism`
-checks against ``gpuwm.bridge_assets``.
+checks against ``gpuwm.bridge_assets``.  The bundle alone was not enough: a
+wheel install reaches it only through ``gpuwm fetch-bridges``, which no
+install text ran, so since 2.8.0 the ``gpuwm-data`` companion carries the
+renderer's layer directories as well, and
+:func:`test_the_companion_wheel_ships_the_renderers_map_layers` holds its
+wheel to them.
 """
 
 from __future__ import annotations
@@ -99,27 +104,23 @@ def _require_companion_tree() -> None:
         pytest.skip("packaging gate needs the source tree, not an install")
 
 
-#: The ONLY files that may be deliberately absent from the wheel, in two
-#: pinned classes.  Anything else excluded from the wheel is a packaging
-#: bug, and either list going stale is one too.
+#: The ONLY files that may be deliberately absent from the wheel are the
+#: size-externalized class below.  Anything else excluded from the wheel is
+#: a packaging bug, and the list going stale is one too.
 #:
-#: License-driven: the four CC-BY-NC-SA-4.0 RFMIP reference-result NetCDFs
-#: (gpuwm-data/gpuwm_data/data/rrtmgp/PROVENANCE.md) -- in-repo test
-#: fixtures whose non-commercial license must not attach to the
-#: distributable.  These must stay in the repo.
+#: There used to be a license-driven class as well: the four
+#: CC-BY-NC-SA-4.0 RFMIP reference results, kept in the repository as test
+#: fixtures and excluded from both artifacts.  Since 2.8.0 no RFMIP file is
+#: in the repository at all (the tests fetch them from upstream,
+#: gpuwm/core/rfmip_upstream.py), so the class retired with the files and
+#: :func:`test_no_rfmip_file_is_carried` holds the tree to it.
 #:
-#: Repo-relative, and they moved with their directory: both classes below
-#: now name files in the COMPANION distribution, because that is where the
-#: rrtmgp and thompson/tables directories ship since 2.5.0.  The `gpuwm`
-#: wheel excludes nothing at all now, which
+#: Repo-relative, and it moved with its directory: the class below names
+#: files in the COMPANION distribution, because that is where the
+#: thompson/tables directory ships since 2.5.0.  The `gpuwm` wheel
+#: excludes nothing at all now, which
 #: :func:`test_wheel_exclusions_are_exactly_the_pinned_lists` states
 #: directly rather than leaving as an absence.
-_LICENSE_EXCLUDED_FROM_WHEEL = frozenset({
-    "gpuwm-data/gpuwm_data/data/rrtmgp/rfmip-clear-sky-reference-lw-down.nc",
-    "gpuwm-data/gpuwm_data/data/rrtmgp/rfmip-clear-sky-reference-lw-up.nc",
-    "gpuwm-data/gpuwm_data/data/rrtmgp/rfmip-clear-sky-reference-sw-down.nc",
-    "gpuwm-data/gpuwm_data/data/rrtmgp/rfmip-clear-sky-reference-sw-up.nc",
-})
 
 #: Size-driven externalized assets: published as GitHub release assets
 #: because they exceed distribution-channel limits, staged by
@@ -391,8 +392,7 @@ def test_every_data_file_in_the_companion_is_declared(
     assert present, "found no data files in the companion -- walk is broken"
 
     shipped = _companion_shipped(monkeypatch)
-    undeclared = sorted(present - shipped - _LICENSE_EXCLUDED_FROM_WHEEL
-                        - _EXTERNALIZED_FROM_WHEEL)
+    undeclared = sorted(present - shipped - _EXTERNALIZED_FROM_WHEEL)
     assert not undeclared, (
         f"{len(undeclared)} data file(s) in gpuwm-data/ would be omitted "
         "from its wheel because [tool.setuptools.package-data] in "
@@ -442,14 +442,12 @@ def test_the_moved_directories_left_the_gpuwm_wheel_entirely(
 def test_wheel_exclusions_are_exactly_the_pinned_lists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the license fixtures and the size-externalized assets.
+    """Only the size-externalized assets.
 
-    Both directions matter: an exclusion pattern that silently widened
-    would strip runtime data from the wheel, and a named fixture leaving
-    the repo would break the RFMIP acceptance gates that read it.  The
-    externalized assets may legitimately be absent from a checkout (the
-    public repository ships them as release assets); when present they
-    still must not reach the wheel.
+    An exclusion pattern that silently widened would strip runtime data
+    from the wheel.  The externalized assets may legitimately be absent
+    from a checkout (the public repository ships them as release assets);
+    when present they still must not reach the wheel.
 
     There is no third, redistribution-driven class any more.
     ``CCN_ACTIVATE.BIN`` was the only member and it ships now, so it must
@@ -474,21 +472,18 @@ def test_wheel_exclusions_are_exactly_the_pinned_lists(
     present = _files_on_disk(COMPANION_PACKAGE_ROOT, REPO_ROOT)
     shipped = _companion_shipped(monkeypatch)
     excluded = present - shipped
-    expected = set(_LICENSE_EXCLUDED_FROM_WHEEL) | (
-        set(_EXTERNALIZED_FROM_WHEEL) & present)
+    expected = set(_EXTERNALIZED_FROM_WHEEL) & present
     assert excluded == expected, (
         "companion wheel exclusions drifted from the pinned lists:\n"
         f"  unexpectedly excluded: {sorted(excluded - expected)}\n"
         f"  expected but shipped/missing: {sorted(expected - excluded)}"
     )
-    for relative in sorted(_LICENSE_EXCLUDED_FROM_WHEEL):
-        assert (REPO_ROOT / relative).is_file(), (
-            f"license-excluded test fixture vanished from the repo: {relative}"
-        )
-    # The applicable license text still ships beside the surviving rrtmgp
-    # data so PROVENANCE.md stays resolvable inside an installed wheel.
-    assert ("gpuwm-data/gpuwm_data/data/rrtmgp/LICENSE-CC-BY-NC-SA-4.0"
+    # The licence of the one CC-BY-SA-4.0 member ships beside it, so
+    # PROVENANCE.md stays resolvable inside an installed wheel.
+    assert ("gpuwm-data/gpuwm_data/data/rrtmgp/LICENSE-CC-BY-SA-4.0"
             in shipped)
+    assert ("gpuwm-data/gpuwm_data/data/rrtmgp/"
+            "rrtmgp-trace-gas-climatology.json" in shipped)
     # ...and the redistributed WRF table must be on the SHIPPED side.
     for relative in sorted(_REDISTRIBUTED_WRF_DATA):
         assert relative in shipped, relative
@@ -525,17 +520,32 @@ def test_externalized_assets_match_the_fetch_contract() -> None:
     # What this test is actually about is the size- and license-driven
     # EXCLUDES: every one of them moved to gpuwm-data/MANIFEST.in with the
     # directory it named, and one left behind here would be a rule nobody
-    # is enforcing.  The single `exclude` that remains names a development
-    # test RELEASE-EXCLUDE.txt already drops from the public tree (its
-    # campaign harness, tools/n5s/**, is not a package and never shipped);
-    # tests/test_operational_package_excludes_probes.py measures that the
-    # sdist really lacks it.
-    assert ([rule for rule in rules if rule.startswith("exclude ")]
-            == ["exclude tests/test_n5s_toolchain.py"]), (
+    # is enforcing.  The `exclude` lines that remain name development tests
+    # RELEASE-EXCLUDE.txt already drops from the public tree: the n5s
+    # toolchain test (its campaign harness, tools/n5s/**, is not a package
+    # and never shipped) and the branch-dispositions gate (its ledger,
+    # docs/branch-dispositions.md, is branch bookkeeping of the development
+    # tree).  tests/test_operational_package_excludes_probes.py measures
+    # that the sdist really lacks the first.
+    root_excludes = [rule for rule in rules if rule.startswith("exclude ")]
+    assert root_excludes == [
+        "exclude tests/test_n5s_toolchain.py",
+        "exclude tests/test_branch_dispositions.py",
+    ], (
         "the root MANIFEST.in's `exclude` lines drifted.  Size- and "
         "license-driven excludes belong in gpuwm-data/MANIFEST.in with the "
-        "directory they name (moved there in 2.5.0); the only root exclude "
-        f"is the RELEASE-EXCLUDE'd n5s test; found {rules}")
+        "directory they name (moved there in 2.5.0); the only root excludes "
+        "are RELEASE-EXCLUDE'd development tests; found {}".format(rules))
+    release_exclude = {
+        line.strip() for line in
+        (REPO_ROOT / "RELEASE-EXCLUDE.txt").read_text(
+            encoding="utf-8").splitlines()}
+    for rule in root_excludes:
+        path = rule.split(None, 1)[1].strip()
+        assert path in release_exclude, (
+            f"root MANIFEST.in excludes {path} from the sdist but "
+            "RELEASE-EXCLUDE.txt keeps it in the public tree, so the two "
+            "release surfaces disagree about whether it ships")
     # The prunes keep other artifacts and development-only probes out of
     # the operational source distribution:
     #
@@ -1199,8 +1209,57 @@ def test_the_companion_sdist_carries_the_same_files_as_its_wheel(
         "describe one exclusion list. Only in the sdist: "
         f"{sorted(in_sdist - in_wheel)}; only in the wheel: "
         f"{sorted(in_wheel - in_sdist)}")
-    assert not (in_sdist & _LICENSE_EXCLUDED_FROM_WHEEL), (
-        "the CC-BY-NC-SA-4.0 RFMIP reference results now reach the sdist; "
-        "that is a licensing decision about a published artifact, so "
-        "record it: rewrite the paragraph in gpuwm-data/MANIFEST.in that "
-        "says which artifacts carry them and re-measure the counts in it")
+
+
+def test_no_rfmip_file_is_carried() -> None:
+    """No RFMIP NetCDF is in the tree, so none can reach an artifact.
+
+    The breakage: the four reference results are CC-BY-NC-SA-4.0, and a
+    copy in the tree is a copy in the public repository and one packaging
+    edit away from the companion wheel, attaching a non-commercial
+    restriction to both; the input file's terms are ambiguous.  The tests
+    that read them fetch them from upstream (gpuwm/core/rfmip_upstream.py).
+    """
+
+    from gpuwm.core.rfmip_upstream import RFMIP_FILES
+
+    carried = sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "gpuwm-data").rglob("*")
+        if path.name in RFMIP_FILES
+        or path.name in {"LICENSE-CC-BY-NC-SA-4.0", "LICENSE-CC-BY-4.0"})
+    assert not carried, carried
+
+
+def test_the_companion_wheel_ships_the_renderers_map_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The layers every picture's coastline, borders, state lines and
+    counties are drawn from reach the wheel every install pulls.
+
+    A wheel install's renderer has no map assets of its own, and
+    ``gpuwm.rustwx`` hands it the companion's.  A companion wheel without
+    them draws every picture with no geography, which is the defect this
+    copy exists to close; ``test_render_basemap_delivery`` holds the copy
+    byte-identical to ``tools/rustwx/assets/basemap``.
+    """
+
+    _require_source_tree()
+    _require_companion_tree()
+    shipped = _companion_shipped(monkeypatch)
+    prefix = "gpuwm-data/gpuwm_data/data/basemap/"
+    layers = ("natural_earth_10m/ne_10m_coastline",
+              "natural_earth_10m/ne_10m_land",
+              "natural_earth_10m/ne_10m_ocean",
+              "natural_earth_10m/ne_10m_lakes",
+              "natural_earth_10m/ne_10m_admin_0_boundary_lines_land",
+              "natural_earth_10m/ne_10m_admin_1_states_provinces_lines",
+              "natural_earth_110m/ne_110m_coastline",
+              "natural_earth_110m/ne_110m_admin_0_countries",
+              "us_counties_5m/cb_2023_us_county_5m")
+    absent = [prefix + layer + suffix for layer in layers
+              for suffix in (".shp", ".shx")
+              if prefix + layer + suffix not in shipped]
+    assert not absent, (
+        "the gpuwm-data wheel would not carry these map layers, so a wheel "
+        "install draws pictures with no geography:\n  " + "\n  ".join(absent))

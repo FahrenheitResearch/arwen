@@ -20,7 +20,8 @@ Three things are proven here, and they answer three different questions.
    The same decode is reduced to a parity digest -- per field: units,
    axes, location, staggering, shape, missing count and the SHA-256 of
    the ``<f8`` bytes; per frame: the times, the member, the grid
-   fingerprint, the axis hashes and the header hash -- and compared to a
+   fingerprint, the axis hashes and the portable header hash (rule
+   gpuwm-portable-frame-header-v1) -- and compared to a
    committed golden.  A source whose Python decode REFUSES has its
    refusal class and message as its golden instead, because a refusal is
    an answer and the two engines have to agree about it too.  These are
@@ -75,7 +76,10 @@ from gpuwm import bridges
 from gpuwm import mapped_engine_bridge as engine_bridge
 from gpuwm.mapped_source import (_array_sha256, _decode_mapped_source_python,
                                  _FORMATS as _MAPPED_SOURCE_FORMATS,
-                                 _inspect_mapped_source_python, _sha256)
+                                 _inspect_mapped_source_python, _sha256,
+                                 libm_dependent_fields)
+from gpuwm.source_frame import (PORTABLE_HEADER_RULE,
+                                portable_frame_header_sha256)
 
 
 ROOT = Path(__file__).parents[1]
@@ -106,17 +110,14 @@ BUNDLE = Path(os.environ.get(
 #: that owns the bytes by some other means first.
 #:
 #: The environment override is the portable half and is what a second box
-#: uses.  Point it at a copy and the row runs there too -- but see
-#: section 11 of ``docs/dev/decode-vendor-design.md`` first: the golden's
-#: frame header hash is computed over absolute input paths, so a copy at
-#: a DIFFERENT path reproduces every array digest and fails on the two
-#: header hashes alone.
+#: uses.  Point it at a copy and the row runs there too: the golden's
+#: portable header digest compares the decode independently of its root.
 MEMBER_SAMPLE = Path(os.environ.get(
     "GPUWM_20CRV3_MEMBER_SAMPLE",
     str(Path.home() / "Downloads" / "1932-03-21 20CR Member 72 Files"),
 ))
 
-DIGEST_SCHEMA = "gpuwm-mapped-parity-digest-v1"
+DIGEST_SCHEMA = "gpuwm-mapped-parity-digest-v2"
 
 
 # --------------------------------------------------------------------
@@ -128,7 +129,7 @@ DIGEST_SCHEMA = "gpuwm-mapped-parity-digest-v1"
 # one of them in the DERIVED layer: `eastward_wind`, `northward_wind`,
 # `eastward_wind_10m`, `northward_wind_10m` (the grid-relative wind
 # rotation) and `specific_humidity` (the relative-humidity derivation),
-# plus the frame header hashes that carry those fields.  Every DIRECTLY
+# plus the v1 raw header hashes that carry those fields. Every DIRECTLY
 # DECODED field hashed identical.  And the PYTHON reference engine
 # missed exactly the goldens the Rust engine missed, on exactly the same
 # rows: 26 failures, 4 python decode + 4 rust decode + 3 rust inspection
@@ -154,10 +155,10 @@ DIGEST_SCHEMA = "gpuwm-mapped-parity-digest-v1"
 #
 # What it must never become is a skip.  Every row still runs both
 # engines and still has a bar to clear; only WHICH reference it clears
-# against moves, and the row says which and why.  Making the committed
-# numbers themselves reproducible off the measuring box -- a
-# machine-independent form for the derived fields and the header hash --
-# is task GOLD-PORTABLE (#157) and is deliberately not what this does.
+# against moves, and the row says which and why. Making the derived
+# field arrays reproducible across platforms remains GOLD-PORTABLE
+# (#157). The v2 digest uses portable headers while retaining the exact
+# array comparison, including every libm-dependent field.
 
 #: The member every committed golden carries naming its measuring
 #: platform.  Top level of the golden FILE and never inside a digest, so
@@ -213,9 +214,9 @@ def load_golden(path: Path) -> tuple[dict, dict[str, str]]:
         raise AssertionError(
             f"{path.name} does not declare the platform that measured it "
             f"(no {GOLDEN_PLATFORM_KEY!r} member).  A golden is a "
-            "measurement of a platform: the derived fields (wind "
-            "rotation, specific humidity) and the frame header hashes "
-            "differ by C runtime, so an unstamped golden would be "
+            "measurement of a platform: derived field arrays (wind "
+            "rotation, specific humidity) differ by C runtime, so an "
+            "unstamped golden would be "
             "compared across platforms and read as an engine defect.  "
             "Re-measure it on the box it belongs to with "
             "`python tools/extract_mapped_engine_goldens.py --source "
@@ -483,14 +484,17 @@ def _staged(entry) -> bool:
 def _staged_path_strings(source: str) -> tuple[str, ...]:
     """Every absolute path this battery hands the engines for ``source``.
 
+    Include both handed and resolved spellings for linked staging roots.
     Longest first, so a directory that is a prefix of a file path can
     never eat half of that path before the file's own rule is tried.
     """
 
     entry = STAGED_SOURCES[source]
-    paths = [str(path) for path in entry["files"]]
-    paths.append(str(_mapping_of(entry)))
-    return tuple(sorted(set(paths), key=len, reverse=True))
+    handed = [str(path) for path in entry["files"]]
+    handed.append(str(_mapping_of(entry)))
+    paths = set(handed)
+    paths.update(os.path.realpath(path) for path in handed)
+    return tuple(sorted(paths, key=len, reverse=True))
 
 
 def machine_independent(source: str, value, paths: Sequence[str] | None = None):
@@ -554,8 +558,11 @@ def machine_independent(source: str, value, paths: Sequence[str] | None = None):
 def parity_digest(source: str, mapping: Path, frames) -> dict[str, object]:
     """Reduce a decode to the numbers parity is judged on."""
 
+    libm_fields = libm_dependent_fields(json.loads(
+        mapping.read_text(encoding="utf-8")))
     return machine_independent(source, {
         "schema": DIGEST_SCHEMA,
+        "header_rule": PORTABLE_HEADER_RULE,
         "source": source,
         "verdict": "DECODED",
         "mapping": {"name": mapping.name, "sha256": _sha256(mapping)},
@@ -576,7 +583,12 @@ def parity_digest(source: str, mapping: Path, frames) -> dict[str, object]:
                      for path, digest in frame.input_sha256.items()),
                     key=lambda row: (row["name"], row["sha256"]),
                 ),
-                "header_sha256": _canonical_sha256(frame.header.to_dict()),
+                # The arrays, including libm-derived fields, remain exact
+                # in the fields table. Only the header uses the portable
+                # rule shared with compose, before any path is hashed.
+                "portable_header_sha256": portable_frame_header_sha256(
+                    frame.header, inputs=_staged_path_strings(source),
+                    libm_dependent=libm_fields),
                 "fields": {
                     name: {
                         "units": field.units,
@@ -607,10 +619,9 @@ def refusal_digest(source: str, mapping: Path, error: BaseException):
     })
 
 
-#: The inspection document's engine-identity members: which binaries
-#: decoded and where the bytes live on this machine.  Masked, and
-#: nothing else is -- in particular every per-field ``sha256`` the
-#: report carries stays in the digest and is compared exactly.
+#: The inspection document's decoder identity is masked. Materialized
+#: frame headers use their portable digest below, as decode and compose
+#: do. Every per-field ``sha256`` stays in the comparison exactly.
 INSPECTION_MASK = ("decoders",)
 
 
@@ -647,6 +658,17 @@ def inspection_digest(source: str, document, error=None) -> dict[str, object]:
         key=lambda row: (row["name"], row["sha256"]),
     )
     materialization = dict(document.get("materialization") or {})
+    if materialization.get("verdict") == "PASS":
+        headers = materialization.get("frame_header_sha256_portable")
+        assert (materialization.get("portable_rule") == PORTABLE_HEADER_RULE
+                and isinstance(headers, list)
+                and len(headers) == materialization["frame_count"]
+                and all(isinstance(value, str)
+                        and re.fullmatch(r"[0-9a-f]{64}", value)
+                        for value in headers)), (
+            "materialized inspection lacks complete portable header digests; "
+            "dropping its raw headers would leave frame metadata uncompared")
+        materialization.pop("frame_header_sha256", None)
     document["materialization"] = materialization
     return machine_independent(source, {
         "schema": DIGEST_SCHEMA,
@@ -985,7 +1007,15 @@ def assert_engine_inspection_matches(source: str, entry, expected,
 
 COMPOSE_GOLDENS = ROOT / "tests" / "data" / "mapped_engine_compose_goldens"
 
-COMPOSE_DIGEST_SCHEMA = "gpuwm-mapped-compose-parity-digest-v1"
+#: v2: each frame's header is digested in its portable form
+#: (``portable_header_sha256``, rule ``gpuwm-portable-frame-header-v1``)
+#: where v1 digested the raw header.  The raw header quotes every field's
+#: ``<absolute input path>:<record index>``, and a hash cannot be masked
+#: after the fact, so a v1 compose golden reproduced only with the bytes
+#: staged at the very path that measured it: two goldens stamped from a
+#: staging folder that was later deleted failed on every other box and at
+#: every other path, while every array, input hash and receipt matched.
+COMPOSE_DIGEST_SCHEMA = "gpuwm-mapped-compose-parity-digest-v2"
 
 #: How a row's supplement inventory is drawn from its primary inputs.
 #:
@@ -1129,18 +1159,21 @@ COMPOSED_SOURCES: dict[str, dict[str, object]] = {
     },
     # ERA5 native model levels: a 137-hybrid-level GRIB2 primary (t/u/v/q;
     # pressure and height are DERIVED via the in-band Section-4 pv ladder)
-    # borrowing its ten surface/soil fields from the same hours'
-    # pressure-level/single-level combined file -- the exact donor bytes
-    # the certified `era5` front door produces.  One hour-block,
+    # borrowing its ten surface/soil fields and its water state (sea
+    # surface temperature, sea ice, lake water and ice) from the same
+    # hours' pressure-level/single-level combined file -- the exact donor
+    # bytes the certified `era5` front door produces.  One hour-block,
     # 2026-05-05 12-15Z, 0.25-degree subset; alignment is
     # exact_coordinate_subset + valid_time_exact by construction of the
-    # fetch.  Staged 2026-08-31, retiring this source's exemption below.
+    # fetch.  The model-level file was staged 2026-08-31; the donor was
+    # fetched again 2026-09-28 because the one staged beside it predates
+    # the lake state the era5 fetch has requested since 2.7.0.
     "era5-l137": {
         "primary": _files("era5-l137",
                           "era5-ml-l137-20260505-12z-15z.grib2"),
         "supplement": _SUPPLEMENT_DONOR,
         "donor_files": _files("era5-l137",
-                              "era5-combined-20260505-12z-15z.grib"),
+                              "era5-combined-lakes-20260505-12z-15z.grib"),
     },
 }
 
@@ -1215,16 +1248,59 @@ def composed_recipe(source: str) -> dict[str, object]:
 
 
 def _composed_path_strings(recipe) -> tuple[str, ...]:
-    """Every absolute path a composed row hands the engines."""
+    """Every absolute path a composed row hands the engines.
 
-    paths = [str(path) for path in recipe["primary"]]
-    paths.extend(str(path) for paths_ in recipe["supplements"].values()
-                 for path in paths_)
-    paths.extend(str(path) for path in recipe["provenance"].values())
-    paths.extend(str(path) for path in recipe["contributing"].values())
-    paths.append(str(recipe["mapping"]))
-    paths.append(str(recipe["composition"]))
-    return tuple(sorted(set(paths), key=len, reverse=True))
+    Each one is listed as handed AND as resolved: the composition resolves
+    its inputs before it records them, so a staging root reached through a
+    junction or a symlink is quoted by its target's spelling, which the
+    handed spelling does not match.  Measured with a default staging root
+    that is a junction: the frame provenance read the physical location
+    and escaped the mask.
+    """
+
+    handed = [str(path) for path in recipe["primary"]]
+    handed.extend(str(path) for paths_ in recipe["supplements"].values()
+                  for path in paths_)
+    handed.extend(str(path) for path in recipe["provenance"].values())
+    handed.extend(str(path) for path in recipe["contributing"].values())
+    handed.append(str(recipe["mapping"]))
+    handed.append(str(recipe["composition"]))
+    paths = set(handed)
+    paths.update(os.path.realpath(path) for path in handed)
+    return tuple(sorted(paths, key=len, reverse=True))
+
+
+def _composed_libm_fields(recipe) -> frozenset[str]:
+    """The fields a composed frame may carry from a transcendental.
+
+    Read from the declarations of every mapping the composition binds, the
+    primary and each contributing donor, so a new source is table work.
+    """
+
+    names: set[str] = set()
+    for path in (recipe["mapping"], *recipe["contributing"].values()):
+        with open(path, encoding="utf-8") as handle:
+            names.update(libm_dependent_fields(json.load(handle)))
+    return frozenset(names)
+
+
+def composed_header_digest(recipe, header) -> str:
+    """A composed frame's header, digested where no box can move it.
+
+    The raw header quotes every field's ``<absolute input path>:<record
+    index>``, and a digest cannot be masked afterwards, so the raw digest is
+    an identity of where the bytes were staged.  The portable form
+    (:func:`gpuwm.source_frame.portable_frame_header`) reduces each input
+    this row hands the engines to its file name and names each
+    libm-dependent field's array instead of hashing it.  Nothing leaves the
+    comparison: every field's array digest, the libm-dependent ones
+    included, is compared exactly in the frame's ``fields`` table beside
+    this one.
+    """
+
+    return portable_frame_header_sha256(
+        header, inputs=_composed_path_strings(recipe),
+        libm_dependent=_composed_libm_fields(recipe))
 
 
 def _composed_staged(source: str) -> bool:
@@ -1346,6 +1422,10 @@ def compose_digest(recipe, bundle) -> dict[str, object]:
     records.  Those two are the whole point of `compose`; a golden that
     compared frames alone would pass an engine that borrowed the right
     numbers by the wrong rule and recorded nothing about it.
+
+    Each frame's header is digested in its portable form
+    (:func:`composed_header_digest`), so a golden reproduces wherever the
+    bytes are staged.
     """
 
     source = str(recipe["source"])
@@ -1355,6 +1435,7 @@ def compose_digest(recipe, bundle) -> dict[str, object]:
         "schema": COMPOSE_DIGEST_SCHEMA,
         "source": source,
         "verdict": "COMPOSED",
+        "header_rule": PORTABLE_HEADER_RULE,
         "mapping": {"name": recipe["mapping"].name,
                     "sha256": bundle.mapping_sha256},
         "composition": {"name": recipe["composition"].name,
@@ -1376,7 +1457,8 @@ def compose_digest(recipe, bundle) -> dict[str, object]:
                      for path, value in frame.input_sha256.items()),
                     key=lambda row: (row["name"], row["sha256"]),
                 ),
-                "header_sha256": _canonical_sha256(frame.header.to_dict()),
+                "portable_header_sha256": composed_header_digest(
+                    recipe, frame.header),
                 "fields": {
                     name: {
                         "units": field.units,
@@ -1733,13 +1815,12 @@ def _committed_goldens() -> list[Path]:
 def test_every_committed_golden_declares_its_measuring_platform(path):
     """A golden that does not say whose numbers it carries is unusable.
 
-    Named breakage: the derived fields (grid-relative wind rotation,
-    the relative-humidity derivation) and the frame header hashes that
-    carry them are produced by the platform's libm, measured field by
-    field on Linux against these Windows-measured files.  An unstamped
-    golden cannot be scoped, so it is either compared across platforms
-    and reads as an engine defect, or excused everywhere and stops being
-    a gate.  Neither may be a default, so the stamp is required.
+    Named breakage: the derived field arrays (grid-relative wind rotation,
+    the relative-humidity derivation) depend on the platform's libm,
+    measured field by field on Linux against these Windows-measured files.
+    An unstamped golden cannot be scoped, so it is either compared across
+    platforms and reads as an engine defect, or excused everywhere and
+    stops being a gate. Neither may be a default, so the stamp is required.
     """
 
     _, stamp = load_golden(path)
@@ -2005,7 +2086,7 @@ def test_every_refusal_class_maps_to_a_python_exception_type():
         "usage", "not_implemented", "missing_input", "mapping_invalid",
         "manifest_mismatch", "selector_unmatched", "grid_mismatch",
         "decode_failed", "frame_invalid", "forcing_series",
-        "authority_moved",
+        "authority_moved", "disk_full", "write_failed", "requester_closed",
     }
     assert set(engine_bridge.REFUSAL_CLASSES) == expected
     for name, exception in engine_bridge.REFUSAL_CLASSES.items():
@@ -2024,6 +2105,16 @@ def test_a_refusal_object_becomes_its_declared_exception(name):
     assert type(error) is engine_bridge.REFUSAL_CLASSES[name]
     assert "the named breakage" in str(error)
     assert "the named remedy" in str(error)
+
+
+def test_a_refusal_maps_without_a_command_line():
+    """The capability query maps its refusal with no command in hand."""
+
+    error = engine_bridge.refusal_error(
+        {"class": "usage", "message": "the named breakage",
+         "remedy": "the named remedy"})
+    assert type(error) is ValueError
+    assert "the named breakage" in str(error)
 
 
 def test_an_unknown_refusal_class_is_itself_a_defect():
@@ -2459,6 +2550,9 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # its own staging contract rather than a literal file list.
         "icon-global": "compose inputs are produced by the normalization "
                        "stage, not published",
+        # The same GDT-101 normalization, on DWD's regional mesh.
+        "icon-d2": "compose inputs are produced by the normalization "
+                   "stage, not published",
     }
     registered = {
         adapter.source_id for adapter in source_adapters()
@@ -2591,6 +2685,128 @@ def test_the_rust_engine_reproduces_the_compose_golden(
 
     assert_engine_compose_matches(
         source, recipe, expected, tmp_path, monkeypatch, note)
+
+
+def _restaged(recipe, root: Path):
+    """``recipe`` with every staged input moved under ``root``."""
+
+    def move(path) -> Path:
+        path = Path(path)
+        return Path(root) / path.parent.name / path.name
+
+    return {
+        **recipe,
+        "primary": tuple(move(path) for path in recipe["primary"]),
+        "supplements": {role: tuple(move(path) for path in paths)
+                        for role, paths in recipe["supplements"].items()},
+    }
+
+
+def _composed_header(recipe, spell, *, temperature: str, pressure: str,
+                     record: int = 12):
+    """A composed header shaped like the real one, quoting ``recipe``'s inputs.
+
+    ``spell`` turns a handed path into the spelling the header records, and
+    ``record`` is the primary record the temperature was read from.
+    """
+
+    primary = spell(recipe["primary"][0])
+    donor = spell(next(iter(recipe["supplements"].values()))[0])
+    return {
+        "schema": "gpuwm.source_frame.v1",
+        "source_id": str(recipe["source"]),
+        "source_cycle": "2026-08-17T00:00:00+00:00",
+        "grid": {"projection": "regular_latitude_longitude",
+                 "nx": 1440, "ny": 721},
+        "vertical_coordinates": {},
+        "initialization_policies": {},
+        "fields": [
+            {"canonical_name": "air_temperature",
+             "data_reference": f"sha256:{temperature}",
+             "source_field": f"{primary}:{record}"},
+            {"canonical_name": "soil_temperature",
+             "data_reference": "sha256:bbbb",
+             "source_field": f"{donor}:40"},
+            {"canonical_name": "surface_pressure",
+             "data_reference": f"sha256:{pressure}",
+             "source_field": f"{primary}:3;{primary}:7"},
+        ],
+    }
+
+
+def _header_digest_as_handed(row, **values) -> str:
+    return composed_header_digest(
+        row, _composed_header(row, str, **values))
+
+
+def test_a_composed_header_digest_does_not_move_with_the_staging_root(
+        tmp_path):
+    """A compose golden reproduces wherever its bytes are staged.
+
+    Named breakage: the ``aigfs`` and ``aigefs`` compose goldens were
+    stamped with the staging override pointing at a folder that was
+    later deleted.  The raw frame header quotes each field's absolute input
+    path, so both goldens failed on every other box and at every other
+    path while every array, input hash and receipt matched.  The digest
+    must not move with the root, and must still move when a directly
+    decoded array does.
+    """
+
+    recipe = composed_recipe("aigefs")
+    here = _restaged(recipe, tmp_path / "one" / "staging")
+    there = _restaged(recipe, tmp_path / "two" / "elsewhere")
+    digest = _header_digest_as_handed
+
+    assert (digest(here, temperature="aaaa", pressure="cccc")
+            == digest(there, temperature="aaaa", pressure="cccc"))
+    # The raw header is what moved, which is the defect this retires.
+    assert _canonical_sha256(_composed_header(
+        here, str, temperature="aaaa", pressure="cccc")) !=         _canonical_sha256(_composed_header(
+            there, str, temperature="aaaa", pressure="cccc"))
+    # A directly decoded array that changed still moves the digest.
+    assert (digest(here, temperature="aaaa", pressure="cccc")
+            != digest(here, temperature="zzzz", pressure="cccc"))
+    # So does the record a field was read from: reducing each path to its
+    # file name must not also mask which record the engine took.
+    assert (digest(here, temperature="aaaa", pressure="cccc")
+            != digest(here, temperature="aaaa", pressure="cccc", record=13))
+    # The derived surface pressure is named, not hashed, in the header;
+    # its array digest is compared exactly in the frame's fields table.
+    assert "surface_pressure" in _composed_libm_fields(recipe)
+    assert (digest(here, temperature="aaaa", pressure="cccc")
+            == digest(here, temperature="aaaa", pressure="dddd"))
+
+
+def test_a_composed_header_digest_does_not_move_through_a_linked_root(
+        tmp_path):
+    """A staging root reached through a directory link digests the same.
+
+    Named breakage: the composition resolves its inputs before it records
+    them, so a root reached through a junction or a symlink is quoted by
+    its target's spelling while the row hands the linked one; masking the
+    handed spelling alone left the resolved path in the digest.
+    """
+
+    recipe = composed_recipe("aigefs")
+    here = _restaged(recipe, tmp_path / "one" / "staging")
+    target = tmp_path / "physical"
+    linked = tmp_path / "linked"
+    target.mkdir()
+    try:
+        os.symlink(target, linked, target_is_directory=True)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"this box cannot create a directory link: {error}")
+    through_link = _restaged(recipe, linked)
+    for path in (*through_link["primary"],
+                 *next(iter(through_link["supplements"].values()))):
+        Path(os.path.realpath(path)).parent.mkdir(parents=True,
+                                                   exist_ok=True)
+        Path(os.path.realpath(path)).touch()
+    resolved = composed_header_digest(through_link, _composed_header(
+        through_link, os.path.realpath, temperature="aaaa",
+        pressure="cccc"))
+    assert resolved == _header_digest_as_handed(
+        here, temperature="aaaa", pressure="cccc")
 
 
 def test_a_declared_compose_format_is_a_declared_decode_format():

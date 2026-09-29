@@ -1,7 +1,7 @@
 """The Rust workspaces' battery list, kept in sync with the workspaces.
 
 ``tools/battery/cargo_gates.txt`` is how the release battery finds the
-Cargo test suites.  Drew's 2026-08-12 ruling ("probably we would want
+Cargo test suites.  The 2026-08-12 project ruling ("probably we would want
 tests right") made them a leg; this suite is the gate on the list, the
 same kind of gate ``tests/test_stage1_manifest.py`` is on the stage-1
 list and ``tests/test_tiles_gate_manifest.py`` is on the ``[tiles]``

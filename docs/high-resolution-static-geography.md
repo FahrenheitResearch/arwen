@@ -1,6 +1,6 @@
 # High-resolution static geography
 
-## Production path (config-driven, US-interior)
+## Production path (config-driven, worldwide)
 
 The pilot machinery below is now reachable per-case through one declared
 TOML block:
@@ -10,30 +10,50 @@ TOML block:
 enabled = true
 cache_root = "/data/highres-cache"
 on_refuse = "error"          # or "fallback-30s"
+landcover_source = "auto"    # or "cglc-modis-lcz", "annual-nlcd"
 ```
 
 When enabled, every domain of the case replaces terrain, land-use
-fractions/index/mask, and top/bottom soil fractions/categories from USGS
-3DEP 1/3 arc-second tiles, the Annual NLCD year nearest the case date, and
-SoilGrids v2 250 m -- fetched on demand for the domain footprint + halo
-(`gpuwm.static.highres_fetch`), cached under `cache_root`, whole published
-artifacts only (complete 1x1-degree 3DEP tiles, the complete Annual NLCD
-year bundle), with the SHA-256 of every fetched byte recorded into a
-per-domain receipt at fetch time.  Monthly climatologies stay 30s with the
-pilot's counted donor fill; TMN is recomputed.  Absence of the block is
-the identity: the 30-arc-second build runs byte-unchanged.
+fractions/index/mask, and top/bottom soil fractions/categories: terrain
+from USGS 3DEP 1/3 arc-second tiles inside the United States and
+Copernicus DEM GLO-30 elsewhere, land cover from CGLC-MODIS-LCZ (100 m,
+2018, 60 S to 78 N) by default or the Annual NLCD year nearest the case
+date on request, and soil from SoilGrids v2 250 m -- fetched on demand for
+the domain footprint + halo (`gpuwm.static.highres_fetch`), cached under
+`cache_root`, whole published artifacts only (complete 1x1-degree terrain
+tiles, the one CGLC-MODIS-LCZ GeoTIFF pinned by size, MD5 and SHA-256, the
+complete Annual NLCD year bundle), with the SHA-256 of every fetched byte
+recorded into a per-domain receipt at fetch time.  Land-cover sources are
+rows of `LANDCOVER_SOURCES` (fetch kind, crosswalk into MODIS 21, water
+rule, years, licence), so another collection is a row, not a code path.
+CGLC-MODIS-LCZ's Local Climate Zones (51 to 61, WRF's numbering since
+4.4.2) become the urban category 13, as WRF's Noah and Noah-MP treat them
+when no urban canopy scheme runs, so the category count stays 21 and no
+table changes.  Monthly climatologies
+stay 30s with the pilot's counted donor fill; TMN is recomputed.  Absence
+of the block is the identity: the 30-arc-second build runs byte-unchanged.
 
-The lane refuses loudly, with the reason in the receipt, when the
-footprint leaves the joint 3DEP/Annual-NLCD publication envelope, when the
-baseline land-use inventory is not MODIS-21, when source tiles are missing
-(named), and when an enabled block would replace zero cells.  A coastal
-footprint is not refused: the crosswalk's open water is split against the
-domain's own 30s baseline water field, so the sea stays WRF ocean category
-17 and inland water becomes lake category 21, with both cell counts and
-the discriminating method in the receipt.  `on_refuse =
-"fallback-30s"` proceeds on the unchanged baseline beneath a receipt that
-names the refusal; the default stops the case.  Pre-1985 cases take the
-earliest NLCD map and the receipt names the anachronism in years.
+Every cell a source does not cover (the sea past the land-cover
+collection's offshore edge, the far side of a national border, a terrain
+tile that is not published, a footprint that runs past the land-cover
+raster) takes the 30-arc-second baseline for that field, handed over
+across five cells at the edge with the nest terrain ramp
+(`COVERAGE_BLEND_CELLS`), and the receipt's `coverage` entry gives the
+count and the latitude/longitude bounds of those cells per field; one
+console warning names them.  The lane refuses loudly, with the reason in
+the receipt, when a requested source reaches no part of the footprint,
+when the baseline land-use inventory is not MODIS-21, when a cell is
+covered by neither the source nor the baseline, and when an enabled block
+that reached cells would replace zero of them.  A coastal footprint is
+not refused: CGLC-MODIS-LCZ separates the sea from inland water itself,
+and NLCD's single open-water class is split against the domain's own 30s
+baseline water field, so the sea stays WRF ocean category 17 and inland
+water becomes lake category 21, with the cell counts and the rule in the
+receipt.  `on_refuse = "fallback-30s"` proceeds on the unchanged baseline
+beneath a receipt that names the refusal; the default stops the case.  A
+case far from the land-cover map's year (2018 for CGLC-MODIS-LCZ, before
+1985 or after 2024 for NLCD) takes the nearest map and the receipt names
+the anachronism in years.
 
 ## The pilot
 
@@ -99,8 +119,8 @@ The implementation:
   singled out;
 - performs continuous area averaging and categorical area-fraction
   aggregation rather than nearest-neighbour sampling at model-cell centres;
-- reads no network data and refuses incomplete terrain or land-cover
-  coverage;
+- reads no network data, and hands every cell its sources do not cover
+  to the 30-arc-second baseline, counted and bounded in the receipt;
 - emits comparison arrays, plots, timings, source/fallback audits, and a
   receipt that states exactly what was and was not certified.
 
@@ -125,23 +145,23 @@ fallback.  The large class-change counts are expected when comparing a 30 m
 NLCD crosswalk against the older 30-arc-second MODIS/USGS products, but they
 are not by themselves evidence that the new categories are more accurate.
 
-## Global fallback design
+## Global sources
 
-The intended open-data fallback is [Copernicus DEM GLO-30](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM.html)
-for 30 m terrain, [ESA WorldCover 2021 v200](https://worldcover2021.esa.int/)
-for 10 m land cover, and SoilGrids 250 m for soil texture.  Copernicus GLO-30
-is available under its Full, Free and Open licence; WorldCover and SoilGrids
-are CC BY 4.0.  This fallback is design-only: it has not been downloaded,
-wired into RW-WPS, or certified.  WorldCover 2021 also has the same, usually
-larger, historical-anachronism problem.
+The global sources are wired and default outside the United States:
+[Copernicus DEM GLO-30](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/DEM.html)
+for 30 m terrain,
+[CGLC-MODIS-LCZ](https://doi.org/10.5281/zenodo.7670653) for 100 m land
+cover (the default everywhere, CC BY 4.0), and SoilGrids 250 m for soil
+texture (CC BY 4.0).  Copernicus GLO-30 is available under its Full, Free
+and Open licence.  CGLC-MODIS-LCZ represents 2018, so a case far from
+2018 carries a named anachronism in its receipt.
 
-Production work still required includes tiled/cache-aware downloading,
-full-domain halo coverage, selection policy, public CLI/schema integration,
-attribution packaging, global fixtures, and trajectory/stock-WRF gates.
-Coastline and lake separation is done: the split runs against the domain's
-own 30-arc-second baseline water field.  It is not optional and there is no
-flag for it.  The mask is a required argument of `build_highres_overrides`,
-and the production overlay and the bounded pilot below both derive it from
+Coastline and lake separation follows each land-cover source's water rule.
+For a source with one open-water class the split runs against the
+domain's own 30-arc-second baseline water field.  It is not optional and
+there is no flag for it.  The mask is a required argument of
+`build_highres_overrides`, and the production overlay and the bounded
+pilot below both derive it from
 `gpuwm.static.highres.baseline_ocean_mask`, so the two cannot report
 different coastlines for one domain.
 

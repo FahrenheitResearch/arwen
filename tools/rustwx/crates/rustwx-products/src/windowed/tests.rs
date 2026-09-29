@@ -18,6 +18,27 @@ fn plan_windowed_products_blocks_short_forecast_hours() {
     assert!(temp_hours.is_empty());
 }
 
+/// A blocker is a fact about the frame's hour and the window, the same for
+/// every model.  It used to advise "use a HRRR extended cycle" on every
+/// model's short frame and blame "HRRR APCP windows" for a 1 h QPF at F000.
+#[test]
+fn a_short_hour_blocker_names_the_hour_and_no_model() {
+    let (_planned, blockers, ..) = plan_windowed_products(
+        &[
+            HrrrWindowedProduct::Qpf1h,
+            HrrrWindowedProduct::Wind10m0to24hMax,
+            HrrrWindowedProduct::Temp2m0to24hMax,
+        ],
+        0,
+        Some(3),
+    );
+    assert_eq!(blockers.len(), 3, "{blockers:?}");
+    for blocker in &blockers {
+        assert!(blocker.reason.contains("requires forecast hour >= "), "{blocker:?}");
+        assert!(!blocker.reason.contains("HRRR"), "{blocker:?}");
+    }
+}
+
 #[test]
 fn qpf_hourly_fallback_is_limited_to_hourly_cadence_models() {
     assert!(qpf_hourly_fallback_supported(ModelId::Hrrr, 48));

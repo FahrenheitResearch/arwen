@@ -664,3 +664,167 @@ def _real_wif_bytes():
                 and candidate.stat().st_size == WIF_DATASET_ASSET.bytes):
             return candidate
     return None
+
+
+# ---------------------------------------------------------------------------
+# A damaged activation table is found, and repaired where this command owns
+# the root; a stalled download ends in words
+# ---------------------------------------------------------------------------
+
+def _wheel_with_staged_user_root(tmp_path, monkeypatch):
+    asset = _packaged_ccn_asset()
+    real_packaged = packaged_thompson_table_root()
+    if not (real_packaged / asset.filename).is_file():
+        pytest.skip(f"packaged asset absent: {asset.filename}")
+    if not all((real_packaged / name).is_file()
+               for name in table_assets.EXTERNALIZED_TABLE_FILENAMES):
+        pytest.skip("externalized asset bytes not present in this checkout")
+    packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+    import shutil
+
+    shutil.copyfile(real_packaged / asset.filename, packaged / asset.filename)
+    assert table_assets.fetch_tables_main(
+        _args(from_dir=str(real_packaged))) == 0
+    return asset, packaged, user_root
+
+
+def test_an_empty_activation_table_in_the_staged_root_is_repaired(
+        tmp_path, monkeypatch, capsys):
+    """`has 0 bytes; expected 35288` used to be reported as verified.
+
+    fetch-tables skipped any CCN_ACTIVATE.BIN it found, said "nothing to
+    fetch", and the first mp=28 forecast refused the file at load; setup
+    and reinstalling never touched the user copy.
+    """
+
+    from gpuwm.core.thompson_aerosol_contract import (
+        validate_ccn_activation_asset)
+
+    asset, _packaged, user_root = _wheel_with_staged_user_root(
+        tmp_path, monkeypatch)
+    capsys.readouterr()
+    (user_root / asset.filename).write_bytes(b"")
+
+    assert table_assets.fetch_tables_main(_args()) == 0
+    printed = capsys.readouterr().out
+    assert "damaged" in printed and asset.filename in printed
+    assert "nothing to fetch" not in printed
+    assert validate_ccn_activation_asset(user_root / asset.filename) == asset
+
+
+def test_an_empty_activation_table_in_a_named_root_is_refused_not_overwritten(
+        tmp_path, monkeypatch, capsys):
+    root = _staged_root_without_externalized(tmp_path, monkeypatch)
+    asset = _packaged_ccn_asset()
+    (root / asset.filename).write_bytes(b"")
+    assert table_assets.fetch_tables_main(_args()) == 2
+    out = capsys.readouterr().out
+    assert "REFUSED" in out and asset.filename in out
+    assert (root / asset.filename).read_bytes() == b""
+
+
+def test_doctor_does_not_verify_a_root_with_an_empty_activation_table(
+        tmp_path, monkeypatch):
+    from gpuwm import doctor
+
+    asset, _packaged, user_root = _wheel_with_staged_user_root(
+        tmp_path, monkeypatch)
+    assert doctor._thompson_tables_check().status == "verified"
+    (user_root / asset.filename).write_bytes(b"")
+    check = doctor._thompson_tables_check()
+    assert check.status == "missing"
+    assert asset.filename in check.detail
+    assert check.action == "gpuwm fetch-tables"
+    (user_root / asset.filename).unlink()
+    absent = doctor._thompson_tables_check()
+    assert absent.status == "missing" and not absent.blocking
+    assert "mp_physics=28" in absent.detail
+    # Damaged or absent, only mp_physics=28 reads the file, so neither
+    # fails the check for the Thompson runs that never open it.
+    assert not check.blocking
+    assert (check.blocking, check.severity) == (absent.blocking, absent.severity)
+    assert "mp_physics=28" in check.detail and "mp_physics=28" in check.brief
+
+
+def test_doctor_reads_the_activation_table_the_loader_would_read(
+        tmp_path, monkeypatch):
+    """The file override the mp=28 loader honours is the one checked."""
+
+    from gpuwm import doctor
+    from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_PATH_ENV
+
+    asset, packaged, user_root = _wheel_with_staged_user_root(
+        tmp_path, monkeypatch)
+    (user_root / asset.filename).write_bytes(b"")
+    monkeypatch.setenv(AEROSOL_TABLE_PATH_ENV, str(packaged / asset.filename))
+    assert doctor._thompson_tables_check().status == "verified"
+    monkeypatch.setenv(AEROSOL_TABLE_PATH_ENV,
+                       str(tmp_path / "elsewhere" / asset.filename))
+    check = doctor._thompson_tables_check()
+    assert check.status == "missing" and not check.blocking
+    assert AEROSOL_TABLE_PATH_ENV in check.detail
+
+
+def test_a_server_that_withholds_the_body_is_a_refusal_within_the_timeout(
+        tmp_path, monkeypatch):
+    """HTTP 200 and a length, then nothing: this used to wait forever."""
+
+    import http.server
+    import threading
+    import time as clock
+
+    release = threading.Event()
+
+    class Withhold(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - the handler's own spelling
+            self.send_response(200)
+            self.send_header("Content-Length", "8192")
+            self.end_headers()
+            self.wfile.flush()
+            release.wait(30)
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Withhold)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(table_assets, "SOCKET_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(table_assets, "TRANSFER_ATTEMPTS", 2)
+    monkeypatch.setattr(table_assets, "RETRY_PAUSE_SECONDS", 0.0)
+    asset = _asset_for(b"\x00" * 8192)
+    root = tmp_path / "root"
+    root.mkdir()
+    url = f"http://127.0.0.1:{server.server_address[1]}/{asset.filename}"
+    started = clock.monotonic()
+    try:
+        with pytest.raises(table_assets.TableAssetError) as excinfo:
+            table_assets.fetch_asset_from_url(root, asset, url)
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+    assert clock.monotonic() - started < 10
+    message = str(excinfo.value)
+    assert "stalled 2 times" in message and "--from" in message
+    assert not (root / asset.filename).exists()
+    assert list(root.glob(".*fetch-partial*")) == []
+
+
+def test_a_missing_file_on_the_server_is_not_retried(tmp_path, monkeypatch):
+    calls = []
+    real = table_assets._transfer
+
+    def counting(url, temp, asset):
+        calls.append(url)
+        return real(url, temp, asset)
+
+    monkeypatch.setattr(table_assets, "_transfer", counting)
+    asset = _asset_for(b"x" * 16)
+    root = tmp_path / "root"
+    root.mkdir()
+    with pytest.raises(table_assets.TableAssetError, match="download failed"):
+        table_assets.fetch_asset_from_url(
+            root, asset, (tmp_path / "nowhere.dat").as_uri())
+    assert len(calls) == 1

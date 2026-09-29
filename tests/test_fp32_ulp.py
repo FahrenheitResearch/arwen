@@ -58,8 +58,12 @@ _TOTAL_ORDER_OWNERS = {
 #: 31 offender rows measured at 40b9878c0 were exactly those checkouts
 #: (plus one lane venv's vendored pip).  A worktree's own defects are
 #: caught when this gate runs inside it, which every lane's pytest does.
+#: ``.venv/`` is the environment ``install.sh`` creates inside the
+#: checkout: third-party packages (Pillow, SciPy, urllib3, CuPy) are not
+#: this estate, and with them in scope the gate was red on every checkout
+#: installed the documented way.
 _VENDORED = ("tools/grib1_bridge/vendor", "work/", "evidence/",
-             ".worktrees/", ".claude/worktrees/")
+             ".worktrees/", ".claude/worktrees/", ".venv/")
 
 #: A NESTED CHECKOUT is its own estate wherever it sits, not only under
 #: the two prefixes above: stray worktrees land at arbitrary root-level

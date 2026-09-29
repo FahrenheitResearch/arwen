@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import partial
 import fnmatch
 import os
 from pathlib import Path
@@ -38,7 +39,8 @@ from gpuwm.io.wrf_output_schema import (
     WRF_FIELD_TYPE_REAL,
 )
 from gpuwm.supervisor import (_fsync_directory, fsync_file, quarantine_file,
-                              replace_file_with_retry, unique_temp_path)
+                              replace_file_with_retry, unique_temp_path,
+                              writing_progress)
 
 from gpuwm.io.netcdf_serialization import NETCDF4_IO_LOCK
 
@@ -46,8 +48,8 @@ _COMPLETION_ATTR = "GPUWM_WRITE_COMPLETE"
 # netCDF4 releases the GIL around HDF5 calls, while the shipped HDF5 library
 # is not thread-safe.  Domain D2H streams and staging remain independent; only
 # each worker's create/write/close/reopen/publish netCDF session is serialized.
-# The Rust engine needs no such serialization of its own, but the publish
-# step's self-validation reopens the tape with netCDF4, so the lock stays.
+# The Rust engine needs no such serialization of its own. The ordinary
+# validation path and explicit Python writer still use netCDF4, so the lock stays.
 #
 # THE LOCK IS NO LONGER THIS MODULE'S.  Guarding the writer against itself
 # left it unguarded against every other netCDF4 READER in the process, and
@@ -980,10 +982,26 @@ def state_frame(
     return fields
 
 
+def _validation_reader(path):
+    """Keep Windows Unicode filenames off the narrow NetCDF-C open path.
+
+    The native reader inventories metadata and decodes only Times below; it
+    never copies a whole tape or reads weather arrays for publication checks.
+    Resolve the bridge before quarantine's input-error handler, since a missing
+    or incompatible reader says nothing about whether a frame is complete.
+    Other filenames keep the existing independent netCDF4 validation path.
+    """
+    if os.name == "nt" and not os.path.abspath(os.fspath(path)).isascii():
+        from gpuwm.netcdf_bridge import open_dataset, resolve_netcdf_bin
+        return partial(open_dataset, executable=resolve_netcdf_bin()), True
+    return netCDF4.Dataset, False
+
+
 def validate_wrfout_file(path, *, inventory, shapes, times):
     """Reopen and prove inventory/shapes/Times/completion before publish."""
     path = Path(path)
-    with netCDF4.Dataset(path, "r") as ds:
+    reader, _native = _validation_reader(path)
+    with reader(path) as ds:
         if int(getattr(ds, _COMPLETION_ATTR, 0)) != 1:
             raise ValueError(f"wrfout {path} has no completion attribute")
         actual = set(ds.variables)
@@ -1179,10 +1197,21 @@ def quarantine_orphan_wrfouts(directory):
     for path in iter_wrfout_files(directory):
         if ".tmp" in path.name:
             continue
+        from gpuwm.netcdf_bridge import NetcdfInputError
+        reader, native = _validation_reader(path)
         try:
-            with netCDF4.Dataset(path, "r") as ds:
-                complete = int(getattr(ds, _COMPLETION_ATTR, 0)) == 1
+            with reader(path) as ds:
+                try:
+                    complete = int(getattr(ds, _COMPLETION_ATTR, 0)) == 1
+                except (ValueError, TypeError, OverflowError):
+                    complete = False
+        except NetcdfInputError:
+            complete = False
         except Exception:
+            # Crashes, timeouts and malformed reader replies are not evidence
+            # that this frame is corrupt. Leave it untouched and report them.
+            if native:
+                raise
             complete = False
         if not complete:
             target = quarantine_file(path, reason="incomplete-wrfout")
@@ -1749,6 +1778,15 @@ class _AsyncFrame:
     #: whole-writer ``update_global_attrs`` swap must.  ``None`` means
     #: "use the writer's standing set".
     global_attrs: object = None
+    #: The frame's field bytes, counted once at admission while the
+    #: fields still exist, so the writer can say how much it has left to
+    #: write after the worker has released them.
+    nbytes: int = 0
+
+
+def _frame_nbytes(fields) -> int:
+    return sum(int(getattr(value, "nbytes", 0) or 0)
+               for value in (fields or {}).values())
 
 
 class _AsyncTicketQueue(queue.Queue):
@@ -1770,6 +1808,14 @@ class _AsyncTicketQueue(queue.Queue):
             if not any(queued is item for queued in self.queue):
                 item.admitted = False
             raise
+
+
+def _with_remedy(error, cause):
+    """``error`` carrying ``cause``'s remedy, which a failed event shows."""
+    remedy = getattr(cause, "remedy", None)
+    if isinstance(remedy, str) and remedy:
+        error.remedy = remedy
+    return error
 
 
 class AsyncDomainWrfoutWriter:
@@ -1797,6 +1843,11 @@ class AsyncDomainWrfoutWriter:
     #: AttributeError on the worker thread.
     history_selection = None
     _identity_pending = False
+    #: Field bytes of every admitted frame not yet written, and of the
+    #: written frame whose output identity is still being hashed.  Class
+    #: defaults for the same ``object.__new__`` shells as above.
+    _pending_bytes = 0
+    _identity_bytes = 0
 
     @staticmethod
     def _new_ticket_queue() -> queue.Queue:
@@ -1851,14 +1902,32 @@ class AsyncDomainWrfoutWriter:
             return self._pending + int(self._identity_pending)
 
     @property
+    def pending_work_bytes(self) -> int:
+        """Bytes this writer still moves before :meth:`drain` returns.
+
+        A frame not yet written is written and then read back once for its
+        output identity; a written frame whose identity is in progress is
+        read once.  The run's finalization heartbeat declares this so the
+        supervisor can bound the drain by its size.
+        """
+        with self._condition:
+            return 2 * self._pending_bytes + self._identity_bytes
+
+    @property
     def completed_records(self):
         with self._condition:
             return tuple(getattr(self, "_completed_records", ()))
 
     def _raise_failure(self) -> None:
         if self._failure is not None:
-            raise RuntimeError("per-domain wrfout writer failed") \
-                from self._failure
+            # This wrapper is what a run's failed event and its map page
+            # show, so it carries the cause's words and remedy; a bare
+            # "writer failed" left the reader with nothing to act on.
+            failure = self._failure
+            raise _with_remedy(RuntimeError(
+                "per-domain wrfout writer failed: "
+                f"{str(failure) or type(failure).__name__}"),
+                failure) from failure
 
     def _peer_failure(self):
         """The FIRST failure recorded on the shared abort event, if any.
@@ -1885,15 +1954,17 @@ class AsyncDomainWrfoutWriter:
             self._raise_failure()
             peer = self._peer_failure()
             if peer is not None:
-                raise RuntimeError(
+                raise _with_remedy(RuntimeError(
                     "per-domain wrfout writing was aborted by another "
-                    f"domain's writer: {peer[1]}") from peer[0]
+                    f"domain's writer: {peer[1]}"), peer[0]) from peer[0]
             raise RuntimeError("per-domain wrfout writing was aborted")
 
     def _admit(self, ticket: _AsyncFrame) -> None:
         """Admit one staged frame with bounded, liveness-aware waits."""
+        ticket.nbytes = _frame_nbytes(ticket.fields)
         with self._condition:
             self._pending += 1
+            self._pending_bytes += ticket.nbytes
         try:
             while True:
                 self._check_admission_liveness()
@@ -1911,6 +1982,7 @@ class AsyncDomainWrfoutWriter:
             if not ticket.admitted:
                 with self._condition:
                     self._pending -= 1
+                    self._pending_bytes -= ticket.nbytes
                     self._condition.notify_all()
 
     def _history_plan(self, produced) -> tuple[frozenset[str], dict]:
@@ -2161,6 +2233,7 @@ class AsyncDomainWrfoutWriter:
                 return
             staging_consumed = False
             writer = None
+            ticket_bytes = int(getattr(ticket, "nbytes", 0) or 0)
             try:
                 ticket.event.synchronize()
                 # D2H is complete.  Drop device ownership on the side stream
@@ -2199,7 +2272,9 @@ class AsyncDomainWrfoutWriter:
                 ticket.pinned_refs = ()
                 with self._condition:
                     self._identity_pending = True
+                    self._identity_bytes = ticket_bytes
                     self._pending -= 1
+                    self._pending_bytes -= ticket_bytes
                     staging_consumed = True
                     self._condition.notify_all()
                 published = getattr(writer, "publication_revision", None)
@@ -2252,8 +2327,10 @@ class AsyncDomainWrfoutWriter:
                 with self._condition:
                     if staging_consumed:
                         self._identity_pending = False
+                        self._identity_bytes = 0
                     else:
                         self._pending -= 1
+                        self._pending_bytes -= ticket_bytes
                     self._condition.notify_all()
 
     def update_global_attrs(self, global_attrs) -> None:
@@ -2396,6 +2473,11 @@ class PerDomainWrfoutWriters:
     #: unaffected.
     history_selection = None
 
+    #: The run's progress object, told before and after each write this
+    #: set makes between two model steps (:meth:`attach_write_progress`).
+    #: ``None`` publishes nothing, which is every caller that attaches none.
+    write_progress = None
+
     def __init__(self, model, output_dir, *, start_time, title,
                  initial_condition=None, source=None,
                  progress_callback=None, history_selection=None,
@@ -2479,6 +2561,7 @@ class PerDomainWrfoutWriters:
         self.last_durable_wrfout = None
         if progress_callback is not None:
             self.attach_progress_callback(progress_callback)
+            self.attach_write_progress(progress_callback)
 
     def _selection_for(self, domain_cfg):
         """One domain's ``[output]`` selection: its own, else the tree's.
@@ -2521,9 +2604,36 @@ class PerDomainWrfoutWriters:
         for writer in self._writers.values():
             writer.landing_observer = observer
 
+    def attach_write_progress(self, progress_callback) -> None:
+        """Tell ``progress_callback`` about each write between two steps.
+
+        A history frame is submitted, and on a streamed domain written,
+        after one model step's heartbeat and before the next, and a
+        restart drains every queued frame there too.  A supervisor that
+        hears nothing in that stretch times it as one model step: a
+        1132x906x55 streamed forecast's last 5.24 GB frame took 81 s and,
+        with the stop-tick checkpoint after it, went past the 120 s step
+        bound, so a run with every step done was stopped.  With a progress
+        object attached, each write publishes a ``writing:`` record that
+        declares its bytes (:func:`gpuwm.supervisor.writing_progress`).
+        This is its own method because the runners attach their landing
+        hooks through a fan-out that does not carry the progress object.
+        """
+        self.write_progress = progress_callback
+
+    def _write_beat(self, phase: str, work_bytes: int | None):
+        return writing_progress(self.write_progress, phase,
+                                work_bytes=work_bytes)
+
     @property
     def pending(self) -> int:
         return sum(writer.pending for writer in self._writers.values())
+
+    @property
+    def pending_work_bytes(self) -> int:
+        """Every domain's :attr:`AsyncDomainWrfoutWriter.pending_work_bytes`."""
+        return sum(int(getattr(writer, "pending_work_bytes", 0) or 0)
+                   for writer in self._writers.values())
 
     @property
     def paths(self) -> tuple[Path, ...]:
@@ -2702,29 +2812,65 @@ class PerDomainWrfoutWriters:
                 getattr(node.state, "physics", None))
         frame_attrs = (None if not carrier_attrs
                        else {**writer.global_attrs, **carrier_attrs})
+        phase = f"history-d{int(node.cfg.grid_id):02d}"
         if streamed is not None:
             # A streamed domain's numbers live in the pinned host store;
             # the provenance snapshot applies to its frames the same way.
+            # Its frame is written HERE, between two model steps: the
+            # frame is assembled off the store, then this thread waits for
+            # the frames queued ahead of it and for its own write.  The
+            # first record covers the assembly and the second, once the
+            # frame's size is known, declares the bytes still to move:
+            # everything queued plus this frame, written and read back.
+            with self._write_beat(phase, self.pending_work_bytes):
+                frame = streamed.history_fields()
+                with self._write_beat(
+                        phase, self.pending_work_bytes
+                        + 2 * _frame_nbytes(frame)):
+                    writer.submit(
+                        path, valid_time, None, frame=frame,
+                        extra_fields=self._metadata_by_grid_id[
+                            node.cfg.grid_id],
+                        refl_field=refl_field,
+                        global_attrs=frame_attrs)
+                    # The next sweep may reuse these pinned views once the
+                    # native write releases them. Identity hashing can
+                    # continue on the worker; final drain/close still wait
+                    # for the complete record.
+                    consume_staging = getattr(writer, "drain_staging",
+                                              writer.drain)
+                    consume_staging()
+            return
+        # A resident frame is staged device to host and queued; this thread
+        # waits only for room in the queue, behind the frames already in it.
+        with self._write_beat(phase, self.pending_work_bytes):
             writer.submit(
-                path, valid_time, None, frame=streamed.history_fields(),
+                path, valid_time, node.state,
                 extra_fields=self._metadata_by_grid_id[node.cfg.grid_id],
                 refl_field=refl_field,
                 global_attrs=frame_attrs)
-            # The next sweep may reuse these pinned views once the native
-            # write releases them. Identity hashing can continue on the
-            # worker; final drain/close still wait for the complete record.
-            consume_staging = getattr(writer, "drain_staging", writer.drain)
-            consume_staging()
-            return
-        writer.submit(
-            path, valid_time, node.state,
-            extra_fields=self._metadata_by_grid_id[node.cfg.grid_id],
-            refl_field=refl_field,
-            global_attrs=frame_attrs)
 
-    def drain(self) -> None:
+    def drain(self, *, before_domain=None) -> None:
+        """Wait for every domain's durable files and output identities.
+
+        ``before_domain(grid_id, work_bytes)``, when given, is called before
+        each domain is waited on with :attr:`pending_work_bytes` for the
+        whole set: the domains share one NetCDF lock, so the first wait can
+        cover all of them.
+
+        Without ``before_domain`` this is a drain between two model steps
+        (a restart waits here for every queued frame before it writes its
+        checkpoint), and each domain's wait is a ``writing:`` record on the
+        attached write progress, sized the same way.
+        """
         for gid in sorted(self._writers):
-            self._writers[gid].drain()
+            if before_domain is not None:
+                before_domain(gid, self.pending_work_bytes)
+                self._writers[gid].drain()
+            else:
+                with self._write_beat(f"drain-history-writers-d{int(gid):02d}",
+                                      self.pending_work_bytes):
+                    self._writers[gid].drain()
             if self._writers[gid].paths:
                 self.last_durable_wrfout = self._writers[gid].paths[-1]
 

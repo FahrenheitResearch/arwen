@@ -283,6 +283,53 @@ def test_elf_arch_is_read_from_the_object_not_assumed(receipt):
     cubins = [name for name in receipt["artifacts"]
               if name.startswith("cubin/") and (RECEIPT_DIR / name).exists()]
     assert cubins
+    # The receipt names the card that compiled these objects; the header
+    # must agree with it, not merely spell some SM.
+    card = "SM" + receipt["device"]["compute_capability"].replace(".", "")
     for name in cubins:
         arch = sass.elf_sm_arch((RECEIPT_DIR / name).read_bytes())
-        assert arch.startswith("SM") and arch[2:].isdigit(), (name, arch)
+        assert arch == card, (name, arch)
+
+
+#: A real 64-byte CUDA ELF header in the other layout, copied from an
+#: NVRTC 12.9.86 sm_86 kernel cache entry and never rebuilt:
+#: ``EI_OSABI`` 0x33, ``EI_ABIVERSION`` 7, ``e_flags`` 0x00560556, the SM
+#: in the LOW byte.  Read from the second byte, as every object once was,
+#: it names ``SM5``.
+_ABI7_SM86_HEADER = bytes.fromhex(
+    "7f454c460201013307000000000000000200be00810000000000000000000000"
+    "4010000000000000800c0000000000005605560040003800040040000f000100")
+
+
+def test_elf_arch_reads_the_byte_the_header_s_layout_names():
+    assert sass.elf_sm_arch(_ABI7_SM86_HEADER) == "SM86"
+
+
+def test_elf_arch_refuses_a_layout_it_cannot_place():
+    """An unlisted layout is not read by guessing a byte: that guess is
+    how an sm_86 object was named ``SM5``."""
+
+    later = bytearray(_ABI7_SM86_HEADER)
+    later[8] = 9                       # an EI_ABIVERSION nobody wrote yet
+    with pytest.raises(sass.DisassemblyUnavailable, match="EI_ABIVERSION 9"):
+        sass.elf_sm_arch(bytes(later))
+
+
+def test_the_sections_fallback_records_an_unplaceable_header(monkeypatch):
+    """The fallback names ``nvdisasm -b SM<arch>``; with no arch to name
+    it records the object as unavailable instead of raising out of the
+    receipt or disassembling under a guessed target."""
+
+    calls = []
+
+    def refuse(exe, args):
+        calls.append(args)
+        return subprocess.CompletedProcess([exe, *args], 1, "", "refused")
+
+    monkeypatch.setattr(sass, "_run", refuse)
+    later = bytearray(_ABI7_SM86_HEADER)
+    later[8] = 9
+    result = sass.disassemble("nvdisasm", bytes(later))
+    assert result["available"] is False
+    assert "EI_ABIVERSION 9" in result["reason"]
+    assert [args[0] for args in calls] == ["-c"]

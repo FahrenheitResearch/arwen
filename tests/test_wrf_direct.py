@@ -44,6 +44,7 @@ from gpuwm.wrf_direct import (
     load_domain_artifacts_manifest,
     write_domain_artifacts_manifest,
     _wrf_noah_landuse,
+    _wrf_soil_category,
 )
 from gpuwm.physics_compat import (
     MYNN_PROFILE_ID,
@@ -185,54 +186,65 @@ def test_experiment_config_suite_export_keeps_the_expert_acknowledgement(
     """Suite freedom is not consent silence.
 
     The exporter's profileless recompute APPLIES the registry-owned
-    expert-tuple governance -- that is the contract
+    tuple governance -- that is the contract
     ``experiment_config_suite=True`` carries, and it is what this test
-    guards.  Its severity is warn-not-block's: an expert tuple is
-    implemented and individually verified, so it runs and says so in
-    one line naming both delivery spellings, and delivering the
-    acknowledgement silences that line.
+    guards.  Its severity is warn-not-block's: a tuple outside what the
+    registry declares reachable is still implemented component by
+    component, so it runs and says so in one line naming both delivery
+    spellings, and delivering the acknowledgement silences that line.
+
+    The tuple used to be the Noah-MP profile's, under the
+    noahmp-host-column-throughput-v1 expert acknowledgement.  d97690a4c
+    admitted noah-mp as a per-domain land-surface option and made that
+    acknowledgement an optional advisory, so the Noah-MP tuple is
+    registry-reachable on this route and exports with no line; that is
+    pinned first.  The same suite with the analytic clear-sky radiation
+    (ra_lw_physics = ra_sw_physics = 90), an implemented option no
+    declared route reaches, carries the contract now.
     """
 
     from gpuwm.physics_compat import (
         NOAHMP_PROFILE_ID,
         single_domain_runtime_switches,
     )
+    from gpuwm.physics_registry import physics_registry
 
-    run = {
-        **single_domain_runtime_switches(NOAHMP_PROFILE_ID),
-        "hybrid_opt": 2, "hypsometric_opt": 2,
-        "specified": True, "nested": False, "spec_bdy_width": 5,
-    }
-    cache = _minimal_prepared_cache(tmp_path / "prepared", run)
+    geometry = {"hybrid_opt": 2, "hypsometric_opt": 2,
+                "specified": True, "nested": False, "spec_bdy_width": 5}
+    noahmp = {**single_domain_runtime_switches(NOAHMP_PROFILE_ID), **geometry}
 
     def marker(*args, **kwargs):
         raise RuntimeError("reached-post-physics-gate")
 
     monkeypatch.setattr(wrf_direct, "_forcing_interval_indices", marker)
 
-    with pytest.raises(RuntimeError, match="reached-post-physics-gate"):
-        export_prepared_wrf(
-            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
-            tmp_path / "wrf-native-input",
-            valid_time=datetime(2026, 7, 29, 6),
-            experiment_config_suite=True)
-    unacked = [line for line in capsys.readouterr().err.splitlines()
-               if line.startswith("warning:")
-               and "registry-expert-template" in line]
-    assert len(unacked) == 1, unacked
-    assert "--ack noahmp-host-column-throughput-v1" in unacked[0]
-    assert 'acknowledgements = ["noahmp-host-column-throughput-v1"]' \
-        in unacked[0]
+    def export(cache, acknowledgements=()):
+        with pytest.raises(RuntimeError, match="reached-post-physics-gate"):
+            export_prepared_wrf(
+                cache, tmp_path / "static.npz", tmp_path / "geometry.json",
+                tmp_path / "wrf-native-input",
+                valid_time=datetime(2026, 7, 29, 6),
+                experiment_config_suite=True,
+                expert_acknowledgements=acknowledgements)
+        return [line for line in capsys.readouterr().err.splitlines()
+                if line.startswith("warning:")
+                and "registry reachability" in line]
 
-    with pytest.raises(RuntimeError, match="reached-post-physics-gate"):
-        export_prepared_wrf(
-            cache, tmp_path / "static.npz", tmp_path / "geometry.json",
-            tmp_path / "wrf-native-input",
-            valid_time=datetime(2026, 7, 29, 6),
-            experiment_config_suite=True,
-            expert_acknowledgements=(
-                "noahmp-host-column-throughput-v1",))
-    assert "registry-expert-template" not in capsys.readouterr().err
+    assert export(_minimal_prepared_cache(
+        tmp_path / "prepared-noahmp", noahmp)) == []
+
+    acknowledgement = physics_registry()["authority"][
+        "unnamed_tree_outside_reachability_acknowledgement_id"]
+    analytic = _minimal_prepared_cache(
+        tmp_path / "prepared-analytic",
+        {**noahmp, "ra_lw_physics": 90, "ra_sw_physics": 90})
+    unacked = export(analytic)
+    assert len(unacked) == 1, unacked
+    assert "'outside-registry-declared-reachability'" in unacked[0]
+    assert f"--ack {acknowledgement}" in unacked[0]
+    assert f'acknowledgements = ["{acknowledgement}"]' in unacked[0]
+
+    assert export(analytic, (acknowledgement,)) == []
 
 
 def test_single_domain_cli_forwards_physics_profile_and_acknowledgement(
@@ -403,6 +415,113 @@ def test_number_moment_wrfinput_contract_writes_arbitrary_vertical_shape(
             assert not np.any(variable[:])
 
 
+@pytest.mark.parametrize("mp_physics, numbers", [
+    (8, {"QNRAIN": "nr", "QNICE": "ni"}),
+    (28, {"QNRAIN": "nr", "QNICE": "ni", "QNCLOUD": "nc"}),
+])
+def test_the_stock_export_writes_the_cold_start_seeded_number_moments(
+        tmp_path, mp_physics, numbers):
+    """A Thompson cold start's seeded numbers reach the exported wrfinput.
+
+    The cold start seeds rain and ice numbers (and mp=28's droplet
+    number) where the analysed mass has none, as real.exe does with
+    make_RainNumber, make_IceNumber and make_DropletNumber.  The inventory
+    rows named QNRAIN and QNICE by their Registry names qnr and qni, the
+    prepared cache holds them as nr and ni, and the export found no such
+    array and wrote both as zero beside a nonzero QRAIN and QICE.  The
+    whole route runs here on the CPU: initialization, prepared cache,
+    export, and the file read back bit for bit.
+    """
+    import dataclasses
+
+    from test_arbitrary_vertical_gpu import _sha256, _static
+    from test_real_init import _analyzed_hrrr_real_init, _host_array
+    from gpuwm.gfs_direct import _geometry_contract
+    from gpuwm.ingest.lateral_bc import (
+        attach_lateral_boundaries, build_state_lateral_boundaries)
+    from gpuwm.ingest.prepared_cache import write_prepared_cache
+
+    ny, nx = 12, 12
+    valid_time = datetime(2026, 7, 20, 6)
+    # A specified mp=28 domain otherwise refuses without WRF's WIF
+    # climatology file; the aerosol source is not what is under test.
+    aerosol = {"mp28_aerosol_source": "synthetic"} if mp_physics == 28 else {}
+    result, cfg = _analyzed_hrrr_real_init(
+        mp_physics, shape=(ny, nx), map_proj=1, hypsometric_opt=2,
+        specified=True, nested=False, spec_bdy_width=5, spec_zone=1,
+        relax_zone=4, bl_pbl_physics=1, sf_sfclay_physics=91,
+        sf_surface_physics=2, **aerosol)
+    state = result.state
+    seeded = {}
+    for wrf_name, state_name in numbers.items():
+        value = np.array(_host_array(getattr(state, state_name)),
+                         dtype=np.float32)
+        assert value.max() > 0.0, state_name
+        seeded[wrf_name] = value
+
+    grid = LambertGrid(39.0, -84.0, 30.0, 60.0, -84.0,
+                       cfg.dx, cfg.dy, nx + 1, ny + 1)
+    static = _static(grid, ny, nx)
+    state.set_map_coriolis(
+        static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
+        static["F"], static["E"],
+        sina=static["SINALPHA"], cosa=static["COSALPHA"])
+    boundaries = build_state_lateral_boundaries(
+        [state, state], (valid_time, valid_time + timedelta(hours=1)),
+        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    attach_lateral_boundaries(state, boundaries)
+
+    static_path = tmp_path / "native-static.npz"
+    np.savez(static_path, **static)
+    geometry_path = tmp_path / "geometry.json"
+    geometry_path.write_text(json.dumps({
+        "schema": "gpuwm-native-static-direct-v1",
+        "status": "PASS",
+        "cache": {"path": static_path.name,
+                  "bytes": static_path.stat().st_size,
+                  "sha256": _sha256(static_path)},
+        "geometry": _geometry_contract(grid, cfg),
+    }), encoding="utf-8")
+    plane = np.ones((ny, nx), dtype=np.float32)
+    met = SimpleNamespace(fields={
+        "LANDSEA": plane, "SKINTEMP": 289.0 * plane, "T2": 289.0 * plane,
+        "U10": np.full((ny, nx + 1), 7.0, dtype=np.float32),
+        "V10": np.full((ny + 1, nx), -1.0, dtype=np.float32),
+    })
+    surface = {
+        "TSK": 289.0 * plane,
+        "TSLB": np.full((4, ny, nx), 288.0, dtype=np.float32),
+        "SMOIS": np.full((4, ny, nx), 0.25, dtype=np.float32),
+        "SH2O": np.full((4, ny, nx), 0.25, dtype=np.float32),
+        "TMN": 287.0 * plane,
+        "SEAICE": np.zeros((ny, nx), dtype=np.float32),
+        "XLAND": plane, "LANDMASK": plane,
+        "SNOW": np.zeros((ny, nx), dtype=np.float32),
+        "SNOWH": np.zeros((ny, nx), dtype=np.float32),
+    }
+    cache_path = tmp_path / "prepared-cache"
+    write_prepared_cache(
+        cache_path,
+        identity={"domain_config": {"run": dataclasses.asdict(cfg)},
+                  "forcing_hours": [0, 1],
+                  "static_cache_sha256": _sha256(static_path)},
+        initial_result=result, met=met, surface=surface,
+        boundaries=boundaries,
+        metadata={"initial_valid_time": valid_time.isoformat()})
+    output = tmp_path / "wrf-native-input"
+    export_prepared_wrf(
+        cache_path, static_path, geometry_path, output,
+        valid_time=valid_time, boundary_interval_seconds=3600)
+
+    with netCDF4.Dataset(output / "wrfinput_d01") as dataset:
+        for wrf_name, value in seeded.items():
+            written = np.asarray(dataset.variables[wrf_name][0],
+                                 dtype=np.float32)
+            np.testing.assert_array_equal(
+                written.view(np.uint32), value.view(np.uint32),
+                err_msg=wrf_name)
+
+
 def test_global_updates_keep_stock_wrf_v4_gate_and_geometry():
     geometry = {
         "center_lat": 35.5,
@@ -566,6 +685,16 @@ def test_noah_landuse_remaps_lakes_but_preserves_mask():
         mapped, np.array([[1, 17, 17], [13, 17, 20]], dtype=np.int32))
     np.testing.assert_array_equal(
         lakes, np.array([[False, False, True], [False, True, False]]))
+
+
+def test_stock_export_writes_the_soil_category_real_exe_writes():
+    """Land over water soil carries silty clay loam; water carries water."""
+    raw_lu = np.array([[12, 17, 21, 10, 13]], dtype=np.int32)
+    sct_dom = np.array([[14.0, 14.0, 14.0, 6.0, 14.0]], dtype=np.float32)
+    lu, _ = _wrf_noah_landuse(raw_lu)
+    np.testing.assert_array_equal(
+        _wrf_soil_category(sct_dom, lu), [[8, 14, 14, 6, 8]])
+    np.testing.assert_array_equal(lu, [[12, 17, 17, 10, 13]])
 
 
 def test_lbc_orientation_matches_wrf_side_layout():
@@ -1246,3 +1375,60 @@ def test_wrfinput_fields_refuse_a_receipt_that_lost_the_nest_anchor():
     with pytest.raises(KeyError, match="state/qv"):
         wrf_direct._wrfinput_fields(
             cache, {}, geometry, valid_time, p_top=5000.0)
+
+
+def test_the_root_export_stages_where_a_door_measures_it(tmp_path, monkeypatch):
+    """A door refuses a deep root on the unchanged-WRF export's staging.
+
+    That path is ``wrf-native-input.tmp-<pid>/.root-export.tmp-<pid>/
+    manifest.json`` inside the door's own staging, and it is only right
+    if the hierarchy exporter really hands d01's exporter a folder inside
+    its staging and d01's exporter stages beside it: the export is run
+    here, from a door's staging and at the widest process id, up to that
+    hand-off.
+    """
+    from gpuwm.fetch_guard import WINDOWS_WIDEST_PID
+    from gpuwm.native_domain_artifacts import (
+        _atomic_staging_sibling, hierarchy_bundle_write_paths)
+
+    class HandedOver(Exception):
+        pass
+
+    handed = []
+
+    def root_export(_prepared, _static, _geometry, output, **_kwargs):
+        handed.append(Path(output))
+        raise HandedOver()
+
+    def run(nx, ny, dx, dt, *, specified, nested):
+        return SimpleNamespace(nx=nx, ny=ny, nz=8, dx=dx, dy=dx, dt=dt,
+                               specified=specified, nested=nested,
+                               mp_physics=6)
+
+    d01 = _domain(1, 0, specified=True, nested=False)
+    d01.run = run(100, 80, 12000.0, 60.0, specified=True, nested=False)
+    d02 = _domain(2, 1, specified=False, nested=True)
+    d02.run = run(60, 60, 4000.0, 20.0, specified=False, nested=True)
+    exp = SimpleNamespace(
+        domains=(d01, d02), projection=SimpleNamespace(map_proj="lambert"),
+        start_time=datetime(1999, 5, 3, 12),
+        vertical=SimpleNamespace(
+            eta_levels=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.2, 0.0),
+            p_top=5000.0, hybrid_opt=2))
+    monkeypatch.setattr(wrf_direct, "export_prepared_wrf", root_export)
+    monkeypatch.setattr(wrf_direct, "grids_from_projection_config",
+                        lambda _exp: (object(), object()))
+    monkeypatch.setattr(os, "getpid", lambda: WINDOWS_WIDEST_PID)
+    output_root = tmp_path / "prepared"
+    door_staging = _atomic_staging_sibling(output_root, nonce="f" * 10)
+
+    with pytest.raises(HandedOver):
+        export_prepared_wrf_hierarchy(
+            exp, (_artifact(1), _artifact(2)),
+            door_staging / "wrf-native-input",
+            boundary_interval_seconds=21600)
+
+    staged = (wrf_direct.export_staging_path(handed[0]) / "manifest.json")
+    assert staged in hierarchy_bundle_write_paths(output_root)
+    assert len(str(staged)) == max(
+        len(str(path)) for path in hierarchy_bundle_write_paths(output_root))

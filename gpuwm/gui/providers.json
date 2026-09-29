@@ -1,0 +1,52 @@
+{
+  "schema": "gpuwm.cloud-providers.v1",
+  "about": "Cloud machines for gpuwm gui. A provider is a table of command lines, run with the user's own CLI and credentials; adding a provider is adding an entry here. {{name}} is filled from the machine row.",
+  "providers": {
+    "aws": {
+      "label": "Amazon EC2",
+      "cli": "aws",
+      "credentials": "your own AWS profile (aws configure, or aws sso login), named by the row's profile",
+      "needs": ["image", "instance_type", "region", "key_name", "security_group", "spend_cap_usd", "price_per_hour_usd"],
+      "defaults": {"profile": "default", "ssh_user": "ubuntu", "volume_gib": 200, "idle_stop_min": 30, "root_device": "/dev/sda1"},
+      "optional_args": {
+        "launch": {"subnet": ["--subnet-id", "{{subnet}}"]}
+      },
+      "calls": {
+        "identity": ["aws", "sts", "get-caller-identity", "--profile", "{{profile}}", "--output", "json"],
+        "launch": ["aws", "ec2", "run-instances", "--profile", "{{profile}}", "--region", "{{region}}",
+                   "--image-id", "{{image}}", "--instance-type", "{{instance_type}}",
+                   "--key-name", "{{key_name}}", "--security-group-ids", "{{security_group}}",
+                   "--instance-initiated-shutdown-behavior", "stop",
+                   "--block-device-mappings", "DeviceName={{root_device}},Ebs={VolumeSize={{volume_gib}},VolumeType=gp3,DeleteOnTermination=true}",
+                   "--tag-specifications", "ResourceType=instance,Tags=[{Key=Name,Value={{name}}},{Key=gpuwm-machine,Value={{name}}}]",
+                   "--user-data", "file://{{user_data_file}}",
+                   "--count", "1", "--query", "Instances[0].InstanceId", "--output", "text"],
+        "start": ["aws", "ec2", "start-instances", "--profile", "{{profile}}", "--region", "{{region}}",
+                  "--instance-ids", "{{instance_id}}", "--output", "json"],
+        "wait": ["aws", "ec2", "wait", "instance-running", "--profile", "{{profile}}", "--region", "{{region}}",
+                 "--instance-ids", "{{instance_id}}"],
+        "address": ["aws", "ec2", "describe-instances", "--profile", "{{profile}}", "--region", "{{region}}",
+                    "--instance-ids", "{{instance_id}}",
+                    "--query", "Reservations[0].Instances[0].PublicDnsName", "--output", "text"],
+        "state": ["aws", "ec2", "describe-instances", "--profile", "{{profile}}", "--region", "{{region}}",
+                  "--instance-ids", "{{instance_id}}",
+                  "--query", "Reservations[0].Instances[0].State.Name", "--output", "text"],
+        "stop": ["aws", "ec2", "stop-instances", "--profile", "{{profile}}", "--region", "{{region}}",
+                 "--instance-ids", "{{instance_id}}", "--output", "json"],
+        "host_keys": ["aws", "ec2", "get-console-output", "--profile", "{{profile}}", "--region", "{{region}}", "--instance-id", "{{instance_id}}", "--query", "Output", "--output", "text"],
+        "terminate": ["aws", "ec2", "terminate-instances", "--profile", "{{profile}}", "--region", "{{region}}",
+                      "--instance-ids", "{{instance_id}}", "--output", "json"]
+      },
+      "outputs": {"launch": "instance_id", "address": "address", "state": "cloud_state"},
+      "sequences": {
+        "start_new": ["identity", "launch", "wait", "address", "host_key", "settle", "set_cap", "check"],
+        "start_existing": ["identity", "start", "wait", "address", "host_key", "settle", "set_cap", "check"],
+        "stop": ["settle", "stop"],
+        "terminate": ["settle", "terminate"]
+      },
+      "user_data": "#!/bin/bash\n# First boot: install the ArWen cap guard, which stops this machine at its spend cap or when idle.\nmkdir -p /var/lib/arwen-cap-guard\necho {{cap_minutes}} > /var/lib/arwen-cap-guard/cap_minutes\necho {{idle_stop_min}} > /var/lib/arwen-cap-guard/idle_minutes\necho 0 > /var/lib/arwen-cap-guard/used_minutes\ncat > /usr/local/bin/arwen-cap-guard <<'GUARD'\n#!/bin/bash\n# ArWen cap guard: stops this machine at its spend cap or after it sits idle.\n# used_minutes is kept on disk, so the cap holds across stops and starts.\nstate=\"${ARWEN_CAP_GUARD_STATE:-/var/lib/arwen-cap-guard}\"\ntick=\"${ARWEN_CAP_GUARD_TICK_S:-60}\"\nrounds=\"${ARWEN_CAP_GUARD_ROUNDS:-0}\"\nmkdir -p \"$state\"\ncount() { cat \"$state/$1\" 2>/dev/null || echo \"$2\"; }\n# A boot is billed before this service runs: count one minute for it.\necho $(( $(count used_minutes 0) + 1 )) > \"$state/used_minutes\"\nidle=0; n=0\nwhile sleep \"$tick\"; do\n  used=$(( $(count used_minutes 0) + 1 ))\n  echo \"$used\" > \"$state/used_minutes\"\n  cap=$(count cap_minutes 0)\n  limit=$(count idle_minutes 30)\n  if [ \"$used\" -ge \"$cap\" ]; then shutdown -h now 'spend cap reached'; fi\n  # A render worker waiting for frames is not work: only its drawing (python -m gpuwm render) is.\n  if pgrep -af 'python[0-9.]* .*-m gpuwm|machine_agent' | grep -v ' render-loop ' |\n       awk -v me=\"$$\" '$1 != me' | grep -q . \\\n     || nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -q .; then\n    idle=0\n  else\n    idle=$((idle + 1))\n  fi\n  echo \"$idle\" > \"$state/idle_count\"\n  if [ \"$idle\" -ge \"$limit\" ]; then shutdown -h now 'idle stop'; fi\n  n=$((n + 1))\n  if [ \"$rounds\" -gt 0 ] && [ \"$n\" -ge \"$rounds\" ]; then exit 0; fi\ndone\nGUARD\nchmod +x /usr/local/bin/arwen-cap-guard\ncat > /etc/systemd/system/arwen-cap-guard.service <<'UNIT'\n[Unit]\nDescription=ArWen spend cap and idle stop\n[Service]\nExecStart=/usr/local/bin/arwen-cap-guard\nRestart=always\n[Install]\nWantedBy=multi-user.target\nUNIT\nsystemctl daemon-reload\nsystemctl enable --now arwen-cap-guard.service\n",
+      "set_cap": ["sudo", "sh", "-c", "echo {{guard_cap_minutes}} > /var/lib/arwen-cap-guard/cap_minutes && echo {{idle_stop_min}} > /var/lib/arwen-cap-guard/idle_minutes && systemctl restart arwen-cap-guard.service"],
+      "read_used": ["cat", "/var/lib/arwen-cap-guard/used_minutes"]
+    }
+  }
+}

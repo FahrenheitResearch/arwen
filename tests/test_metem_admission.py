@@ -22,10 +22,12 @@ def test_actual_shapes_price_unregistered_source_and_preserve_default(tmp_path):
     from gpuwm.core.preflight import (estimate_ingest, estimate_phases, ingest_analysis_shapes,
                                       source_analysis_fields_per_time)
     exp=experiment(tmp_path)
-    shapes={d.grid_id:ingest_analysis_shapes(d.run,source='gfs') for d in exp.domains}
+    # The GFS level count follows the model top the fetch is asked for.
+    top=exp.vertical.p_top
+    shapes={d.grid_id:ingest_analysis_shapes(d.run,source='gfs',p_top_pa=top) for d in exp.domains}
     default=estimate_ingest(exp,source='gfs')
     actual=estimate_ingest(exp,source='unregistered-format',analysis_shapes_by_domain=shapes,
-                           source_fields_per_time=source_analysis_fields_per_time('gfs'))
+                           source_fields_per_time=source_analysis_fields_per_time('gfs',p_top_pa=top))
     assert actual.items == default.items
     assert actual.peak_envelope_bytes == default.peak_envelope_bytes
     assert actual.host_fields_per_time == default.host_fields_per_time

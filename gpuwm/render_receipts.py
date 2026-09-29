@@ -16,8 +16,104 @@ INVOCATION_SCHEMA = "gpuwm.render-invocation.v1"
 SUMMARY_FILENAME = "render-summary.json"
 _MAX_RECEIPT_BYTES = 64 * 1024 * 1024
 _MAX_STATUS_BYTES = 60 * 1024  # headroom within the selected-job 64 KiB envelope
-_CATALOG_REQUESTS = {"all", "direct", "derived", "generic", "heavy", "windowed"}
+_CATALOG_REQUESTS = {"all", "direct", "derived", "generic", "heavy", "windowed",
+                     "variables"}
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_PLAIN_BYTES = frozenset(b"abcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _drawn_family(requested: str) -> str:
+    """The folder a requested product's pictures are filed under.
+
+    A named product's folder is its slug.  A stored variable asked for as
+    ``var:NAME`` is filed under the engine's own spelling of that name
+    (``rusty-weather/src/store_render.rs``): lowercase letters, digits and
+    ``_`` for themselves, every other byte as ``-XX``.
+    """
+
+    if not requested.startswith("var:"):
+        return requested
+    spelled = "".join(chr(byte) if byte in _PLAIN_BYTES else f"-{byte:02x}"
+                      for byte in requested[len("var:"):].encode("utf-8"))
+    return f"var_{spelled}"
+
+
+def drawn_families(root: Path, written, layout: str) -> set[str]:
+    """The product folders ``written`` filled, read the way a receipt reads them."""
+
+    from gpuwm.render_layout import fs_path
+    root = Path(fs_path(root, descend=True)).resolve()
+    families = set()
+    for name in written:
+        path = Path(fs_path(name, descend=True)).resolve()
+        if path.is_relative_to(root):
+            families.add(_family(path, root, layout))
+    return families
+
+
+def undrawn_note(summary: dict | None) -> tuple[str, str] | None:
+    """``(headline, detail)`` for the products a run drew NO picture of.
+
+    THE closing note of a run.  Read from the published summary, which
+    aggregates every invocation this folder has seen -- the early frame,
+    each frame drawn while the forecast ran, and the end-of-run passes --
+    so a product the live renders skipped on every frame is named even
+    when the last pass never asked for it.
+
+    WHAT BREAKAGE THIS PREVENTS (gate law): every run of the default
+    preset drew 20 of its 24 products, and the end-of-run note named only
+    ``qpf_1h`` -- which had drawn 24 pictures and was skipped at F000 --
+    because it listed the last pass's skips.  The three products that
+    drew nothing at all were skipped by the live renders and appeared
+    nowhere a reader looks.
+
+    ``None`` when every product that was skipped somewhere was drawn
+    somewhere else.  The headline's first line names the products; one
+    line per product follows with the first reason recorded for it,
+    because the causes differ by product: a field the frames do not
+    store, a window they do not span, a section with no line to cut it
+    along.  It used to give one cause for all of them, "the frames do
+    not carry their input fields or the time window they need", which
+    sent a reader whose section had no line looking at the forecast's
+    history fields.  The detail counts the skips.
+    """
+
+    if not summary:
+        return None
+    rows = summary.get("undrawn_families") or []
+    count = int(summary.get("undrawn_family_count") or len(rows))
+    if not count:
+        return None
+    names = [str(row.get("name")) for row in rows]
+    more = count - len(names)
+    listed = ", ".join(names) + (f" and {more} more" if more > 0 else "")
+    lines = [f"  {row.get('name')}: {_first_reason(row)}" for row in rows]
+    if more > 0:
+        lines.append(f"  the other {more} are named in "
+                     f"{summary.get('summary_path') or SUMMARY_FILENAME}")
+    headline = (
+        f"note: {count} requested product(s) drew no picture in this run: "
+        f"{listed}; every other product drew at least one picture.  Why:\n"
+        + "\n".join(lines))
+    detail = (
+        "Each reason is the first the renderer recorded for that product; "
+        "the counts are skipped render attempts across every pass of this "
+        "run:\n"
+        + "\n".join(f"  {row.get('name')}: skipped {row.get('count')} time(s)"
+                    for row in rows))
+    return headline, detail
+
+
+def _first_reason(row) -> str:
+    """The first recorded reason of one undrawn row, as one line."""
+
+    reasons = row.get("reasons") or []
+    if not reasons:
+        # The bounded summary drops reason text first when it runs out of
+        # room; the invocation receipts keep every one.
+        return ("no reason kept in the summary; the receipts under "
+                ".render-receipts hold it")
+    return " ".join(str(reasons[0]).split())
 
 
 def _hash(path: Path) -> str:
@@ -189,11 +285,13 @@ def _documents(root: Path, paths=None):
     if directory.is_symlink():
         raise ValueError("Render receipt directory must not be a symlink")
     paths = sorted(directory.glob("*.json")) if paths is None else paths
+    # The aggregate byte bound below is what bounds this read, however many
+    # receipts share it: a folder drawn while a long forecast runs files one
+    # receipt per pass and legitimately holds thousands.
     total = 0
     for path in paths:
         path = Path(path)
-        if (path.parent != directory or path.suffix != ".json" or path.is_symlink()
-                or len(documents) >= 4096):
+        if path.parent != directory or path.suffix != ".json" or path.is_symlink():
             raise ValueError("Render invocation receipt is not a bounded regular file")
         with path.open("rb") as stream:
             payload = stream.read(_MAX_RECEIPT_BYTES - total + 1)
@@ -206,6 +304,26 @@ def _documents(root: Path, paths=None):
         documents.append((raw, path, payload))
     documents.sort(key=lambda pair: (pair[0]["created_utc"], pair[0]["id"]))
     return documents
+
+
+def _removed_since_published(name: str) -> bool:
+    """Whether nothing at all stands at a receipt's (already validated) PNG path.
+
+    Asked in the long-path spelling, so a picture deeper than the Windows
+    path limit is never mistaken for a removed one.  Anything standing
+    there, a replaced file or a link included, is not removed: it goes
+    on to :func:`_output_path` and the digest check, which refuse it.
+    A file standing where one of the picture's folders was leaves no
+    picture either; Linux reports that as NotADirectoryError where
+    Windows reports FileNotFoundError, and without it the summary
+    failed with a bare OSError on one system only.
+    """
+    from gpuwm.render_layout import fs_path
+    try:
+        os.lstat(fs_path(name, descend=True))
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    return False
 
 
 def _recorded_output_path(root: Path, name: str) -> Path:
@@ -252,11 +370,23 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
     rendered = Counter()
     for name, row in current.items():
         if verify_images:
+            if _removed_since_published(row["path"]):
+                # A picture published by an earlier invocation and removed
+                # since: its receipt stays true as a record of that
+                # invocation, and the picture is no longer counted.  This
+                # refused before, and one pruned PNG then failed every
+                # later render of the folder at publication.
+                degraded.append({"path": row["path"], "reason":
+                    "the picture was published and has since been removed "
+                    "from disk; it is no longer counted"})
+                continue
             path = _output_path(root, row["path"])
             if path.stat().st_size != row["size_bytes"] or _hash(path) != row["sha256"]:
                 raise ValueError("A published PNG changed after its render receipt")
         rendered[row["family"]] += 1
-    requested = list(dict.fromkeys(token.strip() for spec in specs for token in spec.split(",") if token.strip()))
+    # Whole products: a section's comma-separated level list is one family.
+    from gpuwm.rustwx import product_spec_terms
+    requested = list(dict.fromkeys(token for spec in specs for token in product_spec_terms(spec)))
     explicit = not any(token in _CATALOG_REQUESTS for token in requested)
     skipped_rows = []
     for name, count in sorted(skipped.items()):
@@ -264,6 +394,13 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
         shown = [reason for reason in exact if len(reason.encode("utf-8")) <= 2048][:3]
         skipped_rows.append({"name": name, "count": count, "reasons": shown,
                              "additional_reasons": len(exact) - len(shown)})
+    # Every product some invocation skipped and NO invocation drew, across
+    # every pass this folder has seen: the early frame, the frames drawn
+    # while the forecast ran, and the end-of-run and windowed passes.
+    undrawn_rows = [{"name": row["name"], "count": row["count"],
+                     "reasons": row["reasons"][:1]}
+                    for row in skipped_rows
+                    if _drawn_family(row["name"]) not in rendered]
     shown_failures = [reason for reason in failures if len(reason.encode("utf-8")) <= 2048][:8]
     summary = {"schema": SUMMARY_SCHEMA, "summary_path": str(root / SUMMARY_FILENAME),
         "requested_specs": specs[:8], "additional_requested_specs": max(0, len(specs)-8),
@@ -274,11 +411,14 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
         "requested_families": requested[:64] if explicit else None,
         "requested_family_count": len(requested) if explicit else None,
         "additional_requested_families": max(0, len(requested)-64) if explicit else 0,
-        "rendered_png_count": len(current), "rendered_family_count": len(rendered),
+        "rendered_png_count": sum(rendered.values()), "rendered_family_count": len(rendered),
         "rendered_families": [{"name": name, "count": count} for name, count in sorted(rendered.items())][:64],
         "additional_rendered_families": max(0, len(rendered)-64),
         "skipped_count": sum(skipped.values()), "skipped_family_count": len(skipped),
         "skipped_families": skipped_rows[:64], "additional_skipped_families": max(0, len(skipped_rows)-64),
+        "undrawn_family_count": len(undrawn_rows),
+        "undrawn_families": undrawn_rows[:64],
+        "additional_undrawn_families": max(0, len(undrawn_rows)-64),
         "failure_count": len(failures), "failures": shown_failures,
         "additional_failures": len(failures)-len(shown_failures),
         "degraded_count": len(degraded),
@@ -299,9 +439,12 @@ def _bounded_summary(summary):
     # reason. Omitted exact details remain in the invocation receipts.
     while len((json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")) > _MAX_STATUS_BYTES:
         rows = [row for row in summary["skipped_families"] if row["reasons"]]
+        undrawn = [row for row in summary.get("undrawn_families", ()) if row["reasons"]]
         if rows:
             row = max(rows, key=lambda row: sum(len(reason) for reason in row["reasons"]))
             row["reasons"].pop(); row["additional_reasons"] += 1
+        elif undrawn:
+            max(undrawn, key=lambda row: len(row["reasons"][0]))["reasons"].pop()
         elif summary["failures"]:
             summary["failures"].pop(); summary["additional_failures"] += 1
         elif summary.get("degraded"):
@@ -311,9 +454,42 @@ def _bounded_summary(summary):
             summary["additional_section_fills"] += 1
         elif len(summary["receipt_paths"]) > 1:
             summary["receipt_paths"].pop(0); summary["additional_receipts"] += 1
+        elif (preview := _largest_preview(summary)) is not None:
+            # Long valid selections fill the envelope with the preview
+            # lists themselves (each requested spec is the whole selection
+            # string), and no reason text is left to drop. The preview
+            # shortens by its last row and says how many it left out, the
+            # same convention every other list here uses; the totals and
+            # the exact invocation receipts are unchanged.
+            rows, count = preview
+            summary[rows].pop()
+            summary[count] = int(summary.get(count) or 0) + 1
         else:
+            # Only fixed-size fields and one receipt path remain, and they
+            # still do not fit the selected-job status envelope.
             raise ValueError("Render summary metadata exceeds its status bound; exact invocation receipts were retained")
     return summary
+
+
+#: The summary's preview lists and the field that counts what each leaves out.
+_PREVIEW_LISTS = (
+    ("requested_specs", "additional_requested_specs"),
+    ("requested_families", "additional_requested_families"),
+    ("rendered_families", "additional_rendered_families"),
+    ("skipped_families", "additional_skipped_families"),
+    ("undrawn_families", "additional_undrawn_families"),
+    ("section_tops_km", "additional_section_tops_km"),
+)
+
+
+def _largest_preview(summary):
+    """The non-empty preview list taking the most status bytes, or ``None``."""
+    sized = [(len(json.dumps(summary[rows], separators=(",", ":")).encode("utf-8")), rows, count)
+             for rows, count in _PREVIEW_LISTS if summary.get(rows)]
+    if not sized:
+        return None
+    _size, rows, count = max(sized)
+    return rows, count
 
 
 def _preserve_bytes(path: Path, payload: bytes):

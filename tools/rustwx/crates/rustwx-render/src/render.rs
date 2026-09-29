@@ -235,6 +235,7 @@ impl Default for RenderOpts {
                 under_color: None,
                 over_color: None,
                 mask_below: None,
+                categories: false,
             },
             background: Rgba::WHITE,
             colorbar: true,
@@ -827,6 +828,13 @@ pub(crate) fn pick_ticks(levels: &[f64], step: Option<f64>) -> Vec<f64> {
     ticks
 }
 
+/// The values the colorbar labels: the category codes at band centres for a
+/// category colormap, otherwise [`pick_ticks`] over the legend levels.
+pub(crate) fn legend_ticks(cmap: &LeveledColormap, step: Option<f64>) -> Vec<f64> {
+    cmap.category_codes()
+        .unwrap_or_else(|| pick_ticks(cmap.legend_levels_for_display(), step))
+}
+
 fn colorbar_levels_for_ticks(cmap: &LeveledColormap) -> &[f64] {
     cmap.legend_levels_for_display()
 }
@@ -1009,10 +1017,9 @@ fn filter_tick_labels_to_fit(
     let mut labels = Vec::with_capacity(ticks.len());
     let mut last_right = i32::MIN / 4;
 
-    for tick_val in ticks {
+    for (tick_val, label) in ticks.iter().zip(text::format_tick_labels(ticks)) {
         let frac = (tick_val - lo) / range;
         let px = cbar_x as f64 + frac * cbar_w as f64;
-        let label = text::format_tick(*tick_val);
         let lw = text::text_width(&label, text_scale) as i32;
         if lw >= max_x.saturating_sub(min_x) {
             continue;
@@ -1050,13 +1057,12 @@ fn filter_vertical_tick_labels_to_fit(
     }
 
     let mut candidates = Vec::with_capacity(ticks.len());
-    for tick_val in ticks {
+    for (tick_val, label) in ticks.iter().zip(text::format_tick_labels(ticks)) {
         let frac = (tick_val - lo) / range;
         if !frac.is_finite() {
             continue;
         }
         let py = cbar_y as f64 + (1.0 - frac) * cbar_h as f64;
-        let label = text::format_tick(*tick_val);
         let centered_y = (py.round() as i32) - (line_h / 2);
         let max_label_y = max_y.saturating_sub(line_h);
         let y = centered_y.clamp(min_y, max_label_y.max(min_y));
@@ -1170,6 +1176,65 @@ fn draw_projected_polygons(
     }
 }
 
+/// Liang-Barsky: the parameters `(t0, t1)`, `0 <= t0 < t1 <= 1`, of the part
+/// of the segment `a -> b` that lies inside the closed rectangle
+/// `[min_x, max_x] x [min_y, max_y]`, or `None` when no stretch of it does
+/// (a segment that only touches the rectangle at one point has no stretch).
+fn clip_segment_to_rect(
+    a: (f64, f64),
+    b: (f64, f64),
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+) -> Option<(f64, f64)> {
+    if ![a.0, a.1, b.0, b.1].iter().all(|value| value.is_finite()) {
+        return None;
+    }
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let mut t0 = 0.0_f64;
+    let mut t1 = 1.0_f64;
+    for (p, q) in [
+        (-dx, a.0 - min_x),
+        (dx, max_x - a.0),
+        (-dy, a.1 - min_y),
+        (dy, max_y - a.1),
+    ] {
+        if p == 0.0 {
+            // Parallel to this edge: wholly outside it or never crossing it.
+            if q < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let r = q / p;
+        if p < 0.0 {
+            if r > t1 {
+                return None;
+            }
+            t0 = t0.max(r);
+        } else {
+            if r < t0 {
+                return None;
+            }
+            t1 = t1.min(r);
+        }
+    }
+    (t1 > t0).then_some((t0, t1))
+}
+
+/// Draws basemap linework cut at the map rectangle.
+///
+/// Every segment is clipped to the map rectangle before it is drawn, and the
+/// stroke itself is confined to that rectangle, so no line reaches past the
+/// frame into the margin. `MapExtent::to_pixel` keeps vertices up to 10 % of
+/// the extent outside the map so that a line leaving the map is still drawn up
+/// to the edge; before this cut, the polyline kept those vertices as they
+/// were, and county lines leaving the bottom of a 12 km map were drawn in the
+/// margin below the frame. The clip mask then decides, per clipped segment,
+/// whether the segment is drawn at all: one that touches the mask is drawn up
+/// to the rectangle, and the pass that clears outside the mask trims the rest.
 fn draw_projected_lines(
     img: &mut RgbaImage,
     layout: &Layout,
@@ -1178,6 +1243,28 @@ fn draw_projected_lines(
     presentation: RenderPresentation,
     clip_mask: Option<&RgbaImage>,
 ) {
+    if layout.map_w == 0 || layout.map_h == 0 {
+        return;
+    }
+    let local_max_x = layout.map_w.saturating_sub(1) as f64;
+    let local_max_y = layout.map_h.saturating_sub(1) as f64;
+    let pixel_clip = (
+        layout.map_x as i32,
+        layout.map_y as i32,
+        layout.map_x.saturating_add(layout.map_w).saturating_sub(1) as i32,
+        layout.map_y.saturating_add(layout.map_h).saturating_sub(1) as i32,
+    );
+    let to_canvas = |(x, y): (f64, f64)| (layout.map_x as f64 + x, layout.map_y as f64 + y);
+    let along = |a: (f64, f64), b: (f64, f64), t: f64| {
+        // The unclipped ends stay bit-identical to the projected vertex.
+        if t <= 0.0 {
+            a
+        } else if t >= 1.0 {
+            b
+        } else {
+            (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+        }
+    };
     // Collect all projected+clipped polylines first so we can either
     // dispatch them all as one GPU batch (single canvas round-trip) or
     // fall back to per-polyline CPU drawing.
@@ -1201,29 +1288,41 @@ fn draw_projected_lines(
         let mut current: Vec<(f64, f64)> = Vec::with_capacity(line.points.len());
         let mut previous_local: Option<(f64, f64)> = None;
         for &(x, y) in &line.points {
-            if let Some((px, py)) = extent.to_pixel(x, y, layout.map_w, layout.map_h) {
-                let visible = clip_mask
-                    .map(|mask| {
-                        previous_local
-                            .map(|(prev_x, prev_y)| {
-                                segment_intersects_mask(mask, prev_x, prev_y, px, py)
-                            })
-                            .unwrap_or_else(|| mask_contains_local_pixel(mask, px, py))
-                    })
-                    .unwrap_or(true);
-                if visible {
-                    current.push((
-                        layout.map_x as f64 + px as f64,
-                        layout.map_y as f64 + py as f64,
-                    ));
-                } else {
-                    push_chunk(&mut current, style.color, style.width, &mut chunks);
-                }
-                previous_local = Some((px, py));
-            } else {
+            let Some(point) = extent.to_pixel(x, y, layout.map_w, layout.map_h) else {
                 push_chunk(&mut current, style.color, style.width, &mut chunks);
                 previous_local = None;
+                continue;
+            };
+            if let Some(previous) = previous_local {
+                let clipped =
+                    clip_segment_to_rect(previous, point, 0.0, local_max_x, 0.0, local_max_y);
+                match clipped {
+                    Some((t0, t1)) => {
+                        let start = along(previous, point, t0);
+                        let end = along(previous, point, t1);
+                        let visible = clip_mask.is_none_or(|mask| {
+                            segment_intersects_mask(mask, start.0, start.1, end.0, end.1)
+                        });
+                        if visible {
+                            // A segment that enters the rectangle starts a new
+                            // piece at the edge; one that leaves it ends its
+                            // piece at the edge.
+                            if t0 > 0.0 || current.is_empty() {
+                                push_chunk(&mut current, style.color, style.width, &mut chunks);
+                                current.push(to_canvas(start));
+                            }
+                            current.push(to_canvas(end));
+                            if t1 < 1.0 {
+                                push_chunk(&mut current, style.color, style.width, &mut chunks);
+                            }
+                        } else {
+                            push_chunk(&mut current, style.color, style.width, &mut chunks);
+                        }
+                    }
+                    None => push_chunk(&mut current, style.color, style.width, &mut chunks),
+                }
             }
+            previous_local = Some(point);
         }
         push_chunk(&mut current, style.color, style.width, &mut chunks);
     }
@@ -1234,7 +1333,7 @@ fn draw_projected_lines(
     // can stay GPU-resident across multiple draw passes — see the
     // canvas-resident pipeline plan.
     for (points, color, width) in chunks {
-        draw::draw_polyline_aa(img, &points, color, width);
+        draw::draw_polyline_aa_clipped(img, &points, color, width, pixel_clip);
     }
 }
 
@@ -2405,6 +2504,129 @@ fn chrome_anchor_rows(
     }
 
     (layout.title_y, layout.subtitle_y)
+}
+
+/// Where the header goes: its row bounds `(left, right, center)` and its
+/// `(title, subtitle)` rows.
+///
+/// A header follows its domain frame so the title sits over the map it
+/// names.  A narrow frame (a tall nest on a wide canvas) leaves most of
+/// the header row unused while its own width cuts the subtitle, which
+/// dropped the valid time from every narrow nest at any image width, so
+/// the advice to widen the image could not help.  When the header text
+/// does not fit over the frame, its row widens, on the same rows and
+/// centred on the frame, to the narrowest width the text fits.  It stays
+/// inside the canvas row, and when a vertical colour bar stands beside
+/// the frame it ends at the frame's right edge, so it never runs into the
+/// bar or the units above it.  Text that still does not fit is cut and
+/// warned about as before, and a wider image now widens the row.
+fn header_anchor(
+    layout: &Layout,
+    opts: &RenderOpts,
+    frame_rect: Option<LocalRect>,
+) -> ((u32, u32, u32), (u32, u32)) {
+    let bounds = chrome_anchor_bounds(layout, opts.domain_frame, frame_rect);
+    let rows = chrome_anchor_rows(layout, opts.domain_frame, frame_rect);
+    let (frame_left, frame_right, frame_center) = bounds;
+    let frame_width = frame_right.saturating_sub(frame_left);
+    if frame_width >= layout.map_w || header_text_fits(layout, opts, frame_width) {
+        return (bounds, rows);
+    }
+    let room_left = layout.map_x.min(frame_left);
+    let canvas_right = layout.map_x.saturating_add(layout.map_w);
+    let bar_beside_frame = opts.colorbar
+        && matches!(
+            opts.presentation.colorbar.orientation,
+            ColorbarOrientation::VerticalRight
+        )
+        && colorbar_anchor_rect(
+            layout,
+            ColorbarOrientation::VerticalRight,
+            opts.domain_frame,
+            frame_rect,
+        )
+        .0 < layout.cbar_x;
+    let room_right = if bar_beside_frame {
+        frame_right.min(canvas_right)
+    } else {
+        canvas_right.max(frame_right)
+    };
+    let room = room_right.saturating_sub(room_left);
+    if room <= frame_width {
+        return (bounds, rows);
+    }
+    // The narrowest row the header fits, found by bisection: whether it
+    // fits only grows with the row's width.
+    let width = if header_text_fits(layout, opts, room) {
+        let (mut cut, mut fits) = (frame_width, room);
+        while fits - cut > 1 {
+            let middle = cut + (fits - cut) / 2;
+            if header_text_fits(layout, opts, middle) {
+                fits = middle;
+            } else {
+                cut = middle;
+            }
+        }
+        fits
+    } else {
+        room
+    };
+    let left = frame_center
+        .saturating_sub(width / 2)
+        .clamp(room_left, room_right - width);
+    let right = left + width;
+    ((left, right, left + width / 2), rows)
+}
+
+/// Whether every header text fits a row `row_width` pixels wide, measured
+/// exactly as `draw_chrome_and_colorbar` fits them.
+fn header_text_fits(layout: &Layout, opts: &RenderOpts, row_width: u32) -> bool {
+    let row_width = row_width.max(1);
+    let scale = layout.text_scale;
+    fn present(text: Option<&str>) -> Option<&str> {
+        text.map(str::trim).filter(|text| !text.is_empty())
+    }
+    let fits = |text: &str, width: u32, bold: bool| measure_text_width(text, scale, bold) <= width;
+    if !present(opts.title.as_deref()).is_none_or(|title| fits(title, row_width, true)) {
+        return false;
+    }
+    if !opts.presentation.plot_style.uses_operational_presentation() {
+        return joined_subtitle_metadata(opts)
+            .is_none_or(|metadata| fits(&metadata, row_width, false));
+    }
+    let available = row_width.saturating_sub(18u32.saturating_mul(scale));
+    let right = present(opts.subtitle_right.as_deref());
+    let left_fits = present(opts.subtitle_left.as_deref()).is_none_or(|left| {
+        let width = subtitle_left_width(available, right, scale, 6u32.saturating_mul(scale));
+        fits(left, width.max(1), false)
+    });
+    let center_fits =
+        present(opts.subtitle_center.as_deref()).is_none_or(|center| fits(center, available, false));
+    let right_fits = right.is_none_or(|right| {
+        let width = subtitle_right_width(available, opts.subtitle_left.is_some(), right, scale);
+        fits(right, width.max(1), false)
+    });
+    left_fits && center_fits && right_fits
+}
+
+/// Width for the right half of the subtitle row.
+///
+/// The right label is measured first (`subtitle_left_width`), so it keeps
+/// what it needs; this bound only stops a pathological label from eating
+/// the whole row.
+fn subtitle_right_width(available: u32, has_left: bool, right: &str, scale: u32) -> u32 {
+    if has_left {
+        available
+            .saturating_sub(subtitle_left_width(
+                available,
+                Some(right),
+                scale,
+                6u32.saturating_mul(scale),
+            ))
+            .max(available / 2)
+    } else {
+        available
+    }
 }
 
 fn joined_subtitle_metadata(opts: &RenderOpts) -> Option<String> {
@@ -4305,6 +4527,7 @@ fn draw_variable_layers(
             nx,
             pixel_points,
             &opts.cmap,
+            opts.raster_sample_mode,
             layout.map_w,
             layout.map_h,
         ),
@@ -4552,9 +4775,8 @@ fn draw_chrome_and_colorbar(
     _has_title: bool,
 ) -> (u128, u128) {
     let chrome_start = Instant::now();
-    let (chrome_left, chrome_right, chrome_center) =
-        chrome_anchor_bounds(layout, opts.domain_frame, domain_frame_rect);
-    let (title_y, subtitle_y) = chrome_anchor_rows(layout, opts.domain_frame, domain_frame_rect);
+    let ((chrome_left, chrome_right, chrome_center), (title_y, subtitle_y)) =
+        header_anchor(layout, opts, domain_frame_rect);
     let title_color = opts.presentation.chrome.title_color;
     let subtitle_color = opts.presentation.chrome.subtitle_color;
     let row_width = chrome_right.saturating_sub(chrome_left).max(1);
@@ -4631,21 +4853,12 @@ fn draw_chrome_and_colorbar(
             .map(str::trim)
             .filter(|text| !text.is_empty())
         {
-            let right_width = if opts.subtitle_left.is_some() {
-                // The right label is measured first (subtitle_left_width),
-                // so it keeps what it needs; this bound only stops a
-                // pathological label from eating the whole row.
-                subtitle_available
-                    .saturating_sub(subtitle_left_width(
-                        subtitle_available,
-                        Some(right),
-                        layout.text_scale,
-                        6u32.saturating_mul(layout.text_scale),
-                    ))
-                    .max(subtitle_available / 2)
-            } else {
-                subtitle_available
-            };
+            let right_width = subtitle_right_width(
+                subtitle_available,
+                opts.subtitle_left.is_some(),
+                right,
+                layout.text_scale,
+            );
             let (fitted, truncated) =
                 fit_text_to_width(right, right_width.max(1), layout.text_scale, false);
             if truncated {
@@ -4796,7 +5009,7 @@ fn draw_chrome_and_colorbar(
             domain_frame_rect,
         );
         let levels = colorbar_levels_for_ticks(&opts.cmap);
-        let ticks = pick_ticks(levels, opts.cbar_tick_step);
+        let ticks = legend_ticks(&opts.cmap, opts.cbar_tick_step);
         match colorbar_orientation {
             ColorbarOrientation::HorizontalBottom => {
                 colorbar::draw_colorbar(
@@ -4931,10 +5144,9 @@ fn draw_chrome_and_colorbar(
                     // The header belongs to the map's title and timestamps.
                     // If the label has no complete row within the legend
                     // column, retain every glyph in the side margin.
-                    let tick_width = ticks.iter().map(|value| {
+                    let tick_width = text::format_tick_labels(&ticks).iter().map(|label| {
                         text::text_width_with_factor(
-                            &text::format_tick(*value), layout.text_scale,
-                            layout.label_factor)
+                            label, layout.text_scale, layout.label_factor)
                     }).max().unwrap_or(0);
                     let label = text::vertical_text(units, layout.text_scale, layout.label_factor);
                     let legend_left = cbar_x.saturating_add(cbar_w)

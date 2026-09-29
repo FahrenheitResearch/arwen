@@ -78,15 +78,18 @@ def test_pyshp_available_answers_false_when_the_reader_is_absent(
 def test_the_remedy_names_a_command_that_can_actually_supply_it():
     """A remedy that cannot supply what it names is worse than none.
 
-    Both halves have to be there: the reader arrives by pip, the
-    geometry it reads arrives in the bridge bundle, and naming only the
-    first sends a reader to a second failure one step later.
+    The reader arrives by pip, and since 2.8.0 so does the geometry pyshp
+    reads: the ``gpuwm-data`` package every install pulls carries it.  So
+    the pip line is the whole fix, and the sentence says where the
+    geometry comes from rather than sending the reader to
+    ``gpuwm fetch-bridges`` for files the install already has.
     """
 
     remedy = rustwx.PYSHP_REMEDY
     assert "pip install" in remedy
     assert "gpuwm[render]" in remedy
-    assert "gpuwm fetch-bridges" in remedy
+    assert "gpuwm-data" in remedy
+    assert "fetch-bridges" not in remedy
 
 
 # ---------------------------------------------------------------------------

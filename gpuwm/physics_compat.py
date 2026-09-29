@@ -562,6 +562,38 @@ MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID = (
 )
 
 # ---------------------------------------------------------------------------
+# The Thompson members of the MYNN + RUC family.
+#
+# The HRRR operational class is Thompson microphysics with MYNN surface
+# layer and PBL over the RUC land surface.  The two WSM6 rows above carry
+# the surface/PBL/land half of it, and until these rows there was no named
+# suite with Thompson in it, so a user who wanted that class had to write
+# the tuple by hand and no menu, no ``--physics-profile`` list and no
+# preset could offer it.  Each row is its WSM6 sibling with ONE component
+# moved (microphysics wsm6-mp6 -> thompson-mp8) and nothing else, so a
+# paired run of the two isolates the microphysics; the maturity is the
+# composition ceiling the registry derives, which is the siblings' own
+# implemented-unverified, and the routes and sources are exactly the
+# sibling's, because the RUC nine-layer soil ingest is what limits where
+# either can run.
+#
+# The Dudhia member is named ``-dudhia-``, not ``-no-radiation-``: the
+# WSM6 ids that say "no-radiation" run Dudhia shortwave with longwave off,
+# and the registry carries a standing warning that those ids are wrong and
+# frozen.  A new id does not repeat a name the registry calls wrong.
+#: Thompson + MYNN 5/5 + RUC + RTE+RRTMGP on both streams: the nocturnally
+#: valid member, and the one a menu offers.
+THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID = (
+    "thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1"
+)
+#: The same composition with Dudhia shortwave and longwave off, the
+#: sibling of :data:`MYNN_RUC_PROFILE_ID`.  A daytime validation suite, as
+#: that sibling is.
+THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID = (
+    "thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1"
+)
+
+# ---------------------------------------------------------------------------
 # The composition suites (audit R-067).
 #
 # Each of these is an implemented option's FIRST named suite: before them
@@ -582,6 +614,11 @@ MILBRANDT2MOM_NTIEDTKE_PROFILE_ID = (
 WDM6_GRELL_FREITAS_PROFILE_ID = (
     "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
 )
+#: Aerosol-aware Thompson (mp_physics=28) with the MYJ / Eta similarity
+#: pair, cumulus off, on RTE+RRTMGP.
+THOMPSON_AEROSOL_MYJ_PROFILE_ID = (
+    "thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1"
+)
 #: The SASE PBL on the revised MM5 surface layer, with the turbulence
 #: closure supplied by the PBL scheme (km_opt 0, bldt/khdif/kvdif 0).
 SASE_CLOSURE_SUPPLIED_PROFILE_ID = (
@@ -601,14 +638,17 @@ SMAGORINSKY_3D_PROFILE_ID = (
 CONSTANT_K_PROFILE_ID = (
     "wsm6-pbl-off-mm5-noah-constant-k-v1"
 )
-#: The six composition suites in the order every route declaration
-#: appends them, so a per-source list and the registry route it is
-#: checked against cannot disagree about their order.  The aerosol-aware
-#: seventh suite is NOT here: the fixed-template runners cannot resolve
-#: it by name (see _templates_outside_the_single_domain_menu).
+#: The seven composition suites in the order every route declaration
+#: appends them (tools/build_registry.py _SUITELESS_TEMPLATES), so a
+#: per-source list and the registry route it is checked against cannot
+#: disagree about their order.  The aerosol-aware suite joined the other
+#: six when its cold-start arm landed (audit R-044): the prepared
+#: single-domain runner builds its initialization like any other suite's,
+#: with nwfa/nifa from the WIF monthly climatology.
 COMPOSITION_SUITE_PROFILE_IDS = (
     MILBRANDT2MOM_NTIEDTKE_PROFILE_ID,
     WDM6_GRELL_FREITAS_PROFILE_ID,
+    THOMPSON_AEROSOL_MYJ_PROFILE_ID,
     SASE_CLOSURE_SUPPLIED_PROFILE_ID,
     TKE_1_5_ORDER_PROFILE_ID,
     SMAGORINSKY_3D_PROFILE_ID,
@@ -3199,9 +3239,10 @@ def pending_wrf_physics_components(
     #     carried in the namelist importer's printed receipt;
     #   * the registry decides REACHABILITY.  Audit R-067 gave mp=28 its
     #     first named suite -- ONE, thompson-aerosol-mp28-myj-eta-noah-
-    #     rte-rrtmgp-v1, declared on the experiment-per-domain route only,
-    #     because neither fixed-template runner can build a cold start for
-    #     the aerosol-aware boundary species (R-044 owns that arm).  It is
+    #     rte-rrtmgp-v1, declared on the experiment-per-domain route and
+    #     on the prepared single-domain route (the latter since its
+    #     cold-start arm landed, audit R-044); the native benchmark keeps
+    #     it off because no native run of it exists to replay.  It is
     #     not the default template's microphysics and no route makes it a
     #     default, so it is still never the scheme a user gets by
     #     accident: it is reached by naming that suite or as a per-domain
@@ -3452,6 +3493,8 @@ __all__ = [
     "RADIATION_OFF_LAND_SURFACE_ACK",
     "RRTMG_VARIANT_LEGACY",
     "RRTMG_VARIANT_RTE_RRTMGP",
+    "THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID",
+    "THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID",
     "THOMPSON_PROFILE_ID",
     "THOMPSON_TABLE_ROOT_ENV",
     "UnsupportedPhysicsSuiteError",
@@ -3496,10 +3539,8 @@ __all__ = [
 # option's ``consumers.reads_glw`` row; the two profile menus are hand-kept
 # lists of template ids, and an implemented composition with no menu row
 # has no front door.  Each deliberate omission is cited, so the retirement
-# sweep is a grep (audit R-067 for the compositions with no template at
-# all, R-068 for the ONE template the runtime-switch derivation still
-# reaches no route for: the count was two until the menu became every
-# fixed-template route's own declaration, and the sibling citation is
+# sweep is a grep (R-068 for the ONE template the runtime-switch
+# derivation still reaches no route for; the sibling citations are
 # retired below).
 def _templates_outside_the_single_domain_menu() -> dict[str, str]:
     """The omissions that remain, named through the registry's own records.
@@ -3516,11 +3557,16 @@ def _templates_outside_the_single_domain_menu() -> dict[str, str]:
     that template is declared on one of them, and its runtime product is
     resolved from the composition like every other row -- so there is no
     omission left to cite.
+
+    RETIRED here, with the fix it waited on: the R-067 citation for the
+    aerosol-aware Thompson suite, whose blocker (R-044) was a missing
+    mp_physics=28 arm in gpuwm/ingest/microphysics_cold_start.py.  The arm
+    exists, the prepared single-domain route declares the suite, and the
+    menu therefore carries it by derivation.
     """
 
     from gpuwm.physics_registry import (
-        DEFAULT_TEMPLATE_ID, REGISTRY_REBUILD_ENV,
-        template_ids_with_components)
+        DEFAULT_TEMPLATE_ID, REGISTRY_REBUILD_ENV)
 
     if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
         # tools/build_registry.py reaches this module while it REGENERATES
@@ -3529,25 +3575,10 @@ def _templates_outside_the_single_domain_menu() -> dict[str, str]:
         # same reason and in the same window, so an empty map here refuses
         # nothing that the rebuilt registry will not be held to.
         return {}
-    aerosol = template_ids_with_components(
-        microphysics="thompson-aerosol-mp28")
-    if len(aerosol) != 1:
-        raise RuntimeError(
-            "the audit R-067 citation names THE ONE aerosol-aware Thompson "
-            f"template and the registry now has {len(aerosol)}: "
-            f"{list(aerosol)}; give each its single-domain row or cite each "
-            "omission")
     return {
         DEFAULT_TEMPLATE_ID: (
             "audit R-068: the registry's DEFAULT_TEMPLATE_ID, registered for "
             "plan review, never given a _SINGLE_DOMAIN_RUNTIME_SWITCHES row"),
-        aerosol[0]: (
-            "audit R-067 with R-044 as the named blocker: "
-            "gpuwm/ingest/microphysics_cold_start.py source_absent_"
-            "microphysics has no arm for mp_physics=28, so the fixed-template "
-            "runner cannot build an initialization contract for this suite. "
-            "It is registered and reachable on the experiment-per-domain "
-            "route; this menu regains it when that arm lands"),
     }
 
 

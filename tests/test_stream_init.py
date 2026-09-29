@@ -55,7 +55,7 @@ class _Cfg:
 
 
 #: THE GATE (b) CASE, to the byte, from the receipts in
-#: ``Downloads/node1-streaming/STREAM-ATTACH.md``.  1024 x 1024 x 49 on a
+#: the stream-attach measurement record.  1024 x 1024 x 49 on a
 #: 5070 Ti: ``state/*`` in the cache manifest, the free memory the decision was
 #: actually taken against, and the allocation the resident road then died on.
 OC1024_STATE_MANIFEST_BYTES = 4_945_485_824
@@ -459,6 +459,58 @@ def test_resident_is_forced_even_on_a_domain_that_cannot_fit():
         device_memory=(15 * GIB, 16 * GIB))
     assert road == "resident"
     assert receipt["fits"] is False
+
+
+def test_the_init_line_prints_the_planners_free_reading(monkeypatch):
+    """F11: the init line said "8.88 GiB free of 10.00 GiB on the card" while
+    other programs held about 6 GiB and the planner, in the same run, had
+    measured 3.99 to 4.32 GiB.
+
+    The stub card is the WDDM shape: CUDA's ``memGetInfo`` reports 8.88 GiB
+    free, NVML sees 6 GiB of the 10 GiB card in use.  The planner's reading
+    is the capped one, and the init line and its fit decision must use it.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    from gpuwm.core import preflight as pf
+    from tilestream import autoplan
+
+    wddm_free = int(8.88 * GIB)
+
+    class Device:
+        #: What CUDA alone answers on this card, through either spelling.
+        mem_info = (wddm_free, 10 * GIB)
+
+        def __init__(self, number=0):
+            self.pci_bus_id = "00000000:01:00.0"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    cuda = SimpleNamespace(Device=Device, runtime=SimpleNamespace(
+        memGetInfo=lambda: (wddm_free, 10 * GIB),
+        getDeviceProperties=lambda number: {"name": b"stub card"}))
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=cuda))
+    monkeypatch.setattr(pf, "device_physical_total_bytes",
+                        lambda **_: 10 * GIB)
+    monkeypatch.setattr(pf, "device_wide_used_bytes", lambda **_: 6 * GIB)
+
+    planner = autoplan.Machine.detect(host_bytes=64 * GIB)
+    assert planner.vram_bytes == 4 * GIB < wddm_free
+
+    road, receipt = runner._choose_stream_init_road(
+        "auto", decision=_Decision(True), reader=_manifest(3 * GIB))
+    assert receipt["device_free_bytes"] == planner.vram_bytes
+    assert "against 4.00 GiB free of 10.00 GiB on the card" in receipt["why"]
+    assert "8.88 GiB free" not in receipt["why"]
+    # 3 GiB of state prices at 4.2 GiB: inside 80% of 8.88 GiB, outside 80%
+    # of 4 GiB, so the road itself was decided on a figure the card did not
+    # have.
+    assert road == "store" and receipt["fits"] is False
 
 
 def test_an_unknown_road_is_refused_before_anything_is_read():

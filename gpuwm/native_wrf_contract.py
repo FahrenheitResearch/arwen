@@ -113,13 +113,136 @@ def native_geometry_contract(grid, cfg) -> dict[str, object]:
         "moad_cen_lon": grid.moad_cen_lon,
         "lat_range": [float(latitude.min()), float(latitude.max())],
         "lon_range": [float(longitude.min()), float(longitude.max())],
+        **({"definition": grid.definition()}
+           if callable(getattr(grid, "definition", None)) else {}),
     }
+
+
+def native_geometry_drift(
+        recorded: Mapping[str, object], expected: Mapping[str, object],
+        grid=None) -> dict[str, dict[str, object]]:
+    """Every key on which a recorded geometry names a different grid.
+
+    ``expected`` is :func:`native_geometry_contract` of the grid this
+    machine built.  The definition, the projection parameters, the shape
+    and the spacing are compared exactly.  The reference point, centre
+    and latitude/longitude extremes are compared within
+    :data:`gpuwm.static.grid_identity.GRID_POSITION_TOLERANCE_CELLS` of a
+    cell where projection arithmetic computed them, because the last
+    digit of such a value depends on the machine that computed it.  A
+    root's reference point, and a centred root's centre, are given
+    values and stay exact; ``grid`` says which grid this is, and without
+    it the definition in ``expected`` does.  A receipt written before
+    definitions were recorded is held to everything else.
+    """
+    from gpuwm.static.grid_identity import grid_record_drift
+
+    definition = expected.get("definition")
+    if grid is not None and hasattr(grid, "anchor_is_given"):
+        anchor_given = bool(grid.anchor_is_given)
+        center_given = bool(grid.center_is_given)
+    elif isinstance(definition, Mapping):
+        anchor_given = ("nest_of" not in definition
+                        and "translated_from" not in definition)
+        center_given = False
+    else:
+        # A contract without a definition comes from a grid that cannot
+        # say how it was built; every value it records is held exactly.
+        anchor_given = center_given = True
+    exact = set()
+    if anchor_given:
+        exact |= {"ref_lat", "ref_lon"}
+    if center_given:
+        exact |= {"center_lat", "center_lon"}
+    return grid_record_drift(
+        recorded, expected,
+        dx_m=float(expected["dx_m"]), dy_m=float(expected["dy_m"]),
+        points=(("ref_lat", "ref_lon"), ("center_lat", "center_lon")),
+        ranges=(("lat_range", False), ("lon_range", True)),
+        exact=exact, optional=("definition",))
+
+
+#: Grids whose all-shoreline sea-level land was already announced, so a
+#: domain checked at build, at write and at load says it once.
+_ANNOUNCED_SHORELINE_LAND: set = set()
+
+
+def require_land_terrain(hgt, landmask, *, subject="native static HGT_M"):
+    """Refuse a terrain field that holds no height for land that has one.
+
+    The failure this refuses arrives as exactly 0 m on every land cell:
+    absent WPS GEOG terrain tiles, a footprint outside the staged tiles, a
+    degenerate dataset, or a cache written without its terrain, each of
+    which a forecast would integrate as land with no orography.  The static
+    build's tile coverage gate (``require_source_coverage`` in
+    :mod:`gpuwm.static.build`) proves the first two where the build runs;
+    this check reads only the fields, so it also covers a cache loaded
+    later.
+
+    Zero height alone is not that failure.  The 30 arc-second GMTED2010 in
+    WPS GEOG holds 0 m on atolls and cays that really lie at sea level and
+    on islets too small for it, and a domain whose only land is such
+    islands has 0 m on every land cell with its terrain complete.  Ground
+    at sea level is shoreline ground, so the field is refused only when
+    some of that land has land on all four sides inside the grid: an island
+    at least three cells across, or a landmass.  An edge cell's fourth
+    neighbour lies outside the grid and is unknown, so an edge cell never
+    counts.  A field whose land is all shoreline passes, and that is said
+    once per grid on stderr.
+    """
+    land = np.asarray(landmask, dtype=np.float64) >= 0.5
+    if not np.any(land):
+        return
+    height = np.asarray(hgt, dtype=np.float64)
+    if np.any(height[land] != 0.0):
+        return
+    if land.ndim != 2:
+        raise ValueError(
+            f"{subject} is identically zero over every land cell and is not "
+            "a 2-D grid whose shoreline could be told apart from inland")
+    inland = np.zeros_like(land)
+    inland[1:-1, 1:-1] = (land[1:-1, 1:-1]
+                          & land[:-2, 1:-1] & land[2:, 1:-1]
+                          & land[1:-1, :-2] & land[1:-1, 2:])
+    land_cells = int(np.count_nonzero(land))
+    inland_cells = int(np.count_nonzero(inland))
+    if inland_cells:
+        raise ValueError(
+            f"{subject} is identically zero over every land cell, and "
+            f"{inland_cells} of its {land_cells} land cell(s) have land on "
+            "all four sides, so this is ground away from any shore held at "
+            "exactly sea level: the terrain is missing (WPS GEOG terrain "
+            "tiles absent, outside their staged footprint or degenerate, or "
+            "a cache written without it), or the terrain dataset does not "
+            "carry this island (the 30 arc-second GMTED2010 in WPS GEOG "
+            "holds 0 m on some islands).  Declaring [static.highres] with "
+            "fields = \"terrain\" gives this land its Copernicus GLO-30 "
+            "height")
+    key = (land.shape, land_cells)
+    if key not in _ANNOUNCED_SHORELINE_LAND:
+        _ANNOUNCED_SHORELINE_LAND.add(key)
+        import sys
+        print(
+            f"terrain: every one of the {land_cells} land cell(s) of this "
+            f"{land.shape[0]}x{land.shape[1]} grid is shoreline the terrain "
+            "dataset holds at 0 m (atolls and cays at sea level, or islets "
+            "too small for its 30 arc-second height), and they are prepared "
+            "at 0 m; [static.highres] terrain gives them their Copernicus "
+            "GLO-30 height",
+            file=sys.stderr)
 
 
 def write_native_static_cache(
         path: Path, fields: Mapping[str, object]) -> dict[str, object]:
-    """Atomically write a finite numeric native-static NPZ."""
+    """Atomically write a finite numeric native-static NPZ.
 
+    A field set carrying both ``HGT_M`` and ``LANDMASK`` is held to
+    :func:`require_land_terrain` first, so a route that never validated
+    its statics cannot publish a cache its own forecast refuses to load.
+    """
+
+    if "HGT_M" in fields and "LANDMASK" in fields:
+        require_land_terrain(fields["HGT_M"], fields["LANDMASK"])
     path = Path(path)
     if path.exists():
         raise FileExistsError(f"refusing to overwrite native static cache {path}")
@@ -161,10 +284,12 @@ def write_native_geometry_receipt(
     if not static_path.is_file():
         raise FileNotFoundError(f"native static cache is missing: {static_path}")
     path.parent.mkdir(parents=True, exist_ok=True)
+    from gpuwm.static.sampling_contract import current_sampling_contract
     receipt = {
         "schema": "gpuwm-native-static-direct-v1",
         "status": "PASS",
         "geometry": native_geometry_contract(grid, cfg),
+        "static_sampling_contract": current_sampling_contract(),
         "cache": {
             "path": static_path.name,
             "bytes": static_path.stat().st_size,
@@ -206,6 +331,11 @@ def native_static_export_fields(
 
     Caller-supplied copies must match within bounded floating-point rounding;
     editable static metadata cannot override the namelist-derived geometry.
+    A copy inside that bound is kept byte for byte: it is the same geometry,
+    and its bytes are what a preparation sealed.  The model state is built
+    from these fields and its setup fingerprint is compared exactly, so a
+    tree prepared on one machine and run on another must rebuild them from
+    the prepared bytes, not from the running machine's last-digit rounding.
     """
 
     result = dict(fields)
@@ -229,7 +359,7 @@ def native_static_export_fields(
             # but only 5.83e-16 absolute.  Keep the same 16-ulp budget at
             # unit-vector scale for this dimensionless pair alone:
             # 16 * spacing(1) = 3.55e-15.  All other fields retain their
-            # output-relative bound.  Regenerated values still win below.
+            # output-relative bound.
             scale = np.maximum(np.abs(stored), np.abs(regen))
             if name in {"SINALPHA", "COSALPHA"}:
                 scale = np.maximum(1.0, scale)
@@ -242,14 +372,24 @@ def native_static_export_fields(
                     f" geometry beyond libm rounding: max_abs"
                     f" {float(d.max())!r} at {int(np.count_nonzero(d))}"
                     f" of {d.size} points")
+            result[name] = stored
+            continue
         result[name] = value
     return result
 
 
 def validate_native_static_fields(
-        fields: Mapping[str, object], grid, ny: int, nx: int,
+        fields: Mapping[str, object], grid, ny: int, nx: int, *,
+        land_terrain: bool = True,
 ) -> dict[str, np.ndarray]:
-    """Validate the portable static cache shared by direct source adapters."""
+    """Validate the portable static cache shared by direct source adapters.
+
+    ``land_terrain=False`` leaves :func:`require_land_terrain` to the
+    caller, for a baseline field set a declared ``[static.highres]``
+    terrain overlay is still to replace: the overlay supplies the height
+    the baseline dataset lacks, so the check belongs to what comes out of
+    it.
+    """
 
     missing = sorted(NATIVE_STATIC_REQUIRED - set(fields))
     if missing:
@@ -307,35 +447,44 @@ def validate_native_static_fields(
     if result["ALBEDO12M"].min() < 0.0 \
             or result["ALBEDO12M"].max() > 100.0:
         raise ValueError("static field ALBEDO12M is outside 0..100 percent")
-    land = result["LANDMASK"] == 1.0
-    if np.any(land) and not np.any(result["HGT_M"][land] != 0.0):
-        raise ValueError(
-            "native static HGT_M is identically zero over every land cell; "
-            "mandatory WPS GEOG terrain is missing, outside its staged "
-            "footprint, or degenerate")
+    if land_terrain:
+        require_land_terrain(result["HGT_M"], result["LANDMASK"])
     return native_static_export_fields(result, grid)
 
 
 def load_native_static_cache(
-        path: Path, grid, ny: int, nx: int,
+        path: Path, grid, ny: int, nx: int, *, land_terrain: bool = True,
 ) -> dict[str, np.ndarray]:
-    """Load a pickle-free portable native static cache and validate it."""
+    """Load a pickle-free portable native static cache and validate it.
+
+    ``land_terrain`` as in :func:`validate_native_static_fields`.
+    """
 
     with np.load(Path(path), allow_pickle=False) as source:
-        return validate_native_static_fields(source, grid, ny, nx)
+        return validate_native_static_fields(
+            source, grid, ny, nx, land_terrain=land_terrain)
 
 
 def verify_native_static_receipt(
-    receipt_path: Path, static_input: Path, grid, cfg,
+    receipt_path: Path, static_input: Path, grid, cfg, *, relocating: bool = False,
 ) -> dict[str, object]:
     """Require a geometry and SHA-bound native static cache receipt."""
 
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if relocating:
+        from gpuwm.static.sampling_contract import require_relocation_sampling_contract
+        require_relocation_sampling_contract(receipt.get("static_sampling_contract"))
     if (receipt.get("schema") != "gpuwm-native-static-direct-v1"
             or receipt.get("status") != "PASS"):
         raise ValueError("unrecognized or non-PASS native static receipt")
-    if receipt.get("geometry") != native_geometry_contract(grid, cfg):
-        raise ValueError("native static receipt geometry differs from target")
+    geometry = receipt.get("geometry")
+    if not isinstance(geometry, dict):
+        raise ValueError("native static receipt lacks a geometry object")
+    drift = native_geometry_drift(
+        geometry, native_geometry_contract(grid, cfg), grid)
+    if drift:
+        raise ValueError(
+            f"native static receipt geometry differs from target: {drift}")
     cache = receipt.get("cache")
     expected_cache = {
         "path": static_input.name,

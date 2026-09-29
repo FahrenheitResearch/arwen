@@ -2,7 +2,9 @@
 //!
 //! The satellite twin of `rw_nexrad`, built to
 //! `docs/obs-goes-cwp-bridge-design.md`.  A fail-closed CLI with three
-//! jobs and no opinions beyond them:
+//! jobs and no opinions beyond them (plus the Level 1b radiance family,
+//! `bt` / `colocate` / `quicklook`, and the clear-sky forward operator
+//! `forward`, documented in `radiance.rs` and `forward.rs`):
 //!
 //! * **acquire** — list and download ABI L2 cloud granules for a
 //!   `(satellite, sector, product set, time window)` from the anonymous
@@ -47,7 +49,9 @@
 //! ```
 
 mod cloudtop;
+mod forward;
 mod pack;
+mod radiance;
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -73,6 +77,11 @@ use rw_store::atomic::atomic_write_bytes;
 use cloudtop::{
     CLOUDTOP_READABLE_SCHEMAS, CLOUDTOP_SCHEMA, CloudTopMeta, NO_REGRID, SiblingEntry,
     decode_cloudtop_pack, pairs_with_schema, write_cloudtop_pack,
+};
+use forward::{ForwardOptions, cmd_forward};
+use radiance::{
+    BT_READABLE_SCHEMAS, RadianceOptions, cmd_bt, cmd_colocate, cmd_quicklook, cmd_superobs,
+    verify_bt_pack,
 };
 use pack::{
     ArrayEntry, CWP_READABLE_SCHEMAS, CWP_SCHEMA, CoefficientTable, CwpRow, DqfRow, PackMeta, PayloadBuilder,
@@ -112,7 +121,7 @@ pub const CLOUDTOP_VERIFY_SCHEMA: &str = "gpuwm-obs.goes-cloudtop-verify.v1";
 /// _it_pins` below binds the literal to the three constants instead, so
 /// a schema bump that forgets this line fails the crate's own tests.
 const ABI_MARKER: &str = "gpuwm-obs.goes-fetch.v1\tgpuwm-obs.goes-cwp.v2\t\
-gpuwm-obs.goes-cloudtop.v2";
+gpuwm-obs.goes-cloudtop.v2\tgpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1";
 
 /// The ABI scan mode the operational feed has run since 2019.  A flip to
 /// the contingency mode is a flag, not a rebuild.
@@ -125,7 +134,7 @@ const CWP_FORMULA: &str = "CWP[g m^-2] = (2/3) * tau * r_e[um] * rho[g cm^-3]";
 const DEFAULT_CACHE_DIR: &str = ".rw-goes-cache";
 
 const USAGE: &str = "\
-usage: rw_goes <list|fetch|cwp|cloud-top|verify> [OPTIONS]
+usage: rw_goes <list|fetch|cwp|cloud-top|bt|colocate|quicklook|forward|verify> [OPTIONS]
        rw_goes --version | --help | --abi
 
   list       report the ABI L2 cloud granules a (satellite, sector, product
@@ -136,8 +145,21 @@ usage: rw_goes <list|fetch|cwp|cloud-top|verify> [OPTIONS]
              and write a `gpuwm-obs.goes-cwp.v1` pack (the 2 km pack)
   cloud-top  decode the same scan's ACHA / CTP and write a
              `gpuwm-obs.goes-cloudtop.v1` pack (the 10 km pack)
-  verify     re-read either pack and re-prove its header, schema and payload
-             digest
+  bt         decode one ABI-L1b-Rad granule to brightness temperature with the
+             file's own Planck constants and write a `gpuwm-obs.goes-bt.v1`
+             pack (optionally with the scan's ACM clear-sky mask and a CMIP
+             cross-check plane)
+  colocate   place simulated brightness-temperature tiles on a bt pack's grid
+             by ABI lattice index and write the paired statistics and block
+             table
+  quicklook  paint a pack plane or simulated tiles through the rw-sat per-band
+             palette
+  forward    the clear-sky infrared forward operator: evaluate a fast-model
+             table (gpuwm-da.abi-fast-model.v1, trained on CRTM) on the model
+             columns of a gpuwm-da.abi-columns.v2 stream and write brightness
+             temperatures with Jacobians as a gpuwm-da.abi-crtm.v1 stream
+  verify     re-read any pack family and re-prove its header, schema and
+             payload digest
 
 two packs per scan, deliberately
   Measured on real GOES-19 CONUS granules: COD/CPS/ACTP are the 2 km fixed
@@ -272,6 +294,83 @@ DQF gating (both pack subcommands)
   inference.  The ice and mixed-phase CWP coefficients are PROVISIONAL and
   the pack says so.  Neither subcommand resamples anything.
 
+bt options (planes: bt, rad, lat, lon, then bcm and cmip_bt when given, then
+            the _dqf planes of every source)
+  --rad FILE            ABI-L1b-Rad{C,F,M1,M2} granule (required); the band is
+                        read from its name and every Planck constant from its
+                        own planck_fk1/fk2/bc1/bc2 variables.  Brightness
+                        temperature is the L1b product definition
+                        T = (fk2 / ln(fk1 / Rad + 1) - bc1) / bc2; a pixel whose
+                        DQF is not 0 (conditionally usable, out of range, no
+                        value, focal-plane temperature) or whose radiance is not
+                        positive is NaN plus a count, never a value
+  --acm FILE            ABI-L2-ACM clear-sky mask of the SAME scan (BCM: 0 clear,
+                        1 cloudy, DQF == 0), carried as the bcm plane
+  --cmip FILE           ABI-L2-CMIP product of the same band and scan: NOAA's
+                        own inversion of the same radiance, carried as cmip_bt
+                        and compared pixel for pixel in the pack's cross_check
+                        row (bias, rmse, max abs), a check on the arithmetic
+                        above and never the scored quantity
+  --received-utc ISO    when this system first held the radiance granule (the
+                        fetch manifest's wall), recorded in the pack's provenance
+                        row beside the granule's own date_created and id
+  --band N              refuse unless the granule is this band
+  --out FILE            pack destination (required)
+  --window XS,XC,YS,YC  decode only this fixed-grid window, every file alike
+
+forward options
+  --columns FILE        the gpuwm-da.abi-columns.v2 stream of model columns
+  --table FILE          the gpuwm-da.abi-fast-model.v1 coefficient table
+  --out FILE            the gpuwm-da.abi-crtm.v1 output stream
+  --emis-mode N         0: the table's surface emissivity by class (default);
+                        1: the per-column emissivity the columns carry
+  --bands LIST          ABI bands to evaluate, comma-separated (default: every
+                        band in the table)
+  --threads N           worker threads (default: the machine's parallelism)
+
+colocate options
+  --pack FILE           the gpuwm-obs.goes-bt.v1 pack (required)
+  --sim PLANE           a simulated brightness-temperature plane: north-first
+                        float32 little-endian, with a PLANE.json sidecar of
+                        schema gpuwm-da.simsat-plane.v1 naming its shape, band,
+                        exact ABI 2 km global-lattice crop (the SimSat
+                        abi_fixed_grid_crop dictionary) and an optional u8
+                        condensate mask plane; repeatable, tiles compose on the
+                        lattice and an overlap keeps the first tile's pixel
+  --block N             block side in lattice pixels for the block table
+                        (default 24 = about 48 km at the sub-satellite point)
+  --zenith-max DEG      drop pairs beyond this satellite zenith angle
+  --out FILE            the block table CSV (required)
+  --stats FILE          the pixel statistics JSON: per scene class (all,
+                        obs_clear, obs_cloudy, sim_clear, sim_cloudy, both_clear,
+                        both_cloudy, obs_clear_sim_cloudy, obs_cloudy_sim_clear)
+                        per zenith band (all, le40, le60, le70): n, means, bias
+                        (sim minus obs), rmse, the least-squares obs = a + b sim
+                        fit and the rmse after it, the raw moments and a 1 K
+                        difference histogram (required)
+  Colocation is BY INDEX: the pack's scan angles are proven to sit on the
+  (index + 1/2) * 56 urad lattice and pixel (I, J) of a tile is pixel (I, J) of
+  the pack.  Nothing is interpolated, filled or resampled.
+
+superobs options
+  --pack FILE           the gpuwm-obs.goes-bt.v1 pack, built with --acm (required)
+  --block N             block side in lattice pixels (default 24)
+  --zenith-max DEG      drop pixels beyond this satellite zenith angle
+  --out FILE            the observation-only block table CSV (required): per
+                        block the clear pixels' mean and spread with the
+                        finite, clear and cloudy counts, the columns named as
+                        the colocation table names them so one quality control
+                        reads both; no simulated plane is involved
+  --stats FILE          the record JSON (gpuwm-da.abi-superobs.v1), also printed
+
+quicklook options
+  --pack FILE --plane-name NAME   paint one plane of a pack (default bt)
+  --sim PLANE ...       or compose simulated tiles on the lattice
+  --band N              palette band (default: the pack's or the tile's)
+  --bbox-index X0,X1,Y0,Y1  crop to these inclusive global lattice indices
+  --downsample N        block-mean N x N finite pixels per output pixel
+  --out FILE            PNG destination (required)
+
 verify options
   --pack FILE           the pack to re-prove (--out is accepted too).  The
                         family is read from the pack's own schema, not from
@@ -314,6 +413,11 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
         "fetch" => cmd_fetch(&options),
         "cwp" => cmd_cwp(&options),
         "cloud-top" => cmd_cloud_top(&options),
+        "bt" => cmd_bt(&options.radiance),
+        "colocate" => cmd_colocate(&options.radiance),
+        "superobs" => cmd_superobs(&options.radiance),
+        "quicklook" => cmd_quicklook(&options.radiance),
+        "forward" => cmd_forward(&options.forward),
         "verify" => cmd_verify(&options),
         other => Err(boxed_error(format!(
             "unknown subcommand {other:?}\n\n{USAGE}"
@@ -347,6 +451,11 @@ struct Options {
     window: Option<[usize; 4]>,
     pack: Option<PathBuf>,
     pairs_with: Option<PathBuf>,
+    /// The radiance, colocation and quicklook flags, kept beside the
+    /// shared ones so `--out`, `--pack` and `--window` mean one thing.
+    radiance: RadianceOptions,
+    /// The forward operator's flags.
+    forward: ForwardOptions,
 }
 
 impl Options {
@@ -401,6 +510,101 @@ impl Options {
                 }
                 "--pack" => options.pack = Some(PathBuf::from(value()?)),
                 "--pairs-with" => options.pairs_with = Some(PathBuf::from(value()?)),
+                "--columns" => options.forward.columns = Some(PathBuf::from(value()?)),
+                "--table" => options.forward.table = Some(PathBuf::from(value()?)),
+                "--emis-mode" => {
+                    let raw = value()?;
+                    options.forward.emis_mode = Some(raw.parse::<u8>().map_err(|_| {
+                        boxed_error(format!("--emis-mode expects 0 or 1, got {raw:?}"))
+                    })?)
+                }
+                "--bands" => {
+                    let raw = value()?;
+                    let mut bands = Vec::new();
+                    for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        let band = part.parse::<u8>().map_err(|_| {
+                            boxed_error(format!("--bands expects ABI band numbers, got {part:?}"))
+                        })?;
+                        if !(1..=16).contains(&band) {
+                            return Err(boxed_error(format!("--bands {band} is not an ABI band (1..16)")));
+                        }
+                        bands.push(band);
+                    }
+                    options.forward.bands = bands
+                }
+                "--threads" => {
+                    let raw = value()?;
+                    let count = raw.parse::<usize>().map_err(|_| {
+                        boxed_error(format!("--threads expects a count, got {raw:?}"))
+                    })?;
+                    if count == 0 {
+                        return Err(boxed_error("--threads must be at least 1"));
+                    }
+                    options.forward.threads = Some(count)
+                }
+                "--rad" => options.radiance.rad = Some(PathBuf::from(value()?)),
+                "--received-utc" => options.radiance.received_utc = Some(value()?),
+                "--acm" => options.radiance.acm = Some(PathBuf::from(value()?)),
+                "--cmip" => options.radiance.cmip = Some(PathBuf::from(value()?)),
+                "--sim" => options.radiance.sim.push(PathBuf::from(value()?)),
+                "--stats" => options.radiance.stats = Some(PathBuf::from(value()?)),
+                "--plane-name" => options.radiance.plane_name = Some(value()?),
+                "--block" => {
+                    let raw = value()?;
+                    let count = raw.parse::<usize>().map_err(|_| {
+                        boxed_error(format!("--block expects a pixel count, got {raw:?}"))
+                    })?;
+                    if count == 0 {
+                        return Err(boxed_error("--block must be at least 1 pixel"));
+                    }
+                    options.radiance.block = Some(count)
+                }
+                "--downsample" => {
+                    let raw = value()?;
+                    let count = raw.parse::<usize>().map_err(|_| {
+                        boxed_error(format!("--downsample expects a pixel count, got {raw:?}"))
+                    })?;
+                    if count == 0 {
+                        return Err(boxed_error("--downsample must be at least 1"));
+                    }
+                    options.radiance.downsample = Some(count)
+                }
+                "--band" => {
+                    let raw = value()?;
+                    let band = raw.parse::<u8>().map_err(|_| {
+                        boxed_error(format!("--band expects an ABI band number, got {raw:?}"))
+                    })?;
+                    if !(1..=16).contains(&band) {
+                        return Err(boxed_error(format!("--band {band} is not an ABI band (1..16)")));
+                    }
+                    options.radiance.band = Some(band)
+                }
+                "--zenith-max" => {
+                    let raw = value()?;
+                    let deg = raw.parse::<f64>().map_err(|_| {
+                        boxed_error(format!("--zenith-max expects degrees, got {raw:?}"))
+                    })?;
+                    if !(deg > 0.0 && deg <= 90.0) {
+                        return Err(boxed_error(format!("--zenith-max {deg} is outside (0, 90] degrees")));
+                    }
+                    options.radiance.zenith_max_deg = Some(deg)
+                }
+                "--bbox-index" => {
+                    let raw = value()?;
+                    let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+                    if parts.len() != 4 {
+                        return Err(boxed_error(format!(
+                            "--bbox-index expects X0,X1,Y0,Y1, got {raw:?}"
+                        )));
+                    }
+                    let mut values = [0i64; 4];
+                    for (slot, text) in values.iter_mut().zip(&parts) {
+                        *slot = text.parse::<i64>().map_err(|_| {
+                            boxed_error(format!("--bbox-index component {text:?} is not a whole number"))
+                        })?;
+                    }
+                    options.radiance.bbox_index = Some(values)
+                }
                 other => {
                     return Err(boxed_error(format!(
                         "unknown option {other:?}\n\n{USAGE}"
@@ -409,6 +613,10 @@ impl Options {
             }
             index += 1;
         }
+        options.radiance.out = options.out.clone();
+        options.radiance.window = options.window;
+        options.radiance.pack = options.pack.clone();
+        options.forward.out = options.out.clone();
         Ok(options)
     }
 
@@ -571,7 +779,7 @@ fn parse_time(raw: &str) -> Result<DateTime<Utc>, Box<dyn Error>> {
 /// ISO8601, carrying the tenth-of-a-second the GOES filename actually
 /// states when it is not zero.  Scan start IS the scan's identity here, so
 /// it is never rounded away.
-fn iso8601(when: DateTime<Utc>) -> String {
+pub(crate) fn iso8601(when: DateTime<Utc>) -> String {
     if when.timestamp_subsec_millis() == 0 {
         when.format("%Y-%m-%dT%H:%M:%SZ").to_string()
     } else {
@@ -1978,11 +2186,15 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
     if CLOUDTOP_READABLE_SCHEMAS.contains(&declared.as_str()) {
         return verify_cloudtop_pack(path, &bytes, &declared);
     }
+    if BT_READABLE_SCHEMAS.contains(&declared.as_str()) {
+        return verify_bt_pack(path, &bytes);
+    }
     Err(boxed_error(format!(
-        "{} declares schema {declared:?}; this build reads {} and {}",
+        "{} declares schema {declared:?}; this build reads {}, {} and {}",
         path.display(),
         CWP_READABLE_SCHEMAS.join(", "),
-        CLOUDTOP_READABLE_SCHEMAS.join(", ")
+        CLOUDTOP_READABLE_SCHEMAS.join(", "),
+        BT_READABLE_SCHEMAS.join(", ")
     )))
 }
 
@@ -2146,7 +2358,7 @@ mod tests {
     fn help_and_version_are_stable_surfaces() {
         assert!(run(&[]).unwrap().contains("usage: rw_goes"));
         let help = run(&["--help".to_string()]).unwrap();
-        for subcommand in ["list", "fetch", "cwp", "cloud-top", "verify"] {
+        for subcommand in ["list", "fetch", "cwp", "cloud-top", "bt", "colocate", "superobs", "quicklook", "forward", "verify"] {
             assert!(help.contains(subcommand), "usage must document {subcommand}");
         }
         for flag in [
@@ -2170,6 +2382,17 @@ mod tests {
             "--window",
             "--pack",
             "--pairs-with",
+            "--rad",
+            "--acm",
+            "--cmip",
+            "--sim",
+            "--block",
+            "--stats",
+            "--zenith-max",
+            "--plane-name",
+            "--downsample",
+            "--bbox-index",
+            "--band",
         ] {
             assert!(help.contains(flag), "usage must document {flag}");
         }
@@ -2188,14 +2411,14 @@ mod tests {
         // The marker is a literal (no const-format crate in the offline
         // vendor closure), so this is what keeps it accurate: bump a schema
         // without touching the marker and this test is the refusal.
-        for needle in [FETCH_SCHEMA, pack::CWP_SCHEMA, cloudtop::CLOUDTOP_SCHEMA] {
+        for needle in [FETCH_SCHEMA, pack::CWP_SCHEMA, cloudtop::CLOUDTOP_SCHEMA, radiance::BT_SCHEMA, forward::FORWARD_SCHEMA] {
             assert!(
                 ABI_MARKER.contains(needle),
                 "--abi does not pin {needle}, so a wrapper written against \
                  it could not tell a drifted binary from a current one"
             );
         }
-        assert_eq!(ABI_MARKER.split('\t').count(), 3);
+        assert_eq!(ABI_MARKER.split('\t').count(), 5);
     }
 
     #[test]

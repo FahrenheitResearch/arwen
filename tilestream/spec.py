@@ -602,6 +602,47 @@ def plan_tiles(nx: int, ny: int, tile_nx: int, tile_ny: int,
     return specs
 
 
+def edge_band_unowned(n: int, tile_n: int, halo: int, band: int) -> bool:
+    """Whether some tile's interior, widened by its halo, reaches within
+    ``band`` cells of a domain edge that tile's compute window does not
+    reach, on a NON-periodic axis.
+
+    ``plan_tiles`` clamps a tile's compute window into the domain, so a
+    tile owns an edge exactly when its WINDOW reaches it
+    (gpuwm.core.streaming.owned_edges).  A specified domain's relaxation
+    zone is applied only on the edges a tile owns (its seams relax nothing
+    -- gpuwm.ingest.lateral_bc.LateralBoundaries.seam_sides), so a zone
+    cell in the window of a tile that does not own that edge is integrated
+    with no relaxation at all.  Whether that reaches the answer is the
+    halo's business, because the halo is the step's dependency radius: a
+    zone cell of an unowned edge within ``halo`` of the tile's interior
+    feeds the owned cells beside the seam every step, and the tiled run
+    stops matching the resident one (at ratio 20 on 40-cell tiles every
+    point differed after 15 minutes, the largest difference on the seam).
+    A zone cell further out, which a window clamped against the far edge
+    still holds, never reaches an owned cell within the step.
+
+    In seam terms, for a window narrower than the axis: every seam sits at
+    least ``band + halo`` cells from a forced edge, or no more than
+    ``halo`` cells from it, where the window of the tile beside it is
+    clamped out to that edge and owns it.  A window as wide as the axis
+    reaches both edges and owns both.
+    """
+    n, tile_n, halo, band = int(n), int(tile_n), int(halo), int(band)
+    cn = tile_n + 2 * halo
+    if band <= 0 or tile_n <= 0 or cn > n:
+        return False
+    for t in range(-(-n // tile_n)):
+        i0 = t * tile_n
+        i1 = min(i0 + tile_n, n)
+        c0 = min(max(i0 - halo, 0), n - cn)
+        if i0 - halo < band and c0 != 0:
+            return True
+        if i1 + halo > n - band and c0 + cn != n:
+            return True
+    return False
+
+
 def coverage_counts(specs: Sequence[TileSpec], ny: int, nx: int,
                     variant: str):
     """Per-point scatter-write count over the full array, as a numpy array.

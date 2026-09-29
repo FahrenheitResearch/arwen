@@ -70,6 +70,41 @@ def test_shared_measured_snapshot_keeps_physical_total_and_free_distinct(config,
     assert "inferred" not in output
 
 
+@pytest.mark.parametrize("explain", [False, True])
+def test_a_measured_capacity_is_labelled_measured_not_declared(config, capsys, explain):
+    """hrrr-full-09 (a): the wizard's follow-up check measured the card and
+    then printed ``Target GPU capacity: 15.4705 GiB (declared)`` beside
+    ``Physical GPU capacity: 15.47 GiB (measured)`` for the same card."""
+    parser = argparse.ArgumentParser()
+    pf.register_cli(parser.add_subparsers(required=True))
+    args = parser.parse_args(["check", str(config), "--free-gib", "6", "--vram-gib", "10"])
+    args.explain = explain   # the top-level --explain, as gpuwm.cli sets it
+    args._shared_sizing_budget = domain_wizard.SizingBudget(
+        10, 6 * pf.GIB, None, "same measured sizing fixture", measured=True)
+    pf.check_main(args)
+    output = capsys.readouterr().out
+    assert "Target GPU capacity: 10 GiB (measured)" in output
+    assert "(declared)" not in output
+
+
+def test_the_capacity_label_names_where_the_value_came_from(config, capsys):
+    """Declared stays declared; the JSON carries the same word."""
+    sample = domain_wizard.SizingBudget(10, 6 * pf.GIB, None, "fixture", measured=True)
+    assert pf.target_capacity_source(None, False) == "declared"
+    assert pf.target_capacity_source(None, True) == "declared"
+    assert pf.target_capacity_source(sample, False) == "measured"
+    assert pf.target_capacity_source(sample, True) == "measured on the selected GPU"
+    _, raw, _ = _run(capsys, config, "--budget-gib", "100", "--vram-gib", "32", "--json")
+    assert json.loads(raw)["capacity_source"] == "declared"
+    parser = argparse.ArgumentParser()
+    pf.register_cli(parser.add_subparsers(required=True))
+    args = parser.parse_args(["check", str(config), "--free-gib", "6",
+                              "--vram-gib", "10", "--json"])
+    args._shared_sizing_budget = sample
+    pf.check_main(args)
+    assert json.loads(capsys.readouterr().out)["capacity_source"] == "measured"
+
+
 def test_default_names_mixed_domains_and_streaming_host_claim(config, tmp_path, capsys):
     tree = _nested_auto_tiles(tmp_path)
     code, output, _ = _run(capsys, tree, "--budget-gib", "13")

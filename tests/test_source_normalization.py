@@ -34,7 +34,7 @@ def write(tmp_path, document, name="candidate.normalization.json"):
 
 def test_the_shipped_inventory_is_closed_and_self_consistent():
     names = source_authorities.packaged_normalizer_ids()
-    assert names == ("icon-gdt101-pressure-v1",)
+    assert names == ("icon-d2-gdt101-model-level-v1", "icon-gdt101-pressure-v1")
     for name in names:
         spec = norm.load_normalization(name)
         assert spec.name == name

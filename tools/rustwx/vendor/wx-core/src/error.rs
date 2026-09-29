@@ -14,6 +14,16 @@ pub enum RustmetError {
     #[error("HTTP error: {0}")]
     Http(String),
 
+    /// A transfer the network ended: a connection that failed, reset or
+    /// timed out, a body that broke off or came up short, or a 429 or 5xx
+    /// that outlived every retry.  It renders exactly like `Http` so no
+    /// message changes; the variant exists so a caller can tell "ask
+    /// again later" apart from an answer the origin gave on purpose (a 4xx,
+    /// a 200 to a range request, a span it was not asked for), which
+    /// another attempt would only repeat.
+    #[error("HTTP error: {0}")]
+    Transfer(String),
+
     #[error("HTTP status {code}: {url}")]
     HttpStatus { code: u16, url: String },
 
@@ -28,6 +38,13 @@ pub enum RustmetError {
 
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
+}
+
+impl RustmetError {
+    /// Did the network end this transfer, so another attempt may succeed?
+    pub fn is_transfer(&self) -> bool {
+        matches!(self, RustmetError::Transfer(_))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, RustmetError>;

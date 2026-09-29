@@ -296,7 +296,7 @@ established.  What can be said: NT's CuPy pool peak is 140 MiB **lower**
 than GF's (7.889 vs 8.029), so the excess is not pool growth.  What cannot
 be said is where it is instead — `peak(device) - peak(pool)` subtracts two
 independently sampled maxima that need not be simultaneous, and treating
-that difference as a decomposition is exactly the trap CLAUDE.md warns
+that difference as a decomposition is exactly the trap the project rules warn
 about.  Doing it anyway produced an "implied frame" of 9,233 B against
 YSU's recorded 9,232 B, a one-byte agreement that is pure artifact: all 21
 ntiedtke kernels compile to a **0 B** frame under the model's own

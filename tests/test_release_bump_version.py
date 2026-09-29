@@ -70,6 +70,38 @@ def test_bumping_moves_every_declaration_and_opens_the_changelog(tmp_path):
     assert lock.count(to) == 1
 
 
+def test_bumping_repins_the_vendor_manifest_digest_of_the_terminal_lock(tmp_path):
+    """Opening 2.7.5, 2.7.6 and 2.8.0 each left the manifest naming the old lock.
+
+    The shared UI vendor manifest pins the SHA-256 of the terminal crate's
+    Cargo.lock, and the bump rewrites that lock's version line, so
+    tests/test_vendored_cargo_registry.py refused the new line until a
+    second commit re-pinned the digest by hand.
+    """
+    import hashlib
+
+    module = _load()
+    root = _copy_tree(tmp_path)
+    source = REPO_ROOT / module.VENDOR_MANIFEST
+    if not source.is_file():
+        pytest.skip("the bump test needs the vendor manifest")
+    manifest = root / module.VENDOR_MANIFEST
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, manifest)
+    before = manifest.read_bytes().decode("utf-8")
+    touched = module.bump(root, "99.0.4")
+    assert module.VENDOR_MANIFEST in touched
+    digest = hashlib.sha256((root / module.TERMINAL_LOCK).read_bytes()).hexdigest()
+    after = manifest.read_bytes().decode("utf-8")
+    assert f'"arwen-tui": "{digest}"' in after
+    # Only that digest moved: every other line of the manifest is as it was.
+    changed = [pair for pair in zip(before.splitlines(), after.splitlines()) if pair[0] != pair[1]]
+    assert len(changed) == 1 and '"arwen-tui"' in changed[0][0]
+    assert len(before.splitlines()) == len(after.splitlines())
+    # A second pass at the same number has nothing to re-pin.
+    assert module.VENDOR_MANIFEST not in module.bump(root, "99.0.4")
+
+
 def test_bumping_again_does_not_open_a_second_changelog_section(tmp_path):
     module = _load()
     root = _copy_tree(tmp_path)

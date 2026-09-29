@@ -203,3 +203,55 @@ def test_local_cache_rotation_respects_active_reader_lease(tmp_path):
         assert directory.exists()
     assert cache._prune(root, 8, 8, "b" * 64, reader_leases=True) == 0
     assert not directory.exists()
+
+
+def test_a_wheel_install_hands_the_compact_processor_its_map_files(native, tmp_path, monkeypatch):
+    """Every call of the renderer binary gets one environment, so the compact
+    preparation that feeds the remote gallery starts it the way a render does."""
+    from test_render_basemap_delivery import wheel_with_companion
+    companion = wheel_with_companion(tmp_path, monkeypatch)
+    environments = []
+    inner = viewer.subprocess.run
+    def run(command, **kwargs):
+        environments.append(kwargs.get("env"))
+        return inner(command, **kwargs)
+    monkeypatch.setattr(viewer.subprocess, "run", run)
+    c = native.case
+    viewer.catalog(query(c), c.tmp_path)
+    viewer._work_job(c.tmp_path, c.record["id"])
+    assert native.calls and len(environments) == len(native.calls)
+    assert all(env is not None and env["RUSTWX_BASEMAP_DIR"] == str(companion) for env in environments)
+
+
+def _sync_with_budget(native, monkeypatch, cache_bytes, folder):
+    c = native.case
+    viewer.catalog(query(c, sequence=1), c.tmp_path); viewer._work_job(c.tmp_path, c.record["id"])
+    monkeypatch.setattr(remote_cli, "_transport", lambda _command, request, **_kwargs: {"ok": True, "processed_frame": viewer.catalog(request, c.tmp_path)})
+    def download(_command, request, path, member, **_kwargs):
+        stream = io.BytesIO(); viewer.stream(request, c.tmp_path, stream)
+        path.write_bytes(stream.getvalue())
+    monkeypatch.setattr(ra, "_download", download)
+    options = SimpleNamespace(workspace=str(c.tmp_path), job=c.record["id"], domain=1, sequence=1,
+        cache_root=str(c.tmp_path / folder), profile=viewer.PROFILE, products="2m_temperature", reader_leases=True,
+        prefetch_sequences=[], expected_run_id=c.manifest["run_id"], cache_bytes=cache_bytes)
+    return cache.sync(options, [], [])["processed_frame"]
+
+
+@pytest.mark.parametrize("budget", [32 * 1024**2, 2 * 1024**4])
+def test_any_budget_that_holds_the_frame_admits_it(native, monkeypatch, budget):
+    """A 32 MiB or 2 TiB local cache was refused as outside 64 MiB..1 TiB,
+    although the frame's measured size is what decides whether it fits."""
+    value = _sync_with_budget(native, monkeypatch, budget, f"cache-{budget}")
+    assert value["local_cache_limit_bytes"] == budget
+    assert 0 < value["local_cache_bytes"] <= budget
+
+
+def test_a_budget_smaller_than_the_frame_is_refused_by_the_frame_size(native, monkeypatch):
+    with pytest.raises(viewer.Backpressure, match="exceeds this local cache budget"):
+        _sync_with_budget(native, monkeypatch, 64 * 1024, "cache-small")
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "33554432", 1.5])
+def test_a_budget_that_can_hold_nothing_is_refused(value):
+    with pytest.raises(ValueError, match="can hold no viewer frame"):
+        viewer._cache_bytes(value)

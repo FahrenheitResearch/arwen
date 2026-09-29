@@ -70,6 +70,8 @@ from gpuwm.physics_compat import (SINGLE_DOMAIN_PHYSICS_PROFILES,
                                   P3_LEGACY_RRTMG_PROFILE_ID,
                                   RUC_PROFILE_ID,
                                   THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+                                  THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+                                  THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
                                   THOMPSON_PROFILE_ID,
                                   THOMPSON_RTE_RRTMGP_PROFILE_ID,
                                   THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
@@ -140,11 +142,17 @@ _WIZARD_PROFILE_RANKING = (
     P3_LEGACY_RRTMG_PROFILE_ID,
     MYNN_RTE_RRTMGP_PROFILE_ID,
     MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+    # The Thompson member of the MYNN + RUC pair sits beside its WSM6
+    # sibling in each block: both radiation streams here, Dudhia below.
+    # Offered, not picked: no table in the tree chooses a suite by grid
+    # spacing, so a sub-km domain gets it by choosing it.
+    THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
     MYNN_PROFILE_ID,
     RUC_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
+    THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
 )
 
 
@@ -270,14 +278,24 @@ def day_only(profile: str) -> bool:
     the operator declares the validation experiment themselves.
     """
 
-    longwave, shortwave = radiation_scheme_ids(_switches(profile))
-    return shortwave > 0 and longwave == 0
+    return switches_day_only_reason(_switches(profile)) is not None
 
 
 def day_only_reason(profile: str) -> str | None:
     """Why this suite is daytime-only, in the guards' own terms."""
 
-    longwave, shortwave = radiation_scheme_ids(_switches(profile))
+    return switches_day_only_reason(_switches(profile))
+
+
+def switches_day_only_reason(switches: Mapping[str, Any]) -> str | None:
+    """:func:`day_only_reason` asked of a switch map rather than a suite id.
+
+    The physics composer checks combinations no suite names, and asking
+    the suite-keyed form would leave those without the answer or with a
+    second copy of the predicate.
+    """
+
+    longwave, shortwave = radiation_scheme_ids(switches)
     if not (shortwave > 0 and longwave == 0):
         return None
     return (f"ra_sw_physics {shortwave} with ra_lw_physics {longwave}: "
@@ -665,7 +683,7 @@ __all__ = [
     "day_only_reason", "default_basis", "default_profile_for", "maturity",
     "nocturnal_remedy", "profile_facts", "radiation_scheme_ids",
     "registered_sources", "shipped_profiles", "source_menu",
-    "switch_route_blocker",
+    "switch_route_blocker", "switches_day_only_reason",
     "universally_admissible_profile", "vertical_levels",
 ]
 
@@ -718,30 +736,25 @@ def _templates_without_a_runtime_switch_row() -> dict[str, str]:
     this map by arithmetic, and :func:`_wizard_menu` then offers it in the
     same import.  A template that loses one is cited automatically instead
     of failing the agreement check with no reason to give.
+
+    RETIRED here too, with the fix it waited on: the R-067 citation for
+    the aerosol-aware Thompson suite, whose blocker (R-044) was a missing
+    mp_physics=28 arm in gpuwm/ingest/microphysics_cold_start.py.  The arm
+    exists and the prepared single-domain route declares the suite, so the
+    single-domain door resolves a runtime product for it and the wizard
+    offers it by the arithmetic above.
     """
 
     import os
 
-    from gpuwm.physics_registry import (
-        REGISTRY_REBUILD_ENV, physics_registry, template_ids_with_components)
+    from gpuwm.physics_registry import REGISTRY_REBUILD_ENV, physics_registry
 
     if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
         # Skipped while the registry is being regenerated, exactly as the
         # agreement check these citations feed is: the templates they name
         # may not exist on disk until the rebuild finishes.
         return {}
-    aerosol = template_ids_with_components(
-        microphysics="thompson-aerosol-mp28")
-    if len(aerosol) != 1:
-        raise RuntimeError(
-            "the audit R-067 citation names THE ONE aerosol-aware Thompson "
-            f"template and the registry now has {len(aerosol)}: "
-            f"{list(aerosol)}; give each its wizard row or cite each omission")
-    cited = {aerosol[0]: (
-        "audit R-067 with R-044 as the named blocker: the fixed-template "
-        "runner has no cold-start arm for the aerosol-aware boundary "
-        "species, so this suite is offered on the experiment-per-domain "
-        "route only")}
+    cited: dict[str, str] = {}
     reason = (
         "audit R-068: no fixed-template runner route declares it, so the "
         "single-domain door resolves no runtime product for it and no "

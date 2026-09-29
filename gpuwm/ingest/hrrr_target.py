@@ -116,6 +116,40 @@ class HrrrSourceWindow:
             "target_source_j_range": list(self.target_source_j_range),
         }
 
+    def matches_record(self, recorded) -> bool:
+        """Whether a recorded :meth:`to_dict` describes this window.
+
+        The crop, halos and radius are integers and are compared exactly.
+        The target's extent in source index units comes out of projection
+        arithmetic, whose last digit depends on the machine that ran it, so
+        it is compared within
+        :data:`gpuwm.static.grid_identity.GRID_POSITION_TOLERANCE_CELLS` of
+        a source cell.  The target itself is bound exactly beside this by
+        its identity, so the allowance only ever admits rounding.
+        """
+
+        from gpuwm.static.grid_identity import GRID_POSITION_TOLERANCE_CELLS
+
+        expected = self.to_dict()
+        ranges = ("target_source_i_range", "target_source_j_range")
+        if not isinstance(recorded, Mapping) or set(recorded) != set(expected):
+            return False
+        if any(recorded[key] != expected[key]
+               for key in expected if key not in ranges):
+            return False
+        for key in ranges:
+            values = recorded[key]
+            if (not isinstance(values, (list, tuple)) or len(values) != 2
+                    or any(isinstance(value, bool)
+                           or not isinstance(value, (int, float))
+                           or not math.isfinite(value) for value in values)):
+                return False
+            if any(abs(float(value) - float(bound))
+                   > GRID_POSITION_TOLERANCE_CELLS
+                   for value, bound in zip(values, expected[key])):
+                return False
+        return True
+
 
 @dataclass(frozen=True)
 class HrrrTargetDomain:
@@ -339,9 +373,12 @@ def required_hrrr_source_window(
     Atmospheric and hydrometeor interpolation uses a four-point parabolic
     stencil spanning ``floor(index)-1`` through ``floor(index)+2``.  Surface
     land/water matching may search a bounded radius around the nearest source
-    mass point.  The returned crop covers both requirements and refuses a
-    target that would need any point outside the native 1799 x 1059 HRRR mass
-    grid.
+    mass point.  The returned crop covers both requirements.  A target whose
+    parabolic stencil needs any point outside the native 1799 x 1059 HRRR
+    mass grid is refused.  The surface search is clipped at the native
+    grid's edge instead: no donor exists beyond it, and the donor search
+    treats a crop edge that is HRRR's own edge as closed, so clipping there
+    cannot hide a nearer donor.
     """
 
     if isinstance(target, HrrrTargetDomain):
@@ -401,12 +438,9 @@ def required_hrrr_source_window(
     fallback_i_max = int(np.floor(mass_x.max() + radius))
     fallback_j_min = int(np.ceil(mass_y.min() - radius))
     fallback_j_max = int(np.floor(mass_y.max() + radius))
-    i_start = min(parabolic_i_min, fallback_i_min)
-    i_end = max(parabolic_i_max, fallback_i_max)
-    j_start = min(parabolic_j_min, fallback_j_min)
-    j_end = max(parabolic_j_max, fallback_j_max)
-    if (i_start < 0 or j_start < 0
-            or i_end >= HRRR_SOURCE_NX or j_end >= HRRR_SOURCE_NY):
+    if (parabolic_i_min < 0 or parabolic_j_min < 0
+            or parabolic_i_max >= HRRR_SOURCE_NX
+            or parabolic_j_max >= HRRR_SOURCE_NY):
         # Same breakage, same class as the mapped route's window refusal:
         # a source grid that does not reach the domain.  A door that owns
         # one owns both, so the certified native route and a table-added
@@ -414,8 +448,17 @@ def required_hrrr_source_window(
         raise SourceCoverageRefusal(
             "target domain plus required interpolation halo leaves HRRR "
             "coverage: required zero-based inclusive window "
-            f"i={i_start}..{i_end}, j={j_start}..{j_end}; native limits "
+            f"i={parabolic_i_min}..{parabolic_i_max}, "
+            f"j={parabolic_j_min}..{parabolic_j_max}; native limits "
             f"are i=0..{HRRR_SOURCE_NX - 1}, j=0..{HRRR_SOURCE_NY - 1}")
+    # The donor search's box stops at HRRR's own edge.  Demanding source
+    # cells past it refused domains whose atmosphere HRRR covers, only
+    # because the search box around a coastal cell reached past the edge
+    # where there is nothing to search.
+    i_start = max(0, min(parabolic_i_min, fallback_i_min))
+    i_end = min(HRRR_SOURCE_NX - 1, max(parabolic_i_max, fallback_i_max))
+    j_start = max(0, min(parabolic_j_min, fallback_j_min))
+    j_end = min(HRRR_SOURCE_NY - 1, max(parabolic_j_max, fallback_j_max))
     source_i_range = (
         min(float(value[0].min()) for value in coordinates),
         max(float(value[0].max()) for value in coordinates),

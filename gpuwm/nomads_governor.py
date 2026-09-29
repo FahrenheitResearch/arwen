@@ -276,17 +276,63 @@ def log_event(url: str, kind: str, status: str,
         pass
 
 
-def pace(url: str, *, sleeper=time.sleep) -> None:
+class PaceBudgetExceeded(Exception):
+    """The request was NOT sent: its turn under the governor is further away than the caller will wait.
+
+    Nothing was recorded, so the node-wide spacing is exactly as it was.
+    A page asking whether a file exists would rather say "not checked"
+    than queue behind a download for minutes; a transfer never passes a
+    budget and waits as long as the governor says.
+    """
+
+
+class _Budget:
+    def __init__(self, sleeper, max_wait_s: float) -> None:
+        self.sleeper = sleeper
+        self.left = max_wait_s
+
+    def __call__(self, seconds: float) -> None:
+        if seconds > self.left:
+            raise PaceBudgetExceeded(f"the NOMADS governor asks for {seconds:.1f} s more")
+        self.left -= seconds
+        self.sleeper(seconds)
+
+
+def _wait(seconds: float) -> None:
+    """The governor's own wait: :func:`time.sleep`, unless a pooled
+    download this request belongs to has already failed.
+
+    Then it gives up at once (:class:`gpuwm.fetch_pool.TransferCancelled`)
+    instead of serving out a gap or a 15 minute cooldown for a request
+    whose answer nobody will use.  Giving up sends nothing, so this is
+    never looser than the plain wait.
+    """
+
+    from gpuwm.fetch_pool import sleep_unless_stopped  # local: import order
+    sleep_unless_stopped(seconds)
+
+
+def pace(url: str, *, sleeper=None, max_wait_s: float | None = None) -> None:
     """Block until this process may send ``url``.
 
     A no-op for every host but NOMADS.  For NOMADS it takes the shared
     sentinel, reads the node-wide state, waits out whichever is later --
     the cooldown or the minimum gap since the last request anyone made
-    -- and then records this request before returning.
+    -- and then records this request before returning.  ``sleeper``
+    defaults to :func:`_wait`.
+
+    ``max_wait_s`` bounds the total wait: when the governor would make
+    this caller wait longer, :class:`PaceBudgetExceeded` is raised
+    before anything is sent or recorded.  The governor is never looser
+    for it: a request that goes out still went through the same gap.
     """
 
     if not is_nomads_url(url):
         return
+    if sleeper is None:
+        sleeper = _wait
+    if max_wait_s is not None:
+        sleeper = _Budget(sleeper, max_wait_s)
     gap_ms = min_interval_ms()
     state = state_path()
     lock = _lock_path(state)
@@ -405,17 +451,19 @@ def _is_rate_limit(error: BaseException) -> bool:
 
 
 def paced_urlopen(request: Request | str, *, timeout: float | None = None,
-                  opener=urlopen, sleeper=time.sleep):
+                  opener=urlopen, sleeper=None, max_wait_s: float | None = None):
     """:func:`urllib.request.urlopen` under the governor.
 
     Paces the request when it is bound for NOMADS, logs it when the
     shared request log is enabled, and marks the node-wide cooldown when
     the answer is an over-rate-limit one.  Non-NOMADS URLs pass straight
     through, unpaced and unlogged, exactly as in the Rust client.
+    ``max_wait_s`` is :func:`pace`'s: past it, nothing is sent and
+    :class:`PaceBudgetExceeded` is raised.
     """
 
     url = request if isinstance(request, str) else request.full_url
-    pace(url, sleeper=sleeper)
+    pace(url, sleeper=sleeper, max_wait_s=max_wait_s)
     started = _now_ms()
     kind = "get"
     if isinstance(request, Request) and request.get_method() == "HEAD":
@@ -457,6 +505,7 @@ __all__ = [
     "LOCK_STALE_AFTER_MS",
     "MIN_INTERVAL_ENV",
     "NOMADS_HOST",
+    "PaceBudgetExceeded",
     "REQUEST_LOG_ENV",
     "STATE_PATH_ENV",
     "cooldown_ms",

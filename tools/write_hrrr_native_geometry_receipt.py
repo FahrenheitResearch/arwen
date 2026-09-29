@@ -15,6 +15,7 @@ from gpuwm.ingest.hrrr_target import (
 )
 from gpuwm.native_wrf_contract import (
     native_geometry_contract,
+    native_geometry_drift,
     write_native_geometry_receipt,
 )
 
@@ -81,8 +82,12 @@ def write_hrrr_native_geometry_receipt(
 
     grid = target.grid()
     expected_geometry = native_geometry_contract(grid, _target_cfg(target))
-    if payload.get("geometry") != expected_geometry:
-        raise ValueError("HRRR static receipt geometry differs from its target")
+    recorded = payload.get("geometry")
+    drift = (native_geometry_drift(recorded, expected_geometry, grid)
+             if isinstance(recorded, dict) else {"geometry": recorded})
+    if drift:
+        raise ValueError(
+            f"HRRR static receipt geometry differs from its target: {drift}")
     return write_native_geometry_receipt(
         output, grid, _target_cfg(target), static_cache)
 

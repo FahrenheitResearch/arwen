@@ -101,6 +101,8 @@ def status(request, workspace):
 
 
 def receive(request, workspace, source):
+    from gpuwm.filesystem_paths import publish_new
+
     if (not isinstance(request, dict) or set(request) != {"schema", "action", "workspace", "size", "sha256"}
             or request.get("schema") != "gpuwm.remote.request.v1" or request.get("action") != "put-input"):
         raise ValueError("Invalid fixed input-stream request")
@@ -126,9 +128,9 @@ def receive(request, workspace, source):
             raise ValueError("Raw input stream failed its complete byte-length/SHA-256 check")
         if not reused:
             # A concurrent successful upload of the same content is harmless.
-            # Link is create-only: no process can replace an admitted object.
+            # Publication is create-only: no process can replace an admitted object.
             try:
-                os.link(temporary, path)
+                publish_new(temporary, path)
             except FileExistsError:
                 object_path(workspace, identity, require=True)
                 reused = True

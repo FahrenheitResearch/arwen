@@ -15,6 +15,7 @@ use ndarray::ArrayD;
 use crate::array;
 use crate::grib::{declared_vertical_admits, selector_matches, GribRecord};
 use crate::model::{Mapping, ROTATED_WIND_PAIRS};
+use crate::node::Node;
 use crate::refusal::{frame_invalid, selector_unmatched, Result};
 
 /// A (valid_time, member, field) address into the decoded collection.
@@ -168,6 +169,7 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
     }
     let source_format = mapping.format()?.to_owned();
     let declared_levels = mapping.declared_levels()?;
+    let interface_levels = mapping.interface_levels()?;
     let field_names = mapping.field_names()?;
 
     // matched[(valid_time, member, field)] -> record positions, in decode order.
@@ -183,7 +185,7 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
                 .selectors()
                 .iter()
                 .any(|selector| selector_matches(selector, &identity, &source_format));
-            if hit && declared_vertical_admits(&declared_levels, &field, record.level_value)? {
+            if hit && declared_vertical_admits(&declared_levels, &interface_levels, &field, record.level_value)? {
                 matched
                     .entry((record.valid_time, record.member.clone(), name.clone()))
                     .or_default()
@@ -268,11 +270,52 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
         )));
     }
 
+    // Fields a pressure-level frame completes where the source leaves
+    // them out: their levels may be a subset of the ladder.
+    let required: BTreeSet<String> = mapping
+        .required_field_names()
+        .map(|names| names.into_iter().collect())
+        .unwrap_or_default();
+    let completed: BTreeSet<&str> =
+        crate::derive::completed_fields(mapping.vertical_kind()?, &required)
+            .into_iter()
+            .collect();
+
     let vertical_values = if !declared_levels.is_empty() {
-        declared_levels.clone()
+        let ladder = carried_ladder(mapping, &declared_levels, &matched, records)?;
+        // Records on a declared level the chosen era ladder omits are
+        // not stacked: a publication that carries that level for some
+        // fields and not others is read on the ladder all of them share.
+        if ladder.len() != declared_levels.len() {
+            let kept: BTreeSet<u64> = ladder.iter().map(|level| level.to_bits()).collect();
+            let omitted: BTreeSet<u64> = declared_levels
+                .iter()
+                .map(|level| level.to_bits())
+                .filter(|bits| !kept.contains(bits))
+                .collect();
+            for ((_time, _member, name), group) in matched.iter_mut() {
+                if !stacks_vertically(mapping, name)? {
+                    continue;
+                }
+                group.retain(|position| {
+                    !omitted.contains(&records[*position].level_value.to_bits())
+                });
+            }
+        }
+        ladder
     } else {
         let mut level_sets: BTreeSet<Vec<u64>> = BTreeSet::new();
         let mut chosen: Option<Vec<f64>> = None;
+        // The ladder is read off the fields the source must publish whole;
+        // a completed field states it only when nothing else does.
+        let ladder_from_completed = matched.keys().all(|(_time, _member, name)| {
+            completed.contains(name.as_str())
+                || !mapping
+                    .field(name)
+                    .and_then(|field| field.target_axes())
+                    .map(|axes| axes.iter().any(|axis| axis == "vertical"))
+                    .unwrap_or(false)
+        });
         for ((_time, _member, name), group) in &matched {
             if !mapping
                 .field(name)?
@@ -280,6 +323,9 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
                 .iter()
                 .any(|axis| axis == "vertical")
             {
+                continue;
+            }
+            if completed.contains(name.as_str()) && !ladder_from_completed {
                 continue;
             }
             let mut levels: Vec<f64> = group
@@ -350,7 +396,15 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
         entries
             .par_iter()
             .map(|(key, group)| {
-                assemble_one_field(mapping, records, &source_format, &vertical_values, key, group)
+                assemble_one_field(
+                    mapping,
+                    records,
+                    &source_format,
+                    &vertical_values,
+                    &completed,
+                    key,
+                    group,
+                )
             })
             .collect()
     });
@@ -398,6 +452,78 @@ pub fn assemble_grib(mapping: &Mapping, records: &[GribRecord]) -> Result<Decode
     })
 }
 
+/// Whether a mapped field's records stack on the vertical axis.
+fn stacks_vertically(mapping: &Mapping, name: &str) -> Result<bool> {
+    Ok(mapping
+        .field(name)?
+        .source_axes()?
+        .iter()
+        .any(|axis| axis == "vertical"))
+}
+
+/// `mapped_source._carried_ladder`: the declared ladder a decode stacks.
+///
+/// A publisher adds or drops levels between releases of one product,
+/// so a file from the other side of the change lacks a level
+/// `vertical.levels` names.  `vertical.era_ladders` lists the whole
+/// ladders such publications carry; the decode stacks the largest
+/// declared ladder every vertical field's records carry in full.  With
+/// no era ladders, or none that fits, the declared ladder comes back and
+/// the coverage check names what is missing from it.
+fn carried_ladder(
+    mapping: &Mapping,
+    declared: &[f64],
+    matched: &BTreeMap<DirectKey, Vec<usize>>,
+    records: &[GribRecord],
+) -> Result<Vec<f64>> {
+    let eras = mapping.era_ladders()?;
+    if eras.is_empty() {
+        return Ok(declared.to_vec());
+    }
+    let mut carried: Vec<BTreeSet<u64>> = Vec::new();
+    for ((_time, _member, name), group) in matched {
+        if !stacks_vertically(mapping, name)? {
+            continue;
+        }
+        carried.push(
+            group
+                .iter()
+                .map(|position| records[*position].level_value.to_bits())
+                .collect(),
+        );
+    }
+    Ok(choose_ladder(declared, &eras, &carried))
+}
+
+/// The largest of `declared` and the era ladders that every set in
+/// `carried` holds, in the declared order; `declared` when none does.
+fn choose_ladder(declared: &[f64], eras: &[Vec<f64>], carried: &[BTreeSet<u64>]) -> Vec<f64> {
+    if carried.is_empty() {
+        return declared.to_vec();
+    }
+    let fits = |ladder: &[f64]| {
+        carried
+            .iter()
+            .all(|levels| ladder.iter().all(|level| levels.contains(&level.to_bits())))
+    };
+    if fits(declared) {
+        return declared.to_vec();
+    }
+    let mut best: Option<Vec<f64>> = None;
+    for era in eras {
+        let members: BTreeSet<u64> = era.iter().map(|level| level.to_bits()).collect();
+        let ladder: Vec<f64> = declared
+            .iter()
+            .copied()
+            .filter(|level| members.contains(&level.to_bits()))
+            .collect();
+        if fits(&ladder) && best.as_ref().map_or(true, |chosen| ladder.len() > chosen.len()) {
+            best = Some(ladder);
+        }
+    }
+    best.unwrap_or_else(|| declared.to_vec())
+}
+
 /// One mapped field, assembled from the records its selectors matched.
 ///
 /// The body of `assemble_grib`'s per-field loop, lifted out so it can
@@ -410,6 +536,7 @@ fn assemble_one_field(
     records: &[GribRecord],
     source_format: &str,
     vertical_values: &[f64],
+    completed: &BTreeSet<&str>,
     key: &DirectKey,
     group: &[usize],
 ) -> Result<(DirectValue, NaiveDateTime)> {
@@ -424,28 +551,83 @@ fn assemble_one_field(
             )));
         }
         let selectors = field.selectors();
+        let policy = field.missing_kind()?;
         let stacking_axis = if source_axes.iter().any(|axis| axis == "vertical") {
             Some("vertical")
+        } else if source_axes.iter().any(|axis| axis == "half_level") {
+            Some("half_level")
         } else if source_axes.iter().any(|axis| axis == "soil") {
             Some("soil")
         } else {
             None
         };
+        // Each record answers the FIRST of the field's selectors it
+        // matches: a field lists its selectors in the order it prefers
+        // them, so a record of a later selector stands in only where no
+        // earlier one was published.  With one selector every record has
+        // rank 0 and nothing here changes.
+        let rank = |position: usize| -> usize {
+            let identity = records[position].identity();
+            selectors
+                .iter()
+                .position(|selector| selector_matches(selector, &identity, source_format))
+                .unwrap_or(0)
+        };
+        // The record's values in the field's source units: a selector may
+        // declare the factor that takes its record there.
+        let scaled = |position: usize, rank: usize| -> ArrayD<f64> {
+            let values = &records[position].values;
+            match selectors
+                .get(rank)
+                .and_then(|selector| selector.field("scale"))
+                .and_then(Node::as_f64)
+            {
+                Some(scale) => values.mapv(|value| value * scale),
+                None => values.clone(),
+            }
+        };
+        // The records the field is built from.
+        let mut used: Vec<usize> = Vec::with_capacity(group.len());
+        // Levels of the ladder the source did not publish for a field the
+        // frame completes; they are NaN planes until then.
+        let mut absent_levels = 0usize;
 
         let mut values = match stacking_axis {
             None => {
-                if group.len() != 1 {
+                let ranks: Vec<usize> = group.iter().map(|position| rank(*position)).collect();
+                let best = ranks.iter().copied().min().unwrap_or(0);
+                let chosen: Vec<usize> = group
+                    .iter()
+                    .zip(&ranks)
+                    .filter(|(_position, rank)| **rank == best)
+                    .map(|(position, _rank)| *position)
+                    .collect();
+                if chosen.len() != 1 {
                     return Err(frame_invalid(format!(
                         "duplicate GRIB messages for scalar field {field_name} at {valid_time}"
                     )));
                 }
-                records[group[0]].values.clone()
+                used.push(chosen[0]);
+                scaled(chosen[0], best)
             }
-            Some("vertical") => {
-                let mut by_level: BTreeMap<u64, usize> = BTreeMap::new();
-                for position in group {
+            Some(axis_name @ ("vertical" | "half_level")) => {
+                let interfaces = mapping.interface_levels()?;
+                let vertical_values = if axis_name == "half_level" { interfaces.as_slice() } else { vertical_values };
+                let ranks: Vec<usize> = group.iter().map(|position| rank(*position)).collect();
+                let mut best: BTreeMap<u64, usize> = BTreeMap::new();
+                for (position, rank) in group.iter().zip(&ranks) {
+                    let entry = best
+                        .entry(records[*position].level_value.to_bits())
+                        .or_insert(*rank);
+                    *entry = (*entry).min(*rank);
+                }
+                let mut by_level: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
+                for (position, rank) in group.iter().zip(&ranks) {
                     let level = records[*position].level_value;
-                    if by_level.insert(level.to_bits(), *position).is_some() {
+                    if best[&level.to_bits()] != *rank {
+                        continue;
+                    }
+                    if by_level.insert(level.to_bits(), (*position, *rank)).is_some() {
                         return Err(frame_invalid(format!(
                             "duplicate {field_name} GRIB level {level} at {valid_time}"
                         )));
@@ -463,7 +645,11 @@ fn assemble_one_field(
                     .filter(|bits| !declared.contains(bits))
                     .map(|bits| f64::from_bits(*bits))
                     .collect();
-                if !missing.is_empty() || !extra.is_empty() {
+                // A field the frame completes may leave levels out; it is
+                // derived there from the frame's own state.  Only under the
+                // reject policy, whose NaN can mean nothing but "absent".
+                let completes = completed.contains(field_name.as_str()) && policy == "reject";
+                if (!missing.is_empty() && !completes) || !extra.is_empty() {
                     let missing = crate::refusal::python_float_list_repr(&missing);
                     let extra = crate::refusal::python_float_list_repr(&extra);
                     return Err(selector_unmatched(format!(
@@ -471,13 +657,33 @@ fn assemble_one_field(
                          extra={extra}"
                     )));
                 }
-                let ordered: Vec<ArrayD<f64>> = vertical_values
-                    .iter()
-                    .map(|level| records[by_level[&level.to_bits()]].values.clone())
-                    .collect();
+                absent_levels = missing.len();
+                let plane: Vec<usize> = by_level
+                    .values()
+                    .next()
+                    .map(|(position, _rank)| records[*position].values.shape().to_vec())
+                    .expect("a matched field has at least one level");
+                let mut ordered: Vec<ArrayD<f64>> = Vec::with_capacity(vertical_values.len());
+                for level in vertical_values {
+                    match by_level.get(&level.to_bits()) {
+                        Some((position, rank)) => {
+                            let level_values = scaled(*position, *rank);
+                            if absent_levels > 0
+                                && level_values.iter().any(|value| !value.is_finite())
+                            {
+                                return Err(frame_invalid(format!(
+                                    "{field_name} contains missing/non-finite GRIB data"
+                                )));
+                            }
+                            used.push(*position);
+                            ordered.push(level_values);
+                        }
+                        None => ordered.push(ArrayD::from_elem(plane.clone(), f64::NAN)),
+                    }
+                }
                 let axis = source_axes
                     .iter()
-                    .position(|item| item == "vertical")
+                    .position(|item| item == axis_name)
                     .expect("vertical axis proven present");
                 array::stack(&ordered, axis, field_name)?
             }
@@ -534,8 +740,9 @@ fn assemble_one_field(
                         "{field_name} is missing GRIB soil selectors {absent:?}"
                     )));
                 }
+                used.extend(group.iter().copied());
                 let ordered: Vec<ArrayD<f64>> = (0..selectors.len())
-                    .map(|index| records[by_selector[&index]].values.clone())
+                    .map(|index| scaled(by_selector[&index], index))
                     .collect();
                 let axis = source_axes
                     .iter()
@@ -552,9 +759,10 @@ fn assemble_one_field(
         // materialized only to be walked once and dropped.  A cell that
         // is replaced is finite afterwards, so a single in-place pass
         // decides and rewrites exactly the cells the mask selected.
-        let policy = field.missing_kind()?;
+        // A field with absent levels had each published level checked as
+        // it was stacked, and its NaN planes are exactly the absent ones.
         if policy == "reject" {
-            if values.iter().any(|value| !value.is_finite()) {
+            if absent_levels == 0 && values.iter().any(|value| !value.is_finite()) {
                 return Err(frame_invalid(format!(
                     "{field_name} contains missing/non-finite GRIB data"
                 )));
@@ -580,13 +788,13 @@ fn assemble_one_field(
         let target_axes = field.target_axes()?;
         let values = array::transpose_to_target(values, &source_axes, &target_axes, field_name)?;
 
-        let mut ordered_group = group.to_vec();
+        let mut ordered_group = used;
         ordered_group.sort_by_key(|position| records[*position].index);
         let references: Vec<String> = ordered_group
             .iter()
             .map(|position| format!("{}:{}", records[*position].source, records[*position].index))
             .collect();
-        let group_cycles: BTreeSet<NaiveDateTime> = group
+        let group_cycles: BTreeSet<NaiveDateTime> = ordered_group
             .iter()
             .map(|position| records[*position].reference_time)
             .collect();
@@ -945,6 +1153,161 @@ mod tests {
         let refusal = resolve_hybrid_coefficients(&mapping, 3, &[]).unwrap_err();
         assert!(refusal.message.contains("pv"), "{}", refusal.message);
         assert!(refusal.message.contains("hybrid_a"), "{}", refusal.message);
+    }
+
+    /// Two stacked pressure fields on a declared 1000/5000/10000 Pa
+    /// ladder, with `era_ladders` spliced in verbatim when given.
+    fn pressure_mapping(era_ladders: &str) -> Mapping {
+        let field = |category: i64, parameter: i64, units: &str| {
+            format!(
+                r#"{{"selectors": [{{"format": "grib2", "discipline": 0,
+                     "category": {category}, "parameter": {parameter},
+                     "level_type": 100}}],
+                   "units": {{"source": "{units}", "target": "{units}"}},
+                   "source_axes": ["vertical", "y", "x"],
+                   "target_axes": ["vertical", "y", "x"],
+                   "location": "mass", "staggering": "none",
+                   "missing": {{"kind": "reject"}}}}"#
+            )
+        };
+        let text = format!(
+            r#"{{"schema": "rw-wps.mapping.v1", "name": "t", "format": "grib2",
+                "coordinates": {{"vertical": {{"kind": "pressure", "units": "Pa",
+                    "levels": [1000, 5000, 10000]{era_ladders}}}}},
+                "fields": {{"air_temperature": {},
+                            "eastward_wind": {}}}}}"#,
+            field(0, 0, "K"),
+            field(2, 2, "m s-1"),
+        );
+        let bytes = text.as_bytes().to_vec();
+        Mapping {
+            sha256: crate::digest::bytes_sha256(&bytes),
+            doc: crate::node::Node::parse(&bytes).unwrap(),
+            path: "<test>".to_owned(),
+        }
+    }
+
+    fn pressure_record(index: usize, category: i64, parameter: i64, level: f64) -> GribRecord {
+        let time = chrono::NaiveDate::from_ymd_opt(2024, 5, 17)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        GribRecord {
+            source: "<test>".to_owned(),
+            index,
+            reference_time: time,
+            valid_time: time,
+            member: None,
+            parameter,
+            level_type: 100,
+            level_value: level,
+            table_version: None,
+            center: None,
+            subcenter: None,
+            master_table_version: None,
+            local_table_version: None,
+            discipline: Some(0),
+            category: Some(category),
+            second_level_type: None,
+            second_level_value: None,
+            process_identity: None,
+            time_semantics: vec![0],
+            coordinate_values: Vec::new(),
+            values: ArrayD::from_elem(ndarray::IxDyn(&[2, 3]), level),
+            latitude: vec![10.0, 11.0],
+            longitude: vec![20.0, 21.0, 22.0],
+            grid_fingerprint: "grid".to_owned(),
+        }
+    }
+
+    /// Temperature records on `temperature` levels, wind on `wind`.
+    fn pressure_records(temperature: &[f64], wind: &[f64]) -> Vec<GribRecord> {
+        let mut records = Vec::new();
+        for level in temperature {
+            records.push(pressure_record(records.len(), 0, 0, *level));
+        }
+        for level in wind {
+            records.push(pressure_record(records.len(), 2, 2, *level));
+        }
+        records
+    }
+
+    const ERA: &str = r#", "era_ladders": [[5000, 10000]]"#;
+
+    #[test]
+    fn a_publication_without_the_top_level_decodes_on_its_era_ladder() {
+        let mapping = pressure_mapping(ERA);
+        let records = pressure_records(&[5000.0, 10000.0], &[5000.0, 10000.0]);
+        let collection = assemble_grib(&mapping, &records).unwrap();
+        assert_eq!(collection.vertical_values, vec![5000.0, 10000.0]);
+        let temperature = collection
+            .direct
+            .values()
+            .find(|value| value.name == "air_temperature")
+            .unwrap();
+        assert_eq!(temperature.values.shape(), &[2, 2, 3]);
+        assert_eq!(temperature.values[ndarray::IxDyn(&[0, 0, 0])], 5000.0);
+        assert_eq!(temperature.values[ndarray::IxDyn(&[1, 0, 0])], 10000.0);
+    }
+
+    #[test]
+    fn a_publication_with_every_declared_level_keeps_the_declared_ladder() {
+        let mapping = pressure_mapping(ERA);
+        let all = [1000.0, 5000.0, 10000.0];
+        let collection = assemble_grib(&mapping, &pressure_records(&all, &all)).unwrap();
+        assert_eq!(collection.vertical_values, all.to_vec());
+    }
+
+    #[test]
+    fn a_level_only_some_fields_carry_is_left_out_of_every_field() {
+        let mapping = pressure_mapping(ERA);
+        let records = pressure_records(&[1000.0, 5000.0, 10000.0], &[5000.0, 10000.0]);
+        let collection = assemble_grib(&mapping, &records).unwrap();
+        assert_eq!(collection.vertical_values, vec![5000.0, 10000.0]);
+        let temperature = collection
+            .direct
+            .values()
+            .find(|value| value.name == "air_temperature")
+            .unwrap();
+        assert_eq!(temperature.references, vec!["<test>:1", "<test>:2"]);
+    }
+
+    #[test]
+    fn a_level_no_declared_ladder_omits_still_refuses_by_name() {
+        let mapping = pressure_mapping(ERA);
+        let records = pressure_records(&[1000.0, 10000.0], &[1000.0, 10000.0]);
+        let refusal = assemble_grib(&mapping, &records).unwrap_err();
+        assert_eq!(
+            refusal.message,
+            "air_temperature vertical coverage mismatch; missing=[5000.0], extra=[]"
+        );
+    }
+
+    #[test]
+    fn without_era_ladders_the_absent_level_refuses_as_it_always_did() {
+        let mapping = pressure_mapping("");
+        let records = pressure_records(&[5000.0, 10000.0], &[5000.0, 10000.0]);
+        let refusal = assemble_grib(&mapping, &records).unwrap_err();
+        assert_eq!(
+            refusal.message,
+            "air_temperature vertical coverage mismatch; missing=[1000.0], extra=[]"
+        );
+    }
+
+    #[test]
+    fn the_largest_era_ladder_carried_in_full_wins() {
+        let declared = [1000.0, 5000.0, 10000.0, 20000.0];
+        let eras = vec![vec![10000.0, 20000.0], vec![5000.0, 10000.0, 20000.0]];
+        let carried: Vec<BTreeSet<u64>> = vec![
+            [5000.0f64, 10000.0, 20000.0]
+                .iter()
+                .map(|level| level.to_bits())
+                .collect(),
+        ];
+        assert_eq!(
+            choose_ladder(&declared, &eras, &carried),
+            vec![5000.0, 10000.0, 20000.0]
+        );
     }
 
     #[test]

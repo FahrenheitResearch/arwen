@@ -118,8 +118,10 @@ def test_every_licence_text_is_named_by_the_notice_and_vice_versa() -> None:
         "the NOTICE names no path for these licence texts, so a reader has no "
         f"way to find them: {unnamed}")
 
+    # A path in this repository, not the tail of a URL: the SoilGrids credit
+    # cites https://creativecommons.org/licenses/by/4.0/, which is no file.
     cited = {m.rstrip(".,;") for m in
-             re.findall(r"licenses/[A-Za-z0-9._-]+", notice)}
+             re.findall(r"(?<![/\w.])licenses/[A-Za-z0-9._-]+", notice)}
     cited.discard("licenses/licenses")       # the PEP 639 wheel path, not a file
     dangling = sorted(name for name in cited if not (ROOT / name).exists())
     assert dangling == [], f"the NOTICE points at licence texts that are not here: {dangling}"

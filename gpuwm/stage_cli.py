@@ -481,6 +481,66 @@ def resolve_bundle(prepared_root: Path) -> dict:
     }
 
 
+def resolve_head_bundle(prepared_root: Path, head_sha256: str) -> dict:
+    """What a chained preparation's HEAD says about itself.
+
+    The same answer as :func:`resolve_bundle`, read from
+    ``boundary-stream/head.json`` before ``proof.json`` exists: the head
+    carries the proof without its seal keys, so its schema names the
+    source and the layout exactly as the sealed proof will.  The returned
+    bundle carries ``head_sha256``, which :func:`sim_command` relays as
+    ``--prepared-head-sha256``.
+    """
+
+    from gpuwm.ingest.boundary_stream import BoundaryStreamError, bind_head
+
+    root = Path(prepared_root)
+    try:
+        head = bind_head(root, head_sha256)
+    except BoundaryStreamError as error:
+        raise StageRefusal(str(error)) from None
+    payload = dict(head["basis"]["proof_head"])
+    schema = payload.get("schema")
+    index = _schema_index()
+    if not isinstance(schema, str) or schema not in index:
+        raise StageRefusal(
+            f"the prepared head in {root} declares schema {schema!r}, which "
+            "no runner in this install reads")
+    entry = index[schema]
+    if entry["layout"] != "single":
+        raise StageRefusal(
+            f"the prepared head in {root} is a {entry['layout']} bundle; "
+            "only a single domain is published at its head")
+    return {
+        "document": root / "boundary-stream" / "head.json",
+        "root": root,
+        "schema": schema,
+        "source": _resolve_packaged_source(root, entry),
+        "layout": "single",
+        "domains": 1,
+        "payload": payload,
+        "head_sha256": str(head["head_sha256"]),
+        "source_manifest_sha256": head["basis"].get("input_manifest_sha256"),
+    }
+
+
+def unsealed_head_bundle(prepared_root: Path) -> dict | None:
+    """The head bundle of a chained preparation that has not sealed yet.
+
+    ``None`` unless the tree carries a chained head, no ``proof.json`` and
+    no failure or stop marker, which is the breakage this prevents: a
+    forecast started on a preparation that will never finish.
+    """
+
+    from gpuwm.ingest.boundary_stream import live_chained_head
+
+    root = Path(prepared_root)
+    head = live_chained_head(root)
+    if head is None:
+        return None
+    return resolve_head_bundle(root, head["head_sha256"])
+
+
 #: Where a mapped preparation copies the input manifest it consumed.
 _MAPPED_EVIDENCE_MANIFEST = "source-evidence/input-manifest.json"
 
@@ -777,13 +837,22 @@ def sim_command(bundle: dict, *, experiment_config: Path,
             "a single-domain forecast binds the WPS namelist by digest "
             "through its proof, so --wps-namelist is required.  It is "
             "the same namelist.wps the preparation stage consumed.")
-    digests = single_domain_digests(bundle)
+    if bundle.get("head_sha256") is not None:
+        # A chained preparation bound at its head: the proof and cache
+        # digests do not exist yet, and the runner checks them at the seal.
+        binding = ["--prepared-head-sha256", str(bundle["head_sha256"]),
+                   "--source-manifest-sha256",
+                   str(bundle["source_manifest_sha256"])]
+    else:
+        digests = single_domain_digests(bundle)
+        binding = ["--proof-sha256", digests["proof"],
+                   "--source-manifest-sha256", digests["source_manifest"],
+                   "--prepared-content-sha256", digests["prepared_content"]]
     return [sys.executable, "-m", SINGLE_DOMAIN_RUNNER,
             "--source", str(bundle["source"]),
-            "--prepared-root", str(bundle["document"].parent),
-            "--proof-sha256", digests["proof"],
-            "--source-manifest-sha256", digests["source_manifest"],
-            "--prepared-content-sha256", digests["prepared_content"],
+            "--prepared-root", str(bundle.get("root",
+                                              bundle["document"].parent)),
+            *binding,
             "--experiment-config", str(config),
             "--wps-namelist", str(Path(wps_namelist)),
             *profile_flags, *stream_flags,
@@ -872,7 +941,9 @@ def sim_main(args) -> int:
     """``gpuwm sim``: the forecast, alone.
 
     Nothing is fetched. Rendering stays off unless products are requested;
-    that opt-in uses the runner's existing first-committed-frame worker.
+    that opt-in draws each output frame of every grid as it lands, on the
+    runner's own render worker.  The line ``gpuwm prep`` prints asks for
+    the default set.
     The runner is called IN THIS PROCESS rather than spawned, which is
     what puts its per-step output on the caller's terminal as it
     happens instead of behind a pipe -- the whole point of running the
@@ -882,7 +953,18 @@ def sim_main(args) -> int:
     from gpuwm.explain import explain_enabled, render
 
     try:
-        bundle = resolve_bundle(args.prepared_root)
+        try:
+            bundle = resolve_bundle(args.prepared_root)
+        except StageRefusal:
+            # A chained preparation still producing its later boundary
+            # intervals (here, or copied here arrays first and markers
+            # last): the forecast binds its head and waits at each seam.
+            bundle = unsealed_head_bundle(args.prepared_root)
+            if bundle is None:
+                raise
+            print(f"sim: {args.prepared_root} is still being prepared; "
+                  f"binding its head {bundle['head_sha256']} and starting "
+                  "the forecast beside it", file=sys.stderr)
         layout = bundle["layout"] if args.runner == "auto" else args.runner
         # Check the actual bundle adapter before allocating an output folder.
         _restart_flags(layout, getattr(args, "restart", None),
@@ -920,19 +1002,34 @@ def sim_main(args) -> int:
         return 2
 
     if getattr(args, "print_command", False):
-        import shlex
+        # One line for the shell it is printed in: PowerShell on Windows,
+        # where a quoted interpreter path followed by -m is a syntax
+        # error, and a POSIX shell elsewhere.
+        from gpuwm.prep_output import shell_command
 
-        print(shlex.join(command))
+        print(shell_command(command))
         return 0
 
     layout = bundle["layout"] if args.runner == "auto" else args.runner
     requested = getattr(args, "render_products", None)
     plots = requested is not None and str(requested).strip().lower() not in {"", "none"}
-    print(f"sim: {bundle['document'].parent} -- {bundle['schema']} "
+    # Said as what this run does.  It used to read "no render on this
+    # route" whenever the flag was absent, although both runners draw
+    # every output frame as it lands when asked, and "first-frame plots"
+    # when it was given, although they draw every frame.
+    if plots:
+        render_note = (f"no fetch; drawing {requested} from each output "
+                       "frame as it lands")
+    elif requested is None:
+        render_note = ("no fetch and no render: pass --render-products to "
+                       "draw each output frame as it lands")
+    else:
+        render_note = f"no fetch and no render (--render-products {requested})"
+    print(f"sim: {bundle.get('root', bundle['document'].parent)} -- "
+          f"{bundle['schema']} "
           f"(source {bundle['source']}, "
           f"{'domain tree' if layout == 'tree' else 'single domain'}), "
-          + (f"no fetch; first-frame plots requested: {requested}"
-             if plots else "no fetch and no render on this route"))
+          + render_note)
     if outdir != Path(args.outdir):
         print(f"sim: run folder "
               f"{run_stamp.relative_to_case(outdir, args.outdir)} under "
@@ -1036,12 +1133,12 @@ def register_cli(subparsers) -> None:
                           "experiment IS this shipped suite; omitted, "
                           "the experiment's own suite runs as written")
     sim.add_argument("--render-products", default=None, metavar="SPEC",
-                     help="render selected products from the first committed "
-                          "history frame while the forecast runs: comma-separated "
-                          "catalog selectors, 'all', or 'none'. Omitted means "
-                          "no rendering; this does not render every saved frame")
+                     help="render selected products from every committed "
+                          "history frame of every grid as it lands, while the "
+                          "forecast runs: comma-separated catalog selectors, "
+                          "'all', or 'none'. Omitted means no rendering")
     sim.add_argument("--render-dir", type=Path, default=None, metavar="DIR",
-                     help="first-frame picture directory (default OUTDIR/png); "
+                     help="picture directory (default OUTDIR/png); "
                           "ignored without --render-products")
     sim.add_argument("--io-mode", default="history", choices=("history",),
                      dest="io_mode",
@@ -1076,7 +1173,9 @@ def register_cli(subparsers) -> None:
                           "is this run's own timestamped folder, named "
                           "but not created: asking the question spends "
                           "nothing, and the runner makes the directory "
-                          "when you run the line")
+                          "when you run the line.  The line is quoted for "
+                          "PowerShell on Windows and for a POSIX shell "
+                          "elsewhere")
     sim.set_defaults(func=sim_main)
     return None
 

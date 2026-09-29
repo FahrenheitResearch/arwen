@@ -93,7 +93,23 @@ parser is what accepts or refuses each one.
 | `vram_gib` | `--vram-gib` | `vtable` | `--vtable` |
 | `ladder` | `--ladder` | `geog_root` | `--geog-root` |
 | `root_dx_km` | `--root-dx` | `chain` | `--chain` |
-| `physics_profile` | `--physics-profile` | | |
+| `physics_profile` | `--physics-profile` | `physics_choices` | `--physics-choices` |
+
+`physics_choices` is an object, family to scheme (`{"microphysics":
+"thompson-mp8", "pbl": "myj", "surface_layer": "eta-similarity"}`),
+and reaches the wizard as the JSON its flag takes. The wizard checks it
+the way `gpuwm physics-catalog --check` does and writes it over the
+suite (`physics_profile`, or the source's default) the way
+`gpuwm physics-catalog --into` writes a mix, on every size its fit
+tries, so the card is priced for the schemes that run. The suite is then
+the base, not an assertion: the chain's stages are not told the config
+is that suite, and a plan that also sets `run_options.physics_profile`
+is refused, because the preparer would refuse the config it makes. The
+run manifest's `physics` records `choices`, `base_suite`, the
+`components` they resolve to and the suite they make, or null. The
+HRRR route runs its namelists, which have no key for `moist_cq`, so a
+mix from HRRR is written with the value that route's importer runs:
+the suite's own when the mix is a shipped suite, and `false` otherwise.
 
 `point` or `polygon` is required (there is no default place), and so is
 `cycle`. `--out` is deliberately **not** exposed: run-plan owns where the
@@ -153,9 +169,10 @@ source on the wrong route is refused naming the right one.
 | `experiment` | the config-driven route: one experiment TOML with its `[case_data]` inputs, prepared and integrated in this process — what `gpuwm run CONFIG` executes | era5 |
 | `prepared` | the native prepared-cache chain, in the documented order | **gfs**, **hrrr**, or any packaged mapped source with a table fetch route (icon-eu, rap, rrfs, hrrr-prs, gem-gdps, aifs, aigfs, ecmwf-open-data — the registry's facts decide, not this list) |
 
-**The credential-free path is `prepared` + `gfs`.** ERA5 needs a
-Copernicus CDS key; GFS is public. A `prepared` plan therefore runs end
-to end on a machine with no credentials at all.
+ERA5 through the public ARCO store is keyless; an ERA5 intent naming no
+provider already uses it. Only the Copernicus CDS provider and ERA5 ensemble
+members need a Copernicus key. The `prepared` + `gfs` path is also public and
+runs end to end on a machine with no credentials at all.
 
 The route reads the config's own `[fetch].source` and drives that
 source's documented chain. Neither chain is re-implemented here.
@@ -274,7 +291,10 @@ input requirement. Reuse includes the corridor flag in its argument binding,
 so a previous stationary preparation is retained and rebuilt for a moving run.
 
 On every corridor-sealing prepared chain the preparation seals child-resolution
-statics over each child's whole parent extent beside the other
+statics over the ground each child can reach during the run (its declared
+footprint widened by what its follow settings, itinerary and
+`reach_speed_m_s` let it and every moving ancestor travel, clipped to its
+frame; see docs/prepared-followers.md) beside the other
 hierarchy artifacts, digest-bound into the preparation document, and the
 tree runner (`gpuwm-prepared-tree-forecast`) crops each new footprint's
 statics out of that corridor at move time — the run stays fully sealed,
@@ -320,19 +340,29 @@ resolves and prepares exactly as it did before this existed.
 
 **`--estimate` prices it.** The corridor is the largest single thing
 the preparation writes for a moving nest, and it is not inferable from
-the domain sizes a caller already has — it is *parent extent at child
-resolution*, so a 45×45 nest with `parent_grid_ratio = 3` on a 398×320
-root is a 1194×960 corridor:
+the domain sizes a caller already has: it is *the ground the nest can
+reach, at child resolution*, the declared footprint widened by what the
+follow settings, itinerary and `reach_speed_m_s` let it and every moving
+ancestor travel over the run, clipped to its frame. A 6 h tree with a
+9 km 301×335 root, a 3 km nest at (94, 30) that moves up to 8 parent
+cells every 30 minutes, and a 1 km and a 500 m nest riding inside it,
+prices its 500 m corridor at 3846×2694 cells of the 5418×6030 frame:
 
 ```json
 "corridor": {
-  "domains": [{"domain":"d02","grid_id":2,"parent_id":1,
-               "corridor_nx":1194,"corridor_ny":960,"cells":1146240,
+  "domains": [{"domain":"d04","grid_id":4,"parent_id":3,"frame_grid_id":1,
+               "corridor_nx":3846,"corridor_ny":2694,"cells":10361124,
                "planes_per_cell":97,"bytes_per_cell":776,
-               "host_bytes":889482240}],
-  "host_bytes": 889482240, "host_gib": 0.8284, "basis": "…"
+               "host_bytes":8040232224,
+               "window_child_cells":[750,750,3846,2694],
+               "frame_child_cells":[5418,6030],"whole_frame":false}, …],
+  "host_bytes": …, "host_gib": …, "basis": "…"
 }
 ```
+
+`whole_frame` is true when the reach covers the frame, as it does over a
+long run. `unbounded` says why when nothing bounds the reach at all: a
+dormant nest, whose start is chosen when it fires.
 
 Every child is priced, not only the one that relocates: run-plan passes
 the flag bare, which the preparation reads as "every child domain".
@@ -360,9 +390,11 @@ test rather than falling through to whatever the chain happened to do.
 | `dry_run` | `false` | resolve and validate, emit `resolved_plan`, stop before any device work |
 | `restart` | `null` | a `gpuwmrst` checkpoint to continue from |
 | `render_products` | `null` | which products the render stage draws — `gpuwm render --products`' own spec (a comma-separated list, or `all`), or `none` to skip rendering. Absent leaves the default set unchanged. `prepared` route only |
+| `render_section` | `null` | the line every `xsec:` term of `render_products` is cut along, `gpuwm render --section`'s own value (`lat,lon,lat,lon`, or a JSON file resolved relative to the plan); carried to every render the run draws. An `xsec:` term with no line, or a line the renderer cannot read, is refused when the plan is built |
 | `geog_root` | `null` | static geography tree (`prepared` route only) |
 | `supplement` | `[]` | repeatable `ROLE=PATH` preparation donor bindings, resolved relative to the plan. HRRR accepts `PMSL=GRIB` inside `data_dir` and binds explicit donor hashes in a run-local source manifest. Mapped routes forward the bindings to their preparer. GFS and existing prepared bundles reject this option. |
 | `data_dir` | `null` | where the fetch lands (`prepared` route only) |
+| `transport` | `null` | the one host the fetch stage pins, the value `gpuwm fetch --transport` takes; wins over the config's `[fetch] transport`, and `automatic_resolutions` records which one was used (`prepared` route only) |
 | `physics_profile` | `null` | passed to the HRRR preparer when stated (`prepared` route only) |
 | `health_debug` | `false` | enable debug phase health attribution |
 
@@ -394,15 +426,26 @@ or reordered line, never a skipped one, and the reader refuses it.
 | `stage_finished` | `stage`, `wall_seconds`, `phases`, (`receipts`, `outcome`) | that stage closes |
 | `model_progress` | `domain`, `outer_step`, `model_seconds`, `wall_seconds`, `speed_x`, `step_ms`, `phase`, (`domains`) | each outer step |
 | `output_committed` | `domain`, `valid_time`, `path` | a wrfout is durable on disk |
-| `first_products_ready` | `domain`, `valid_time`, `frame`, `paths`, `render_products`, `render_seconds`, `seconds_from_plan_accepted` | the first frame's pictures are on disk, while the forecast runs on |
+| `first_products_ready` | `domain`, `valid_time`, `frame`, `paths`, `render_products`, `render_seconds`, `seconds_from_plan_accepted`, `complete` | the first frame's pictures are on disk, while the forecast runs on; `complete` is false when the renderer exited nonzero partway (the pictures it drew are kept and finalize draws the frame again) |
 | `model_progress` (polled) | as above plus `source: "stage_progress_file"`, `step_ms: null` | a `prepared` stage that runs as a subprocess, sampled from its own progress file |
-| `warning` | `code`, `message`, (`detail`) | anything worth saying, nothing worth stopping for |
+| `prepare_head_ready` | `head_sha256` | a chained preparation published its head: `prepare` has just closed and the forecast starts while the later boundary intervals are prepared |
+| `prepare_sealed` | `prepared_root`, `prepared` | that preparation sealed (its `proof.json` is written), while the forecast runs on |
+| `boundary_wait_started` | `interval`, `reason` | the forecast reached a boundary interval that is not prepared yet |
+| `boundary_wait_finished` | `interval`, `seconds` | that interval arrived after `seconds` of waiting |
+| `warning` | `code`, `message`, (`detail`, `folder`) | anything worth saying, nothing worth stopping for; `folder` is the scratch folder a `compose_scratch_may_not_fit` warning measured |
 | `completed` | `dry_run`, `run_dir`, `receipt_path`, `receipts`, `outputs_committed`, `first_products_seconds`, `summary` | last line, exit 0 |
-| `failed` | `stage`, `error_class`, `message`, `remedy`, `run_dir`, `receipts` | last line, nonzero exit |
+| `failed` | `stage`, `error_class`, `message`, `remedy`, `run_dir`, `receipts`, (`folders`) | last line, nonzero exit; `folders` lists the folders a refusal names as the place to act (a scratch folder to make room in), which a page keeps in the words it shows |
 
 `stage` ∈ `fetch`, `prepare`, `initialize`, `forecast`, `finalize`.
 `fetch` appears only when the plan declares one; every other stage
 always emits its pair, so a stage timeline has no holes to interpret.
+A chained preparation (a single domain; see PIPELINE-STAGES.md) is the
+one stage whose work outlives its pair: `prepare` closes at the head,
+`prepare_head_ready` follows, the `forecast` stage opens while the later
+boundary intervals are still being prepared, and `prepare_sealed` marks
+the end of the preparation wherever it lands among the forecast's
+events. A domain tree, and a preparation that declines chaining, closes
+`prepare` at its seal as before.
 The finer pipeline phases inside a stage are not lost — they arrive on
 `stage_started.phase` and the full ordered list on
 `stage_finished.phases`.
@@ -549,6 +592,7 @@ including the two `run-plan` does not own:
 {
   "schema": "gpuwm.run-manifest.v1",
   "pid": 24188,
+  "process": {"pid": 24188, "start": "…", "boot": "…"},
   "started_at_utc": "2026-08-07T18:00:12.104Z",
   "plan_sha256": "…",
   "run_dir":     "…/runs/overnight",
@@ -564,7 +608,15 @@ including the two `run-plan` does not own:
 
 ### Reattach: read the heartbeat, don't own the pipe
 
-1. Read `run-manifest.json` for the paths and the pid.
+1. Read `run-manifest.json` for the paths and the pid. A pid names a
+   process only until it ends; after a crash or a restart another
+   program can hold the same number. `process` is the run's own
+   identity: the process's creation time (`start`, as the operating
+   system reports it) and, on Linux, the boot it belongs to (`boot`,
+   `/proc/sys/kernel/random/boot_id`). The run is alive only while the
+   process holding `pid` has that same identity (`gpuwm.proc_identity`
+   compares them); a manifest without `process` cannot prove which
+   process it named, so treat its run as ended and never signal its pid.
 2. Read `run-progress.json` for **current state**. That file is the
    authoritative anchor — atomically republished on every step, and what
    gpuwm's own recovery reads.
@@ -587,6 +639,22 @@ A torn final line in `events.jsonl` means the writer died mid-flush.
 reader that silently drops a partial line cannot tell "still going" from
 "died here". Pass `allow_partial_tail=True` once you have established
 which.
+
+One process writes a run's stream at a time. While a stream is open its
+writer holds `.events.jsonl.owner` beside it: the process id, when that
+process was created, the host and a random token. A second
+`gpuwm run-plan` or `gpuwm go` aimed at a folder whose stream a live
+process is writing is refused before it writes a record, and the refusal
+names that process. An owner file left by a process that has ended, or
+whose process id now belongs to a different process, is taken over; one
+written on another machine is never taken over, and the refusal names
+the file to delete once nothing runs there. The next writer to open a
+stream that ends in a torn line moves those bytes to
+`events.jsonl.torn-<UTC time>` beside it, cuts the stream back to its
+last whole record and continues the numbering from there, so the history
+replays again and nothing the dead writer left is thrown away. The first
+record it then writes is a `warning` with code `event_tail_recovered`,
+whose `preserved_path` names the file the cut bytes went to.
 
 ### Do not touch the checkout a run is reading
 
@@ -649,6 +717,25 @@ it creates nothing on disk. It is also where a plan that cannot run is
 refused — a moving nest on a chain whose preparation cannot feed one is
 rejected here, from the config alone, rather than after the fetch.
 
+For an intent plan, `memory` is the card memory the wizard fitted the
+grid to: `peak_envelope_bytes` of the binding phase (`binding_phase`)
+against `budget_bytes`, with `alloc_estimate_bytes`, the `free_bytes` and
+`vram_gib` it was sized from, and `sizing_basis` (`declared-capacity`
+for a named card, `measured-available` for this machine's GPU). Every
+source fills it, including one whose inputs are fetched only when the
+run starts, so a front end reads how close a draft is to its card from
+this record rather than from the words printed beside it. It is `null`
+for a plan that names its own config; `--estimate` prices that one.
+
+An intent whose grid does not fit its card is refused at exit 2: the
+sentence goes to stderr, and stdout carries the memory refusal document
+every memory refusal prints (`arwen.configuration-error.v1`, `kind`
+`memory`). Its `error` is the whole refusal and its `memory` holds
+`peak_envelope_bytes`, `budget_bytes` and `binding_phase` for the layout
+that was priced, whether or not preprocessing is priced for the source.
+`--estimate` refuses the same intent the same way. Any other refusal
+prints nothing on stdout.
+
 **`--estimate PLAN.json`** → `gpuwm.run-plan.estimate.v1`. VRAM from
 `gpuwm.core.preflight`'s own itemization — the arithmetic `gpuwm check`
 reports, on the CPU, with no CUDA context.
@@ -673,10 +760,37 @@ figure to compare against a card — and only gains accuracy.
 Output-frame counts per domain, which are exact. A `corridor` block sizing the statics corridor
 a moving nest's preparation will seal (disk and host; zero VRAM), from
 the corridor module's own arithmetic rather than an estimate that
-merely agrees with it. Where this package has no measured number (bytes
-per frame, download size, wall time for an arbitrary configuration) the
-field is `null` **with its `basis` stated**. A front end showing an
-invented duration would be showing gpuwm's name on a number gpuwm never
+merely agrees with it.
+
+A `download` block prices the download the run will make: the plan's
+own `fetch` block when it has one, otherwise the config's `[fetch]`
+table, which is what the prepared route downloads from. It counts the
+objects the fetch will request the way the fetch counts them and prices
+each at the size measured for its source and byte transport in
+`gpuwm/data/download-bytes.v1.json` (`bytes` left on disk,
+`transfer_bytes` moved over the network, `objects`, `leads`, `source`,
+`mode`, `basis`). The transport is the one the fetch will take: a GFS
+or GDAS cycle older than the grib-filter host keeps is read as whole
+objects from the archive when no mode is named, and is priced that
+way. A route that composes files after the transfer (a GEFS a/b pair,
+a GDPS valid time) keeps the objects beside the composed copy, so
+both are counted in `bytes` and only the objects in `transfer_bytes`.
+A download already on disk is not counted again: all of the
+managed download folder, which is keyed to the request, and in a
+folder named by hand (`data_dir`, or a fetch's `out`) only the files a
+fetch receipt of the same request names, for the leads this request
+asks for. A `disk` block gives
+`bytes`, the whole of what the run writes: the download, the
+preparation (priced per grid cell from real preparations of the same
+chain), the history files, the kept checkpoints and the pictures, each
+also given on its own. It is the
+projection `gpuwm run-plan` refuses on before its download, and the
+figure the event page compares with free disk. A source or transport
+with no measured size is left out by name in `disk.unpriced` and
+`download.basis`, never priced at a guess. Where this package has no
+measured number (wall time for an arbitrary configuration) the field is
+`null` **with its `basis` stated**. A front end showing an invented
+duration would be showing gpuwm's name on a number gpuwm never
 measured.
 
 **`--catalog`** → `gpuwm.run-plan.catalog.v1`. The renderer's product
@@ -872,6 +986,16 @@ render command owns that vocabulary and a second copy of it here is the
 enumeration drift `render.py`'s own catalog code already refuses to pay
 for. Absent leaves the default set exactly as it was, so `gpuwm go`'s
 own behaviour is unchanged.
+
+A vertical section (`xsec:<fill>[/<overlay>...]`) is cut along the line
+in `render_section`, the same value `gpuwm go --section` and `gpuwm render
+--section` take; the plan is refused before anything is fetched when it
+names an `xsec:` term and no line:
+
+```json
+"run_options": { "render_products": "composite_reflectivity,xsec:QCLOUD=0.01,0.1/wa",
+                 "render_section": "38.3,-99.0,38.3,-98.4" }
+```
 
 `none` lives in the same field as the product list rather than in a
 separate boolean, so "which products" has one answer and not two that

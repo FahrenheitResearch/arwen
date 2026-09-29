@@ -16,6 +16,9 @@ path = "src/main.rs"
 [dependencies]
 zarrs = { version = "=0.23.14", default-features = false, features = ["filesystem", "blosc", "gzip", "zstd", "transpose"] }
 zarrs_http = "=0.3.1"
+# The HTTP client the reader's own store (src/http_store.rs) builds, with a timeout sized for a chunk.
+reqwest = { version = "=0.12.28", default-features = false, features = ["blocking"] }
+bytes = "=1.12.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }

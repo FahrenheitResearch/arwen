@@ -40,6 +40,7 @@ RETIRE_KEYS = frozenset({
 REARM_KEYS = frozenset({"max_firings", "cooldown_s"})
 DOMAIN_FOLLOW_EXTRA_KEYS = frozenset({
     "cadence_seconds", "max_move_parent_cells", "min_overlap_fraction", "track",
+    "reach_speed_m_s",
 })
 
 
@@ -196,8 +197,16 @@ class DomainFollowConfig:
     max_move_parent_cells: int | None = None
     min_overlap_fraction: float | None = None
     track: TrackConfig | None = None
+    #: How fast, on average since the start, this nest may travel (m/s);
+    #: ``None`` takes gpuwm.core.nest_reach.DEFAULT_REACH_SPEED_M_S.  The
+    #: runner clamps a move past it and the statics corridor is sized to
+    #: it (gpuwm.core.nest_reach).
+    reach_speed_m_s: float | None = None
 
     def __post_init__(self) -> None:
+        from gpuwm.core.nest_reach import validate_reach_speed
+        object.__setattr__(self, "reach_speed_m_s", validate_reach_speed(
+            self.reach_speed_m_s, "follow"))
         if not math.isfinite(float(self.cadence_seconds)) or float(self.cadence_seconds) <= 0.0:
             raise ValueError("follow cadence_seconds must be finite and > 0")
         if self.max_move_parent_cells is not None and int(self.max_move_parent_cells) < 1:
@@ -212,6 +221,8 @@ class DomainFollowConfig:
             "max_move_parent_cells": self.max_move_parent_cells,
             "min_overlap_fraction": self.min_overlap_fraction,
             **({"track": self.track.to_json()} if self.track is not None else {}),
+            **({"reach_speed_m_s": float(self.reach_speed_m_s)}
+               if self.reach_speed_m_s is not None else {}),
         }
 
 
@@ -232,7 +243,8 @@ def build_domain_follow_config(table: dict, source: str, *, grid_id: int) -> Dom
         return DomainFollowConfig(
             tracker=tracker, cadence_seconds=float(extras["cadence_seconds"]), track=track,
             max_move_parent_cells=(None if extras.get("max_move_parent_cells") is None else int(extras["max_move_parent_cells"])),
-            min_overlap_fraction=(None if extras.get("min_overlap_fraction") is None else float(extras["min_overlap_fraction"])))
+            min_overlap_fraction=(None if extras.get("min_overlap_fraction") is None else float(extras["min_overlap_fraction"])),
+            reach_speed_m_s=extras.get("reach_speed_m_s"))
     except ValueError as err:
         raise ValueError(f"{label} of {source}: {err}") from None
 

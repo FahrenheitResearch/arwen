@@ -19,7 +19,7 @@ Measured, at this commit:
     tools/rrtmg_wrf461_oracle/lw_gate.py:23-26
         DEFAULT_FIXDIR = os.environ.get(
             "GPUWM_RRTMG_LW_FIXTURES",
-            os.path.expanduser("~/.claude/jobs/fea7a141/tmp/rrtmg_lw/fixtures"))
+            os.path.expanduser("<one agent job's scratch directory>"))
 
     tests/test_rrtmg_lw_numpy.py:38  pytestmark = pytest.mark.skipif(
                                          not os.path.isdir(DEFAULT_FIXDIR), ...)

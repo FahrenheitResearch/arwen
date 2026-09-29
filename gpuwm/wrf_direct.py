@@ -67,6 +67,36 @@ from gpuwm.wrf_physics_inventory import (
 
 
 _CONTRACT_PATH = Path(__file__).with_name("wrf_direct_v461_contract.json")
+
+#: Where the hierarchy exporter has d01's own exporter write, inside its
+#: staging, before it moves the two root files up beside the children.
+ROOT_EXPORT_DIRNAME = ".root-export"
+
+
+def export_staging_path(output: Path, *, pid: int | None = None) -> Path:
+    """The sibling an export is written in before one rename publishes it.
+
+    One spelling for both exporters, so the depth a door measures before
+    it prepares (:func:`gpuwm.native_domain_artifacts.published_path_refusal`)
+    is the depth they write at.  ``pid`` defaults to this process.
+    """
+
+    output = Path(output)
+    return output.with_name(
+        f"{output.name}.tmp-{os.getpid() if pid is None else int(pid)}")
+
+
+def domain_artifacts_manifest_temporary(
+        manifest_path: Path, *, pid: int | None = None,
+        token: str | None = None) -> Path:
+    """The name :func:`write_domain_artifacts_manifest` writes before its rename."""
+
+    manifest_path = Path(manifest_path)
+    pid = os.getpid() if pid is None else int(pid)
+    token = uuid.uuid4().hex[:12] if token is None else token
+    return manifest_path.with_name(f".{manifest_path.name}.tmp-{pid}-{token}")
+
+
 # WRF's rvovrd (share/module_model_constants.F:41 = 1.6083624), not the 1.608
 # this used to carry.  module_initialize_real.F writes T as
 # theta*(1.+rvovrd*qv) - 300 on every column it produces, so an exporter that
@@ -545,6 +575,7 @@ def _contract_payload_sha256(contract: Mapping[str, object]) -> str:
 def _load_static_geometry_receipt(
         receipt_path: Path, static_path: Path, *,
         expected_geometry: Mapping[str, object] | None = None,
+        expected_grid=None,
 ) -> tuple[dict[str, object], str]:
     """Verify the static receipt/cache binding and optional target geometry."""
 
@@ -563,18 +594,21 @@ def _load_static_geometry_receipt(
     geometry = payload.get("geometry")
     if not isinstance(geometry, dict):
         raise ValueError("native static receipt lacks a geometry object")
-    if expected_geometry is not None and geometry != dict(expected_geometry):
-        keys = sorted(set(geometry) | set(expected_geometry))
+    if expected_geometry is not None:
+        from gpuwm.native_wrf_contract import native_geometry_drift
+
         drift = {
-            name: {
-                "receipt": geometry.get(name),
-                "namelist": expected_geometry.get(name),
-            }
-            for name in keys
-            if geometry.get(name) != expected_geometry.get(name)
+            name: {"receipt": entry["recorded"],
+                   "namelist": entry["expected"],
+                   **{key: value for key, value in entry.items()
+                      if key not in ("recorded", "expected")}}
+            for name, entry in native_geometry_drift(
+                geometry, expected_geometry, expected_grid).items()
         }
-        raise ValueError(
-            f"native static receipt geometry differs from namelist: {drift}")
+        if drift:
+            raise ValueError(
+                "native static receipt geometry differs from namelist: "
+                f"{drift}")
     return geometry, static_sha256
 
 
@@ -814,8 +848,7 @@ def write_domain_artifacts_manifest(
                 artifact.geometry_receipt, directory=False),
         } for artifact in records],
     }
-    temporary = manifest_path.with_name(
-        f".{manifest_path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:12]}")
+    temporary = domain_artifacts_manifest_temporary(manifest_path)
     try:
         temporary.write_text(
             json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
@@ -859,6 +892,16 @@ def _wrf_noah_landuse(raw_lu: np.ndarray, *, iswater: int = 17,
     lake_mask = raw == int(islake)
     mapped = np.where(lake_mask, int(iswater), raw).astype(np.int32)
     return mapped, lake_mask
+
+
+def _wrf_soil_category(sct_dom, lu: np.ndarray, *,
+                       iswater: int = 17) -> np.ndarray:
+    """ISLTYP as real.exe writes it for this land use (lakes merged)."""
+    from gpuwm.core.landuse import soil_category_matched_to_land
+
+    raw = np.asarray(sct_dom, dtype=np.int32)
+    return soil_category_matched_to_land(
+        raw, np.asarray(lu, dtype=np.int32) != int(iswater))
 
 
 def _moist_pressure(cache: PreparedCache) -> tuple[np.ndarray, np.ndarray]:
@@ -1453,7 +1496,10 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     # "too many input landuse types" guard because VEGPARM has categories
     # 1..20.  Preserve LAKEMASK separately exactly as real.exe does.
     lu, lake_mask = _wrf_noah_landuse(raw_lu)
-    soil = np.asarray(static["SCT_DOM"], dtype=np.int32)
+    # real.exe writes the soil category matched to the land mask
+    # (module_initialize_real.F:3108-3131): a land column whose soil map
+    # says water carries silty clay loam, never water soil under land.
+    soil = _wrf_soil_category(static["SCT_DOM"], lu)
     landmask = surface["LANDMASK"]
     snow = np.asarray(
         surface["SNOW"] if "SNOW" in surface else cache.array("met/SNOW"),
@@ -1580,9 +1626,11 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
             continue
         # The key is DECLARED, not guessed.  It used to be
         # f"state/{field.registry_name}", and gpuwm drops WRF's leading q
-        # on exactly mp=28's six new rows, so every one of them missed the
+        # on mp=28's aerosol rows and on the Thompson, Morrison and P3
+        # number moments (nc/nr/ni/ns/ng), so every one of them missed the
         # cache and exported zeros -- including on a run whose WIF
-        # climatology lane had filled nwfa/nifa with real values (R-054).
+        # climatology lane had filled nwfa/nifa with real values (R-054)
+        # and on a Thompson cold start that had seeded nr/ni (A108).
         # ``state_key`` is None only for a member gpuwm has no species for
         # (QNBCA), where zeros ARE what real.exe writes.
         state_name = field.state_key
@@ -2036,7 +2084,7 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
     expected_geometry = native_geometry_contract(expected_grid, domain.run)
     geometry, static_sha256 = _load_static_geometry_receipt(
         artifact.geometry_receipt, artifact.static_cache,
-        expected_geometry=expected_geometry)
+        expected_geometry=expected_geometry, expected_grid=expected_grid)
     if list(geometry["mass_shape"]) != [ny, nx] or int(geometry["nz"]) != nz:
         raise ValueError(
             f"d{domain.grid_id:02d} geometry receipt does not match cache")
@@ -2161,7 +2209,7 @@ def export_prepared_wrf_hierarchy(
     output = Path(output_dir)
     if output.exists() and not overwrite:
         raise FileExistsError(f"refusing to overwrite {output}")
-    staging = output.with_name(output.name + f".tmp-{os.getpid()}")
+    staging = export_staging_path(output)
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
@@ -2171,7 +2219,7 @@ def export_prepared_wrf_hierarchy(
     root_manifest = None
     try:
         root_domain, root_artifact = pairs[0]
-        root_output = staging / ".root-export"
+        root_output = staging / ROOT_EXPORT_DIRNAME
         root_manifest = export_prepared_wrf(
             root_artifact.prepared_cache, root_artifact.static_cache,
             root_artifact.geometry_receipt, root_output,
@@ -2419,7 +2467,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
     if actual_static_sha256 != expected_static_sha256:
         raise ValueError("static cache digest does not match prepared identity")
 
-    staging = output.with_name(output.name + f".tmp-{os.getpid()}")
+    staging = export_staging_path(output)
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)

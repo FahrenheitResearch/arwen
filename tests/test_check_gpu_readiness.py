@@ -144,6 +144,8 @@ def test_windows_available_ram_uses_physical_not_pagefile(monkeypatch):
     monkeypatch.setattr(autoplan.sys, "platform", "win32")
     monkeypatch.setattr(autoplan, "_windows_memory_status", lambda: (64 << 30, 7 << 30))
     monkeypatch.setattr(pf, "_host_total_bytes_or_none", lambda: 32 << 30)
+    # Whatever memory cgroup the test box itself runs in is not the subject.
+    monkeypatch.setattr(autoplan, "_cgroup_memory_headroom", lambda: None)
     assert pf.host_available_bytes() == 7 << 30
     assert autoplan._host_memtotal() == 64 << 30
 
@@ -156,6 +158,7 @@ def test_available_ram_preserves_ceiling_zero_and_unknown(monkeypatch, available
     from tilestream import autoplan
     monkeypatch.setattr(autoplan, "_host_memavailable", lambda: available)
     monkeypatch.setattr(pf, "_host_total_bytes_or_none", lambda: ceiling)
+    monkeypatch.setattr(autoplan, "_cgroup_memory_headroom", lambda: None)
     assert pf.host_available_bytes() == expected
 
 

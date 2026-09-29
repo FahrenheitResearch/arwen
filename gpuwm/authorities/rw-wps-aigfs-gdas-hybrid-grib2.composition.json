@@ -14,7 +14,6 @@
         "terrain_height",
         "land_fraction",
         "skin_temperature",
-        "surface_pressure",
         "specific_humidity_2m",
         "soil_temperature",
         "volumetric_soil_moisture"

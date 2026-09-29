@@ -463,6 +463,10 @@ def test_the_probe_ships_the_census_and_no_sample(tmp_path):
     (shadow / "cupy" / "__init__.py").write_text(textwrap.dedent("""\
         class _Runtime:
             @staticmethod
+            def deviceGetPCIBusId(device):
+                return "0000:01:00.0"
+
+            @staticmethod
             def memGetInfo():
                 return 8 * 1024 ** 3, 10 * 1024 ** 3
 
@@ -489,6 +493,9 @@ def test_the_probe_ships_the_census_and_no_sample(tmp_path):
     env = dict(os.environ)
     env["PYTHONPATH"] = str(shadow)
     env["PATH"] = str(shadow)          # no nvidia-smi anywhere on it
+    # Devices stay visible, so on Linux the probe does look for nvidia-smi
+    # and finds none: the absent-utility path is the one measured here.
+    env.pop("CUDA_VISIBLE_DEVICES", None)
     env.pop("PYTHONSAFEPATH", None)
     payloads = []
     for _ in range(2):

@@ -137,7 +137,12 @@ else:
         check=False,
         capture_output=True,
         text=True,
-        timeout=30,
+        # A hang guard, not a speed bound: the run returns the moment the
+        # uploader exits, and its 64 uploads start interpreters whose
+        # start-up a loaded machine stretches (17 s idle took over 30 s
+        # at a load average of 55 on 24 cores).  The four-worker overlap
+        # is what proves the parallelism, below.
+        timeout=300,
         env=environment,
     )
 

@@ -3,7 +3,7 @@
     python tools/obs_grid_dual_write.py --workdir DIR --receipt OUT.json
 
 Writes ``gpuwm-obs.radar-grid.v1`` and ``gpuwm-obs.goes-grid.v1`` through
-BOTH engines -- Drew's Rust classic writer (the default) and the netCDF4
+BOTH engines -- the project's Rust classic writer (the default) and the netCDF4
 workaround reached by ``GPUWM_OBS_GRID_WRITER=python`` -- at a full-size
 grid, reads each back through the shipped reader, and compares the two:
 variable inventory and definition order, dimension extents, global and

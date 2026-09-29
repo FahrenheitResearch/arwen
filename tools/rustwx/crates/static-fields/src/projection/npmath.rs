@@ -8,8 +8,11 @@
 //!   acos, atan, atan2, log, log10, exp, sqrt, pow, mod) is bit-equal
 //!   to the UCRT libm that Rust `std` links -- `f64::sin` & co. are the
 //!   correct spellings and nothing here re-implements them;
-//! * float32 tan/atan/atan2/asin/acos/log10/sqrt/pow are likewise
-//!   bit-equal to the UCRT float functions `std` links;
+//! * float32 tan/atan/atan2/asin/acos/log10/pow use the vendored pure-Rust
+//!   libm implementation. Platform libm agreement with one NumPy build
+//!   is insufficient: a WPS sampling position must have the same bits
+//!   on the machine that prepares a nest and the machine that moves it;
+//! * sqrt remains the correctly rounded hardware operation;
 //! * float32 **sin, cos, exp and log are NOT**: numpy routes them
 //!   through its own SIMD kernels for both arrays and scalars, so this
 //!   module ports those four kernels exactly (same constants, same
@@ -292,8 +295,16 @@ pub fn np_pow(a: f64, b: f64) -> f64 {
 
 /// numpy's float32 power ufunc (same `** 2.0` special case, measured).
 pub fn np_powf(a: f32, b: f32) -> f32 {
-    if b == 2.0 { a * a } else { a.powf(b) }
+    if b == 2.0 { a * a } else { libm::powf(a, b) }
 }
+
+/// Portable float32 operations for the WPS sampling projection (cross-machine moving nests).
+pub fn np_tanf(x: f32) -> f32 { libm::tanf(x) }
+pub fn np_atanf(x: f32) -> f32 { libm::atanf(x) }
+pub fn np_atan2f(y: f32, x: f32) -> f32 { libm::atan2f(y, x) }
+pub fn np_asinf(x: f32) -> f32 { libm::asinf(x) }
+pub fn np_acosf(x: f32) -> f32 { libm::acosf(x) }
+pub fn np_log10f(x: f32) -> f32 { libm::log10f(x) }
 
 /// numpy's float64 `mod`: fmod adjusted into the divisor's sign, exact
 /// zero taking the divisor's sign (npy_remainder).

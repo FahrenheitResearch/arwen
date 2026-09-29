@@ -5,7 +5,16 @@ backend used by the source-grid and WRF-real setup transforms that precede
 the model allocation.  Both implementations consume and emit FP32 arrays;
 the CPU implementation delegates interpolation arithmetic to the packaged
 Rust bridge and uses deterministic NumPy elementwise helpers for the small
-surface/vector transforms.
+vector and humidity transforms.
+
+The masked surface fields (soil moisture and temperature, snow, skin
+temperature, sea ice) take WPS metgrid's masked chain in float64 in the
+same Rust library under BOTH backends, parallel across target cells: the
+CPU backend on its own library and worker count (at most eight threads
+when none was given), the CUDA backend on the library the resolution
+ladder picks and its host workers, every CPU the process may use when
+none were given (:meth:`CudaPreprocessBackend.wps_masked_chain_engine`).  Each receipt
+names that library as ``masked_surface_chain``.
 """
 
 from __future__ import annotations
@@ -16,10 +25,23 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 
-from gpuwm.ingest.cpu_backend import CPU_BACKEND_ABI, CpuPreprocessBackend
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+from gpuwm.ingest.cpu_backend import (
+    CPU_BACKEND_ABI,
+    MASKED_STENCIL_ENTRY,
+    MASKED_STENCIL_IMPLEMENTATION,
+    WPS_MASKED_CHAIN_ENTRY,
+    WPS_MASKED_CHAIN_IMPLEMENTATION,
+    CpuPreprocessBackend,
+    automatic_workers,
+    available_cpu_count,
+    masked_fields_cpu_backend,
+    shared_cpu_backend,
+)
 
 
 PREPROCESS_IMPLEMENTATION_SCHEMA = "gpuwm-preprocess-implementation-v2"
@@ -54,7 +76,11 @@ def _implementation_tree(backend: str) -> dict[str, object]:
     if backend == "cpu":
         names.append("gpuwm/ingest/cpu_backend.py")
     elif backend == "cuda":
+        # cpu_backend.py rides with the kernel: a vertical column deeper
+        # than the kernel's top tier runs on the CPU bridge
+        # (gpuwm.ingest.vert.WRF_VERT_INTERP_LEVEL_TIERS).
         names.append("gpuwm/core/kernels/vert_interp.cu")
+        names.append("gpuwm/ingest/cpu_backend.py")
     else:  # pragma: no cover - internal call sites own the finite inventory
         raise ValueError(f"unsupported provenance backend {backend!r}")
     files = {}
@@ -91,6 +117,64 @@ def _shared_contracts() -> dict[str, object]:
     }
 
 
+def _record_vertical_route(routes: list, route: dict[str, object]) -> None:
+    """Add one vertical route to a backend's receipt record, once."""
+
+    if route not in routes:
+        routes.append(route)
+
+
+def _selection_block(backend) -> dict[str, object]:
+    """The receipt's ``selection`` entry: requested selector, backend, reason."""
+
+    selection = getattr(backend, "selection", None)
+    return {} if selection is None else {"selection": dict(selection)}
+
+
+def _bridge_identity(native) -> dict[str, object]:
+    return {
+        "name": native.path.name,
+        "sha256": _sha256(native.path),
+        "abi_version": native.abi_version,
+    }
+
+
+def _masked_chain_receipt(native, workers=None) -> dict[str, object]:
+    """What maps the masked surface fields, for a backend's receipt.
+
+    The library is named only when it carries both entries the masked
+    fields run on (the WPS chain and the native HRRR route's soil
+    stencil); one that predates either is recorded as unavailable with
+    the entries it lacks, because the preparation refuses it by name at
+    the first such field and a receipt must not claim an entry the
+    library does not have.  ``workers`` is the worker count those
+    entries were given, ``auto`` when none was (the CPU backend's
+    automatic count, or every CPU under CUDA).
+    """
+
+    receipt: dict[str, object] = {
+        "implementation": WPS_MASKED_CHAIN_IMPLEMENTATION,
+        "entry": WPS_MASKED_CHAIN_ENTRY,
+        "stencil_implementation": MASKED_STENCIL_IMPLEMENTATION,
+        "stencil_entry": MASKED_STENCIL_ENTRY,
+        "workers": "auto" if workers is None else int(workers),
+    }
+    missing = [name for name, present in (
+        (WPS_MASKED_CHAIN_ENTRY,
+         getattr(native, "wps_masked_chain_entry", False)),
+        (MASKED_STENCIL_ENTRY,
+         getattr(native, "masked_stencil_entry", False)),
+    ) if not present]
+    if missing:
+        receipt["bridge"] = None
+        receipt["unavailable"] = (
+            f"the CPU preprocessing library {native.path.name} predates "
+            f"{' and '.join(missing)}")
+    else:
+        receipt["bridge"] = _bridge_identity(native)
+    return receipt
+
+
 def _host(value, *, dtype=None) -> np.ndarray:
     if hasattr(value, "get"):
         value = value.get()
@@ -99,8 +183,16 @@ def _host(value, *, dtype=None) -> np.ndarray:
 
 def _masked_nearest_cpu(field, latitude, longitude, target_lat, target_lon,
                         source_landmask, target_landmask, *, surface="match",
-                        fill_value=0.0, search_radius=8, strict=True):
-    """NumPy FP32 mirror of the bounded WPS surface-nearest operator."""
+                        fill_value=0.0, search_radius=8, strict=True,
+                        native=None, workers=None):
+    """The bounded WPS surface-nearest operator in float32.
+
+    Runs in the Rust preprocessing library (``gpuwm_masked_nearest_f32``)
+    on ``workers`` threads (the automatic count when None), byte-identical
+    to the NumPy scan kept as its test oracle
+    (``gpuwm/verify/water_blend_oracle.py``).  ``native`` is the backend's
+    own library; without one, the library the resolution ladder picks.
+    """
 
     from gpuwm.ingest.horiz import _regular_coordinates
 
@@ -120,45 +212,19 @@ def _masked_nearest_cpu(field, latitude, longitude, target_lat, target_lon,
     if target_landmask.shape != y_raw.shape:
         raise ValueError(
             "target_landmask shape does not match target coordinates")
-    if surface == "match":
-        active = np.ones_like(target_landmask)
-        desired_land = target_landmask
-    elif surface == "land":
-        active = target_landmask
-        desired_land = np.ones_like(target_landmask)
-    elif surface == "water":
-        active = ~target_landmask
-        desired_land = np.zeros_like(target_landmask)
-    else:
+    if surface not in ("match", "land", "water"):
         raise ValueError("surface must be 'match', 'land', or 'water'")
+    if native is None:
+        from gpuwm.ingest.cpu_backend import shared_cpu_backend
 
-    y = np.asarray(y_raw, dtype=np.float32)
-    x = np.asarray(x_raw, dtype=np.float32)
-    center_y = np.rint(y).astype(np.int32)
-    center_x = np.rint(x).astype(np.int32)
-    best_distance = np.full(y.shape, np.inf, dtype=np.float32)
-    best_value = np.full(y.shape, np.float32(fill_value), dtype=np.float32)
-    ny, nx = source_shape
-    radius = int(search_radius)
-    for dj in range(-radius, radius + 1):
-        jy = center_y + dj
-        in_y = (jy >= 0) & (jy < ny)
-        jy_safe = np.clip(jy, 0, ny - 1)
-        for di in range(-radius, radius + 1):
-            ix = center_x + di
-            inside = in_y & (ix >= 0) & (ix < nx)
-            ix_safe = np.clip(ix, 0, nx - 1)
-            value = field[jy_safe, ix_safe]
-            valid = (active & inside & np.isfinite(value)
-                     & (source_landmask[jy_safe, ix_safe] == desired_land))
-            distance = (y - jy_safe) ** np.float32(2.0) \
-                + (x - ix_safe) ** np.float32(2.0)
-            take = valid & (distance < best_distance)
-            best_distance = np.where(take, distance, best_distance)
-            best_value = np.where(take, value, best_value)
-    if strict and np.any(active & ~np.isfinite(best_distance)):
+        native = shared_cpu_backend()
+    values, unmatched = native.masked_nearest(
+        field, source_landmask, y_raw, x_raw, target_landmask,
+        surface=surface, fill_value=fill_value, radius=int(search_radius),
+        workers=workers)
+    if strict and unmatched:
         raise ValueError("no matching source surface within search_radius")
-    return np.ascontiguousarray(best_value, dtype=np.float32)
+    return np.ascontiguousarray(values, dtype=np.float32)
 
 
 def _rotate_earth_to_grid_cpu(u_earth, v_earth, sinalpha, cosalpha):
@@ -238,6 +304,10 @@ class ParallelCpuPreprocessBackend:
             raise ValueError("workers must be positive")
         self.workers = None if workers is None else int(workers)
         self._native = CpuPreprocessBackend(bridge)
+        self._vertical_routes: list[dict[str, object]] = []
+        #: How :func:`resolve_preprocess_backend` chose this backend;
+        #: ``None`` for one constructed directly.
+        self.selection: dict[str, object] | None = None
 
     @staticmethod
     def float32(value):
@@ -287,9 +357,53 @@ class ParallelCpuPreprocessBackend:
 
         return BoundPlan()
 
-    @staticmethod
-    def masked_nearest(*args, **kwargs):
-        return _masked_nearest_cpu(*args, **kwargs)
+    def masked_nearest(self, *args, **kwargs):
+        return _masked_nearest_cpu(
+            *args, **kwargs, native=self._native,
+            workers=self.host_step_workers)
+
+    @property
+    def host_step_workers(self) -> int:
+        """The threads every Rust host step of this backend runs on: its
+        own worker count, or the automatic count (at most eight) when none
+        was given."""
+
+        return (self.workers if self.workers is not None
+                else automatic_workers())
+
+    def at_workers(self, workers: int) -> "ParallelCpuPreprocessBackend":
+        """This backend on ``workers`` threads, as one slot of its budget.
+
+        A preparation that splits its worker budget into concurrent slots
+        runs each slot on this backend with fewer threads.  That is this
+        backend's choice, not a second one, so the slot runs this
+        library, carries this ``selection`` and adds to this record of
+        vertical routes: its receipt is this backend's but for the
+        worker counts.  A slot resolved again by name recorded a CPU that
+        auto fell to as one "named by the caller" and began an empty
+        route record, and the HRRR root preparation refused every slot
+        of a CPU run with two or more boundary hours on that difference.
+        """
+
+        slot = ParallelCpuPreprocessBackend(
+            workers=workers, bridge=self._native.path)
+        slot.selection = (None if self.selection is None
+                          else dict(self.selection))
+        slot._vertical_routes = self._vertical_routes
+        return slot
+
+    def wps_masked_chain_engine(self):
+        """The library and worker count the masked surface chain runs on.
+
+        This backend's own library, so an explicit ``cpu_bridge`` reaches
+        the masked fields too, and its own worker count (the automatic
+        count, at most eight, when none was given, as for every thread the
+        CPU preparation starts on its own).  A library without the chain
+        is refused by name with the remedy.
+        """
+
+        self._native.require_wps_masked_chain()
+        return self._native, self.host_step_workers
 
     @staticmethod
     def rotate_earth_to_grid(*args):
@@ -305,10 +419,24 @@ class ParallelCpuPreprocessBackend:
         surface = np.ascontiguousarray(
             _host(surface_pressure), dtype=np.float32)
         target = np.ascontiguousarray(_host(target_pressure), dtype=np.float32)
+        source_levels = int(source.shape[0]) if source.ndim else 0
+        _record_vertical_route(self._vertical_routes, {
+            "source_levels": source_levels,
+            "column_levels": source_levels + 1,
+            "backend": "cpu",
+            "kernel_level_tier": None,
+            "reason": "the CPU preprocessing backend was selected",
+        })
         return _CpuVerticalPlan(self, source, surface, target)
 
     def receipt(self) -> dict[str, object]:
-        """Return proof metadata that binds the native CPU implementation."""
+        """Return proof metadata that binds the native CPU implementation.
+
+        ``vertical_interpolation`` is this backend's own record of every
+        vertical geometry it has prepared, shared rather than copied, so a
+        receipt taken before the preparation and written after it (every
+        preparation proof) carries what actually ran.
+        """
 
         return {
             "schema": PREPROCESS_IMPLEMENTATION_SCHEMA,
@@ -324,6 +452,10 @@ class ParallelCpuPreprocessBackend:
             },
             "contracts": _shared_contracts(),
             "implementation_tree": _implementation_tree("cpu"),
+            "vertical_interpolation": self._vertical_routes,
+            "masked_surface_chain": _masked_chain_receipt(
+                self._native, self.workers),
+            **_selection_block(self),
         }
 
 
@@ -333,6 +465,16 @@ class CudaPreprocessBackend:
     name = "cuda"
     implementation = "cupy-fp32"
     workers = 1
+
+    def __init__(self, *, host_workers: int | None = None):
+        self._vertical_routes: list[dict[str, object]] = []
+        #: The CPU workers the host steps take (the masked surface fields,
+        #: which run in the Rust preprocessing library under this backend
+        #: too); ``None`` for every CPU the process may use.
+        self.host_workers = _checked_workers(host_workers)
+        #: How :func:`resolve_preprocess_backend` chose this backend;
+        #: ``None`` for one constructed directly.
+        self.selection: dict[str, object] | None = None
 
     @property
     def array_module(self):
@@ -361,6 +503,35 @@ class CudaPreprocessBackend:
 
         return masked_nearest_gpu(*args, **kwargs)
 
+    def wps_masked_chain_engine(self):
+        """The library and worker count the masked surface chain runs on.
+
+        The masked fields are copied to the host for this chain, which
+        runs in the Rust preprocessing library the resolution ladder
+        picks, on this backend's host workers (every CPU the process may
+        use when none was given), exactly as it does under the CPU
+        backend.  A missing or outdated library is refused by name with
+        the remedy.
+        """
+
+        native = masked_fields_cpu_backend()
+        native.require_wps_masked_chain()
+        return native, self.effective_host_workers
+
+    @property
+    def host_step_workers(self) -> int:
+        """The threads the Rust host steps take (:attr:`effective_host_workers`)."""
+
+        return self.effective_host_workers
+
+    @property
+    def effective_host_workers(self) -> int:
+        """The threads the host steps run on: ``host_workers``, or every
+        CPU the process may use when none was given."""
+
+        return (self.host_workers if self.host_workers is not None
+                else available_cpu_count())
+
     @staticmethod
     def rotate_earth_to_grid(*args):
         from gpuwm.ingest.horiz import rotate_earth_to_grid_gpu
@@ -373,16 +544,36 @@ class CudaPreprocessBackend:
 
         return _era5_rh_to_water_gpu(*args)
 
-    @staticmethod
-    def prepare_wrf_vertical(source_pressure, surface_pressure,
+    def prepare_wrf_vertical(self, source_pressure, surface_pressure,
                              target_pressure):
-        from gpuwm.ingest.vert import _prepare_wrf_vert_interp_geometry
+        """Prepare one pressure geometry on the kernel tier that holds it.
 
-        return _CudaVerticalPlan(_prepare_wrf_vert_interp_geometry(
-            source_pressure, surface_pressure, target_pressure))
+        A column deeper than the kernel's top tier is handed to the CPU
+        bridge by the plan itself; either way the route, the source level
+        count and the reason land in this backend's receipt.
+        """
+        from gpuwm.ingest.vert import (
+            _prepare_wrf_vert_interp_geometry, wrf_vertical_route)
+
+        raw_plan = _prepare_wrf_vert_interp_geometry(
+            source_pressure, surface_pressure, target_pressure)
+        route = wrf_vertical_route(raw_plan.source_shape[0])
+        if raw_plan.cpu_bridge is not None:
+            route["cpu_bridge"] = _bridge_identity(raw_plan.cpu_bridge)
+        _record_vertical_route(self._vertical_routes, route)
+        return _CudaVerticalPlan(raw_plan)
 
     def receipt(self) -> dict[str, object]:
-        """Return proof metadata for the selected CuPy CUDA implementation."""
+        """Return proof metadata for the selected CuPy CUDA implementation.
+
+        ``vertical_interpolation`` is this backend's own record of every
+        vertical geometry it has prepared: which engine ran it (the CUDA
+        kernel at a named column tier, or the CPU bridge for a column deeper
+        than the top tier), the source level count and why.  The list is
+        shared rather than copied, so a receipt taken before the
+        preparation and written after it (every preparation proof) carries
+        what actually ran.
+        """
 
         cp = self.array_module
         return {
@@ -391,9 +582,57 @@ class CudaPreprocessBackend:
             "implementation": self.implementation,
             "workers": self.workers,
             "cupy_version": cp.__version__,
+            "cuda_runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
             "contracts": _shared_contracts(),
             "implementation_tree": _implementation_tree("cuda"),
+            "vertical_interpolation": self._vertical_routes,
+            "masked_surface_chain": _cuda_masked_chain_receipt(
+                self.host_workers),
+            **_selection_block(self),
         }
+
+
+def _cuda_masked_chain_receipt(host_workers=None) -> dict[str, object]:
+    """The CUDA backend's masked-chain library, or why there is none.
+
+    A receipt is taken before the preparation it describes, so a missing
+    library is recorded here rather than raised: the preparation refuses
+    it by name at the first masked field.
+    """
+
+    try:
+        return _masked_chain_receipt(shared_cpu_backend(), host_workers)
+    except (OSError, RuntimeError) as error:
+        return {
+            "implementation": WPS_MASKED_CHAIN_IMPLEMENTATION,
+            "entry": WPS_MASKED_CHAIN_ENTRY,
+            "stencil_implementation": MASKED_STENCIL_IMPLEMENTATION,
+            "stencil_entry": MASKED_STENCIL_ENTRY,
+            "workers": ("auto" if host_workers is None
+                        else int(host_workers)),
+            "bridge": None,
+            "unavailable": str(error).splitlines()[0],
+        }
+
+
+def _with_host_workers(backend, workers):
+    """``backend`` with ``workers`` as the worker count of its host steps."""
+
+    if workers is not None:
+        backend.host_workers = _checked_workers(workers)
+    return backend
+
+
+def _checked_workers(workers):
+    """A worker count as an int, or None; refused unless a positive integer."""
+
+    if isinstance(workers, (bool, np.bool_)) or (
+            workers is not None
+            and not isinstance(workers, (int, np.integer))):
+        raise TypeError("workers must be an integer")
+    if workers is not None and int(workers) < 1:
+        raise ValueError("workers must be positive")
+    return None if workers is None else int(workers)
 
 
 def _gpu_runtime_installed() -> bool:
@@ -445,41 +684,212 @@ def _announce_auto_cpu(reason: str) -> None:
              "--preprocess-backend cpu or cuda.")
 
 
-#: The certified GPU-preprocessing pair, named once.
+#: GPU preprocessing certification, keyed by CUDA runtime MAJOR.
 #:
-#: This text used to offer ``[gpu-cu13]`` as the CUDA-13 box's remedy.
-#: Following it installed a pair the resolver does not certify: the auto
-#: backend reads the runtime, finds it outside
-#: :data:`~gpuwm.gpu_stack_identity.CUDA_RUNTIME_RANGE`, and prepares on
-#: the CPU backend -- so a user who did exactly what the remedy said got
-#: CPU preprocessing, with nothing connecting it to the advice they
-#: followed.  A remedy names what is certified or it is not a remedy.
-#: The extra is not withdrawn: it is the matching wheel for a CUDA-13
-#: box's MODEL runtime, which is measured.  What was never measured is
-#: PREPROCESSING on it, so it is described below as what it is instead
-#: of being offered as a way to reach the GPU path.
-_GPU_PREPROCESS_REMEDY = (
-    "CUDA preprocessing was requested but this install cannot import "
-    "cupy, so every GPU interpolation kernel is unreachable.  Refusing "
-    "here, before any source bytes are decoded, rather than in the "
-    "first kernel after them.\n"
-    "  # GPU preprocessing is certified on the CUDA 12.x runtime "
-    "family only:\n"
-    "  remedy: pip install 'gpuwm[gpu-cu12]'\n"
-    "  # A CUDA-13-only box has no certified GPU preprocessing pair "
-    "today:\n"
-    "  #   [gpu-cu13] is the matching wheel for the MODEL runtime "
-    "there, but\n"
-    "  #   preprocessing outside the certified family runs on the "
-    "deterministic\n"
-    "  #   parallel CPU backend, which is what auto already picks.\n"
-    "  # or run the same preparation off-GPU: --preprocess-backend cpu\n"
-    "  # (or auto, which picks the CPU backend on this install)")
+#: ``auto`` prepares on the card only where the runtime's major has a row
+#: here and CuPy is at least that row's ``cupy_major_minimum``; everywhere
+#: else it prepares on the CPU backend and says why in one line.  The gate
+#: prevents one breakage: a CUDA preparation on a runtime whose NVRTC-built
+#: interpolation kernels were never shown to reproduce the CPU backend
+#: within the declared parity rules, so an initial state could differ from
+#: the one the same case prepares on the CPU with nothing recording it.
+#:
+#: A major gets a row only with a passing certification record under
+#: ``tests/data/preprocess_cuda_certification/cuda-<major>.json``: the
+#: ``gpu``-marked CPU/CUDA parity tests in tests/test_preprocess_cpu_backend.py
+#: plus one real-data preparation made on both backends and compared by
+#: tools/verify_wrf_backend_parity.py.
+#: tests/test_preprocess_cuda_certification.py refuses a row without one.
+#: ``extra`` is the install extra carrying that major's CuPy wheel, which
+#: the remedy below names.
+#:
+#: This is a PREPROCESSING certification.  The sealed native-WRF
+#: distribution pins its own runtime family separately
+#: (:data:`gpuwm.gpu_stack_identity.CUDA_RUNTIME_RANGE`), because that
+#: bundle ships one CuPy wheel.
+CERTIFIED_PREPROCESS_CUDA_MAJORS = MappingProxyType({
+    12: MappingProxyType({"cupy_major_minimum": 13, "extra": "gpu-cu12"}),
+    13: MappingProxyType({"cupy_major_minimum": 14, "extra": "gpu-cu13"}),
+})
+
+
+def _certified_majors_text() -> str:
+    return " and ".join(
+        f"CUDA {major}" for major in sorted(CERTIFIED_PREPROCESS_CUDA_MAJORS))
+
+
+def _gpu_preprocess_remedy() -> str:
+    """The refusal for an explicit ``cuda`` request with no cupy.
+
+    Built from :data:`CERTIFIED_PREPROCESS_CUDA_MAJORS`, so the remedy
+    names exactly the pairs the resolver certifies: an install line for
+    a runtime ``auto`` would still decline is not a remedy.
+    """
+
+    lines = [
+        "CUDA preprocessing was requested but this install cannot import "
+        "cupy, so every GPU interpolation kernel is unreachable.  Refusing "
+        "here, before any source bytes are decoded, rather than in the "
+        "first kernel after them.",
+        f"  # GPU preprocessing is certified on {_certified_majors_text()}; "
+        "install the CuPy wheel for this box's CUDA major:",
+    ]
+    for major, row in sorted(CERTIFIED_PREPROCESS_CUDA_MAJORS.items()):
+        lines.append(f"  # on a CUDA {major}.x box:")
+        lines.append(f"  remedy: pip install 'gpuwm[{row['extra']}]'")
+    lines.append(
+        "  # or run the same preparation off-GPU: --preprocess-backend cpu")
+    lines.append("  # (or auto, which picks the CPU backend on this install)")
+    return "\n".join(lines)
+
+
+_GPU_PREPROCESS_REMEDY = _gpu_preprocess_remedy()
+
+#: The ``reason`` a selection records when the caller named the backend.
+NAMED_BY_CALLER = "named by the caller"
+
+
+def _selection(requested: str, backend, reason: str, *, device_load=None):
+    """Attach how this backend was chosen; its receipt carries it.
+
+    ``requested`` is the selector as given (``auto``, ``cuda`` or
+    ``cpu``), ``backend`` is what runs, ``reason`` is why.  A CPU
+    preparation the reader did not ask for therefore names its cause in
+    the preparation receipt, not only in a log line that may be gone.
+    """
+
+    backend.selection = {
+        "requested": requested,
+        "backend": backend.name,
+        "reason": reason,
+    }
+    if device_load is not None:
+        backend.selection["device_load"] = device_load
+    return backend
+
+
+# Auto leaves a card other work is using, because there the preparation
+# ran slower than on the CPU: on node-2's RTX 5090, shared with a running
+# forecast or beside a loaded host, the CUDA preparation took 796 to 990 s
+# against 678 s for the CPU backend on the same case.  The busy reading is
+# NVML's utilization.gpu, the share of the last sample period in which a
+# kernel ran, so 50% means other work held the card at least half the
+# time; an RTX PRO 4500 read 100% driven by another job and 0% idle.
+#
+# Whether the preparation FITS is no longer a fraction of the card: every
+# door prices its preparation (gpuwm.ingest.preparation_price) and
+# :func:`admit_preparation` weighs that price against the card's free
+# memory.  The 25% free-memory floor that stood in for it passed a 24 GB
+# card with 7 GB free for a preparation that needed 32 (A65).
+AUTO_BUSY_UTILIZATION_PERCENT = 50
+
+
+def _auto_device_load(cp):
+    """Use the fit's live instrument; missing telemetry keeps the prior choice.
+
+    Returns ``(reason or None, load)``; ``load`` carries the free and total
+    bytes the same reading saw, which :func:`admit_preparation` weighs the
+    preparation's price against, so auto reads the card once.
+
+    A card the probe could not open through CUDA is not missing telemetry:
+    the preparation's own context would fail the same way, so it goes to
+    the CPU, judged against the thresholds by the NVML sample taken before
+    the failure where there is one.  The probe reports that only for a
+    CUDA runtime error; a failure of the probe's own reads as missing
+    telemetry.
+    """
+    from gpuwm.core.device_probe import device_memory_probe_subprocess
+
+    probe = device_memory_probe_subprocess(
+        device=int(cp.cuda.runtime.getDevice()), report_failure=True)
+    if probe is None:
+        return None, None
+    cuda_error = probe.get("cuda_error")
+    if cuda_error is None:
+        free = probe.get("free_bytes")
+        total = probe.get("total_bytes")
+        utilization = probe.get("utilization_gpu_percent")
+    else:
+        nvml = probe.get("nvml") or {}
+        used = nvml.get("used_bytes")
+        total = nvml.get("total_bytes")
+        utilization = nvml.get("utilization_gpu_percent")
+        free = (total - used if type(used) is int and type(total) is int
+                and 0 <= used <= total else None)
+    load = {
+        "probe": "device_memory_probe_subprocess",
+        "free_bytes": free,
+        "total_bytes": total,
+        "utilization_gpu_percent": utilization,
+        "busy_utilization_threshold_percent": AUTO_BUSY_UTILIZATION_PERCENT,
+    }
+    if cuda_error is not None:
+        load["cuda_error"] = cuda_error
+    reasons = []
+    if (isinstance(utilization, (int, float))
+            and not isinstance(utilization, bool)
+            and AUTO_BUSY_UTILIZATION_PERCENT <= utilization <= 100):
+        reasons.append(
+            f"GPU utilization {utilization:g}% meets the busy threshold "
+            f"of {AUTO_BUSY_UTILIZATION_PERCENT}%")
+    if cuda_error is not None:
+        reasons.append(f"CUDA could not open the card ({cuda_error})")
+    return ("; ".join(reasons) if reasons else None), load
+
+
+def _certified_cuda(cp) -> tuple[bool, str]:
+    """Whether this CuPy/runtime pair is certified, and the sentence saying so."""
+
+    runtime_version = int(cp.cuda.runtime.runtimeGetVersion())
+    major = runtime_version // 1000
+    cupy_version = str(cp.__version__)
+    cupy_major = int(cupy_version.split(".", 1)[0])
+    row = CERTIFIED_PREPROCESS_CUDA_MAJORS.get(major)
+    if row is None:
+        return False, (
+            f"CUDA runtime {runtime_version} (CUDA {major}) is not "
+            f"certified for GPU preprocessing (certified: "
+            f"{_certified_majors_text()})")
+    minimum = int(row["cupy_major_minimum"])
+    if cupy_major < minimum:
+        return False, (
+            f"cupy {cupy_version} is older than cupy {minimum}, the oldest "
+            f"certified for GPU preprocessing on CUDA {major}")
+    return True, (
+        f"cupy {cupy_version} on CUDA runtime {runtime_version} is "
+        f"certified for GPU preprocessing (CUDA {major})")
 
 
 def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
-                               cpu_bridge: Path | str | None = None):
-    """Resolve a public backend selector without silently changing policy."""
+                               cpu_bridge: Path | str | None = None,
+                               reason: str | None = None, price=None):
+    """Resolve a public backend selector without silently changing policy.
+
+    ``reason`` is for a caller whose POLICY, not a person, named the
+    backend (a host-tiled configuration prepares on the CPU); it replaces
+    :data:`NAMED_BY_CALLER` in the receipt's ``selection`` block.  That
+    caller prints its own line; ``auto`` prints one whenever it lands on
+    the CPU.
+
+    ``price`` (a :class:`gpuwm.ingest.preparation_price.PreparationDevicePrice`,
+    or a callable returning one) is what the preparation needs on the
+    card.  Given one, a CUDA answer is weighed against the card's free
+    memory before anything is allocated (:func:`admit_preparation`): auto
+    prepares on the CPU when it does not fit, and an explicit ``cuda`` is
+    refused by name.  A callable is priced only when the answer is CUDA.
+    """
+    chosen = _resolve_preprocess_backend(
+        backend, workers=workers, cpu_bridge=cpu_bridge, reason=reason)
+    if price is None:
+        return chosen
+    # auto's reading was taken in this same call, so it is the decision's
+    # own reading; reuse it rather than probe the card twice.
+    load = (getattr(chosen, "selection", None) or {}).get("device_load")
+    return admit_preparation(chosen, price, workers=workers, probe=load)
+
+
+def _resolve_preprocess_backend(backend="cuda", *, workers=None,
+                                cpu_bridge=None, reason=None):
 
     if backend is None:
         backend = "cuda"
@@ -495,69 +905,263 @@ def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
                 "workers/cpu_bridge cannot accompany a backend object")
         return backend
     normalized = backend.strip().lower()
+    if reason is not None and (not isinstance(reason, str)
+                               or not reason.strip()):
+        raise ValueError("a backend selection reason must be a sentence")
+    named = NAMED_BY_CALLER if reason is None else " ".join(reason.split())
     sealed_backends = _sealed_distribution_preprocess_backends()
     if normalized == "cuda":
         if sealed_backends is not None and "cuda" not in sealed_backends:
             raise ValueError(
                 "CUDA preprocessing is absent from the sealed native "
                 "distribution")
-        if workers is not None or cpu_bridge is not None:
+        # workers reaches the host steps the CUDA backend runs on the CPU
+        # (the masked surface fields).  cpu_bridge stays the CPU
+        # backend's: under CUDA the host library is the one the
+        # resolution ladder picks, and a second way to name it would be
+        # a second answer to which library ran.
+        if cpu_bridge is not None:
             raise ValueError(
-                "workers/cpu_bridge apply only to the CPU backend")
+                "cpu_bridge applies only to the CPU backend; under the CUDA "
+                "backend the host steps use the library the resolution "
+                "ladder picks (set GPUWM_CPU_PREPROCESS_BRIDGE to choose it)")
         if not _gpu_runtime_installed():
             # An EXPLICIT cuda request on a CPU-only install: a named
             # refusal with the remedy, at the front of the work.  The
             # bare default reaches the CPU backend through "auto" and
             # never lands here.
             raise ValueError(_GPU_PREPROCESS_REMEDY)
-        return CudaPreprocessBackend()
+        return _selection(
+            "cuda", _with_host_workers(CudaPreprocessBackend(), workers),
+            named)
     if normalized == "cpu":
         if sealed_backends is not None and "cpu" not in sealed_backends:
             raise ValueError(
                 "CPU preprocessing is absent from the sealed native "
                 "distribution")
-        return ParallelCpuPreprocessBackend(
-            workers=workers, bridge=cpu_bridge)
+        return _selection("cpu", ParallelCpuPreprocessBackend(
+            workers=workers, bridge=cpu_bridge), named)
     if normalized == "auto":
         if cpu_bridge is not None:
             raise ValueError("cpu_bridge cannot accompany backend='auto'")
-        if sealed_backends is not None and "cuda" not in sealed_backends:
-            return ParallelCpuPreprocessBackend(workers=workers)
+        if reason is not None:
+            # auto records its own reason; a caller's would be dropped.
+            raise ValueError(
+                "a selection reason accompanies a named backend, not auto")
         # The CPU fallback is the bare default's road on every box where
-        # CUDA is unusable (fixed-means-default: the prep doors default
-        # to "auto"), so the fall is ANNOUNCED, once, with the reason --
-        # a silent engine swap and a silent death were the two shapes
-        # the 2.5.0 persona walks measured.
-        reason = None
-        try:
-            candidate = CudaPreprocessBackend()
-            cp = candidate.array_module
-            runtime_version = int(cp.cuda.runtime.runtimeGetVersion())
-            cupy_major = int(str(cp.__version__).split(".", 1)[0])
-            # The range is IMPORTED, not restated: this test, the
-            # remedy above and gpu_stack_identity's own refusal have
-            # to answer "what is certified" identically, and three
-            # copies of a literal pair is how they stop doing that.
-            from gpuwm.gpu_stack_identity import CUDA_RUNTIME_RANGE
-
-            certified_low, certified_high = CUDA_RUNTIME_RANGE
-            if (
-                int(cp.cuda.runtime.getDeviceCount()) > 0
-                and cupy_major >= 13
-                and certified_low <= runtime_version < certified_high
-            ):
-                return candidate
-            if int(cp.cuda.runtime.getDeviceCount()) <= 0:
-                reason = "no CUDA device is visible here"
-            else:
-                reason = (f"cupy {cp.__version__} on CUDA runtime "
-                          f"{runtime_version} is outside the certified "
-                          "cupy>=13 + CUDA 12.x family")
-        except (AttributeError, ImportError, RuntimeError, ValueError):
-            reason = "cupy is not installed here"
-        _announce_auto_cpu(reason)
-        return ParallelCpuPreprocessBackend(workers=workers)
+        # CUDA is unusable or uncertified (fixed-means-default: the prep
+        # doors default to "auto"), so EVERY fall is announced, once per
+        # reason, and recorded in the receipt: a silent swap puts a whole
+        # preparation on the host's cores beside an idle card.
+        device_load = None
+        if sealed_backends is not None and "cuda" not in sealed_backends:
+            fallback = ("the sealed native distribution carries no CUDA "
+                        "preprocessing")
+        else:
+            try:
+                candidate = _with_host_workers(
+                    CudaPreprocessBackend(), workers)
+                cp = candidate.array_module
+                if int(cp.cuda.runtime.getDeviceCount()) <= 0:
+                    fallback = "no CUDA device is visible here"
+                else:
+                    certified, sentence = _certified_cuda(cp)
+                    if certified:
+                        busy_reason, device_load = _auto_device_load(cp)
+                        if busy_reason is None:
+                            return _selection("auto", candidate, sentence,
+                                              device_load=device_load)
+                        fallback = busy_reason
+                    else:
+                        fallback = sentence
+            except (AttributeError, ImportError, RuntimeError,
+                    ValueError) as error:
+                # A device error is a RuntimeError too, and naming it "not
+                # installed" sends a reader with a working cupy to
+                # reinstall it.  An installed cupy that fails to import
+                # arrives wrapped in the "CuPy is required" RuntimeError,
+                # so the cause is what is quoted.
+                cause = error.__cause__ or error
+                detail = (str(cause).strip().splitlines() or [""])[0][:160]
+                quoted = f" ({detail})" if detail else ""
+                if "cudaErrorNoDevice" in detail:
+                    # CUDA_VISIBLE_DEVICES="" or no card: the runtime
+                    # raises here instead of counting zero devices.
+                    fallback = "no CUDA device is visible here" + quoted
+                elif _gpu_runtime_installed():
+                    fallback = ("cupy is installed but could not be loaded"
+                                if isinstance(cause, ImportError)
+                                else "cupy is installed but CUDA could not "
+                                "start") + quoted
+                else:
+                    fallback = "cupy is not installed here"
+        _announce_auto_cpu(fallback)
+        return _selection(
+            "auto", ParallelCpuPreprocessBackend(workers=workers), fallback,
+            device_load=device_load)
     raise ValueError("backend must be 'cuda', 'cpu', or 'auto'")
+
+
+class PreparationDeviceRefused(InitializationMemoryRefused):
+    """An explicit CUDA preparation whose price does not fit the card."""
+
+
+#: The one command-line spelling every preparation door takes.
+CPU_PREPARATION_LINE = "--preprocess-backend cpu"
+
+
+def _device_reading(backend, load):
+    """``(free, total, reading)`` of the card: auto's reading or a new probe."""
+
+    if load is not None and type(load.get("free_bytes")) is int:
+        total = load.get("total_bytes")
+        return load["free_bytes"], (total if type(total) is int else None), load
+    from gpuwm.core.device_probe import device_memory_probe_subprocess
+
+    try:
+        device = int(backend.array_module.cuda.runtime.getDevice())
+    except Exception:                     # the probe's own default device
+        device = None
+    kwargs = {"report_failure": True}
+    if device is not None:
+        kwargs["device"] = device
+    probe = device_memory_probe_subprocess(**kwargs)
+    if probe is None or probe.get("cuda_error") is not None:
+        return None, None, probe
+    free, total = probe.get("free_bytes"), probe.get("total_bytes")
+    if type(free) is not int:
+        return None, None, probe
+    return free, (total if type(total) is int else None), probe
+
+
+def preparation_device_fit(price, free, total) -> dict:
+    """The receipt's ``device_fit`` block for one priced selection."""
+
+    record = dict(price.record())
+    record.update({
+        "need_bytes": int(price.need_bytes), "free_bytes": free,
+        "total_bytes": total,
+        "fits": None if free is None else int(price.need_bytes) <= int(free),
+    })
+    return record
+
+
+def _gib(value) -> str:
+    return f"{int(value) / 2**30:.1f} GiB"
+
+
+def preparation_device_sentence(price, free, total) -> str:
+    """``the CUDA preparation needs X and the card has Y free of Z``."""
+
+    of = "" if total is None else f" of {_gib(total)}"
+    return (f"the CUDA preparation needs {_gib(price.need_bytes)} "
+            f"({price.summary()}) and the card has {_gib(free)} free{of}")
+
+
+def preparation_refusal_message(price, free, total, *,
+                                cpu_line: str = CPU_PREPARATION_LINE) -> str:
+    """The explicit-cuda refusal: the terms, the breakage, the CPU line."""
+
+    of = "" if total is None else f" of {_gib(total)}"
+    return (
+        "--preprocess-backend cuda refused before anything was allocated: "
+        f"this preparation needs {_gib(price.need_bytes)} on the card "
+        f"({price.summary()}) and the card has {_gib(free)} free{of}.  "
+        "Started, it would stop with a CUDA out-of-memory "
+        f"{price.stage}, after its inputs were decoded.\n"
+        f"  remedy: run the same command with {cpu_line} "
+        "(the CPU preparation holds this in host memory instead), or with "
+        "--preprocess-backend auto, which makes this choice itself, or "
+        "free the card")
+
+
+def admit_preparation(backend, price, *, workers=None, probe=None):
+    """Weigh a resolved backend against its preparation's device price.
+
+    The decision every CUDA preparation door takes BEFORE its first device
+    allocation.  A CPU backend passes untouched.  A CUDA backend chosen by
+    ``auto`` that does not fit the card's free memory becomes the CPU
+    backend, with one line and the reason in its receipt; a CUDA backend
+    the caller named is refused with :class:`PreparationDeviceRefused`,
+    naming the terms and the CPU line.  Either way the priced selection
+    records ``device_fit``, so a CUDA preparation says why it was admitted.
+    A card whose free memory cannot be read keeps the choice, recorded
+    with ``fits: None``: an unread card never refuses.
+
+    ``probe`` is a reading taken at this decision (the one
+    :func:`resolve_preprocess_backend` just took, or a test's stand-in
+    card); otherwise one subprocess probe is taken now, and this process
+    never stands up a context to take it.  The reading ``auto`` recorded
+    when the backend was resolved is NOT reused here: GFS and ERA5 resolve
+    before their host decode and decide after it, minutes later, and a
+    card other work shares (a chained preparation beside a forecast) can
+    fill in between, so that reading kept CUDA on a card that no longer
+    held the preparation.
+
+    ``price`` may be a callable returning the price: it is called only
+    for a CUDA backend, so a preparation already on the CPU is never
+    priced.
+    """
+
+    if price is None or getattr(backend, "name", None) != "cuda":
+        return backend
+    if callable(price):
+        price = price()
+    selection = dict(getattr(backend, "selection", None) or {})
+    free, total, _reading = _device_reading(backend, probe)
+    fit = preparation_device_fit(price, free, total)
+    if free is None or int(price.need_bytes) <= int(free):
+        backend.selection = dict(selection, device_fit=fit)
+        return backend
+    requested = selection.get("requested", "cuda")
+    if requested != "auto":
+        raise PreparationDeviceRefused(
+            preparation_refusal_message(price, free, total))
+    reason = preparation_device_sentence(price, free, total)
+    _announce_auto_cpu(reason)
+    host_workers = workers
+    if host_workers is None:
+        host_workers = getattr(backend, "host_workers", None)
+    chosen = _selection(
+        "auto", ParallelCpuPreprocessBackend(workers=host_workers), reason,
+        device_load=selection.get("device_load"))
+    chosen.selection["device_fit"] = fit
+    return chosen
+
+
+def decide_preparation_device(requested: str, price, *, probe=None
+                              ) -> tuple[str, dict | None]:
+    """The same decision for a door that passes the backend by NAME.
+
+    Returns ``("cuda" | "cpu", selection)``.  ``requested`` is ``cuda``
+    or ``auto`` (``cpu`` is returned unchanged); the door must already
+    hold CUDA for its own work, so auto here only chooses where the
+    preparation's transforms run.
+    """
+
+    normalized = str(requested).strip().lower()
+    if normalized == "cpu" or price is None:
+        return normalized, None
+    if callable(price):
+        price = price()
+    if normalized not in ("cuda", "auto"):
+        raise ValueError("backend must be 'cuda', 'cpu', or 'auto'")
+    free, total, _reading = _device_reading(None, probe)
+    fit = preparation_device_fit(price, free, total)
+    selection = {"requested": normalized, "device_fit": fit}
+    if free is None or int(price.need_bytes) <= int(free):
+        selection.update(backend="cuda", reason=(
+            NAMED_BY_CALLER if normalized == "cuda" else
+            "the CUDA preparation fits the card's free memory"
+            if free is not None else "the card's free memory was not read"))
+        return "cuda", selection
+    if normalized == "cuda":
+        raise PreparationDeviceRefused(
+            preparation_refusal_message(price, free, total))
+    reason = preparation_device_sentence(price, free, total)
+    _announce_auto_cpu(reason)
+    selection.update(backend="cpu", reason=reason)
+    return "cpu", selection
 
 
 def _sealed_distribution_preprocess_backends() -> tuple[str, ...] | None:
@@ -632,6 +1236,9 @@ def release_backend_memory(backend) -> None:
 __all__ = [
     "CudaPreprocessBackend",
     "ParallelCpuPreprocessBackend",
+    "PreparationDeviceRefused",
+    "admit_preparation",
+    "decide_preparation_device",
     "release_backend_memory",
     "resolve_preprocess_backend",
 ]

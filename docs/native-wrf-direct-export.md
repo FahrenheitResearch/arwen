@@ -160,20 +160,41 @@ current gate accepts only:
   minimum horizontal axis of 13 cells;
 - `spec_bdy_width = spec_zone + relax_zone`, with the verified direct-export
   slice using 5 = 1 + 4;
-- a target whose mass, U, and V interpolation stencils plus its explicit
-  `surface_fallback_radius_cells` halo (0 through 64) fit completely inside
-  the 1799x1059 native HRRR grid; and
+- a target whose mass, U, and V interpolation stencils fit completely inside
+  the 1799x1059 native HRRR grid, with an explicit
+  `surface_fallback_radius_cells` (0 through 64) whose soil donor search box
+  stops at HRRR's own edge; and
 - WSM6 + YSU + classic/old-MM5 option 91 + Noah state using the frozen 49-level hybrid
   coordinate.
 
-The exact crop is derived and checked before decoding.  No clipping,
-projection substitution, missing-level synthesis, or out-of-coverage
-extrapolation is allowed.  Other vertical grids, nests, physics suites,
+The exact crop is derived and checked before decoding.  Only the soil donor
+search is clipped, at HRRR's own edge, where no donor exists; no projection
+substitution, missing-level synthesis, or out-of-coverage extrapolation is
+allowed.  Other vertical grids, nests, physics suites,
 projections, and HRRR-Alaska remain unsupported.
 
 Version-1 domain documents that omit `surface_fallback_radius_cells` retain
-the original radius-eight behavior. New arbitrary-domain documents should set
-it explicitly. The effective radius controls source-window sizing and every
-f00, boundary, and nested-child land-surface mapping. Mapping receipts bind
-the maximum donor distance, ceiling-distance histogram, and zero unresolved
-or cross-surface donors.
+the original radius of eight. New arbitrary-domain documents should set it
+explicitly; `gpuwm domain` writes 24 wherever the domain sits on HRRR's
+grid. The document is also the per-run
+override: edit the key in the `.d01-target.json` beside the experiment and
+`gpuwm go` prepares with it.
+
+The radius sizes the decoded source window: that many HRRR cells are read
+beyond the domain on every side, up to HRRR's own edge. A target land cell with no HRRR land corner
+takes the nearest HRRR land cell (ties to the lowest row, then the lowest
+column). A land cell HRRR's 3 km land mask has as sea, such as a small
+island on a fine nest, can have no HRRR land within the radius; its search
+continues through the decoded window and takes the nearest land cell when
+that cell is nearer than anything outside the window could be (an edge of
+the window that is HRRR's own edge has nothing beyond it). A cell whose
+nearest land the window cannot vouch for is refused, with the radius that
+would decide it and, when that radius is past the maximum of 64, a trim that
+has been checked to leave every remaining land cell a donor.
+
+The effective radius controls source-window sizing for every f00, boundary,
+and nested-child land-surface mapping. Mapping receipts bind the maximum
+donor distance, ceiling-distance histogram, zero unresolved or cross-surface
+donors, and `distant_donors`: every land cell whose donor is more than 8 HRRR
+cells (24 km) away, with its position, its HRRR donor cell and the distance.
+The preparation also prints one warning per grid that has any.

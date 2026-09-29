@@ -33,6 +33,7 @@ download has to be repeated -- costs the download.
 
 from __future__ import annotations
 
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -72,8 +73,16 @@ def upgrade_command(distribution: str) -> str:
     first on PATH is regularly not the one that owns the environment the
     reader just ran ``gpuwm`` from.  Naming the interpreter removes the
     guess.
+
+    On Windows the line is a PowerShell one: PowerShell reads a quoted
+    path as a string, not a program, and refuses the ``-m`` after it, so
+    the interpreter is run with the call operator ``&`` and quoted the
+    PowerShell way (a single quote doubled).
     """
 
+    if os.name == "nt":
+        interpreter = "'" + sys.executable.replace("'", "''") + "'"
+        return f"& {interpreter} -m pip install --upgrade {distribution}"
     return (f"{shlex.quote(sys.executable)} -m pip install --upgrade "
             f"{distribution}")
 

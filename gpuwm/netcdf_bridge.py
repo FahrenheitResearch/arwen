@@ -63,6 +63,40 @@ class NetcdfDecodeError(RuntimeError):
     """The Rust NetCDF decoder refused a file or a variable."""
 
 
+class NetcdfInputError(NetcdfDecodeError):
+    """The decoder returned its controlled input-refusal status, not a crash.
+
+    ``rw_netcdf`` exits 2 when it refuses what it was given; a crash, a
+    timeout or a reader that answers nonsense exits otherwise.  Only the
+    first says anything about the input: a caller that quarantines a file
+    it cannot read must never quarantine one the decoder merely failed on.
+    """
+
+
+class NetcdfFileError(NetcdfInputError):
+    """The decoder ran and refused the file at ``path``: its bytes, not the decoder.
+
+    A subclass, so every ``except NetcdfDecodeError`` and every
+    ``except NetcdfInputError`` still catches it.  It exists so a caller
+    whose refusal tells the reader to restore or regenerate a file can
+    tell that file's failure from the decoder's own: a missing, stale or
+    incompatible ``rw_netcdf`` is :class:`NetcdfBridgeMissing`, a plain
+    :class:`NetcdfDecodeError` or a ``FileNotFoundError`` naming the
+    override, and its remedy is the decoder's.  Blaming a healthy parent
+    for a stale decoder sent its reader to regenerate a forecast that was
+    never damaged.
+    """
+
+    def __init__(self, message: str, *, path: Path | str,
+                 reason: str | None = None):
+        super().__init__(message)
+        self.path = Path(path)
+        #: The decoder's own words about the file, without the command
+        #: that ran or the decoder's name in front: what a refusal that
+        #: already names the file quotes.
+        self.reason = reason if reason is not None else message
+
+
 def _crate_dir() -> Path:
     return Path(__file__).resolve().parent.parent / RUSTWX_CRATE_RELATIVE
 
@@ -155,12 +189,23 @@ def resolve_netcdf_bin() -> Path:
         f"fallback.\n\n{netcdf_remedy()}")
 
 
-def _run(arguments: list[str], *, what: str) -> subprocess.CompletedProcess:
+def _run(arguments: list[str], *, what: str,
+         file: Path | None = None) -> subprocess.CompletedProcess:
+    """Run the decoder; a refusal is ``NetcdfFileError`` when ``file`` is the input it read."""
+
     completed = subprocess.run(
         arguments, capture_output=True, text=True, timeout=_TIMEOUT_S)
     if completed.returncode:
         detail = (completed.stderr or completed.stdout).strip()
-        raise NetcdfDecodeError(f"{what}: {detail}")
+        if completed.returncode != 2:
+            # A crash, a kill or any status other than the decoder's own
+            # refusal says nothing about the file it was reading.
+            raise NetcdfDecodeError(f"{what}: {detail}")
+        if file is not None:
+            reason = detail.removeprefix(f"{NETCDF_NAME}: ").strip()
+            raise NetcdfFileError(f"{what}: {detail}", path=file,
+                                  reason=reason or detail)
+        raise NetcdfInputError(f"{what}: {detail}")
     return completed
 
 
@@ -427,7 +472,7 @@ class Dataset:
         self._executable = Path(executable) if executable else resolve_netcdf_bin()
         completed = _run(
             [os.fspath(self._executable), "inventory", os.fspath(self.path)],
-            what=f"NetCDF inventory failed for {self.path}")
+            what=f"NetCDF inventory failed for {self.path}", file=self.path)
         try:
             document = json.loads(completed.stdout)
         except ValueError as error:
@@ -442,6 +487,12 @@ class Dataset:
                 f"contract.\n\n{netcdf_remedy()}")
         self.format = str(document.get("format", "unknown"))
         self.metadata = dict(document.get("metadata") or {})
+        #: Whether the reader proved every byte the header describes is
+        #: in the file: True for a classic file it checked, False for a
+        #: NetCDF-4 file (its own library checks at open), None from a
+        #: reader older than the check, which says nothing either way.
+        extent = document.get("extent_checked")
+        self.extent_checked = None if extent is None else bool(extent)
         self.dimensions = {
             str(record["name"]): Dimension(
                 str(record["name"]), int(record["len"]),
@@ -535,7 +586,8 @@ class Dataset:
                 command.append(f"--water-layer-thickness={water_layer_thickness}")
             command += [os.fspath(self.path), os.fspath(out), name]
             _run(command,
-                 what=f"NetCDF decode failed for {name} in {self.path}")
+                 what=f"NetCDF decode failed for {name} in {self.path}",
+                 file=self.path)
             document = json.loads((out / "metadata.json").read_text("utf-8"))
             if document.get("schema") != DUMP_SCHEMA:
                 raise NetcdfDecodeError(
@@ -572,10 +624,74 @@ class Dataset:
                     f"{name}: decoded {values.size} values but shape {shape} "
                     f"needs {expected}")
             values = values.reshape(shape)
+            if not raw:
+                values = _mask_default_fill(
+                    self.variables[name], values, record.get("cf") or {},
+                    unit_transform=unit_transform,
+                    layer_water=water_layer_thickness is not None)
             times = tuple(
                 _parse_instant(text, name) for text in (record.get("times") or ())
             )
         return values, times
+
+
+#: The NetCDF library's default fill per stored type (netcdf.h NC_FILL_*),
+#: widened to the f64 the decoder hands back.  Byte and character types
+#: have none here, as in netCDF4-python.
+_NC_DEFAULT_FILL = {
+    "I16": -32767.0, "I32": -2147483647.0,
+    "F32": float(np.float32(9.969209968386869e36)),
+    "F64": 9.969209968386869e36,
+    "U16": 65535.0, "U32": 4294967295.0,
+    "I64": -9223372036854775806.0, "U64": 18446744073709551614.0,
+}
+
+
+def _mask_default_fill(variable: "Variable", values: np.ndarray,
+                       cf: Mapping[str, object], *,
+                       unit_transform: tuple[float, float] | None = None,
+                       layer_water: bool = False) -> np.ndarray:
+    """Values the writer never set, missing when the reader predates that rule.
+
+    An element written masked with no ``_FillValue`` declared is stored as
+    the library's default fill (9.97e36 for a float): a FINITE number, so
+    every finiteness check downstream accepted it as data.  ``rw_netcdf``
+    masks it itself and says so with ``default_fill_rule``; a reader
+    installed before that release does not, and for it the same rule is
+    applied here so the answer does not depend on which reader is
+    installed.
+
+    That reader unpacked what it read before handing it on, so the fill is
+    looked for as it was handed on: times ``scale_factor``, plus
+    ``add_offset``, then through any explicit unit transform, each step
+    the same f64 operation the reader performs, so the comparison is
+    exact.  A packed short's -32767 used to pass here unseen as
+    -32767 * scale + offset.  A layer water conversion is not one formula
+    per value, so after it the fill cannot be recognised on the answer;
+    that is left to a reader with the rule.
+    """
+
+    if cf.get("default_fill_rule") is not None or values.dtype.kind != "f":
+        return values
+    if layer_water or "_FillValue" in variable.attributes:
+        return values
+    fill = _NC_DEFAULT_FILL.get(variable.stored_dtype)
+    if fill is None:
+        return values
+    fill = np.float64(fill)
+    scale, offset = cf.get("scale_factor"), cf.get("add_offset")
+    if scale is not None:
+        fill = fill * np.float64(scale)
+    if offset is not None:
+        fill = fill + np.float64(offset)
+    if unit_transform is not None:
+        fill = (fill * np.float64(unit_transform[0])
+                + np.float64(unit_transform[1]))
+    hit = values == fill
+    if hit.any():
+        values = values.copy()
+        values[hit] = np.nan
+    return values
 
 
 def recover_wrf_soil(wrfinput, met_em, authority) -> tuple[dict, dict]:
@@ -657,7 +773,7 @@ def open_dataset(path: Path | str, *, executable: Path | None = None) -> Dataset
 
 __all__ = [
     "Attributes", "Dataset", "Dimension", "NetcdfBridgeMissing",
-    "NetcdfDecodeError",
+    "NetcdfDecodeError", "NetcdfFileError", "NetcdfInputError",
     "NETCDF_ENV", "NETCDF_NAME", "Variable", "find_netcdf_bin",
     "netcdf_candidates", "netcdf_remedy", "open_dataset", "resolve_netcdf_bin",
 ]

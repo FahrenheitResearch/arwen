@@ -73,7 +73,7 @@ companion can check a build against the one it was written for.
 | `observation_slots` | observation-space slots the analysis is sized for |
 | `clock` | the cycle spine: anchor, tick rate, step and cycle ticks |
 | `analysis_times` | the UTC valid time of every analysis the plan will make |
-| `cadence_settings` | the applied localization and inflation from the cadence owner |
+| `cadence_settings` | the applied localization and inflation from the cadence owner, and the radial-velocity dispersion gate's thresholds (`velocity_dispersion_ratio`, `velocity_dispersion_batch_ratio`; `null` is off) the analysis runs with |
 | `cadence_overrun` | that same owner's verdict on whether one cycle outruns the cadence, with `cost_basis` saying whether that verdict weighed a timing or a price |
 | `memory` | forecast peak, analysis peak, host peak, each against its budget |
 | `wall` | per-cycle, forecast, preparation and total seconds, with `measured` and `basis` |

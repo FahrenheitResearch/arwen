@@ -1,0 +1,15 @@
+{
+ "run": "ms2023-16gb",
+ "exit": 1,
+ "stages_s": {
+  "fetch": 211.389517,
+  "prepare": 92.865487,
+  "forecast": 2.184963
+ },
+ "failed": {
+  "stage": "forecast",
+  "error_class": "DynamicLibNotFoundError",
+  "message": "Failure finding \"libnvrtc.so.13 or libnvrtc.so.12\": No such file: libnvrtc.so.13 or libnvrtc.so.12, No such file: libnvrtc.so.13 or libnvrtc.so.12\n"
+ },
+ "domains": {}
+}

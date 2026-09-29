@@ -1,0 +1,177 @@
+{
+  "about": "How the map names and sorts the renderer's products. favourite_patterns: the maps a forecast opens on and lists first, in order; each pattern matches part of a product folder name. names: a plain name for a product folder. groups: the headings of the map list, first match wins; a heading marked last is listed at the end. thumbnail_patterns: the look a forecast shows in the list, first one it has. Adding a map is a line here, not code. kinds: the headings the Files page sorts pictures under, the same first-match rule; raw_prefix marks the model's own fields.",
+  "favourite_patterns": [
+    "composite_reflectivity",
+    "1km_reflectivity",
+    "2m_temperature",
+    "qpf_1h",
+    "total_qpf",
+    "10m_wind_speed",
+    "mslp_10m_winds",
+    "sbcape",
+    "2m_dewpoint",
+    "500mb_height_winds"
+  ],
+  "thumbnail_patterns": [
+    "2m_temperature",
+    "composite_reflectivity"
+  ],
+  "names": {
+    "composite_reflectivity": "Radar, composite",
+    "composite_reflectivity_uh": "Radar with updraft helicity",
+    "1km_reflectivity": "Radar, 1 km",
+    "2m_temperature": "Temperature, 2 m",
+    "2m_temperature_10m_winds": "Temperature and wind",
+    "2m_dewpoint": "Dew point, 2 m",
+    "2m_dewpoint_10m_winds": "Dew point and wind",
+    "2m_relative_humidity": "Humidity, 2 m",
+    "2m_relative_humidity_10m_winds": "Humidity and wind",
+    "10m_wind_speed_and_direction": "Wind, 10 m",
+    "10m_wind_1h_max": "Wind gust, hourly peak",
+    "10m_wind_run_max": "Wind gust, run peak",
+    "mslp_10m_winds": "Sea level pressure and wind",
+    "qpf_1h": "Rain, last hour",
+    "qpf_total": "Rain, run total",
+    "total_qpf": "Rain, total",
+    "precipitable_water": "Precipitable water",
+    "sbcape": "CAPE, surface based",
+    "mlcape": "CAPE, mixed layer",
+    "mucape": "CAPE, most unstable",
+    "sbcin": "CIN, surface based",
+    "mlcin": "CIN, mixed layer",
+    "mucin": "CIN, most unstable",
+    "srh_0_1km": "Helicity 0 to 1 km",
+    "srh_0_3km": "Helicity 0 to 3 km",
+    "bulk_shear_0_1km": "Shear 0 to 1 km",
+    "bulk_shear_0_6km": "Shear 0 to 6 km",
+    "stp_fixed": "Significant tornado parameter",
+    "ehi_0_1km": "Energy helicity index 0 to 1 km",
+    "uh_2to5km": "Updraft helicity 2 to 5 km",
+    "uh_2to5km_1h_max": "Updraft helicity, hourly peak",
+    "uh_2to5km_run_max": "Updraft helicity, run peak",
+    "simulated_ir_satellite": "Satellite, infrared",
+    "terrain_height": "Terrain"
+  },
+  "groups": [
+    {
+      "name": "Model fields",
+      "match": [
+        "var_"
+      ],
+      "last": true
+    },
+    {
+      "name": "Radar and rain",
+      "match": [
+        "reflectivity",
+        "qpf",
+        "precip",
+        "rain_water"
+      ]
+    },
+    {
+      "name": "Surface",
+      "match": [
+        "2m_",
+        "10m_",
+        "mslp",
+        "terrain"
+      ]
+    },
+    {
+      "name": "Storms",
+      "match": [
+        "cape",
+        "cin",
+        "srh",
+        "shear",
+        "ehi",
+        "stp",
+        "uh_",
+        "lcl",
+        "lfc"
+      ]
+    },
+    {
+      "name": "Upper air",
+      "match": [
+        "mb_",
+        "isotherm"
+      ]
+    },
+    {
+      "name": "Clouds and ice",
+      "match": [
+        "cloud",
+        "satellite",
+        "graupel",
+        "snow",
+        "ice",
+        "water_path",
+        "supercooled"
+      ]
+    }
+  ],
+  "kinds": [
+    {
+      "name": "Radar",
+      "patterns": [
+        "reflectivity",
+        "simulated_ir"
+      ]
+    },
+    {
+      "name": "Surface",
+      "patterns": [
+        "2m_",
+        "10m_",
+        "mslp",
+        "terrain"
+      ]
+    },
+    {
+      "name": "Rain and snow",
+      "patterns": [
+        "qpf",
+        "precip_",
+        "rain",
+        "snow",
+        "graupel",
+        "hail"
+      ]
+    },
+    {
+      "name": "Storm ingredients",
+      "patterns": [
+        "cape",
+        "cin",
+        "srh",
+        "stp",
+        "ehi",
+        "shear",
+        "uh_",
+        "scp",
+        "lapse"
+      ]
+    },
+    {
+      "name": "Upper air",
+      "patterns": [
+        "mb_"
+      ]
+    },
+    {
+      "name": "Clouds and moisture",
+      "patterns": [
+        "cloud",
+        "supercooled",
+        "isotherm",
+        "precipitable",
+        "humidity"
+      ]
+    }
+  ],
+  "raw_prefix": "var_",
+  "raw_kind": "Raw fields",
+  "other_kind": "Other"
+}

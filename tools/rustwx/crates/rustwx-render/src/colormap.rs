@@ -50,6 +50,13 @@ pub enum LegendMode {
     #[default]
     Stepped,
     SmoothRamp,
+    /// One band per category code. The field's values are identities (a
+    /// land-use class, a soil class, a mask value), so a value between two
+    /// codes means nothing: the map samples the nearest grid value, every
+    /// band's fill colour is exactly its legend colour whatever the plot
+    /// style's densification, and each band is labelled with the code it
+    /// stands for rather than with its edges.
+    Categories,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,9 +181,70 @@ pub struct LeveledColormap {
     pub under_color: Option<Rgba>,
     pub over_color: Option<Rgba>,
     pub mask_below: Option<f64>,
+    /// Built for [`LegendMode::Categories`]: each interval is one category
+    /// code, the fill and legend share one level and colour list, and the
+    /// colorbar labels band centres (see [`Self::category_codes`]).
+    pub categories: bool,
 }
 
 impl LeveledColormap {
+    /// A category colormap: one interval per code, one colour per interval,
+    /// and nothing densified. `levels` are the band edges, so for integer
+    /// codes they sit halfway between codes. The palette is spread across
+    /// the bands end to end, so two codes never share a colour while there
+    /// are at least as many palette steps as codes; the legend is the fill,
+    /// field for field, so a band's colour on the bar is the colour its code
+    /// takes on the map under every plot style.
+    fn categories(
+        palette: &[Rgba],
+        levels: &[f64],
+        extend: Extend,
+        mask_below: Option<f64>,
+    ) -> Self {
+        let n_intervals = levels.len().saturating_sub(1);
+        let colors = if n_intervals == 0 || palette.is_empty() {
+            vec![]
+        } else if palette.len() == n_intervals {
+            palette.to_vec()
+        } else {
+            lerp_rgba(palette, n_intervals)
+        };
+        let under_color = match extend {
+            Extend::Min | Extend::Both => colors.first().copied(),
+            Extend::Neither | Extend::Max => None,
+        };
+        let over_color = match extend {
+            Extend::Max | Extend::Both => colors.last().copied(),
+            Extend::Neither | Extend::Min => None,
+        };
+        Self {
+            levels: levels.to_vec(),
+            colors: colors.clone(),
+            legend_levels: levels.to_vec(),
+            legend_colors: colors,
+            under_color,
+            over_color,
+            mask_below,
+            categories: true,
+        }
+    }
+
+    /// The value each legend band stands for when this is a category
+    /// colormap: the centre of every band, which for integer codes is the
+    /// code itself. `None` for any other colormap, whose ticks label edges.
+    pub fn category_codes(&self) -> Option<Vec<f64>> {
+        if !self.categories {
+            return None;
+        }
+        let levels = self.legend_levels_for_display();
+        Some(
+            levels
+                .windows(2)
+                .map(|band| (band[0] + band[1]) * 0.5)
+                .collect(),
+        )
+    }
+
     /// Map a data value to a colour.
     pub fn map(&self, value: f64) -> Rgba {
         if value.is_nan() {
@@ -220,6 +288,9 @@ impl LeveledColormap {
         mask_below: Option<f64>,
         options: ColormapBuildOptions,
     ) -> Self {
+        if options.legend.mode == LegendMode::Categories {
+            return Self::categories(palette, levels, extend, mask_below);
+        }
         let dense_levels = densify_levels_with_density(levels, options.render_density.fill);
         let legend_levels = densify_levels_with_density(levels, options.legend.density);
         let n_intervals = if dense_levels.len() > 1 {
@@ -236,6 +307,7 @@ impl LeveledColormap {
                 under_color: None,
                 over_color: None,
                 mask_below,
+                categories: false,
             };
         }
 
@@ -265,6 +337,7 @@ impl LeveledColormap {
             under_color,
             over_color,
             mask_below,
+            categories: false,
         }
     }
 

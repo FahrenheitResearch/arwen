@@ -190,13 +190,16 @@ failures against independently generated native Python output; the
 Windows pass is not a cross-platform qualification. See
 [the measured platform results and reproduction commands](static-platform-qualification.md).
 
-**Corridor cross-implementation caveat**: a corridor SEALED by a
+**Corridor cross-implementation note**: a corridor SEALED by a
 pre-port preparation embeds `grid_identity_probes` computed by Python
 floats; the port-era runner recomputes them through the default (Rust)
-path.  Byte-green lane 1 makes these identical.  If a probe mismatch
-ever fires on a legacy bundle, that is the gate doing its job (the
-corridor's bitwise floor really is unproven there); the remedy is
-re-preparation, and the refusal text already says so.
+path.  The runner compares the probes within
+`gpuwm.static.grid_identity.GRID_POSITION_TOLERANCE_CELLS` of a cell
+(`corridor.grid_probe_drift`), not to the bit, because two machines or
+two implementations of the same projection may round a position
+differently in the last digit.  A probe mismatch therefore means the
+corridor was prepared on a grid that lies somewhere else; the remedy
+is re-preparation, and the refusal text says so.
 
 **Highres path (lane 3): split contract.**
 - Byte-identical: `usda_texture_category`, the crosswalk mapping,
@@ -216,7 +219,7 @@ re-preparation, and the refusal text already says so.
   against the Python geodesy stack on fixture point sets to ≤ 1e-6 m
   BEFORE any warp uses them (validate-the-instrument).
 
-**Speed** (Drew: "make it speedy"): rayon over row chunks with
+**Speed** (ruling: "make it speedy"): rayon over row chunks with
 deterministic reduction order everywhere (bit-stable run to run and
 equal to the serial result).  The Prove lane measures Python-vs-Rust
 wall time on real domains; the standing measurement to beat is
@@ -406,6 +409,20 @@ independently: the rasterio path leaves the derived window's last row
 the Alps -- visible as `sea_level_filled_pixels: 2848` in the shipped
 2026-08-14 receipt -- where the Rust mosaic covers it.
 
+**The terrain lattice (2026-09-28).**  Both engines now cut every
+terrain window on one fixed pixel lattice per source instead of at the
+footprint's own west/north edge: the first tile's own grid when the
+resolution is inherited, pixel centres on the whole multiples of a
+declared resolution (`warp::mosaic`, and `_terrain_lattice` with
+`_lattice_bounds` in `highres_fetch.py`).  Cut at the footprint's edge,
+a moving nest's statics corridor and the nest itself sampled the same
+ground at different sub-pixel offsets, and the nest's first move was
+refused with `footprint-rebuilt statics differ`.  On the pinned seam
+golden, now cut on that lattice, the Rust mosaic equals `rasterio.merge`
+on the lattice-snapped bounds at every cell (45,793 of 45,793
+bit-identical, no holes on either side), for the declared and the
+inherited lattice alike, so the mosaic gates are exact.
+
 The consequence for the fallback's status is stated where a reader will
 meet it (`gpuwm/static/highres.py`): `GPUWM_STATIC_PYTHON=1` is NOT a
 byte-parity twin on this path.  It is the reference implementation for
@@ -497,9 +514,27 @@ coverage sweep counts it.  Bindings pinned by
 reference bundle present.
 
 Evidence gallery:
-`~/Downloads/evidence-gallery/static-rust-port-20260817/`
+the static-rust-port evidence gallery (2026-08-17)
 (terrain imagery of the Rust-built nest + corridor statics through the
 real `rw_wrfbatch` built from this tree; land-use imagery deliberately
 absent -- the renderer's catalog has no land-use product and the render
 law forbids a matplotlib substitute; matplotlib for the timing/parity
 analysis charts only).
+
+## Portable WPS float32 sampling (cross-machine moving nests)
+
+The float32 sampling projection now uses fixed vendored libm operations
+for tan, atan, atan2, asin, acos, log10 and pow. The platform NumPy
+authority described above remains the reference for the float64 projection
+and the other unchanged kernels, but no longer defines these float32
+operations: platform libm rounding moved interpolated terrain between
+Windows preparation and Linux relocation even on an unchanged grid.
+
+The replacement WPS goldens are in
+`tools/rustwx/crates/static-fields/tests/goldens/wps32/`, with their re-pin
+command and reason recorded there. The Python fallback is still a reported
+diagnostic path; its platform-dependent WPS values do not define the default
+Rust sampling result. Windows-prepared witnesses at 2 km, 1 km and 500 m
+over 30 arc-second terrain must match Linux-rebuilt overlap statics exactly.
+The one-ulp overlap check and bitwise donor-alignment check remain in force;
+there is no field-gradient or grid-position allowance on the statics.

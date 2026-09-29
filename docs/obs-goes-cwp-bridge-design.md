@@ -269,7 +269,7 @@ from its file name, and emits `gpuwm-obs.goes-cwp-verify.v1` or
 `gpuwm-obs.goes-cloudtop-verify.v1` accordingly.
 
 Recorded by the coordinator on 2026-08-06 as packaging shape, not as a
-registered scientific criterion; to be surfaced to Drew in the morning
+registered scientific criterion; to be surfaced for a ruling in the
 summary.
 
 ## Python side
@@ -285,11 +285,11 @@ is phase-uniform, otherwise the cell is masked and counted (a cell half
 clear, half deep ice is not one observation). Per-type obs error
 assigned here, per the operator spec.
 
-## Settled: the DCOMP condemn-mask default (Drew, 2026-08-05)
+## Settled: the DCOMP condemn-mask default (project ruling, 2026-08-05)
 
 The shipped default (condemn missing/fill DQF plus snow/sea-ice 8,
 twilight 16, glint 64) keeps 1,361,938 of the 1,481,473 fixture-granule
-retrievals, 91.93%. Shown that split, Drew ruled: "yeah if its 92% of
+retrievals, 91.93%. Shown that split, the ruling was: "yeah if its 92% of
 data truly then no point contam it with the 8% that might hurt it." The
 default stands, and the condemned ~8% stays out on contamination-risk
 grounds — those bits mark scenes that could degrade the analysis, so the
@@ -302,7 +302,7 @@ and whether some causes should inflate obs error rather than gate (the
 operator spec already does that for the thin/thick bits, which are NOT in
 the condemn mask), stay available as A/Bs for the obs-skill scoreboard.
 
-## Open questions for Drew (carried from the upstream patch set)
+## Open questions (carried from the upstream patch set)
 
 1. Ice/mixed CWP coefficient — keep the PROVISIONAL 2/3·rho_i form, or
    adopt a published IWP–tau–r_e relation before the bridge builds?

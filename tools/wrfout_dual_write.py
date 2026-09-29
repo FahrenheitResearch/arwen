@@ -218,7 +218,7 @@ def render_products(wrfout, out_root, *, width: int = 1200,
     # lane's boundary, so it has not adopted this yet.
     spec, _excluded = rustwx.catalog_verdict(
         rows, [slug for slug, _kind, _status, _detail in rows])
-    slugs = [token for token in spec.split(",") if token]
+    slugs = rustwx.product_spec_terms(spec)
     if not slugs:
         raise SystemExit(f"{wrfout}: no renderable products in the catalog")
     _written, failures, _skipped = rustwx.run_renderer(

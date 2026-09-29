@@ -3,7 +3,10 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -49,6 +52,7 @@ EXPECTED_SOURCE_IDS = (
     "gem-gdps",
     "icon-global",
     "icon-eu",
+    "icon-d2",
     "hrrr-ak",
     "gfs",
     "gdas",
@@ -122,6 +126,7 @@ def test_registry_covers_bound_inventory_and_external_source_routes():
         "gem-gdps",
         "icon-global",
         "icon-eu",
+        "icon-d2",
         "gfs",
         "gdas",
         "gefs",
@@ -759,20 +764,28 @@ def test_cli_20crv3_authoring_says_what_to_do_with_the_manifest(
     assert f"AUTHORED input_manifest={manifest.resolve()} sha256={digest}" \
         in lines
     assert any("next:" in line for line in lines)
-    # The half it knows is bound and exact -- no placeholder, no digest
-    # for the user to compute.
-    bound = [line for line in lines if line.strip().startswith("--")]
+    # The half it knows is the door's own command, bound and exact -- no
+    # placeholder, no digest for the user to compute.
+    bound = [line.strip() for line in lines
+             if line.strip().startswith("gpuwm prep ")]
     assert len(bound) == 1
-    assert f"--source-manifest {manifest.resolve()}" in bound[0]
-    assert f"--source-manifest-sha256 {digest}" in bound[0]
+    assert shlex.split(bound[0], posix=os.name != "nt") == [
+        "gpuwm", "prep", "--source", "20crv3",
+        "--source-manifest", str(manifest.resolve()),
+        "--source-manifest-sha256", digest]
     assert "<" not in bound[0] and ">" not in bound[0]
 
     # And the half it cannot know is named, as comments, because
-    # authoring refuses those flags outright.
+    # authoring refuses those flags outright.  The GRIB2 tool pair is
+    # refused too, but it is not the reader's to supply: the door
+    # resolves it, and naming it pins the Python decoder.
     comments = "\n".join(line for line in lines if line.strip().startswith("#"))
+    for flag in ("--wps-namelist", "--geog-root", "--experiment-config",
+                 "--output-root"):
+        assert flag in comments, flag
+    assert "--grib2" not in comments
     for flag in ("--grib2-inventory", "--grib2-dump", "--wps-namelist",
                  "--geog-root", "--experiment-config", "--output-root"):
-        assert flag in comments, flag
         # Refused at authoring: this is a real limit, not an oversight.
         assert main([
             "--source", "20crv3",
@@ -781,6 +794,75 @@ def test_cli_20crv3_authoring_says_what_to_do_with_the_manifest(
             "--author-only",
             flag, str(tmp_path),
         ]) != 0
+
+
+def test_the_20crv3_handoff_runs_at_the_door_with_exactly_the_flags_it_names(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """The printed line, completed with the flags its comment names, runs.
+
+    The authoring step printed the manifest pair with no command and no
+    ``--source`` in front of it, so the line did not run as printed, and
+    it named ``--grib2-inventory`` and ``--grib2-dump`` among the
+    reader's flags: completed with those, the door forwarded both tool
+    pins and the member route decoded on the Python engine instead of
+    the default one.  The check is the door itself, through ``gpuwm prep
+    --dry-run``, which validates the whole argument contract and prints
+    the child command without opening an input.
+    """
+
+    from gpuwm import cli
+    from gpuwm.mapped_engine_bridge import ENGINE_ENV
+
+    monkeypatch.delenv(ENGINE_ENV, raising=False)
+    source = tmp_path / "member072"
+    source.mkdir()
+    for stamp in ("1932032100", "1932032103"):
+        for role in ("pl", "sfc"):
+            (source / f"mem072_{stamp}_{role}.grb2").write_bytes(
+                f"fixture:{stamp}:{role}".encode()
+            )
+    manifest = tmp_path / "member072.manifest.json"
+    assert main([
+        "--source", "20crv3",
+        "--source-root", str(source),
+        "--author-input-manifest", str(manifest),
+        "--author-only",
+    ]) == 0
+    lines = capsys.readouterr().err.splitlines()
+    bound = [line.strip() for line in lines
+             if line.strip().startswith("gpuwm prep ")]
+    assert len(bound) == 1
+    argv = shlex.split(bound[0], posix=os.name != "nt")[2:]
+    comments = " ".join(line.strip().lstrip("#").strip() for line in lines
+                        if line.strip().startswith("#"))
+    named = re.search(r"cannot bind them: (.*?) are yours", comments)
+    assert named is not None, comments
+    flags = re.findall(r"--[a-z][a-z0-9-]*", named.group(1))
+    assert flags == ["--wps-namelist", "--geog-root", "--experiment-config",
+                     "--output-root"]
+    values = {
+        "--wps-namelist": tmp_path / "namelist.wps",
+        "--geog-root": tmp_path / "geog",
+        "--experiment-config": tmp_path / "experiment.toml",
+        "--output-root": tmp_path / "prepared",
+    }
+    completed = argv + [token for flag in flags
+                        for token in (flag, str(values[flag]))]
+    assert cli.main(["prep", *completed, "--dry-run"]) == 0
+    said = capsys.readouterr()
+    assert "-m gpuwm.twentycrv3_wrf" in said.out
+    assert f"--manifest {manifest.resolve().as_posix()}" in said.out.replace("'", "")
+    # The default engine: no decoder tool rides the child command.
+    assert "--grib2-inventory" not in said.out
+    assert "--grib2-dump" not in said.out
+    # One flag fewer is refused by name: every named flag is one the
+    # door needs, not decoration.
+    for needed in flags:
+        at = completed.index(needed)
+        cut = completed[:at] + completed[at + 2:]
+        assert cli.main(["prep", *cut, "--dry-run"]) != 0
+        assert needed in capsys.readouterr().err
 
 
 def _mapped_args(source_format="grib2"):
@@ -1014,7 +1096,8 @@ def test_cli_mapped_authoring_hashes_the_files_the_input_list_names(
 
     def manifest(output, **kwargs):
         observed["manifest"] = (output, kwargs)
-        return {"source_format": "grib2", "manifest": {"sha256": "2" * 64}}
+        return {"source_format": "grib2",
+                "manifest": {"path": str(output), "sha256": "2" * 64}}
 
     monkeypatch.setattr("gpuwm.source_cli.author_input_manifest", manifest)
 
@@ -1181,7 +1264,7 @@ def test_cli_mapped_author_only_authors_descriptor_and_exact_manifest(
         observed["manifest"] = (output, kwargs)
         return {
             "source_format": "grib2",
-            "manifest": {"sha256": "2" * 64},
+            "manifest": {"path": str(output), "sha256": "2" * 64},
         }
 
     monkeypatch.setattr("gpuwm.source_cli.author_mapping", mapping)
@@ -1279,7 +1362,7 @@ def test_cli_mapped_author_only_does_not_require_run_geometry(monkeypatch, capsy
         "gpuwm.source_cli.author_input_manifest",
         lambda *_args, **_kwargs: {
             "source_format": "grib2",
-            "manifest": {"sha256": "3" * 64},
+            "manifest": {"path": "/case/generated.inputs.json", "sha256": "3" * 64},
             "status": "PASS",
         },
     )
@@ -1352,8 +1435,8 @@ def test_cli_validates_preprocess_options_before_authoring(
             str(output),
             "--preprocess-backend",
             "cuda",
-            "--preprocess-workers",
-            "8",
+            "--cpu-preprocess-bridge",
+            str(tmp_path / "libgpuwm_preprocess_cpu.so"),
         )
     )
     called = False
@@ -1366,7 +1449,7 @@ def test_cli_validates_preprocess_options_before_authoring(
     assert main(args) == EXIT_USAGE
     assert called is False
     assert not output.exists()
-    assert "preprocess-workers requires" in capsys.readouterr().err
+    assert "cpu-preprocess-bridge requires" in capsys.readouterr().err
 
 
 def test_cli_hrrr_dry_run_routes_to_certified_internal_adapter(capsys):
@@ -1413,6 +1496,33 @@ def test_cli_hrrr_dry_run_routes_to_certified_internal_adapter(capsys):
     assert "--pipeline-workers 8" in command
     assert "--history-interval-seconds 3600.0" in command
     assert command.rstrip().endswith("--prepare-workers 4")
+
+
+def test_cli_hrrr_relays_cpu_workers_under_the_preparers_auto_default(capsys):
+    """The door relays a bare backend and the CPU worker count unchanged.
+
+    The preparer it relays to resolves a bare backend with ``auto``,
+    which lands on the CPU where no card is usable and takes the worker
+    count there, so the door must pass both through as given.
+    """
+
+    result = main([
+        "--source", "hrrr",
+        "--source-root", "/source",
+        "--source-sha256s", "/source/SHA256SUMS",
+        "--source-sha256s-sha256", "abc123",
+        "--static-cache", "/static/cache.npz",
+        "--static-receipt", "/static/receipt.json",
+        "--namelist-input", "/case/namelist.input",
+        "--valid-time", "2026-07-18_00:00:00",
+        "--output-root", "/output",
+        "--preprocess-workers", "4",
+        "--dry-run",
+    ])
+    assert result == 0, capsys.readouterr().err
+    command = capsys.readouterr().out
+    assert "--preprocess-workers 4" in command
+    assert "--preprocess-backend" not in command
 
 
 @pytest.mark.parametrize("cadence", ("0", "-1", "nan", "inf"))
@@ -2281,6 +2391,37 @@ def test_cli_hrrr_routes_auto_backend_workers(capsys):
     command = capsys.readouterr().out.replace("\\", "/")
     assert "--preprocess-backend auto" in command
     assert "--preprocess-workers 4" in command
+
+
+def test_cli_hrrr_forwards_cuda_host_workers(capsys):
+    """--preprocess-workers with the CUDA backend reaches the HRRR tool.
+
+    It sets the threads of the host steps that backend runs in the Rust
+    library, and the tool no longer refuses it after this door has
+    forwarded it.
+    """
+    result = main(
+        [
+            "--source", "hrrr",
+            "--source-root", "/source",
+            "--source-sha256s", "/source/SHA256SUMS",
+            "--source-sha256s-sha256", "abc123",
+            "--static-cache", "/case/static.npz",
+            "--static-receipt", "/case/static.json",
+            "--namelist-input", "/case/namelist.input",
+            "--valid-time", "2026-07-18_00:00:00",
+            "--output-root", "/output",
+            "--preprocess-backend", "cuda",
+            "--preprocess-workers", "8",
+            "--dry-run",
+        ]
+    )
+    assert result == 0
+    command = capsys.readouterr().out.replace("\\", "/")
+    assert "prepare_hrrr_wrf.py" in command
+    assert "--preprocess-backend cuda" in command
+    assert "--preprocess-workers 8" in command
+    assert "--cpu-preprocess-bridge" not in command
 
 
 def test_cli_hrrr_rejects_cpu_bridge_with_auto(capsys):

@@ -339,12 +339,22 @@ def test_the_published_identity_shape_did_not_move():
     here would move every already-sealed fingerprint and strand the legs
     carrying them.  The fix improved the RELIABILITY of the resolution
     and the COMPARISON; it must not have added a ninth key.
+
+    A source tree with no .git answers the source-content rung, which
+    carries its own member beside the eight.  That tree had no identity
+    before the rung existed (it answered ``runtime-module-sha256-only``),
+    so no fingerprint sealed on another rung moves; every other rung
+    must still publish exactly the eight.
     """
 
-    assert set(runner._runtime_source_identity()) == {
+    identity = runner._runtime_source_identity()
+    expected = {
         "identity_source", "git_commit", "git_tree", "git_status_short",
         "distribution_manifest_sha256", "installed_wheel",
         "installed_editable", "source_sha256"}
+    if identity["identity_source"] == "installed-source-content":
+        expected.add("installed_source_content")
+    assert set(identity) == expected
 
 
 def test_the_real_identity_of_this_checkout_compares_equal_to_itself():

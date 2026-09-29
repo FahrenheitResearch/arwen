@@ -20,7 +20,7 @@ Kernel-vs-mirror parity tests are ``gpu``-marked (controller-run); the
 kernel source additionally gets an offline NVRTC compile check that needs
 no device.
 
-Fix-round additions (Fable review NEEDS_FIXES(2) + codex shadow
+Fix-round additions (review NEEDS_FIXES(2) + shadow review
 FINDINGS(2)): the mirror's WRF REAL difference regression
 (``test_bdy_mirror_forms_real_difference``), the sign-changing-
 cancellation regression pinning where the FP64 oracle stops being the

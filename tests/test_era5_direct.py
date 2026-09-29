@@ -127,20 +127,25 @@ def test_root_static_can_be_built_directly_from_wps_geog(
 
 
 def test_static_validation_rejects_zero_terrain_over_land_before_export():
-    fields = _complete_static_fields()
+    # Three rows by four columns, all land: the two middle cells have land
+    # on all four sides, which ground at sea level cannot.
+    fields = _complete_static_fields(3, 4)
     fields["HGT_M"][:] = 0.0
     fields["LANDMASK"][:] = 1.0
-    plane = np.ones((2, 3), dtype=np.float64)
+    plane = np.ones((3, 4), dtype=np.float64)
     grid = SimpleNamespace(
         mapfac_m=lambda: plane,
-        mapfac_u=lambda: np.ones((2, 4)),
-        mapfac_v=lambda: np.ones((3, 3)),
+        mapfac_u=lambda: np.ones((3, 5)),
+        mapfac_v=lambda: np.ones((4, 4)),
         coriolis_m=lambda: (plane, plane),
         rotation_m=lambda: (plane, plane),
     )
 
     with pytest.raises(ValueError, match="identically zero over every land"):
-        era5_direct._validated_static(fields, grid, 2, 3)
+        era5_direct._validated_static(fields, grid, 3, 4)
+    # A route that lays a declared high-resolution terrain over these
+    # fields defers the check to what the overlay makes of them.
+    era5_direct._validated_static(fields, grid, 3, 4, land_terrain=False)
 
 
 def test_era5_input_manifest_binds_every_role(tmp_path):
@@ -312,3 +317,91 @@ def test_the_soilgeo_route_reaches_past_the_all_or_none_soil_guard():
     # above ERA5's own terrain is -0.0065 * 500 = -3.25 K on land skin.
     assert np.allclose(np.asarray(state.tsk), 290.0 - 3.25)
     assert np.allclose(np.asarray(state.soil_temperature), 288.0 - 3.25)
+
+
+def _era5_door(tmp_path, monkeypatch, *, domains):
+    """The ERA5 door's own inputs, verified, up to its experiment load."""
+    from pathlib import Path
+
+    from gpuwm import fetch_guard
+
+    roles = {}
+    for role, name in (("grib", "era5.grib"), ("vtable", "Vtable.ERA5"),
+                       ("bridge", "bridge.exe"),
+                       ("wps_namelist", "namelist.wps"),
+                       ("experiment_config", "exp.toml")):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        path.chmod(0o755)
+        roles[role] = path
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "schema": era5_direct.INPUT_MANIFEST_SCHEMA,
+        "files": {role: {"name": path.name,
+                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                  for role, path in roles.items()},
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        era5_direct, "resolve_preprocess_backend",
+        lambda *_a, **_k: SimpleNamespace(receipt=lambda: {"backend": "cpu"}))
+    exp = SimpleNamespace(domains=tuple(range(1, domains + 1)))
+    monkeypatch.setattr(era5_direct, "load_era5_adapter_config",
+                        lambda _path: (exp, None))
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = Path(tmp_path) / ("p" * (125 - len(str(tmp_path)) - 1))
+    return dict(
+        grib=roles["grib"], vtable=roles["vtable"], bridge=roles["bridge"],
+        wps_namelist=roles["wps_namelist"], static_input=None,
+        static_receipt=None, source_orography=None,
+        source_orography_variable="SOILHGT",
+        experiment_config=roles["experiment_config"],
+        input_manifest=manifest,
+        input_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        output_root=parent / ("era5-tree-domain-z80" + "x" * 72),
+        geog_root=tmp_path)
+
+
+def test_an_era5_domain_tree_too_deep_for_windows_is_refused_before_decode(
+        tmp_path, monkeypatch):
+    """The ERA5 door publishes the same domain tree the HRRR stage does;
+    under a root that puts its header at 277 characters it is refused
+    as soon as the experiment says it is a tree, before the manifest
+    verification hashes the GRIB and before any decode."""
+    arguments = _era5_door(tmp_path, monkeypatch, domains=2)
+    hashed = []
+    original_sha256 = era5_direct._sha256
+
+    def sha256_spy(path):
+        hashed.append(path)
+        return original_sha256(path)
+
+    monkeypatch.setattr(era5_direct, "_sha256", sha256_spy)
+
+    with pytest.raises(ValueError) as caught:
+        era5_direct.prepare_era5_wrf(**arguments)
+
+    message = str(caught.value)
+    assert message.startswith("refusing output root ")
+    assert "277 characters" in message
+    assert not hashed
+    assert not arguments["output_root"].parent.exists()
+
+
+def test_a_single_era5_domain_is_not_measured_as_a_tree(
+        tmp_path, monkeypatch):
+    """A single domain publishes no tree, so the same root goes on."""
+    import gpuwm.case_data as case_data
+
+    class Reached(Exception):
+        pass
+
+    def reached(*_args, **_kwargs):
+        raise Reached()
+
+    arguments = _era5_door(tmp_path, monkeypatch, domains=1)
+    monkeypatch.setattr(case_data, "preparation_case_policy", reached)
+
+    with pytest.raises(Reached):
+        era5_direct.prepare_era5_wrf(**arguments)

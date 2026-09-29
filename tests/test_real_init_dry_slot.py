@@ -216,20 +216,40 @@ def test_the_garbage_guard_keeps_refusing_by_name():
             r"interpolated specific-humidity qv is invalid \| observed: "
             r"non_finite_cells=1, first at level 3 row 1 column 2 value nan")):
         real_module._refuse_non_finite_prognostic_qv(bad)
-    # A negative where WRF's rule does not reach (p >= qv_min_p_safe) is
-    # refused naming the level, the column, the value and the pressure.
+    # A negative under WRF's conditional rule (p < qv_min_p_safe) is
+    # floored and receipted.
     deep = qv.copy()
     deep[0, 0, 1] = -2.0e-6
-    heavy = pressure.copy()
-    heavy[0, 0, 1] = 110_000.0
-    with pytest.raises(ValueError, match=(
-            r"negative_cells_at_or_above_qv_min_p_safe=1, first at level 0 "
-            r"row 0 column 1 value -2e-06 at 110000\.0 Pa")):
-        real_module._floor_sh_vertical_undershoot(deep, heavy)
-    # The same negative under the rule is floored and receipted.
     floored, receipt = real_module._floor_sh_vertical_undershoot(deep, pressure)
     assert floored[0, 0, 1] == real_module._WRF_QV_MIN_VALUE
     assert receipt["floored_cells"] == 1 and receipt["levels"] == [0]
+    assert receipt["floored_cells_at_or_above_qv_min_p_safe"] == 0
     assert receipt["min_pre_floor"] == -2.0e-6
     assert receipt["min_pre_floor_at"] == {
         "level": 0, "row": 0, "column": 1, "pressure_pa": 80_000.0}
+
+
+def test_a_negative_where_the_conditional_rule_stops_is_floored_not_refused():
+    """At or above qv_min_p_safe the floor still applies, counted apart.
+
+    WRF's conditional qv_min rule stops at qv_min_p_safe, but the RH lane's
+    rh_to_mxrat1 floors at 1e-6 there unconditionally, and the refusal this
+    replaced named no breakage a floored value would cause: a negative there
+    stopped the whole domain's initialization for a cell the floor makes a
+    valid state.  The receipt keeps the count, the extreme and its pressure.
+    """
+    qv = np.full((4, 2, 3), 2.0e-3)
+    pressure = np.full((4, 2, 3), 80_000.0)
+    qv[0, 0, 1] = -2.0e-6
+    qv[2, 1, 0] = -5.0e-7
+    pressure[0, 0, 1] = 110_000.0
+    floored, receipt = real_module._floor_sh_vertical_undershoot(qv, pressure)
+    assert floored[0, 0, 1] == real_module._WRF_QV_MIN_VALUE
+    assert floored[2, 1, 0] == real_module._WRF_QV_MIN_VALUE
+    assert float(floored.min()) == real_module._WRF_QV_MIN_VALUE
+    assert receipt["floored_cells"] == 2
+    assert receipt["floored_cells_at_or_above_qv_min_p_safe"] == 1
+    assert receipt["levels"] == [0, 2] and receipt["columns"] == 2
+    assert receipt["min_pre_floor"] == -2.0e-6
+    assert receipt["min_pre_floor_at"] == {
+        "level": 0, "row": 0, "column": 1, "pressure_pa": 110_000.0}

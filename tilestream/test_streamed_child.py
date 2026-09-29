@@ -31,8 +31,10 @@ The legs:
                         E's d01 vs C's d01 is the #43 mirror: a one-way
                         parent is bitwise unchanged by its streamed child.
 ``N1 stale child store``  C with the store UNPUBLISHED from the child
-                        state: the coupler's frame pull and the feedback
-                        read then see the frozen attach-time child.  d02
+                        state and the coupler's bounded child operands
+                        served off the frozen attach-time child
+                        (:func:`stale_child_reads`): FORCE and the
+                        feedback read then see the attach-time child.  d02
                         MUST differ from A (the instrument sees the
                         defect) and d01 MUST NOT move (one-way staleness
                         cannot reach a resident parent).
@@ -45,8 +47,9 @@ The legs:
                         C's -- the reload is essential, in both
                         directions, before any PASS above is believed.
 ``W  starved frame``    the frame pull narrowed below the boundary zone
-                        (``child_frame_windows`` at width 2 < bdy width
-                        5): stale child cells inside the zone
+                        (``child_frame_windows`` and the bounded child
+                        operands both fresh only 2 cells deep, < bdy
+                        width 5): stale child cells inside the zone
                         ``bdy_interp1`` reads.  d02 MUST differ, d01 MUST
                         equal C's -- the window is really narrowing the
                         read.
@@ -72,6 +75,8 @@ import argparse
 import json
 import sys
 import time
+
+import numpy as np
 
 from tilestream.test_moving_nest import (
     NBUFFERS, PARENT_DT, RATIO, VRAM_NEEDED_GIB, build_parent,
@@ -107,6 +112,63 @@ def stream_child(model, *, store="host", tile=CHILD_TILE):
     return {2: stepper}
 
 
+def stale_child_reads(child_state, frame_width: int):
+    """``NestWindowSource.array`` for a coupler that reads a STALE child.
+
+    The live target of N1, N1b and W.  A child that ``StreamedDomain``
+    marked is coupled through :class:`gpuwm.core.nest_operands.
+    NestWindowSource`, which reads the child's windows straight out of its
+    store: FORCE's child operands and the feedback restriction both.  The
+    published ``_STORE_ATTR`` and ``nest_stream.child_frame_windows`` feed
+    only the older published-store seam, which a marked child never takes.
+    Unpublishing the one and narrowing the other therefore changed nothing
+    once the bounded operands landed, and N1, N1b and W reported FAIL on a
+    gate whose identity rows all passed: the controls could no longer see
+    a coupler that read the attach-time child.
+
+    Every carrier the coupler reads from ``child_state`` is served as the
+    attach-time copy the ``DomainState`` still holds, refreshed from the
+    store only inside the ``frame_width``-cell boundary frame
+    (``streaming.frame_windows`` sliced by ``streaming.window_slices``, the
+    rule the frame pull used).  ``frame_width=0`` refreshes nothing: N1's
+    frozen child.  ``2`` is below the boundary zone ``bdy_interp1`` reads:
+    W's starved frame.  Setup arrays pass through untouched, because
+    geography is input and never goes stale, and so does every source that
+    is not this child's.
+    """
+    from gpuwm.core.nest_operands import NestWindowSource
+    from gpuwm.core.streaming import frame_windows, window_slices
+
+    live_array = NestWindowSource.array
+    ny, nx = (int(n) for n in child_state.mup.shape)
+    windows = frame_windows(ny, nx, int(frame_width)) if frame_width else ()
+
+    def host(value):
+        if type(value).__module__.split(".")[0] == "cupy":
+            import cupy as cp
+
+            return cp.asnumpy(value)
+        return np.asarray(value)
+
+    def array(self, name):
+        live = live_array(self, name)
+        if self.state is not child_state or self.store is None:
+            return live
+        if "/" in name or f"state/{name}" not in self.store:
+            return live
+        frozen = getattr(child_state, name, None)
+        if frozen is None:
+            return live
+        stale = host(frozen).copy()
+        fresh = host(live)
+        for window in windows:
+            cells = window_slices(stale.shape, window)
+            stale[cells] = fresh[cells]
+        return stale
+
+    return array
+
+
 def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
             unpublish=False, stale_tables=False, frame_width=None,
             tile=None, store="host", validate=True, dump=None,
@@ -114,12 +176,13 @@ def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
     """One executor-driven run.  ``mode`` is ``resident`` or ``streamed``
     (streamed = the CHILD streams; the parent is always resident here).
 
-    ``unpublish=True`` strips the store from the CHILD state, so the
-    coupler's frame pull and the feedback read answer "resident" and read
-    the frozen attach-time arrays -- the stale-child negative control.
-    The integration itself still runs off the store and is still correct;
-    what breaks is exactly and only what the corridor's store consult
-    repairs.
+    ``unpublish=True`` strips the store from the CHILD state and serves the
+    coupler's bounded child operands off the frozen attach-time arrays
+    (:func:`stale_child_reads` at frame width 0), so FORCE and the
+    feedback read see the attach-time child -- the stale-child negative
+    control.  The integration itself still runs off the store and is still
+    correct; what breaks is exactly and only what the corridor's store
+    consult repairs.
 
     ``stale_tables=True`` disarms ``nest_stream._copy_owned_sides`` after
     the first FORCE has landed, so every buffer keeps serving FORCE-1
@@ -127,9 +190,10 @@ def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
     launch-time generation reload specifically.
 
     ``frame_width`` overrides the frame pull's strip width (the mirror of
-    the inverse gate's ``force_halo``): ``2`` is below the boundary zone
-    the tables are built from, so it MUST move the child and MUST NOT
-    move the parent.
+    the inverse gate's ``force_halo``) and keeps the bounded child
+    operands fresh only that deep (:func:`stale_child_reads`): ``2`` is
+    below the boundary zone the tables are built from, so it MUST move the
+    child and MUST NOT move the parent.
 
     ``validate=False`` is for the two controls that DELIBERATELY
     mis-force the child (stale tables, starved frame): feeding a child
@@ -179,8 +243,15 @@ def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
     elif mode != "resident":
         raise ValueError(f"unknown mode {mode!r}")
 
+    from gpuwm.core.nest_operands import NestWindowSource
+
     frames_before = nest_stream.child_frame_windows
     copy_before = nest_stream._copy_owned_sides
+    array_before = NestWindowSource.array
+    if streamed is not None and (unpublish or frame_width is not None):
+        NestWindowSource.array = stale_child_reads(
+            model.node(2).state,
+            0 if frame_width is None else int(frame_width))
     if frame_width is not None:
         from gpuwm.core.streaming import frame_windows
 
@@ -208,6 +279,7 @@ def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
     finally:
         nest_stream.child_frame_windows = frames_before
         nest_stream._copy_owned_sides = copy_before
+        NestWindowSource.array = array_before
 
     d01_sha, d01_per = carrier_digest(model.root.state)
     out = {

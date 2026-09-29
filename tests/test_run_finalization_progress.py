@@ -30,9 +30,11 @@ class _Recorder:
 
     def __init__(self):
         self.phases: list[str] = []
+        self.work_bytes: list[int | None] = []
 
-    def finalizing(self, phase: str) -> None:
+    def finalizing(self, phase: str, *, work_bytes: int | None = None) -> None:
         self.phases.append(phase)
+        self.work_bytes.append(work_bytes)
 
 
 def _frame(path: Path, payload: bytes) -> Path:
@@ -63,6 +65,9 @@ def test_frame_hashing_publishes_one_beat_per_frame(tmp_path):
     # watching the heartbeat can tell 3-of-484 from 400-of-484.
     assert recorder.phases[0].endswith("1-of-4")
     assert recorder.phases[-1].endswith("4-of-4")
+    # And it carries the size of the frame it is about to read, which is
+    # what the supervisor bounds that read by.
+    assert recorder.work_bytes == [path.stat().st_size for path in paths]
 
 
 def test_frame_hashing_without_a_progress_callback_is_unchanged(tmp_path):

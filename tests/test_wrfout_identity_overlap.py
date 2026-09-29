@@ -317,3 +317,22 @@ def test_async_hash_keeps_the_published_descriptor_and_original_bytes(
     assert any(candidate.read_bytes() == original_bytes[0]
                for candidate in tmp_path.rglob("*")
                if candidate.is_file() and candidate != path)
+
+
+def test_writer_failure_shows_the_cause_and_its_remedy(tmp_path, monkeypatch):
+    """A run's failed event is this wrapper: it used to say only "per-domain
+    wrfout writer failed", with no remedy, on the map page (GS-09)."""
+    from gpuwm import runplan
+
+    def changed(candidate, **kwargs):
+        raise output_identity._changed(candidate, "injected")
+
+    monkeypatch.setattr(output_identity, "completed_file_record", changed)
+    writer = _manual_async_writer(Event())
+    _queue_cpu_ticket(writer, tmp_path / "frame")
+    with pytest.raises(RuntimeError, match="wrfout writer failed") as error:
+        writer.close()
+    assert isinstance(error.value.__cause__, output_identity.OutputChangedError)
+    assert "changed" in str(error.value) and "injected" in str(error.value)
+    assert error.value.remedy == output_identity.OutputChangedError.remedy
+    assert runplan._remedy(error.value) == output_identity.OutputChangedError.remedy

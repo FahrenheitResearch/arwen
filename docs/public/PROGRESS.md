@@ -122,6 +122,31 @@ kernels cached for the previous card, so nothing was reusable, and 51 s
 of recompilation ran inside step 1's wall with nothing anywhere naming
 it.
 
+**Paying the compile ahead: `gpuwm warm-kernels`.** On a fresh install or
+a new card, run
+
+```bash
+gpuwm warm-kernels
+```
+
+once. It runs the forecast code for two model steps on a small synthetic
+domain with each physics profile a source defaults to, which compiles
+those profiles' kernels into the CuPy kernel cache, and prints how many it
+compiled and how long that took (`--json` for a page, `--profile NAME` or
+`--all-profiles` for other suites). Measured on an RTX 5070 Ti,
+2026-09-24: 128 kernels in 49.0 s on an empty cache; run again, 0 kernels
+in 1.1 s. Kernels only a real case uses (terrain, lateral boundaries)
+still compile on the first real forecast, in seconds.
+
+**Watching the compile in `gpuwm run-plan`.** While a run-plan forecast
+compiles a GPU module that was not cached, its event stream carries one
+`warning` per module with code `kernel_compile_progress` and message
+`compiling GPU kernels`: the module, its seconds, the stage that was open
+and the running `modules_compiled` and `compile_seconds`. A warm run emits
+none. The events cover the loader's modules (on that RTX 5070 Ti, 19
+modules and 34 of the first profile's 45.5 s); CuPy's own array kernels
+compile in the rest without an event.
+
 ### What the tree does to itself: the nest tags (new in v3)
 
 A run can move a nest across half a state, retire an episode and re-arm

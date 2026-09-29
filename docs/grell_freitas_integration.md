@@ -32,9 +32,13 @@ obs-skill-is-the-referee terms.
   name. GF runs on the model step (WRF's usual GF configuration,
   `STEPCU = 1`) and carries no NCA hold, so the KF cadence knob has no
   meaning here.
-* `clos_choice = 0` (the 16-member ensemble closure) is the only admitted
-  arm — it is the only one the oracle covers. `ishallow` is 0 or 1, both
-  covered, 0 is the WRF Registry default.
+* `clos_choice = 0` (the 16-member ensemble closure) is the arm the
+  oracle covers. 1-16 run one closure member alone, WRF's own code
+  path: the kernel matches the float32 reference on all sixteen
+  (`tests/test_gf_closure_choice_cuda.py`) and the load warns that no
+  WRF run covers them. Other values are refused (above 16 reads past
+  the 16-member closure array). `ishallow` is 0 or 1, both covered, 0
+  is the WRF Registry default.
 * Both Grell-family keys are refused wherever no Grell scheme is selected,
   so unrelated configs cannot carry them.
 * **ArWen structural seam:** 390 (`pbl = 0`, `cu = 3`) cells of the WRF

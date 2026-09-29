@@ -1279,6 +1279,31 @@ def test_grell_freitas_imports_natively_per_domain(tmp_path):
     assert "ishallow = 1" not in stray_toml
 
 
+def test_grell_freitas_imports_a_single_member_closure(tmp_path, capsys):
+    """clos_choice = 10 is a WRF namelist the importer now takes as is.
+
+    It reaches the TOML and the loaded RunConfig unchanged, and the load
+    says the single-member closure is not verified against WRF.  A value
+    with no meaning in WRF's closure code is still refused, with the
+    run door's own sentence.
+    """
+    toml_text, _ = import_namelists(
+        *_pair(tmp_path, inp=_gf_input("\n clos_choice = 10,")),
+        name="gf10")
+    assert "clos_choice = 10" in toml_text
+    out = tmp_path / "gf10.toml"
+    out.write_text(toml_text)
+    exp = load_experiment(out)
+    assert exp.root.run.cu_physics == 3
+    assert exp.root.run.clos_choice == 10
+    assert "clos_choice=10 runs Grell-Freitas" in capsys.readouterr().err
+
+    with pytest.raises(ValueError, match="reads past the end"):
+        import_namelists(
+            *_pair(tmp_path, inp=_gf_input("\n clos_choice = 17,")),
+            name="gf17")
+
+
 def _gf_input(extra_physics: str = "") -> str:
     """INPUT_TEXT selecting GF on d01 (nz >= 12 for GF's preflight)."""
     return INPUT_TEXT.replace(
@@ -2305,10 +2330,10 @@ def test_max_dom_matching_the_declared_arrays_still_loads(tmp_path):
 def _les_child(inp: str) -> str:
     """The base pair with an LES (km_opt=3, PBL-off) nested second domain.
 
-    km_opt=3 and not 2 because validate_run_config refuses km_opt=2 on a
-    NEST child outright (no nested LES domain has been run), and that
-    refusal stands -- this fixture exercises the namelist bridge, not the
-    gate.  km_opt=3 is the closure the nested LES probe actually ran.
+    km_opt=3 is the closure the nested LES probe ran.  A km_opt=2 child
+    loads as well (it cold-starts its own TKE; see
+    test_a_km_opt_2_nest_child_imports_and_loads), and this fixture
+    exercises the namelist bridge, not the turbulence gate.
     """
     return (inp.replace(" km_opt = 4, 4,", " km_opt = 4, 3,")
                .replace(" bl_pbl_physics = 11, 11,",
@@ -2318,12 +2343,34 @@ def _les_child(inp: str) -> str:
 def _les_root(inp: str) -> str:
     """The base pair whose ROOT selects km_opt=2 (prognostic TKE).
 
-    The root is the only domain km_opt=2 is admitted on today: the gate
-    requires bl_pbl_physics=0 and refuses ``nested``.
+    km_opt=2 needs bl_pbl_physics=0 on its own domain, so the root turns
+    its PBL off; the child keeps its PBL scheme and km_opt=4.
     """
     return (inp.replace(" km_opt = 4, 4,", " km_opt = 2, 4,")
                .replace(" bl_pbl_physics = 11, 11,",
                         " bl_pbl_physics = 0, 11,"))
+
+
+@pytest.mark.parametrize(
+    "km_opt,pbl",
+    [(" km_opt = 4, 2,", " bl_pbl_physics = 11, 0,"),
+     (" km_opt = 2, 2,", " bl_pbl_physics = 0, 0,")],
+    ids=["pbl-parent", "tke-parent"])
+def test_a_km_opt_2_nest_child_imports_and_loads(tmp_path, km_opt, pbl):
+    """A namelist whose nest child selects km_opt=2 imports and loads,
+    under a PBL parent and under a km_opt=2 parent.  WRF gives tke no
+    nest-interpolation or feedback flag, so the child cold-starts its own
+    TKE whatever its parent runs."""
+    toml_text, _ = _import_with(
+        tmp_path,
+        inp_filter=lambda inp: (
+            inp.replace(" km_opt = 4, 4,", km_opt)
+               .replace(" bl_pbl_physics = 11, 11,", pbl)))
+    exp = _load(tmp_path, toml_text)
+    expected = [int(v) for v in km_opt.split("=")[1].split(",") if v.strip()]
+    assert [dc.run.km_opt for dc in exp.domains] == expected
+    assert exp.domains[1].run.nested
+    assert exp.domains[1].run.bl_pbl_physics == 0
 
 
 def test_turbulence_row_reaches_every_per_domain_run_config(tmp_path):

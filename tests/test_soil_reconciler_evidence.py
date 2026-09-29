@@ -7,6 +7,11 @@ transcribes all three arms (tests/test_ruc_shoreline_soil_category.py); what
 this file covers is the step BEFORE them -- finding the evidence in a met
 field mapping whose spellings differ per source.
 
+A land column whose soil map says water never needs that evidence: real.exe
+matches it to silty clay loam first (``:3108-3131``), keeping its land-use
+category, and so does the rulebook.  The evidence tests below therefore
+drive the final pass directly, on a column the match has not settled.
+
 That lookup has failed twice, and both times the soil column was present in
 the mapping the reconciler was handed:
 
@@ -19,9 +24,9 @@ the mapping the reconciler was handed:
 
 Both fixes were a name added to an inline chain at one call site.  These
 tests hold the replacement -- ONE table in ``gpuwm/ingest/soil.py``, read by
-every call site -- and, just as hard, hold the refusal: a mapping that
-genuinely carries no evidence must still abort, because the third arm is
-correct and fail-open here would fabricate a soil column.
+every call site -- and, just as hard, hold the final pass's refusal: a column
+that reaches it with no evidence must still abort, because the third arm is
+correct and fail-open there would fabricate a soil column.
 """
 
 from __future__ import annotations
@@ -31,7 +36,8 @@ import inspect
 import numpy as np
 import pytest
 
-from gpuwm.core.landuse import _top_soil_level, reconciled_soil_category
+from gpuwm.core.landuse import (_reconcile_landmask_soil_category,
+                                _top_soil_level, reconciled_soil_category)
 from gpuwm.ingest.soil import (SOIL_TEMPERATURE_RECONCILER_NAMES,
                                SST_RECONCILER_NAMES,
                                reconciler_soil_temperature, reconciler_sst)
@@ -88,6 +94,23 @@ def _reconcile(fields, lu_index, soil_type):
         sst=reconciler_sst(fields), **_ATTRS)
 
 
+def _final_pass(fields, lu_index, soil_type):
+    """real.exe's final pass on the column as geogrid left it.
+
+    Returns the soil category it settles on; the evidence comes from the
+    same table lookups the production call sites make.
+    """
+
+    ivgtyp = np.asarray(lu_index, np.int32).copy()
+    soil = np.asarray(soil_type, np.int32).copy()
+    _reconcile_landmask_soil_category(
+        ivgtyp, soil, ivgtyp != _ISWATER, iswater=_ISWATER,
+        isoilwater=_WATER_SOIL,
+        soil_temperature=reconciler_soil_temperature(fields),
+        sst=reconciler_sst(fields), shape=ivgtyp.shape)
+    return soil
+
+
 # ---------------------------------------------------------------------------
 # The table itself
 # ---------------------------------------------------------------------------
@@ -136,7 +159,7 @@ def test_every_spelling_resolves_the_disagreeing_column(name):
               "SKINTEMP": np.full(lu_index.shape, 291.0, np.float32)}
 
     assert reconciler_soil_temperature(fields) is not None
-    resolved = _reconcile(fields, lu_index, soil_type)
+    resolved = _final_pass(fields, lu_index, soil_type)
 
     # The warm-soil arm: land, and WRF's artificial silty clay loam.
     assert int(resolved[1, 2]) == _LAND_SOIL
@@ -144,13 +167,18 @@ def test_every_spelling_resolves_the_disagreeing_column(name):
     untouched = np.full(lu_index.shape, 6, np.int32)
     untouched[1, 2] = _LAND_SOIL
     np.testing.assert_array_equal(resolved, untouched)
+    # The rulebook reaches the same soil without reading the evidence.
+    np.testing.assert_array_equal(
+        _reconcile(fields, lu_index, soil_type), untouched)
 
 
 def test_a_mapping_with_no_evidence_at_all_still_refuses():
-    """The third arm is CORRECT; the fix must not fail open.
+    """The third arm is CORRECT; the final pass must not fail open.
 
-    A mapping carrying none of the spellings has nothing to decide the
-    column with, and WRF aborts rather than guessing.  So does this.
+    A mapping carrying none of the spellings has nothing to decide a
+    column that reaches the final pass with, and WRF aborts rather than
+    guessing.  So does this.  The land column over water soil does not
+    reach it: the match settles it without evidence.
     """
 
     lu_index, soil_type = _one_mismatch()
@@ -160,7 +188,8 @@ def test_a_mapping_with_no_evidence_at_all_still_refuses():
     assert reconciler_soil_temperature(fields) is None
     assert reconciler_sst(fields) is None
     with pytest.raises(ValueError, match="mismatch_landmask_ivgtyp"):
-        _reconcile(fields, lu_index, soil_type)
+        _final_pass(fields, lu_index, soil_type)
+    assert int(_reconcile(fields, lu_index, soil_type)[1, 2]) == _LAND_SOIL
 
 
 def test_a_cold_soil_column_with_no_sea_evidence_still_refuses():
@@ -175,7 +204,8 @@ def test_a_cold_soil_column_with_no_sea_evidence_still_refuses():
 
     assert reconciler_soil_temperature(fields) is not None
     with pytest.raises(ValueError, match="mismatch_landmask_ivgtyp"):
-        _reconcile(fields, lu_index, soil_type)
+        _final_pass(fields, lu_index, soil_type)
+    assert int(_reconcile(fields, lu_index, soil_type)[1, 2]) == _LAND_SOIL
 
 
 # ---------------------------------------------------------------------------
@@ -201,17 +231,17 @@ def test_the_sst_fallback_prefers_a_real_sst_then_skin_then_tsk():
 def test_the_skin_fallback_resolves_the_column_real_exe_calls_water():
     """The GFS lane has no SST field at all, and this is what that costs.
 
-    Without the fallback the SST arm cannot fire for any GFS child, so a
-    cold-soil mismatch column has no second chance and the preparation
-    aborts.  With it, the column becomes water exactly as real.exe leaves
-    it once SKINTEMP has stood in for the missing SST.
+    Without the fallback the final pass's SST arm cannot fire for any GFS
+    child, so a cold-soil column reaching it has no second chance and the
+    preparation aborts.  With it, the column becomes water exactly as
+    real.exe leaves it once SKINTEMP has stood in for the missing SST.
     """
 
     lu_index, soil_type = _one_mismatch()
     fields = {"GFS_ST000010": np.zeros(lu_index.shape, np.float32),
               "SKINTEMP": np.full(lu_index.shape, 290.0, np.float32)}
 
-    resolved = _reconcile(fields, lu_index, soil_type)
+    resolved = _final_pass(fields, lu_index, soil_type)
     assert int(resolved[1, 2]) == _WATER_SOIL
 
 
@@ -220,14 +250,12 @@ def test_the_skin_fallback_resolves_the_column_real_exe_calls_water():
 # ---------------------------------------------------------------------------
 
 def test_the_child_shape_that_aborted_on_seventy_three_columns():
-    """The refusal as it was observed, and the same grid after the fix.
+    """A nested-GFS child with 73 land columns over water soil.
 
-    Shape, count and field inventory are the probe's dump of what
-    ``finalize_prepared_child`` actually handed the reconciler on the
-    12-3 km nested-GFS tree: a 160x192 child, 73 disagreeing columns
-    scattered across the whole grid (reservoirs and rivers, not an edge
-    artifact), and a mapping whose only soil temperature is spelled
-    ``GFS_ST000010``.
+    A 160x192 child, 73 disagreeing columns scattered across the whole
+    grid (reservoirs and rivers, not an edge artifact), and a mapping whose
+    only soil temperature is spelled ``GFS_ST000010``.  real.exe settles
+    every one of them before its final pass, with or without evidence.
     """
 
     shape = (160, 192)
@@ -252,17 +280,16 @@ def test_the_child_shape_that_aborted_on_seventy_three_columns():
     # No SST key at all, exactly as the GFS lane leaves it.
     assert "SST" not in fields
 
-    # As it was: neither piece of evidence found, and the count in the
-    # message is the count of columns.
+    # Presented to the final pass with neither piece of evidence, the count
+    # in the refusal is the count of columns.
     with pytest.raises(ValueError, match=r"73 column\(s\) disagree"):
-        reconciled_soil_category(
-            lu_index, soil_type=soil_type, xice=fields["XICE"],
-            soil_temperature=None, sst=None, **_ATTRS)
+        _final_pass({}, lu_index, soil_type)
 
-    resolved = _reconcile(fields, lu_index, soil_type)
-    np.testing.assert_array_equal(
-        resolved[rows, columns], np.full(73, _LAND_SOIL, np.int32))
-    assert int((resolved == _WATER_SOIL).sum()) == 0
+    for evidence in (fields, {}):
+        resolved = _reconcile(evidence, lu_index, soil_type)
+        np.testing.assert_array_equal(
+            resolved[rows, columns], np.full(73, _LAND_SOIL, np.int32))
+        assert int((resolved == _WATER_SOIL).sum()) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -334,9 +361,9 @@ def test_the_reconciler_takes_device_evidence_through_initialize_landuse():
     ``reconciled_soil_category`` hosts everything it is handed on the way
     in; ``initialize_landuse`` does not, and its callers pass host statics
     beside met fields that can still be device-resident.  Both pieces of
-    evidence are read inside the reconciliation, so both take the
-    marshalling -- the SST read sits one line below the soil read, and
-    fixing only the first moves the TypeError rather than removing it.
+    evidence are read inside the final pass, so both take the marshalling
+    -- the SST read sits one line below the soil read, and fixing only the
+    first moves the TypeError rather than removing it.
     """
 
     from datetime import datetime
@@ -355,12 +382,28 @@ def test_the_reconciler_takes_device_evidence_through_initialize_landuse():
             np.zeros((4,) + shape, np.float32)),
         sst=_DeviceArrayDouble(np.full(shape, 290.0, np.float32)))
 
-    # Cold soil, warm sea: WRF's second arm, on device-resident inputs.
+    # The land column over water soil is matched before the final pass,
+    # so it stays land under its own vegetation.
+    np.testing.assert_array_equal(landuse.ivgtyp, lu_index)
+    np.testing.assert_array_equal(landuse.isltyp, [[_LAND_SOIL, 6, 4, 11, 6]])
+
+    # Cold soil, warm sea, on device-resident inputs: the final pass's
+    # second arm, reading both pieces of evidence through the marshalling.
+    ivgtyp = lu_index.copy()
+    soil = soil_type.copy()
+    land = _reconcile_landmask_soil_category(
+        ivgtyp, soil, np.ones(shape, bool), iswater=_ISWATER,
+        isoilwater=_WATER_SOIL,
+        soil_temperature=_DeviceArrayDouble(
+            np.zeros((4,) + shape, np.float32)),
+        sst=_DeviceArrayDouble(np.full(shape, 290.0, np.float32)),
+        shape=shape)
     np.testing.assert_array_equal(
-        landuse.ivgtyp,
+        ivgtyp,
         [[_ISWATER, _LAND_VEGETATION, _LAND_VEGETATION, _LAND_VEGETATION,
           _LAND_VEGETATION]])
-    np.testing.assert_array_equal(landuse.isltyp, [[14, 6, 4, 11, 6]])
+    np.testing.assert_array_equal(soil, [[14, 6, 4, 11, 6]])
+    np.testing.assert_array_equal(land, [[False, True, True, True, True]])
 
 
 def test_a_device_resident_mismatch_resolves_to_the_host_answer():
@@ -382,6 +425,17 @@ def test_a_device_resident_mismatch_resolves_to_the_host_answer():
     np.testing.assert_array_equal(on_host, on_device)
     assert int(on_device[1, 2]) == _LAND_SOIL
 
+    cold = np.zeros(lu_index.shape, np.float32)
+    for soil_temperature, sst, expected in ((warm, sea, _LAND_SOIL),
+                                            (cold, sea, _WATER_SOIL)):
+        host = _final_pass({"ST000007": soil_temperature, "SST": sst},
+                           lu_index, soil_type)
+        device = _final_pass(
+            {"ST000007": _DeviceArrayDouble(soil_temperature),
+             "SST": _DeviceArrayDouble(sst)}, lu_index, soil_type)
+        np.testing.assert_array_equal(host, device)
+        assert int(device[1, 2]) == expected
+
 
 # ---------------------------------------------------------------------------
 # The call sites
@@ -397,14 +451,20 @@ def test_no_call_site_spells_the_evidence_inline():
     """
 
     from gpuwm.ingest.nest_init import finalize_prepared_child
+    from gpuwm.ingest.soil import door_reconciled_soil_category
     from gpuwm.runtime import prepare_real_case
 
+    # Every door calls one helper that assembles the reconciler's
+    # arguments, so the table read is pinned there once and each call
+    # site is pinned to the helper.
+    helper = inspect.getsource(door_reconciled_soil_category)
+    assert "reconciled_soil_category(" in helper
+    assert "soil_temperature=reconciler_soil_temperature(" in helper
+    assert "sst=reconciler_sst(" in helper
     for function in (finalize_prepared_child, prepare_real_case):
         source = inspect.getsource(function)
         where = function.__qualname__
-        assert "reconciled_soil_category(" in source, where
-        assert "soil_temperature=reconciler_soil_temperature(" in source, where
-        assert "sst=reconciler_sst(" in source, where
+        assert "door_reconciled_soil_category(" in source, where
         for name in SOIL_TEMPERATURE_RECONCILER_NAMES:
             assert f'"{name}"' not in source, (
                 f"{where} spells {name} inline instead of reading the table")

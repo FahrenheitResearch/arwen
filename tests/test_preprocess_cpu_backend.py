@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from conftest import requires_gpu
+from conftest import requires_gpu, requires_wps_masked_chain_bridge
 from gpuwm.ingest.backend_contract import (
     ArrayParityRule,
     build_backend_receipt,
@@ -155,6 +155,7 @@ def _horizontal_fixture():
     return snapshot, grid, catalog
 
 
+@requires_wps_masked_chain_bridge
 def test_full_horizontal_cpu_path_is_parallel_byte_stable():
     _backend()
     snapshot, grid, catalog = _horizontal_fixture()
@@ -180,8 +181,12 @@ def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda():
     assert receipt["bridge"]["sha256"] == hashlib.sha256(
         native.path.read_bytes()).hexdigest()
     assert resolve_preprocess_backend(None).name == "cuda"
-    with pytest.raises(ValueError, match="apply only to the CPU"):
-        resolve_preprocess_backend("cuda", workers=3)
+    # workers reaches the CUDA backend's host steps (the masked surface
+    # fields run in the Rust library under CUDA too); cpu_bridge stays the
+    # CPU backend's, and names the variable that picks the host library.
+    with pytest.raises(ValueError,
+                       match="cpu_bridge applies only to the CPU backend"):
+        resolve_preprocess_backend("cuda", cpu_bridge=native.path)
     with pytest.raises(ValueError, match="cuda.*cpu.*auto"):
         resolve_preprocess_backend("silent-substitution")
 
@@ -191,14 +196,23 @@ def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda():
     [
         ("13.1.0", 12_900, 1, "cuda"),
         ("12.3.0", 12_900, 1, "cpu"),
+        ("14.2.0", 13_020, 1, "cuda"),
         ("13.1.0", 13_000, 1, "cpu"),
+        ("14.2.0", 14_000, 1, "cpu"),
+        ("14.2.0", 11_080, 1, "cpu"),
         ("13.1.0", 12_900, 0, "cpu"),
     ],
 )
 def test_auto_backend_uses_only_the_certified_cuda_runtime_family(
     monkeypatch, cupy_version, runtime_version, device_count, expected,
 ):
+    monkeypatch.setattr("gpuwm.core.device_probe.device_memory_probe_subprocess",
+                        lambda **_: None)
     class Runtime:
+        @staticmethod
+        def getDevice():
+            return 0
+
         @staticmethod
         def runtimeGetVersion():
             return runtime_version

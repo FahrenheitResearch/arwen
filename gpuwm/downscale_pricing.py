@@ -137,21 +137,60 @@ def needs_machine(options: streaming.StreamingOptions | None) -> bool:
     return bool(options.enabled and options.tile_nx is None)
 
 
-def cold_machine(options: streaming.StreamingOptions | None):
-    """Measure the card NOW, before this process allocates anything on it.
+@dataclass(frozen=True)
+class ColdCard:
+    """The card a run is priced and decided on, read before any allocation.
+
+    ``machine`` is the planning machine :func:`price_child` judges
+    ``[tiles]`` on and records in the plan entry; ``profile`` is the device
+    profile the estimate is priced on, which is the machine's own whenever
+    there is a machine.
+    """
+
+    machine: object | None
+    profile: object | None
+
+
+def cold_card(options: streaming.StreamingOptions | None) -> ColdCard:
+    """Read the card NOW, before this process allocates anything on it,
+    whatever ``[tiles]`` says.
 
     The runner calls this before ``interpolate_parent_initial_state``.
-    ``Machine.detect`` reads free VRAM through CuPy, which stands the
-    CUDA context up; that is the same cost the prepared route pays in
-    ``streaming.cold_planning_machine`` and it is the last thing this
-    process does on the card before the decision.  ``None`` when the
-    options need no card.
+    ``Machine.detect`` reads free VRAM and the device profile through
+    CuPy, which stands the CUDA context up; that is the same cost the
+    prepared route pays in ``streaming.cold_planning_machine``, it is the
+    last thing this process does on the card before the decision, and a
+    run integrates on that card a moment later anyway.
+
+    READ ON EVERY SETTING, NOT ONLY WHEN THE PLANNER NEEDS IT.  The card is
+    not only what ``[tiles]`` is decided on, it is what the child is
+    PRICED on: the estimator's context and kernel-local terms come from
+    the device profile.  This used to return no machine when ``[tiles]``
+    was off or pinned, so the runner priced the child on the 170-SM
+    reference profile while the review priced the same child on the
+    measured card.  Measured on a 552x552x49 child on a 15.47 GiB RTX 5070
+    Ti: the run's report said 17,033,346,128 B, more than the card it then
+    ran on, the review and a ``--tiles=auto`` run said 14,922,267,728 B,
+    and the pool peaked at 12,428,445,696 B.
+
+    A host RAM figure that cannot be read refuses only the options that
+    decide on it (``auto`` and an unpinned ``on``).  Off and a pinned
+    tiling never consult the host, so there the machine is left out and
+    the price is still taken on this card's own profile.
     """
     options = streaming.OFF if options is None else options
-    if not needs_machine(options):
-        return None
-    from tilestream.autoplan import Machine
-    return Machine.detect(host_bytes=options.host_budget_bytes)
+    from tilestream.autoplan import CannotPlan, Machine
+
+    try:
+        machine = Machine.detect(host_bytes=options.host_budget_bytes)
+    except CannotPlan as error:
+        if error.resource != "host" or needs_machine(options):
+            raise
+        from gpuwm.core.preflight import live_device_local_memory_profile
+        return ColdCard(machine=None,
+                        profile=live_device_local_memory_profile())
+    return ColdCard(machine=machine,
+                    profile=getattr(machine, "device_profile", None))
 
 
 def declared_machine(*, free_bytes: int | None, name: str,
@@ -184,12 +223,13 @@ def price_child(cfg, options: streaming.StreamingOptions | None, *,
                 start_time: datetime | None = None) -> ChildPricing:
     """Price one standalone child and decide its ``[tiles]`` mode, once.
 
-    ``machine`` is the planning machine both doors judge on: a cold
-    ``Machine.detect`` in the runner, a :func:`declared_machine` in the
-    review.  ``vram_gib`` and ``profile`` reach the estimator exactly as
-    the fitted sizing route hands them: the measured card's own profile
-    when the door measured one, the declared capacity otherwise, so a
-    Noah-MP child is priced from the card's own reading when there is one.
+    ``machine`` is the planning machine both doors judge on: the
+    :func:`cold_card` read in the runner, on every ``[tiles]`` setting,
+    a :func:`declared_machine` in the review.  ``vram_gib`` and
+    ``profile`` reach the estimator exactly as the fitted sizing route
+    hands them: the measured card's own profile when the door measured
+    one, the declared capacity otherwise, so a Noah-MP child is priced
+    from the card's own reading when there is one.
 
     Raises :class:`tilestream.autoplan.CannotPlan` when the card is too
     small for the child even streamed, with the measured figure and the
@@ -269,6 +309,6 @@ def price_child(cfg, options: streaming.StreamingOptions | None, *,
         machine_name=name, basis=basis, pricing_error=pricing_error)
 
 
-__all__ = ["ChildPricing", "DECLARED_BASIS", "MEASURED_BASIS",
-           "PRICING_EPOCH", "cold_machine", "declared_machine",
+__all__ = ["ChildPricing", "ColdCard", "DECLARED_BASIS", "MEASURED_BASIS",
+           "PRICING_EPOCH", "cold_card", "declared_machine",
            "needs_machine", "price_child"]

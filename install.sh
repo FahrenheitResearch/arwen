@@ -28,7 +28,12 @@
 #      tools/rustwx (skip with --no-render or
 #      GPUWM_INSTALL_NO_RENDER=1);
 #   7. builds the terminal workspace offline in tools/arwen-tui;
-#   8. finishes with `gpuwm doctor` and exits with doctor's status.
+#   8. builds the regular-grid Zarr reader offline in tools/zarr_bridge,
+#      the mapped-source decode engine in tools/rw_wps and the velocity
+#      dealiasing library in tools/region_global_dealias (the default
+#      decode path and the default dealiasing engine);
+#   9. finishes with `gpuwm doctor`, with .venv/bin on its PATH, and
+#      exits with doctor's status.
 #
 # Environment:
 #   GPUWM_REPO_URL     clone source when run outside a checkout
@@ -59,7 +64,7 @@ while [ "$#" -gt 0 ]; do
             CUDA_MAJOR="$2"; shift ;;
         --cuda=*) CUDA_MAJOR="${1#--cuda=}" ;;
         -h|--help)
-            sed -n '2,41p' "$0" 2>/dev/null || true
+            sed -n '2,/^$/p' "$0" 2>/dev/null || true
             exit 0 ;;
         *)
             echo "install.sh: unknown argument '$1'" \
@@ -153,6 +158,33 @@ case "$CUDA_MAJOR" in
         say "the end of this script either way."
         ;;
 esac
+# ------------------------------------------------ one CuPy build, not two
+# cupy-cuda12x and cupy-cuda13x both install the same `cupy` package
+# files, and pip treats them as unrelated distributions.  Re-running this
+# installer with another major into the reused .venv left BOTH registered
+# over one set of files: switching back then said "already satisfied"
+# while the other major's build answered, and uninstalling either broke
+# the other.  So when any CuPy other than the chosen one is present,
+# every CuPy is removed and the chosen one is installed clean below.
+CUPY_WANTED="cupy-cuda${GPU_EXTRA#gpu-cu}x"
+# A pip that cannot list the .venv stops here: reading its failure as
+# "no CuPy" would install beside a build nobody saw.
+if ! CUPY_LISTED=$("$VENV_PY" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null); then
+    fail "pip could not list the packages in .venv, so this install cannot tell which CuPy it holds (run $VENV_PY -m pip list to see why)"
+fi
+CUPY_HAVE=$(printf '%s\n' "$CUPY_LISTED" |
+    tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' |
+    sed -n 's/^\(cupy\(-cuda[0-9][0-9]*x\)\{0,1\}\) *[=@].*/\1/p')
+CUPY_OTHER=0
+for dist in $CUPY_HAVE; do
+    [ "$dist" = "$CUPY_WANTED" ] || CUPY_OTHER=1
+done
+if [ "$CUPY_OTHER" = 1 ]; then
+    say "this .venv holds another CUDA major's CuPy ($(echo $CUPY_HAVE));"
+    say "removing every CuPy build so $CUPY_WANTED installs clean"
+    # shellcheck disable=SC2086
+    "$VENV_PY" -m pip uninstall -y $CUPY_HAVE
+fi
 say "installing the matching gpuwm-data companion from this checkout (editable)"
 "$VENV_PY" -m pip install -e gpuwm-data
 say "installing gpuwm with the [$GPU_EXTRA,render] extras (editable)"
@@ -217,10 +249,20 @@ say "building the terminal workspace in tools/arwen-tui (offline, locked)"
 ( cd tools/arwen-tui && cargo build --release --locked --offline )
 say "building the regular-grid Zarr reader (offline, locked)"
 ( cd tools/zarr_bridge && cargo build --release --locked --offline )
+# Every mapped source decodes in gpuwm_mapped_engine and every radar ingest
+# dealiases through region_global_dealias by default; a checkout that skips
+# either build reports both MISSING and cannot run those default routes.
+say "building the mapped-source decode engine in tools/rw_wps (offline, locked)"
+( cd tools/rw_wps && cargo build --release --locked --offline )
+say "building the velocity dealiasing library (offline, locked)"
+( cd tools/region_global_dealias && cargo build --release --locked --offline )
 
 # ------------------------------------------------------------------ doctor
+# Doctor judges the environment this script just made, as it stands once
+# activated: without .venv/bin on PATH its console-script check reports a
+# gap this script created and the install exits nonzero for it.
 say "running gpuwm doctor"
-if .venv/bin/gpuwm doctor; then
+if PATH="$(pwd)/.venv/bin:$PATH" .venv/bin/gpuwm doctor; then
     say "done -- doctor is clean.  Activate with: . .venv/bin/activate"
 else
     status=$?

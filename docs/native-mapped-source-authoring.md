@@ -241,3 +241,52 @@ the terrain-only supplement engine. Curvilinear GRIB grids, vertical nest
 refinement, moving nests, and two-way feedback also remain unsupported. A
 descriptor must materialize the existing complete canonical source frame and
 pass the existing donor-grid, hierarchy, initialization, and export gates.
+
+
+## Height-based model levels
+
+These keys are read by the mapped engine from a mapping JSON document.
+The descriptor authoring path (`rw-wps --author-mapping`) does not yet
+accept `interface_levels`, `half_level`, `height_from_interfaces`,
+`mass_fraction_rebase`, or `dependency_only`. Author these mappings directly
+as JSON and validate them with the mapped input-manifest authoring path.
+
+A GRIB source that publishes pressure on mass levels and heights on their
+interfaces uses `vertical.kind = "model_level"`, dimensionless `levels`, and
+an ordered `interface_levels` list with one more entry than `levels`.
+Direct interface heights use `source_axes` and `target_axes` of
+`["half_level", "y", "x"]` and target units `m`. The
+`height_from_interfaces` derivation takes that field as `source` and averages
+adjacent interfaces into `geopotential_height` on `["vertical", "y", "x"]`.
+Every column retains its own heights. Missing interfaces, nonfinite heights,
+and crossing layers refuse because they would misplace the mass levels.
+
+Interface heights may declare `time_binding = "cycle_invariant"`; assembly
+broadcasts the complete coordinate to each forecast time. Prognostic mass
+and soil fields still require valid-time data. Pressure remains a direct
+field. No pressure-from-level-number inference is made.
+
+The packaged ICON-D2 route uses these declarations by default: 65 mass levels,
+66 invariant height interfaces, pressure, specific humidity, and five
+condensate species. The emitted model top is 6000 Pa. These are source-table
+entries; the mapped engine does not dispatch on the source name.
+
+`mass_fraction_rebase` converts a declared `source` fraction to a reference
+mass with the fractions listed in `exclude` removed: source divided by
+(1 minus those fractions). Dependencies must share axes and units `kg kg-1`.
+Nonfinite or negative fractions, or a nonpositive reference mass, refuse.
+The source table excludes all water species for dry-air condensate mixing
+ratios, and only condensate for gas-specific humidity. This preserves the
+same dry-air basis when initialization converts humidity to vapor mixing ratio.
+DWD notes that the condensate GRIB names are mixing ratios but the values are
+specific quantities in its [field documentation](https://www.dwd.de/SharedDocs/downloads/DE/modelldokumentationen/nwv/icon/icon_dbbeschr_aktuell.pdf).
+
+A field that is decoded only so a derivation can read it declares
+`"dependency_only": true`. Both engines decode and validate it, pass it to
+every derivation that reads it, and leave it out of the frame, so it takes
+no space in the compose stream. The packaged ICON-D2 mapping marks its six
+raw mass fractions this way, and each frame carries only the humidity and
+mixing ratios derived from them. A field the target requires cannot be
+`dependency_only`; that mapping is refused because its frames would lack
+the field. A field a composition borrows from a donor is published even
+when the donor's own mapping marks it `dependency_only`.

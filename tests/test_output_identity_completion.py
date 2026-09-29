@@ -171,3 +171,126 @@ def test_unavailable_reuse_token_falls_back_to_exact_original_digest(tmp_path, m
     monkeypatch.setattr(output_identity, "_hash_open_file", observe)
     assert output_identity.file_record(path, completed=proof) == proof.record()
     assert hashed == [8]
+
+
+class _MovedEntry:
+    """A path stat whose file id followed the rename, as exFAT reports it."""
+
+    def __init__(self, real, inode):
+        self._real, self.st_ino = real, inode
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _rename_moves_the_file_id(monkeypatch, written, *, offset=160):
+    """After ``renamed`` is set, every observation of the written file,
+    through a descriptor or its address, reports a moved file id.
+
+    exFAT derives the id from the directory entry, and a rename
+    moves the entry (GS-09: one exFAT wrfout read 3062424797184 before its
+    publication rename and 3062424797280 after, with the same bytes).
+    """
+    from dataclasses import replace
+
+    renamed = []
+    revision = output_identity._revision
+    stat = Path.stat
+
+    def observe(handle):
+        current = revision(handle)
+        if renamed and current.file_id == written:
+            return replace(current, inode=current.inode + offset)
+        return current
+
+    def address(candidate, *args, **kwargs):
+        current = stat(candidate, *args, **kwargs)
+        if renamed and (current.st_dev, current.st_ino) == written:
+            return _MovedEntry(current, current.st_ino + offset)
+        return current
+
+    monkeypatch.setattr(output_identity, "_revision", observe)
+    monkeypatch.setattr(Path, "stat", address)
+    return renamed
+
+
+def test_publication_accepts_a_file_id_that_the_rename_moved(tmp_path, monkeypatch):
+    temp, final = tmp_path / ".frame.tmp-0", tmp_path / "frame"
+    payload = bytes(range(256)) * 64
+    temp.write_bytes(payload)
+    publication = output_identity.PublicationFile(temp)
+    try:
+        written = publication.written
+        renamed = _rename_moves_the_file_id(monkeypatch, written.file_id)
+        os.replace(temp, final)
+        renamed.append(True)
+        published = publication.published(final)
+        assert published.file_id != written.file_id
+        assert (published.size, published.modified_ns) == (
+            written.size, written.modified_ns)
+        proof = output_identity.completed_file_record(
+            final, published=published, handle=publication.handle)
+    finally:
+        publication.close()
+    assert output_identity.file_record(final, completed=proof) == {
+        "path": str(final.resolve()), "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def test_a_moved_file_id_does_not_let_a_same_bytes_replacement_publish(
+        tmp_path, monkeypatch):
+    temp, final = tmp_path / ".frame.tmp-0", tmp_path / "frame"
+    temp.write_bytes(b"validated")
+    publication = output_identity.PublicationFile(temp)
+    try:
+        renamed = _rename_moves_the_file_id(
+            monkeypatch, publication.written.file_id)
+        os.replace(temp, final)
+        renamed.append(True)
+        # Windows cannot replace a held target in place; move it aside.
+        final.rename(tmp_path / "aside")
+        (tmp_path / "replacement").write_bytes(b"validated")
+        os.replace(tmp_path / "replacement", final)
+        with pytest.raises(output_identity.OutputChangedError,
+                           match="names a file other than"):
+            publication.published(final)
+    finally:
+        publication.close()
+
+
+@pytest.mark.parametrize("change", ("length", "last write time"))
+def test_a_moved_file_id_does_not_hide_a_content_change(
+        tmp_path, monkeypatch, change):
+    temp, final = tmp_path / ".frame.tmp-0", tmp_path / "frame"
+    temp.write_bytes(b"validated")
+    publication = output_identity.PublicationFile(temp)
+    try:
+        renamed = _rename_moves_the_file_id(
+            monkeypatch, publication.written.file_id)
+        os.replace(temp, final)
+        renamed.append(True)
+        if change == "length":
+            with final.open("ab") as stream:
+                stream.write(b"+")
+        else:
+            written = publication.written.modified_ns
+            os.utime(final, ns=(written, written + 2_000_000_000))
+        with pytest.raises(output_identity.OutputChangedError, match=change):
+            publication.published(final)
+    finally:
+        publication.close()
+
+
+def test_a_changed_output_names_a_remedy_that_is_not_a_retry(tmp_path):
+    path = tmp_path / "frame"
+    path.write_bytes(b"original")
+    published = output_identity.publication_revision(path)
+    replacement = tmp_path / "next"
+    replacement.write_bytes(b"replaced")
+    os.replace(replacement, path)
+    with pytest.raises(output_identity.OutputChangedError) as error:
+        output_identity.completed_file_record(path, published=published)
+    # The same inputs fail the same way on a retry, so none is offered.
+    for text in (str(error.value), error.value.remedy):
+        assert "retry" not in text.lower()
+    assert "start the forecast again" in error.value.remedy

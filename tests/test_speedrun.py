@@ -316,16 +316,47 @@ def _kernel_cache(directory: Path, *, entries: int = 3) -> Path:
     """A directory shaped like a real CuPy kernel cache.
 
     CuPy writes ``<40-hex SHA1 of the blob><blob>`` and the blob is a CUDA
-    ELF whose ``e_flags`` carries the SM version in its second byte --
-    :mod:`gpuwm.kernel_compile_notice` decodes exactly that, so the census
-    this door consults reads these files as sm_120 entries.
+    ELF.  These carry the header an RTX 5070 Ti's cache really holds --
+    64-bit, little-endian, ``EM_CUDA``, ``EI_OSABI`` 0x41 and
+    ``EI_ABIVERSION`` 8, ``e_flags`` 0x06007802 with the SM in its second
+    byte -- so :mod:`gpuwm.kernel_compile_notice`, which reads the SM
+    where the header's layout keeps it, censuses them as sm_120 entries.
     """
 
     directory.mkdir(parents=True, exist_ok=True)
-    blob = b"\x7fELF" + b"\0" * 44 + struct.pack("<I", 120 << 8)
+    blob = bytearray(64)
+    blob[0:9] = b"\x7fELF\x02\x01\x01\x41\x08"
+    struct.pack_into("<H", blob, 18, 190)
+    struct.pack_into("<I", blob, 48, 0x06007802)
     for index in range(entries):
-        (directory / f"{index:040x}").write_bytes(b"0" * 40 + blob)
+        (directory / f"{index:040x}").write_bytes(b"0" * 40 + bytes(blob))
     return directory
+
+
+def test_the_census_counts_this_cards_entries_under_the_key_they_decode_to(
+        tmp_path, monkeypatch):
+    """A warm cache is warm to the speedrun door too.
+
+    The census decodes an entry's SM to a bare ``"120"``; the door used
+    to look this card up as ``"sm_120"``, found nothing, and counted a
+    cache full of this card's kernels as 0 of them for this card -- so
+    ``--compile-mode warm`` refused on a warm cache as COLD, and the
+    record printed "0 for this card"."""
+
+    from gpuwm import kernel_compile_notice, speedrun_cli
+
+    cache = _kernel_cache(tmp_path / "kernel_cache", entries=3)
+    monkeypatch.setattr(kernel_compile_notice, "current_compute_capability",
+                        lambda: "120")
+    census = speedrun_cli._cache_census(cache)
+    assert census["architectures"] == {"120": 3}
+    assert census["entries_for_this_card"] == 3
+    assert speedrun.measured_compile_mode(
+        census["entries_for_this_card"]) == "warm"
+
+    monkeypatch.setattr(kernel_compile_notice, "current_compute_capability",
+                        lambda: "86")
+    assert speedrun_cli._cache_census(cache)["entries_for_this_card"] == 0
 
 
 def test_the_cold_cache_flag_refuses_a_directory_that_is_not_a_kernel_cache(

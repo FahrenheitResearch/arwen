@@ -229,6 +229,57 @@ def test_force_with_the_store_unpublished_couples_the_frozen_child(
     assert coupler.force_sync_bytes == 0
 
 
+def test_the_gate_stale_child_controls_reach_the_bounded_child_operands():
+    """N1, N1b and W must disarm the road a marked child is coupled on.
+
+    A child ``StreamedDomain`` marked is coupled through ``NestWindowSource``
+    straight out of its store, so unpublishing ``_STORE_ATTR`` and
+    narrowing ``child_frame_windows`` stopped reaching it and the GPU gate
+    reported three dead controls beside passing identity rows.
+    ``stale_child_reads`` is what the gate installs instead: the frozen
+    attach-time child everywhere at width 0, and fresh only inside the
+    frame at width 2, which leaves stale cells inside the 5-cell zone
+    ``bdy_interp1`` reads.
+    """
+    from gpuwm.core.nest_operands import NestWindowSource
+    from tilestream.test_streamed_child import stale_child_reads
+
+    parent, child = _nodes()
+    state = child.state
+    ny, nx = state.mup.shape
+    live = {"thp": state.thp + np.float32(11.0),
+            "mup": state.mup + np.float32(2.0)}
+    state._streamed_domain = SimpleNamespace(
+        store={f"state/{name}": value for name, value in live.items()},
+        _geography={}, template_state=state)
+    frozen = state.thp.copy()
+
+    assert np.array_equal(NestWindowSource(state).array("thp"), live["thp"])
+    frozen_everywhere = stale_child_reads(state, 0)
+    starved_frame = stale_child_reads(state, 2)
+
+    source = NestWindowSource(state)
+    assert np.array_equal(frozen_everywhere(source, "thp"), frozen)
+    starved = starved_frame(source, "thp")
+    assert starved.shape == live["thp"].shape
+    for edge in (np.s_[..., 0, :], np.s_[..., 1, :], np.s_[..., -1, :],
+                 np.s_[..., -2, :], np.s_[..., :, 0], np.s_[..., :, 1],
+                 np.s_[..., :, -1], np.s_[..., :, -2]):
+        assert np.array_equal(starved[edge], live["thp"][edge])
+    for depth in (3, 4):
+        assert np.array_equal(starved[..., ny // 2, nx - 1 - depth],
+                              frozen[..., ny // 2, nx - 1 - depth])
+        assert np.array_equal(starved[..., ny - 1 - depth, nx // 2],
+                              frozen[..., ny - 1 - depth, nx // 2])
+    assert np.array_equal(starved[..., ny // 2, nx // 2],
+                          frozen[..., ny // 2, nx // 2])
+
+    # Setup arrays and every other domain's operands pass through.
+    assert frozen_everywhere(source, "c1h") is state.c1h
+    parent_source = NestWindowSource(parent.state)
+    assert frozen_everywhere(parent_source, "thp") is parent.state.thp
+
+
 def test_feedback_reads_the_whole_child_field_not_the_frame(monkeypatch):
     """The restriction reads the whole child interior; its pull is accurate.
 

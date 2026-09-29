@@ -385,9 +385,14 @@ class PendingChildInputs:
                     prepared = future.result()
                 except Exception as exc:
                     self._cancel_pending()
+                    # The cause's own sentence rides in the message: a
+                    # reader of the last exception line alone (a retrying
+                    # worker, a run page) saw no reason and no remedy, so
+                    # a retry keyed on the refusal's remedy never fired.
+                    cause = str(exc).strip() or type(exc).__name__
                     raise RuntimeError(
                         f"d{grid_id:02d} independent input preparation "
-                        "failed") from exc
+                        f"failed: {cause}") from exc
                 del self._futures_by_id[grid_id]
                 del self._futures[future]
                 self._submit_next()
@@ -854,9 +859,18 @@ def _prepare_child_input_on_grid(
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
     started = time.perf_counter()
+    root_selection = dict(getattr(catalog, "provenance", {}).get(
+        "preprocess_selection", {}))
+    requested = (preprocess_backend.strip().lower()
+                 if isinstance(preprocess_backend, str) else None)
+    if root_selection.get("backend") != requested:
+        # The root's reason explains the root's backend.  A child prepared
+        # on another one would otherwise record, say, "the card is
+        # certified" for a preparation that ran on the CPU.
+        root_selection = {}
     preprocess = resolve_preprocess_backend(
         preprocess_backend, workers=preprocess_workers,
-        cpu_bridge=cpu_bridge)
+        cpu_bridge=cpu_bridge, reason=root_selection.get("reason"))
     cfg = child_dc.run
     if not cfg.moist:
         raise ValueError("ERA5-direct child initialization requires moist=True")
@@ -920,6 +934,11 @@ def _prepare_child_input_on_grid(
          int(landuse_attrs["ISLAKE"])) if water_statics is None
         else water_statics.lake)
     mapping_receipt: dict[str, object] = dict(preprocess.receipt())
+    if root_selection:
+        # A child on the root's backend inherits the root's choice,
+        # including the original selector and measured reason, while
+        # recording its own implementation work.
+        mapping_receipt["selection"] = root_selection
     if isinstance(source, HrrrNativeSnapshot):
         soil_mapping_report: dict[str, object] = {}
         catalog_provenance = dict(getattr(catalog, "provenance", {}))
@@ -950,11 +969,14 @@ def _prepare_child_input_on_grid(
         lake_skin_temperature = np.where(lake_mask, skin, np.nan)
         if water_statics is not None:
             from dataclasses import replace
+            from gpuwm.ingest.cpu_backend import host_step_workers
             from gpuwm.ingest.water_temperature import assemble_horizontal_water_temperature
             # This soil invocation applies a lake-skin override, which also
             # marks those lake-category cells as water inside its router.
             water_statics = replace(water_statics, land=water_statics.land & ~lake_mask)
-            horizontal = assemble_horizontal_water_temperature(horizontal, water_statics)
+            horizontal = assemble_horizontal_water_temperature(
+                horizontal, water_statics,
+                workers=host_step_workers(preprocess))
         mapping_receipt.update({
             "source_adapter": "hrrr-native-state-v1",
             "surface_fallback_radius_cells": surface_fallback_radius,
@@ -1136,10 +1158,10 @@ def finalize_prepared_child(
         init_kwargs["initial_perturbation"] = \
             build_initial_state_perturbation(
                 initial_perturbation, grid, grid_id=int(child_dc.grid_id),
-                require_containment=False)
+                require_containment=False, cfg=cfg)
     real = initialize_real(
         horizontal, cfg, coord, static_fields["HGT_M"], grid=grid,
-        **init_kwargs)
+        landmask=static_fields.get("LANDMASK"), **init_kwargs)
     state = real.state
     _set_map_fields(state, grid)
     # initialize_real deliberately leaves EOS diagnostics to its caller.
@@ -1188,6 +1210,10 @@ def finalize_prepared_child(
         lake_skin_temperature=prepared.lake_skin_temperature,
         soil_layer_contract=soil_layer_contract,
         landmask=static_fields.get("LANDMASK"),
+        # Land the source holds no land for takes the column the
+        # router builds (gpuwm/ingest/soil.py: island_soil_columns).
+        soil_no_source_land=getattr(
+            horizontal, "soil_no_source_land", None),
         terrain=(static_fields["HGT_M"]
                  if child_orography is not None else None),
         source_orography=child_orography,

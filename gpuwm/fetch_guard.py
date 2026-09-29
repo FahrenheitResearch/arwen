@@ -16,13 +16,24 @@ the holder dies, which a cooperative sentinel file cannot promise --
 a crashed fetch must not leave a directory permanently unfetchable.
 The loser announces the wait, waits, and then refuses loudly naming the
 holder; it never proceeds in parallel and never silently doubles work.
+A caller that can see the holder's work (the bytes a download has
+staged) passes it as ``holder_progress``, and the loser then waits as
+long as that work keeps moving and refuses only a holder that stalls.
 
 **Nothing is published half-written.**  Text receipts are written to a
-temp that is unique per process *and* per call -- a fixed ``.tmp`` is
-exactly the file two writers collide on -- flushed, fsynced, atomically
-renamed, and the containing directory is fsynced too where the platform
-allows it.  Quarantine names are proven absent before the rename, so
+temp that is unique per call -- a fixed ``.tmp`` is exactly the file two
+writers collide on -- claimed exclusively under a compact random name
+that never repeats the target's own (so a folder deep enough to hold a
+file is deep enough to stage it), flushed, fsynced, atomically renamed,
+and the containing directory is fsynced too where the platform allows
+it.  Quarantine names are proven absent before the rename, so
 moving evidence aside can never overwrite older evidence.
+
+**A write this computer refuses is not a download that failed.**  A
+folder too deep for Windows or a full disk used to surface through the
+network handler as "download failed ...; a re-run resumes".
+:func:`receive` and :class:`LocalWriteFailed` keep the two apart, and
+:func:`local_write_refusal` names the path's length and the fix.
 
 Nothing here deletes anything.  Quarantine moves aside; the lock file
 is the only file this module creates on its own, and it lives in the
@@ -36,14 +47,17 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from gpuwm.explain import layered
 
-#: How long a losing writer waits for the holder before refusing.
+#: How long a losing writer waits for the holder before refusing.  With a
+#: ``holder_progress`` probe it is how long the holder may go without
+#: showing progress, not how long its whole job may take.
 DEFAULT_LOCK_TIMEOUT_S = 600.0
 
 #: Override for the wait budget (seconds).  A test or a batch driver
@@ -70,7 +84,60 @@ _REGISTRY_GUARD = threading.Lock()
 
 
 class FetchLockBusy(RuntimeError):
-    """Another writer holds the output root; this one refuses."""
+    """Another writer holds the output root; this one refuses.
+
+    ``budget_s`` is the wait budget, ``waited_s`` how long this writer
+    waited in all, and ``idle_s``, set only when the wait watched the
+    holder's progress, how long the holder had shown none.  ``holder`` is
+    what the holder recorded about itself.
+    """
+
+    def __init__(self, message: str = "", *, budget_s: float | None = None,
+                 waited_s: float | None = None, idle_s: float | None = None,
+                 holder: str = "") -> None:
+        super().__init__(message)
+        self.budget_s = budget_s
+        self.waited_s = waited_s
+        self.idle_s = idle_s
+        self.holder = holder
+
+
+class _Patience:
+    """How much longer a losing writer waits.
+
+    Without a probe the budget runs from the start of the wait.  With a
+    ``holder_progress`` probe it runs from the last time what the probe
+    returns changed, so a holder whose work is still moving is waited
+    for however long it takes, and only one that has stalled for the
+    whole budget is refused.
+    """
+
+    def __init__(self, budget_s: float, clock,
+                 probe: Callable[[], object] | None) -> None:
+        self.budget_s = budget_s
+        self.probe = probe
+        self._clock = clock
+        self.started = clock()
+        self._last_change = self.started
+        self._mark = probe() if probe is not None else None
+        self._now = self.started
+
+    def expired(self) -> bool:
+        self._now = self._clock()
+        if self.probe is not None:
+            mark = self.probe()
+            if mark != self._mark:
+                self._mark = mark
+                self._last_change = self._now
+        return self._now - self._last_change >= self.budget_s
+
+    @property
+    def waited_s(self) -> float:
+        return self._now - self.started
+
+    @property
+    def idle_s(self) -> float:
+        return self._now - self._last_change
 
 
 class _Entry:
@@ -208,11 +275,22 @@ def _timeout(explicit: float | None) -> float:
 
 
 class OutputLock:
-    """Exclusive cross-process lock over one fetch output root."""
+    """Exclusive cross-process lock over one fetch output root.
+
+    ``holder_progress`` is an optional probe of the holder's work (the
+    bytes it has staged, say).  With one, the wait budget runs from the
+    last time the probe's answer changed rather than from the start of
+    the wait, so a slow but live holder is waited for to the end and
+    only a stalled one is refused.  The concrete breakage it prevents:
+    a flat budget refused a preparation waiting on another's 2.28 GB
+    land-cover download that was still arriving, on any link slower
+    than about 3.8 MB/s.
+    """
 
     def __init__(self, kind: str, target: str | Path, *,
                  timeout_s: float | None = None, progress=print,
-                 clock=time.monotonic, sleeper=time.sleep) -> None:
+                 clock=time.monotonic, sleeper=time.sleep,
+                 holder_progress: Callable[[], object] | None = None) -> None:
         self.kind = kind
         self.target = Path(target)
         self.path = lock_path(kind, target)
@@ -220,32 +298,72 @@ class OutputLock:
         self._progress = progress
         self._clock = clock
         self._sleeper = sleeper
+        self._holder_progress = holder_progress
         self._key = str(self.path).lower() if os.name == "nt" \
             else str(self.path)
         self._held = False
 
-    def _busy(self, waited: float) -> FetchLockBusy:
+    def _busy(self, patience: _Patience | None = None) -> FetchLockBusy:
+        holder = describe_holder(self.path)
+        why = ("  why: two writers in one output directory can publish a "
+               "receipt that describes the other one's bytes, so this run "
+               "refuses rather than interleave.")
+        if patience is None or patience.probe is None:
+            return FetchLockBusy(layered(
+                f"another gpuwm fetch is writing {self.target} "
+                f"({holder}) and this run waited "
+                f"{self.timeout_s:g} s for it.\n"
+                "  remedy: wait for the other run to finish, fetch into a "
+                f"different --out, or raise {LOCK_TIMEOUT_ENV} if the other "
+                "run is expected to take longer.", why),
+                budget_s=self.timeout_s,
+                waited_s=(self.timeout_s if patience is None
+                          else patience.waited_s),
+                holder=holder)
         return FetchLockBusy(layered(
-            f"another gpuwm fetch is writing {self.target} "
-            f"({describe_holder(self.path)}) and this run waited "
-            f"{waited:g} s for it.\n"
-            "  remedy: wait for the other run to finish, fetch into a "
-            f"different --out, or raise {LOCK_TIMEOUT_ENV} if the other "
-            "run is expected to take longer.",
-            "  why: two writers in one output directory can publish a "
-            "receipt that describes the other one's bytes, so this run "
-            "refuses rather than interleave."))
+            f"another gpuwm fetch is writing {self.target} ({holder}) and "
+            f"has shown no progress for {self.timeout_s:g} s; this run "
+            f"waited {patience.waited_s:.0f} s for it in all.\n"
+            "  remedy: find out why the other run stopped (a stalled "
+            "connection, a stopped process) and let it finish or stop it, "
+            f"or raise {LOCK_TIMEOUT_ENV} if it is expected to pause "
+            "longer.", why),
+            budget_s=self.timeout_s, waited_s=patience.waited_s,
+            idle_s=patience.idle_s, holder=holder)
 
-    def acquire(self) -> "OutputLock":
-        key_lock = _key_lock(self._key)
+    def _announce_wait(self) -> None:
+        if self._holder_progress is None:
+            limit = f"waiting up to {self.timeout_s:g} s for it to finish"
+        else:
+            limit = ("waiting for it to finish; this run refuses only if "
+                     f"it shows no progress for {self.timeout_s:g} s")
+        self._progress(f"fetch: {self.target} is locked by "
+                       f"{describe_holder(self.path)}; {limit}")
+
+    def _acquire_key_lock(self, key_lock: threading.RLock) -> None:
         # Same thread: re-entrant, so nesting counts.  Another thread in
         # this process: a genuine second writer, so it queues here.
         if self.timeout_s <= 0:
-            acquired = key_lock.acquire(blocking=False)
-        else:
-            acquired = key_lock.acquire(timeout=self.timeout_s)
-        if not acquired:
-            raise self._busy(self.timeout_s)
+            if not key_lock.acquire(blocking=False):
+                raise self._busy()
+            return
+        if self._holder_progress is None:
+            if not key_lock.acquire(timeout=self.timeout_s):
+                raise self._busy()
+            return
+        patience = _Patience(self.timeout_s, self._clock,
+                             self._holder_progress)
+        announced = False
+        while not key_lock.acquire(timeout=_POLL_S):
+            if patience.expired():
+                raise self._busy(patience)
+            if not announced:
+                self._announce_wait()
+                announced = True
+
+    def acquire(self) -> "OutputLock":
+        key_lock = _key_lock(self._key)
+        self._acquire_key_lock(key_lock)
         self._held = True
         try:
             with _REGISTRY_GUARD:
@@ -268,16 +386,14 @@ class OutputLock:
             if stream.tell() == 0:
                 stream.write(b"\0")
                 stream.flush()
-            deadline = self._clock() + self.timeout_s
+            patience = _Patience(self.timeout_s, self._clock,
+                                 self._holder_progress)
             announced = False
             while not _try_lock(stream):
-                if self._clock() >= deadline:
-                    raise self._busy(self.timeout_s)
+                if patience.expired():
+                    raise self._busy(patience)
                 if not announced:
-                    self._progress(
-                        f"fetch: {self.target} is locked by "
-                        f"{describe_holder(self.path)}; waiting up to "
-                        f"{self.timeout_s:g} s for it to finish")
+                    self._announce_wait()
                     announced = True
                 self._sleeper(_POLL_S)
         except BaseException:
@@ -327,10 +443,12 @@ class OutputLock:
 
 
 def hold(kind: str, target: str | Path, *, timeout_s: float | None = None,
-         progress=print) -> OutputLock:
+         progress=print,
+         holder_progress: Callable[[], object] | None = None) -> OutputLock:
     """``with hold('fetch-out', out):`` -- the single-writer contract."""
 
-    return OutputLock(kind, target, timeout_s=timeout_s, progress=progress)
+    return OutputLock(kind, target, timeout_s=timeout_s, progress=progress,
+                      holder_progress=holder_progress)
 
 
 def active_writer(kind: str, target: str | Path) -> bool:
@@ -390,23 +508,62 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
-def _staging_path(path: Path, tag: str) -> Path:
-    return path.with_name(
-        f"{path.name}.{tag}-{os.getpid()}-{time.time_ns()}.tmp")
+#: The longest name :func:`_staging_path` produces:
+#: ``<tag, at most 8>-<10 hex>.tmp``.
+STAGING_NAME_CHARS = 8 + 1 + 10 + 4
+
+#: Fresh names tried before a publication gives up.  Each is 40 random
+#: bits claimed with O_EXCL, so a second attempt already means another
+#: writer holds the first name; eight in a row do not happen by chance.
+_STAGING_ATTEMPTS = 8
+
+
+def _staging_token() -> str:
+    return secrets.token_hex(5)
+
+
+def _staging_path(path: Path, tag: str, token: str | None = None) -> Path:
+    """A compact sibling of ``path`` that one publication stages into.
+
+    The name is the tag and a random token, never the target's own name.
+    It used to be ``<name>.<tag>-<pid>-<time_ns>.tmp``, 35 characters
+    longer than the file it publishes, so a folder deep enough to hold
+    the published file could still be too deep for Windows (259
+    characters without long paths) to create its staging copy: in an
+    install 143 characters deep the geography resume record fit and its
+    staging copy did not, and every geography setup failed there.
+    Uniqueness now comes from :func:`atomic_write_bytes` claiming the
+    name exclusively rather than from spelling out who wrote it.
+    """
+
+    return path.with_name(f"{tag[:8]}-{token or _staging_token()}.tmp")
 
 
 def atomic_write_bytes(path: Path, payload: bytes, *,
                        tag: str = "publish") -> Path:
     """Publish ``payload`` at ``path`` or leave the old bytes alone.
 
-    The staging name carries the pid and a nanosecond stamp, so two
-    publishers never share it -- the fixed ``<name>.tmp`` this replaces
-    is the one file concurrent writers were guaranteed to collide on.
+    The staging file is claimed with O_EXCL under a fresh random name, so
+    two publishers never share it -- the fixed ``<name>.tmp`` this
+    replaced is the one file concurrent writers were guaranteed to
+    collide on -- and a name another writer already holds is skipped
+    rather than truncated.
     """
 
-    tmp = _staging_path(path, tag)
+    for _ in range(_STAGING_ATTEMPTS):
+        tmp = _staging_path(path, tag)
+        try:
+            stream = tmp.open("xb")
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise FileExistsError(
+            errno.EEXIST,
+            f"no free staging name for {path.name} after "
+            f"{_STAGING_ATTEMPTS} attempts", str(path.parent))
     try:
-        with tmp.open("wb") as stream:
+        with stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
@@ -423,6 +580,111 @@ def atomic_write_text(path: Path, text: str, *,
     """:func:`atomic_write_bytes` for UTF-8 text with LF newlines."""
 
     return atomic_write_bytes(path, text.encode("utf-8"), tag=tag)
+
+
+# ---------------------------------------------------------------------------
+# A write this computer refused is not a download that failed
+# ---------------------------------------------------------------------------
+
+#: The longest path Windows opens for a process when long paths are not
+#: enabled on the machine: MAX_PATH (260) less the terminating null.
+WINDOWS_PATH_LIMIT = 259
+
+#: The widest process id a Windows staging name can carry: process ids
+#: are 32-bit there, ten digits at most.  A measure of a path that holds
+#: one uses this, since the limit above binds only on Windows.
+WINDOWS_WIDEST_PID = 2 ** 32 - 1
+
+
+def windows_path_limit() -> int | None:
+    """:data:`WINDOWS_PATH_LIMIT` where it binds this process, else None.
+
+    Python's own ``python.exe`` declares itself long-path aware, so the
+    limit binds only on Windows and only while the machine's
+    ``LongPathsEnabled`` switch is off, which is the Windows default.
+    """
+
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\FileSystem"
+                            ) as key:
+            if winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1:
+                return None
+    except OSError:
+        pass
+    return WINDOWS_PATH_LIMIT
+
+
+class LocalWriteFailed(Exception):
+    """A write on this computer failed; carries the path it was writing.
+
+    Deliberately not an ``OSError``: a transfer's own handler treats
+    ``OSError`` as the network failing (a reset connection and a read
+    timeout are both ``OSError``), and a local failure must never reach
+    it.
+    """
+
+    def __init__(self, path: Path, error: OSError) -> None:
+        super().__init__(str(error))
+        self.path = path
+        self.error = error
+
+
+def receive(response, dest: Path, mode: str, *, block_bytes: int) -> None:
+    """Stream an HTTP ``response`` into ``dest``; a failed write is local.
+
+    Only the writes are wrapped.  Reads stay outside, so a reset
+    connection or a timeout still reaches the caller as the network.
+    """
+
+    try:
+        sink = dest.open(mode)
+    except OSError as error:
+        raise LocalWriteFailed(dest, error) from error
+    try:
+        while block := response.read(block_bytes):
+            try:
+                sink.write(block)
+            except OSError as error:
+                raise LocalWriteFailed(dest, error) from error
+    finally:
+        try:
+            sink.close()
+        except OSError as error:
+            raise LocalWriteFailed(dest, error) from error
+
+
+def local_write_refusal(label: str, attempted: Path, error: OSError,
+                        consequence: str) -> str:
+    """The message for a write this computer would not do.
+
+    Names the path's length, and where Windows' limit is what refused it,
+    how many characters shorter the folder has to be.  The path goes
+    last: a front end that shows one line cut to a few hundred
+    characters still shows the reason and the fix, and the path itself
+    can be longer than that line.  ``consequence`` says what the failure
+    left behind for a re-run.
+    """
+
+    names = [str(attempted)] + [str(name) for name in
+                                (error.filename, error.filename2) if name]
+    path = max(names, key=len)
+    length = len(path)
+    limit = windows_path_limit()
+    if limit is not None and length > limit:
+        over = length - limit
+        return (f"{label}: this computer cannot write a path of {length} "
+                f"characters: Windows refuses paths longer than {limit} "
+                "characters unless long paths are enabled.  This is not a "
+                f"download failure.  Use a folder at least {over} "
+                f"character{'' if over == 1 else 's'} shorter, or enable "
+                f"Windows long paths; {consequence}.  Path: {path}")
+    return (f"{label}: this computer could not write a path of {length} "
+            f"characters ({error.strerror or error}).  This is not a "
+            f"download failure; {consequence}.  Path: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -461,13 +723,20 @@ __all__ = [
     "FetchLockBusy",
     "LOCK_ROOT_ENV",
     "LOCK_TIMEOUT_ENV",
+    "LocalWriteFailed",
     "OutputLock",
+    "STAGING_NAME_CHARS",
+    "WINDOWS_PATH_LIMIT",
+    "WINDOWS_WIDEST_PID",
     "aside_path",
     "atomic_write_bytes",
     "atomic_write_text",
     "describe_holder",
     "hold",
+    "local_write_refusal",
     "lock_path",
     "lock_root",
     "quarantine",
+    "receive",
+    "windows_path_limit",
 ]

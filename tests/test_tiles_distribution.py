@@ -64,6 +64,8 @@ import tomllib
 
 import pytest
 
+from _release_export import private_input
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
@@ -389,6 +391,9 @@ def test_rescued_tools_is_excluded_from_the_declaration():
         "development fault-injection and remote mutation probes must remain repository-only")
 
 
+# The control half discovers the two excluded trees on disk.  The public
+# export drops both, so there the exclusion has nothing to be measured against.
+@private_input("tilestream/rescued-tools", "tilestream/skeptic")
 def test_rescued_tools_is_excluded_from_the_build_and_not_vacuously():
     """The measurement half, with the control that proves it does work.
 

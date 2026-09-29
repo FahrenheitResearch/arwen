@@ -41,17 +41,18 @@ beside the binaries as ``<dest>/assets/basemap/...``.  That is not a
 new lookup: ``rw_wrfbatch`` already resolves ``assets/basemap`` under
 its own ancestors, so a renderer staged at ``~/.gpuwm/bridges`` finds
 the shapefiles itself, with no environment variable set and no Python
-in the loop.  They travel in the bundle rather than the wheel because
-the wheel has no room, and that is measured rather than estimated:
-as of 2026-08-17 the platform wheels are 108.70 MB (win_amd64) and
-111.70 MB (manylinux_2_28_x86_64) against PyPI's 100 MB per-file cap --
-already over it before a byte of basemap, which deflates to 21.1 MB.
-The published pair is the pure one (91.93 MB wheel, 95.25 MB sdist);
-see ``tools/stage_wheel_bridges.py``'s docstring for the full table and
-what makes the platform pair uploadable.  So the binaries ship in the wheel and the
-basemaps do not -- which is the one place the "arrive by one mechanism"
-rule bends, and the reason a wheel-only install renders fields without
-the cartographic overlay until this command runs.
+in the loop.  They are not in the ``gpuwm`` wheel because the wheel
+has no room, and that is measured rather than estimated: as of
+2026-08-17 the platform wheels were 108.70 MB (win_amd64) and 111.70 MB
+(manylinux_2_28_x86_64) against PyPI's 100 MB per-file cap, already
+over it before a byte of basemap, which deflates to 21.1 MB; see
+``tools/stage_wheel_bridges.py``'s docstring for the full table.  So a
+wheel install gets them from the ``gpuwm-data`` companion instead, which
+every install pulls, and :func:`gpuwm.rustwx.renderer_env` hands that
+copy to the wheel's renderer.  Until 2.8.0 this command was their only
+route onto a wheel install, no install text ran it, and every picture
+of such an install was drawn with no coastlines, borders or state
+lines.  The bundle still carries them for the renderer it stages here.
 
 Platform support is a capability check on the OS and machine
 architecture -- can this box run the bytes in that bundle -- and never
@@ -101,8 +102,10 @@ refuses rather than inventing a hash to check against.
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -114,7 +117,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import zipfile
 
-from gpuwm import bridges
+from gpuwm import bridges, fetch_guard
 from gpuwm.explain import warn
 
 #: Schema of the packaged pins document.
@@ -287,7 +290,8 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "gdt101_remap", "executable", bridges.CRATE_RELATIVE,
         bridges.BRIDGE_ENV["gdt101_remap"],
-        "unstructured GDT-101 source normalization (gpuwm go --source icon-global)"),
+        "unstructured GDT-101 source normalization "
+        "(gpuwm go --source icon-global or icon-d2)"),
     BundledArtifact(
         "gfs_grib2_bridge", "executable", bridges.CRATE_RELATIVE,
         bridges.BRIDGE_ENV["gfs_grib2_bridge"],
@@ -307,7 +311,8 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "gpuwm_preprocess_cpu", "library", bridges.CRATE_RELATIVE,
         "GPUWM_CPU_PREPROCESS_BRIDGE",
-        "--preprocess-backend cpu"),
+        "--preprocess-backend cpu, and the masked surface fields "
+        "(soil, snow, skin, sea ice) under every backend"),
     BundledArtifact(
         "rw_fetch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_FETCH", "gpuwm fetch --engine rust"),
@@ -902,7 +907,7 @@ def embedded_source_revisions(payload: bytes) -> tuple[str, ...]:
 
 
 def verify_source_revision(payload: bytes, *, expected: str,
-                           label: str) -> None:
+                           label: str, equivalent=None) -> None:
     """``payload`` was built from commit ``expected``, or a refusal.
 
     Read from the bytes, never by executing the artifact: the cut
@@ -939,11 +944,117 @@ def verify_source_revision(payload: bytes, *, expected: str,
             f"stamps ({', '.join(revisions)}); one binary cannot be from "
             "two commits, so this build is not trustworthy -- rebuild "
             "from the release checkout")
+    if revisions[0] != expected and equivalent is not None:
+        # A binary built at an earlier commit whose every build input is
+        # byte-identical at the commit being released is that release's
+        # binary: the release cut reuses it rather than recompiling the
+        # same sources.  ``equivalent`` answers None for that case and a
+        # reason otherwise; see :func:`native_input_difference`.
+        reason = equivalent(revisions[0])
+        if reason is None:
+            return
+        raise BridgeAssetError(
+            f"{label}: was built from source revision {revisions[0]}, "
+            f"not the {expected} being released, and it is not "
+            f"interchangeable with a build at {expected}: {reason}; "
+            "rebuild from the release checkout and repack")
     if revisions[0] != expected:
         raise BridgeAssetError(
             f"{label}: was built from source revision {revisions[0]}, "
             f"not the {expected} being released -- a stale build; "
             "rebuild from the release checkout and repack")
+
+
+#: Every tracked path a native crate's build reads, keyed by the crate
+#: root (``BundledArtifact.crate``).  The crate's own directory first,
+#: then whatever it reaches outside it: Cargo ``path`` dependencies,
+#: ``include_str!``/``include_bytes!`` of repository files, and the
+#: shared vendored trees.  Transitive: a crate that depends on another
+#: root carries that root's own outside inputs too.
+#:
+#: What it is for.  A release cut reuses a binary built at an earlier
+#: commit when every path listed for its crate is byte-identical (the
+#: same git object) at the commit being released, so a release that
+#: changed one Python file does not recompile twenty-nine unchanged
+#: binaries.  A path missing from this table is a binary that could be
+#: reused while carrying a stale copy of that file, so
+#: ``tests/test_native_build_inputs.py`` re-derives the outside inputs
+#: from the Cargo manifests and the Rust sources and refuses any it does
+#: not find covered here.
+NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
+    "tools/grib1_bridge": ("tools/grib1_bridge",),
+    "tools/rustwx": ("tools/rustwx", "tools/grib1_bridge/vendor/grib-core"),
+    "tools/rw_wps": ("tools/rw_wps", "tools/grib1_bridge/vendor/grib-core"),
+    "tools/region_global_dealias": ("tools/region_global_dealias",),
+    "tools/arwen-tui": (
+        "tools/arwen-tui", "tools/arwen-ui-vendor", "gpuwm/tui_worker.py",
+        "gpuwm/data/tui", "configs/gfs_12km_quickstart.toml",
+        "configs/nest_lifecycle_20240521_4km.toml"),
+    "tools/zarr_bridge": (
+        "tools/zarr_bridge", "tools/rustwx/crates/netcdf-writer",
+        "tools/rw_wps", "tools/grib1_bridge/vendor/grib-core"),
+}
+
+
+#: Paths inside a crate root that its build never reads: packed into the
+#: bundle as data members, hashed by the pins, never compiled.  The map
+#: asset tree carries the binary licence notice, which moves whenever the
+#: terminal's lock does; listing it as a build input would recompile the
+#: whole renderer workspace for a text refresh.  The inputs test refuses
+#: an exclusion that any Rust source embeds from.
+NATIVE_BUILD_INPUT_EXCLUSIONS: dict[str, tuple[str, ...]] = {
+    "tools/rustwx": ("tools/rustwx/assets",),
+}
+
+
+@functools.lru_cache(maxsize=256)
+def native_input_difference(repo: Path, crate: str, built: str,
+                            released: str) -> str | None:
+    """None when a binary of ``crate`` built at ``built`` is the build at ``released``.
+
+    Two conditions, both read from git and nothing else, so the public
+    publication workflow proves them from its own full clone:
+
+    * ``built`` is an ancestor of ``released``: the reused binary came
+      from this repository's published history, not from a side branch
+      a reader cannot fetch; and
+    * no path :data:`NATIVE_BUILD_INPUTS` lists for ``crate`` (less its
+      :data:`NATIVE_BUILD_INPUT_EXCLUSIONS`) differs between the two
+      commits.
+
+    Anything else, including a commit the clone does not have, is a
+    reason string and the binary is refused as before.
+
+    Answers are kept per (repository, crate, commit pair): a bundle holds many
+    binaries of one crate, and on Windows each git process costs a large part
+    of a second, which made pinning two bundles take a minute and a half.
+    """
+
+    import subprocess
+
+    inputs = NATIVE_BUILD_INPUTS.get(crate)
+    if inputs is None:
+        return f"no build inputs are declared for {crate}"
+    repo = Path(repo)
+    ancestry = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", built,
+         released], capture_output=True, text=True)
+    if ancestry.returncode != 0:
+        return (f"{built} is not an ancestor of {released} in this "
+                "checkout's history, so its sources cannot be compared")
+    excluded = [":(exclude)" + path
+                for path in NATIVE_BUILD_INPUT_EXCLUSIONS.get(crate, ())]
+    diff = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--no-renames", "--name-only",
+         built, released, "--", *inputs, *excluded],
+        capture_output=True, text=True)
+    if diff.returncode != 0:
+        return "git could not compare the two commits: " + diff.stderr.strip()
+    changed = diff.stdout.split()
+    if changed:
+        shown = ", ".join(changed[:8]) + (" ..." if len(changed) > 8 else "")
+        return f"its build inputs changed ({len(changed)} files: {shown})"
+    return None
 
 
 def verify_contract_marker(artifact: str, path: Path) -> None:
@@ -1235,6 +1346,24 @@ def _default_urlopen(request: Request):
     return urlopen(request, timeout=_TIMEOUT_S)
 
 
+def _partial_note(dest: Path) -> str:
+    """What a failed transfer leaves for the next run.
+
+    :func:`download_bundle` resumes any partial no longer than the pin,
+    so a partial is always worth naming; the old text promised a resume
+    even when the failure left nothing on disk.
+    """
+
+    try:
+        size = dest.stat().st_size
+    except OSError:
+        size = 0
+    if size <= 0:
+        return "nothing was downloaded, so a re-run starts from the beginning"
+    return (f"the partial file ({size:,} B) is kept and a re-run resumes "
+            "from it")
+
+
 def download_bundle(url: str, dest: Path, *, expected_bytes: int,
                     progress, urlopen_fn=_default_urlopen) -> None:
     """Download ``url`` to ``dest``, resuming or restarting as needed.
@@ -1273,17 +1402,20 @@ def download_bundle(url: str, dest: Path, *, expected_bytes: int,
             if offset and status != 206:
                 progress("gpuwm fetch-bridges: the server ignored the "
                          "resume range; restarting the download")
-            with dest.open(mode) as sink:
-                while block := response.read(_BLOCK_BYTES):
-                    sink.write(block)
+            fetch_guard.receive(response, dest, mode,
+                                block_bytes=_BLOCK_BYTES)
+    except fetch_guard.LocalWriteFailed as failure:
+        # Before the network handlers: a file this computer would not
+        # write used to read "download failed ...; a re-run resumes".
+        raise BridgeAssetError(fetch_guard.local_write_refusal(
+            "gpuwm fetch-bridges", failure.path, failure.error,
+            _partial_note(dest))) from failure.error
     except HTTPError as error:
         raise BridgeAssetError(
-            f"HTTP {error.code} from {url}; the partial file is kept and "
-            "a re-run resumes")
+            f"HTTP {error.code} from {url}; {_partial_note(dest)}")
     except (URLError, OSError, TimeoutError) as error:
         raise BridgeAssetError(
-            f"download failed from {url}: {error}; the partial file is "
-            "kept and a re-run resumes")
+            f"download failed from {url}: {error}; {_partial_note(dest)}")
     size = dest.stat().st_size
     if size != expected_bytes:
         dest.unlink(missing_ok=True)
@@ -1509,11 +1641,112 @@ def stage_from_dir(source_dir: Path, bundle: BundlePin, dest: Path,
     return stage_from_loose_files(source_dir, bundle, dest, progress=progress)
 
 
+#: The owner file of a bridge folder while one setup stages into it.
+BRIDGE_OWNER_NAME = ".fetch-bridges.owner"
+
+
+class BridgeFolderUnwritable(BridgeAssetError):
+    """The bridge folder cannot be written, so no setup can own it.
+
+    Raised in place of the bare OSError from creating the folder or its
+    owner file, which used to reach the screen as a traceback.  Nothing
+    can be staged there, but an estate that is already complete is still
+    usable, and ``gpuwm fetch-bridges`` says so.
+    """
+
+    def __init__(self, dest: Path, error: OSError):
+        dest = Path(dest)
+        if dest.exists() and not dest.is_dir():
+            reason = "it is a file, not a folder"
+        else:
+            words = (error.strerror or "").strip().rstrip(".")
+            reason = words.lower() if words else "the system refused it"
+        super().__init__(f"{dest} cannot be written ({reason})")
+        self.dest = dest
+        self.reason = reason
+
+
+#: How long a second setup waits for the first to finish staging before
+#: it refuses.  A whole bundle over a slow line fits inside it.
+_BRIDGE_OWNER_WAIT_S = 3600.0
+
+
+@contextmanager
+def bridge_owner(dest: Path, *, progress=print, waited: list | None = None):
+    """Hold ``dest`` for one setup across classify, download and cleanup.
+
+    Two setups (two terminals, or a run's automatic refresh beside a
+    manual ``gpuwm fetch-bridges``) used to share the one partial archive
+    under ``dest``: the second resumed it, installed it and deleted it
+    while the first was still writing, and the first then failed on a
+    file that was gone.  The second now waits for the first.  Re-entrant
+    within one thread, so the command can hold it around a
+    :func:`fetch_bundle` that takes it too.  ``waited`` gets one entry
+    when this call had to wait for another owner.
+    """
+
+    from gpuwm import ownership
+
+    dest = Path(dest)
+
+    def told(holder):
+        if waited is not None:
+            waited.append(holder)
+        progress(f"gpuwm fetch-bridges: waiting for "
+                 f"{ownership.describe_holder(holder)} to finish staging "
+                 f"bridges at {dest}")
+
+    # Only taking the claim is translated here.  An error raised by the
+    # caller's block passes through unchanged, so a failure while staging
+    # is never reported as a folder that cannot be written.
+    with ExitStack() as stack:
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            held = stack.enter_context(ownership.owned(
+                dest / BRIDGE_OWNER_NAME, purpose="bridge setup",
+                wait=_BRIDGE_OWNER_WAIT_S, poll=0.5, on_wait=told))
+        except ownership.OwnershipError as error:
+            raise BridgeAssetError(
+                f"{dest} is still being staged by "
+                f"{ownership.describe_holder(error.holder)} after "
+                f"{_BRIDGE_OWNER_WAIT_S / 60:.0f} minutes; run this again "
+                "once it finishes." + ownership.recovery_words(error)
+            ) from None
+        except OSError as error:
+            raise BridgeFolderUnwritable(dest, error) from None
+        yield held
+
+
+def _estate_complete(dest: Path, bundle: BundlePin) -> bool:
+    _staged, stale, absent = classify_destination(dest, bundle)
+    _held, stale_assets, absent_assets = classify_assets(dest, bundle)
+    return not (stale or absent or stale_assets or absent_assets)
+
+
 def fetch_bundle(pins: BridgePins, bundle: BundlePin, dest: Path, *,
                  keep_bundle: bool = False, progress=print,
                  urlopen_fn=_default_urlopen) -> list[Path]:
-    """Download, verify and stage the platform bundle."""
+    """Download, verify and stage the platform bundle, as ``dest``'s owner.
 
+    When another setup held ``dest`` and this call waited for it, the
+    estate is checked again first: the other setup has usually staged
+    exactly this bundle, and downloading it a second time would only
+    replace verified bytes with the same bytes.
+    """
+
+    waited: list = []
+    with bridge_owner(dest, progress=progress, waited=waited):
+        if waited and _estate_complete(dest, bundle):
+            progress(f"gpuwm fetch-bridges: the setup that held {dest} "
+                     "staged this bundle; nothing left to fetch")
+            return []
+        return _fetch_bundle_owned(pins, bundle, dest,
+                                   keep_bundle=keep_bundle,
+                                   progress=progress, urlopen_fn=urlopen_fn)
+
+
+def _fetch_bundle_owned(pins: BridgePins, bundle: BundlePin, dest: Path, *,
+                        keep_bundle: bool, progress, urlopen_fn) -> list[Path]:
     archive_dir = dest / ARCHIVE_SUBDIR
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive = archive_dir / bundle.filename
@@ -1732,14 +1965,57 @@ def _fetch_bridges_main(args) -> int:
         _print_listing(pins, bundle, dest)
         return 0
 
+    # Classify, stage and verify as the folder's one owner: a second
+    # setup that classified the estate while this one was mid-download
+    # would act on a picture that is about to change.
+    try:
+        with bridge_owner(dest, progress=print):
+            return _stage_estate(args, pins, bundle, dest)
+    except BridgeFolderUnwritable as error:
+        return _unwritable_estate(bundle, dest, error)
+    except BridgeAssetError as error:
+        print(f"gpuwm fetch-bridges: REFUSED: {error}")
+        return 2
+
+
+def _print_verified(bundle: BundlePin, dest: Path, staged: list,
+                    held_assets: list) -> None:
+    print(f"gpuwm fetch-bridges: all {len(staged)} artifacts and "
+          f"{len(held_assets)} map asset file(s) at {dest} verified "
+          "(exact size + SHA-256); nothing to fetch")
+    for note in _override_warnings(bundle):
+        print(note)
+
+
+def _unwritable_estate(bundle: BundlePin, dest: Path,
+                       error: BridgeFolderUnwritable) -> int:
+    """A folder this user cannot write: check it, and change nothing.
+
+    Nothing can be staged there, so there is nothing to own either, and
+    an estate that is already complete is as usable as it was.  Only an
+    incomplete one is refused, in words that say what to do instead.
+    """
+
     staged, stale, absent = classify_destination(dest, bundle)
     held_assets, stale_assets, absent_assets = classify_assets(dest, bundle)
     if not stale and not absent and not stale_assets and not absent_assets:
-        print(f"gpuwm fetch-bridges: all {len(staged)} artifacts and "
-              f"{len(held_assets)} map asset file(s) at {dest} verified "
-              "(exact size + SHA-256); nothing to fetch")
-        for note in _override_warnings(bundle):
-            print(note)
+        _print_verified(bundle, dest, staged, held_assets)
+        return 0
+    needed = len(stale) + len(absent) + len(stale_assets) + len(absent_assets)
+    total = len(bundle.binaries) + len(bundle.assets)
+    print(f"gpuwm fetch-bridges: REFUSED: {error}, and {needed} of the "
+          f"{total} bridge file(s) this release pins are missing or out of "
+          "date there.  Make that folder writable and run this again, or "
+          "pass --dest with a folder you can write.")
+    return 2
+
+
+def _stage_estate(args, pins: BridgePins, bundle: BundlePin,
+                  dest: Path) -> int:
+    staged, stale, absent = classify_destination(dest, bundle)
+    held_assets, stale_assets, absent_assets = classify_assets(dest, bundle)
+    if not stale and not absent and not stale_assets and not absent_assets:
+        _print_verified(bundle, dest, staged, held_assets)
         return 0
     if (stale_assets or absent_assets) and not stale and not absent:
         # The exact shape of the bug this asset half exists to close: a
@@ -1749,8 +2025,9 @@ def _fetch_bridges_main(args) -> int:
         print(f"gpuwm fetch-bridges: the {len(staged)} artifacts at {dest} "
               f"are current, but {len(stale_assets) + len(absent_assets)} of "
               f"{len(bundle.assets)} map asset file(s) are missing or stale "
-              "-- without them the renderer draws plots with no coastlines "
-              "or borders")
+              "-- the renderer falls back to them when the gpuwm-data "
+              "package carries none, and without either it draws plots "
+              "with no coastlines or borders")
     if stale:
         print(f"gpuwm fetch-bridges: {len(stale)} artifact(s) at {dest} do "
               "not match this release's pins and will be replaced once the "
@@ -1885,7 +2162,8 @@ def register_cli(subparsers) -> None:
 __all__ = [
     "ARCHIVE_SUBDIR", "ASSET_ROOT", "ASSET_URL_BASE_ENV",
     "BUNDLED_ARTIFACTS", "BUNDLE_MANIFEST_SCHEMA", "REQUIRED_ASSET_SUBDIRS",
-    "AssetPin", "BinaryPin", "BridgeAssetError", "BridgePins",
+    "AssetPin", "BinaryPin", "BridgeAssetError", "BridgeFolderUnwritable",
+    "BridgePins",
     "BundlePin", "BundledArtifact", "LIBRARY_ABI", "library_abi_for",
     "PINS_RESOURCE", "PINS_SCHEMA",
     "SOURCE_REV_MARKER", "STALE_POLICIES", "STALE_POLICY_ENV",
@@ -1894,6 +2172,8 @@ __all__ = [
     "SUPPORTED_PLATFORMS", "artifact_filename", "asset_url_base",
     "bundle_url", "classify_assets", "classify_destination",
     "download_bundle", "embedded_source_revisions", "fetch_bundle",
+    "NATIVE_BUILD_INPUTS", "NATIVE_BUILD_INPUT_EXCLUSIONS",
+    "native_input_difference",
     "fetch_bridges_main", "host_platform", "host_platform_description",
     "load_pins", "matches_pin", "packaged_pins_path", "parse_pins",
     "register_cli", "sha256_file", "staged_artifact_summary",

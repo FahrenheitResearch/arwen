@@ -32,10 +32,11 @@ clean pair (altimeter or station pressure vs ``psfc`` adjusted to station
 elevation) needs the v2 schema too, so this adapter does not offer a
 pressure type at all rather than offering a wrong one.
 
-**Reports are hourly-matched, and dated to when they were taken.**  The
-decoder matches each report to the ONE whole-hour valid time nearest it
-(``--step-hours`` in [1, 24]), so a report serves one slot and a 5-15 min
-cycling run sees fresh surface observations at roughly one cycle per hour.
+**Reports serve one slot each, and are dated to when they were taken.**  The
+decoder matches each report to the ONE valid time nearest it (a METAR
+record's stride is an hour, ``--step-hours`` in [1, 24]), so a report
+serves one slot and a 5-15 min cycling run fed by METARs sees fresh surface
+observations at roughly one cycle per hour.
 A ``v2`` record carries each report's ``observation_time`` (the archive's
 own instant) beside the ``valid_time`` slot it serves; the age of a report
 at an analysis, and which analysis it is routed to, are measured from
@@ -45,8 +46,11 @@ and the adapter counts such reports (``reports_without_observation_time``)
 so a receipt says which clock its ages came from.  Each report is
 assimilated ONCE, at the analysis nearest its observation time (ties to
 the earlier analysis), and never once its age exceeds ``max_age_seconds``.
-Sub-hourly cadence is the IEM ``asos1min`` dataset -- a new rw-obs route,
-upstream.
+Sub-hourly cadence is the archive's one-minute ASOS pages: a record decoded
+with ``rw_asos --product asos1min`` serves a valid time every minute, each
+report the minute it was taken, and the routing above assimilates the one
+nearest each analysis, so every analysis of a cycle of a few minutes gets a
+report from those stations.
 
 **Station elevation is checked against model terrain.**  A valley or ridge
 station the grid does not resolve produces systematic 2 m innovations that
@@ -833,11 +837,11 @@ def surface_to_gridded_obs(
                 if counts["reports_without_observation_time"]
                 == len(record["reports"]) and record["reports"]
                 else "observation_time"),
-            "note": "the seam is hourly-matched by decoder design and "
-                    "each report serves one slot; its age and routing are "
+            "note": "each report serves one slot; its age and routing are "
                     "measured from observation_time where the record "
-                    "carries it; sub-hourly cadence needs the IEM "
-                    "asos1min route in rw-obs (upstream)",
+                    "carries it; a METAR record reaches the few analyses "
+                    "after each hour, a record decoded with rw_asos "
+                    "--product asos1min carries a report every minute",
         },
         "notes": [
             "wind is SPEED only: drct is dropped at decode (v1 seam); "

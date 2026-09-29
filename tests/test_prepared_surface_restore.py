@@ -293,8 +293,11 @@ def test_direct_native_physics_derivation_declares_the_same_mesh(monkeypatch, en
     monkeypatch.setattr(hrrr_physics, "resolve_prepared_noah_surface", solve)
     monkeypatch.setattr(hrrr_physics, "initialize_prepared_physics", lambda *a, **k: None)
     attrs = dict(MMINLU="x", ISWATER=1, ISLAKE=2, ISICE=3, CEN_LAT=38.)
+    # No mesh case: the keyword is omitted, which is the automatic plan.
+    # An explicit soil_mesh=None is the caller disabling the downscale.
+    chosen = {} if mesh is None else {"soil_mesh": mesh}
     hrrr_physics.initialize_hrrr_physics(None, _cfg(), None, {}, attrs, grid, None,
-                                      soil_mesh=mesh)
+                                      **chosen)
     assert seen[0].enabled is (enabled is not False)
     if mesh is not None:
         assert seen[0] is mesh

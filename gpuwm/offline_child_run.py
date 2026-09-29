@@ -10,6 +10,7 @@ advances only the requested child on the GPU.  It never invokes WPS,
 from __future__ import annotations
 
 import argparse
+import contextlib
 from dataclasses import dataclass
 from datetime import timedelta
 import hashlib
@@ -17,7 +18,9 @@ import json
 import math
 import os
 from pathlib import Path
+import signal
 import sys
+import threading
 import time
 
 import netCDF4
@@ -52,6 +55,7 @@ from gpuwm.offline_child import (
     child_inherits_parent_levels,
     interpolate_parent_initial_state,
     les_child_regime,
+    open_parent_history,
     read_child_surface_state,
     require_offline_child_root_forcing,
     require_runnable_child_radiation_from_archive,
@@ -179,6 +183,128 @@ RENDERER_MISSING_REMEDY = (
     "--render-products none to run the child without pictures.")
 
 
+class ChildStopped(SystemExit):
+    """A stop asked for with SIGTERM, raised where the child was.
+
+    THE BREAKAGE: ``gpuwm downscale`` tells a
+    reader to stop it with SIGTERM when Ctrl-C cannot reach it, the page
+    follows its own Ctrl+C with SIGTERM a minute later, and the child had
+    no handler for it: the process died at the default disposition, exit
+    143, with no line printed, no event, no ``report.json``, no banner and
+    a run manifest carrying only its start, so every reader of the folder
+    saw a run that was still going.  :func:`stop_on_signal` raises this
+    instead, and the child's stop path records the stop.
+
+    A ``SystemExit``, so nothing between the signal and that path that
+    catches ``Exception`` can swallow it, and a door that does not catch
+    it exits with ``128 +`` the signal: 143 for SIGTERM, the status a
+    shell reports for a process SIGTERM killed.
+    """
+
+    def __init__(self, signal_number: int):
+        self.signal_number = int(signal_number)
+        try:
+            self.signal_name = signal.Signals(self.signal_number).name
+        except ValueError:
+            self.signal_name = f"signal {self.signal_number}"
+        super().__init__(128 + self.signal_number)
+
+    def __str__(self) -> str:
+        return f"stopped by {self.signal_name}"
+
+
+#: How many :func:`stop_on_signal` blocks are open: the ``gpuwm
+#: downscale`` door opens one and the child it runs opens another, and
+#: only the outer one installs anything.
+_STOP_DEPTH = 0
+
+
+def _raise_stop(signal_number, _frame) -> None:
+    raise ChildStopped(signal_number)
+
+
+@contextlib.contextmanager
+def stop_on_signal(command: str = "gpuwm downscale"):
+    """A stop signal ends this child through its stop path, and says so.
+
+    SIGTERM is turned into :class:`ChildStopped`, raised where the child
+    was, exactly as Python turns SIGINT into ``KeyboardInterrupt``; the
+    child's stop path (:func:`_record_stop`) then writes the stop into
+    the event stream, ``report.json``, the banner and the run manifest.
+    Both signals are reported on stderr first by the same report the
+    supervisor installs (:func:`gpuwm.signal_report.report_on_signal`),
+    in its wording for a door whose runs are stopped this way.
+
+    A disposition somebody else set is left alone: SIGTERM is taken only
+    from its default, and a SIGINT a shell set to ignore stays ignored.
+    Restored on the way out, because tests and embedders call the door
+    repeatedly in one interpreter.  Nested blocks install once.
+    """
+
+    global _STOP_DEPTH
+    if _STOP_DEPTH:
+        yield
+        return
+    from gpuwm.signal_report import report_on_signal
+
+    replaced = None
+    number = getattr(signal, "SIGTERM", None)
+    try:
+        if number is not None and signal.getsignal(number) is signal.SIG_DFL:
+            signal.signal(number, _raise_stop)
+            replaced = signal.SIG_DFL
+    except (ValueError, OSError):
+        # Not the main thread, or no signal support here: the child
+        # runs exactly as it did before this existed.
+        replaced = None
+    _STOP_DEPTH += 1
+    try:
+        with report_on_signal(command, stoppable=True):
+            yield
+    finally:
+        _STOP_DEPTH -= 1
+        if replaced is not None:
+            try:
+                signal.signal(number, replaced)
+            except (ValueError, OSError):
+                pass
+
+
+@contextlib.contextmanager
+def _stop_signals_held():
+    """While a stop is being recorded, a second stop signal is absorbed.
+
+    The run is already stopping, and the recording takes a few seconds
+    at most (the renders are ended on a 2 s grace).  A second Ctrl-C or
+    SIGTERM landing in the middle of it used to raise again inside the
+    code writing the banner and the report, leaving half of them.
+    SIGKILL still ends the process at once, which is what the desktop
+    sends 5 s after its stop.
+    """
+
+    held = []
+    for name in ("SIGINT", "SIGTERM"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            earlier = signal.getsignal(number)
+            if earlier is signal.SIG_IGN or earlier is None:
+                continue
+            signal.signal(number, lambda _number, _frame: None)
+        except (ValueError, OSError):
+            continue
+        held.append((number, earlier))
+    try:
+        yield
+    finally:
+        for number, earlier in held:
+            try:
+                signal.signal(number, earlier)
+            except (ValueError, OSError):
+                pass
+
+
 class _ChildProgress:
     """The offline child's own run manifest and native event stream.
 
@@ -212,11 +338,18 @@ class _ChildProgress:
         #: asked for.
         self.render_plan = None
         self._stage = None
+        #: The stage the stream last opened, whichever way it was opened
+        #: (the forecast loop emits its own ``stage_started``), so a stop
+        #: can say where it landed.
+        self._current_stage = None
         self._stage_phases: list[str] = []
         self._stage_started_wall = None
         self._started_wall = time.perf_counter()
         self._first_products = None
         self._first_products_seconds = None
+        #: Every frame after the analysis, drawn as it lands
+        #: (:mod:`gpuwm.live_products`), armed beside the early render.
+        self._live_products = None
         #: How far the forecast got, from the last progress sample that
         #: carried a step number.  ``None`` until the first one, which
         #: is the state a child refused before its first step is in --
@@ -238,7 +371,7 @@ class _ChildProgress:
         from datetime import datetime, timezone
         import uuid
 
-        from gpuwm import runplan
+        from gpuwm import proc_identity, runplan
         from gpuwm.supervisor import atomic_write_json
 
         self.outdir = Path(outdir)
@@ -254,6 +387,9 @@ class _ChildProgress:
             "route": "downscale",
             "run_id": self.run_id,
             "pid": os.getpid(),
+            # With its creation time, so a reader can tell this run from a
+            # later program given the same pid (see gpuwm.proc_identity).
+            "process": proc_identity.identify(os.getpid()),
             "started_at_utc": datetime.now(timezone.utc).isoformat(),
             # A child's "plan" IS its configuration: this route has no
             # run-plan document, and the reader's binding is the same
@@ -284,6 +420,8 @@ class _ChildProgress:
         # far it got.
         if event == "model_progress":
             self._note_progress(fields)
+        elif event == "stage_started":
+            self._current_stage = fields.get("stage")
         elif event == "output_committed":
             path = fields.get("path")
             if path is not None:
@@ -426,10 +564,11 @@ class _ChildProgress:
                   phases=list(self._stage_phases), **fields)
 
     def arm_render(self, *, outdir, render_products) -> dict | None:
-        """Arm this child's pictures: the plan, and the early render.
+        """Arm this child's pictures: the plan and the renders that use it.
 
-        The plan is built ONCE, here, and both renders read it: the
-        early one this arms and the finalize one
+        The plan is built ONCE, here, and every render reads it: the
+        early render of the analysis frame, the render of every later
+        frame as it lands, and the finalize one
         :func:`_finish_child_render` runs.  ``render_products`` absent
         or ``none`` arms nothing and leaves :attr:`render_plan` ``None``,
         which is the single answer to "does this run draw?".
@@ -438,21 +577,46 @@ class _ChildProgress:
         plan to :func:`gpuwm.first_products.arm`, which is where the
         whole decision lives for every door, so a route cannot grow a
         second answer to "did this run ask for pictures".
+
+        THE DEFECT THE SECOND RENDER CLOSES: only the analysis frame was
+        drawn while the child ran, and every other frame waited for the
+        forecast to end.  Measured on a 250 m child: its second frame
+        landed at 10:40 and was drawn at 13:16, with every other hour,
+        and the run emitted no ``live_products_ready`` while the forecast
+        it was cut from emitted 12.  The run-plan route draws each frame
+        as it lands (:class:`gpuwm.live_products.LiveProducts`); a child
+        now gets the same object, on the same plan, sharing bounded slots
+        with an exclusive early render, and the finalize
+        render draws only what it cannot prove was drawn.
+
+        Both renders start in a process group of their own
+        (``own_group``), because this child ends them itself when it is
+        stopped (:meth:`halt_renders`).  In the child's group, the Stop
+        that the desktop and the terminal send to the whole group killed
+        a render mid-organisation, and the child published what it had
+        staged.
         """
 
         from gpuwm.first_products import arm
+        from gpuwm.live_products import (LiveProducts, early_render_runner,
+                                          shared_render_slots)
 
         root = Path(outdir)
         plan = {"run": root, "wrfout_dir": root,
                 "render": root / "png",
                 "render_products": str(render_products)}
+        slot, early_slot = shared_render_slots()
         trigger = arm(plan, report=self._first_products_ready,
-                      warn=self.warn)
+                      warn=self.warn, runner=early_render_runner,
+                      slot=early_slot, own_group=True)
         if trigger is None:
             self.render_plan = None
             return None
         self.render_plan = plan
         self._first_products = trigger
+        self._live_products = LiveProducts(
+            plan, report=self._live_products_ready, warn=self.warn,
+            first=trigger, slot=slot, own_group=True)
         return self.render_plan
 
     @property
@@ -467,6 +631,119 @@ class _ChildProgress:
 
         return self._first_products_seconds
 
+    @property
+    def live_products(self):
+        """The render of every frame as it lands, read by finalize."""
+
+        return self._live_products
+
+    def stop_live_products(self, *, halt: bool = False) -> dict | None:
+        """Stop drawing frames as they land.
+
+        ``halt`` is a stopped run: nothing queued is drawn and the render
+        in flight is ended.  Otherwise the queue is finished first, which
+        a child that failed on its own still gets, so the frames it wrote
+        before the failure are pictures too.  The finalize stage
+        stops it itself (:func:`gpuwm.go_cli._render_stage`).
+        """
+
+        live = self._live_products
+        if live is None:
+            return None
+        return live.halt() if halt else live.stop()
+
+    def halt_renders(self) -> bool:
+        """End every render this child started, for a stop.
+
+        Nothing queued is drawn and nothing more is published; the early
+        render, the render of the frame that landed last and the
+        finalize render in flight are each ended rather than waited for
+        (:meth:`gpuwm.first_products.FirstProducts.halt`,
+        :meth:`gpuwm.live_products.LiveProducts.halt`,
+        :func:`gpuwm.go_cli.end_stage_processes`), because the desktop
+        kills a stopped run 5 s after asking and the stop still has to be
+        written down.  The every-frame render is closed first and joined
+        last: its worker may be waiting on the early render, which is
+        ended in between.
+
+        ``True`` once no render of this run is running, which is what
+        licenses tidying the picture folder
+        (:func:`gpuwm.first_products.discard_stopped_render`).
+        """
+
+        from gpuwm.go_cli import end_stage_processes
+
+        first = self._first_products
+        live = self._live_products
+        if live is not None:
+            live.halt(timeout=0)
+        ended = True
+        if first is not None:
+            ended = first.halt() and ended
+        if live is not None:
+            live.halt()
+            ended = not live.running and ended
+        return end_stage_processes() and ended
+
+    def stopped(self, *, stage: str, message: str, signal_name: str,
+                exit_code: int) -> None:
+        """This run was stopped by request.  The stream's last word.
+
+        The run-plan vocabulary's own spelling of a stop, which every
+        reader already keys on: a ``failed`` event carrying
+        ``interrupted: true`` and the exit code
+        (:func:`gpuwm.runplan.execute_plan` writes the same fields, and
+        the page reads that pair as Stopped).  A tag of its own would be
+        a line no existing reader recognises as the end of a run.
+
+        THE BREAKAGE: a Stop from the desktop or
+        the terminal was published as ``failed`` with the message
+        ``KeyboardInterrupt: KeyboardInterrupt``, which is neither a
+        reason nor something a reader can act on.
+        """
+
+        self.emit("failed", stage=stage, message=message[:1600],
+                  interrupted=True, exit_code=int(exit_code),
+                  signal=signal_name)
+
+    def end(self, state: str) -> None:
+        """Write how and when this run ended into its run manifest.
+
+        The manifest carried only ``started_at_utc``, so a folder whose
+        run had stopped read as one still running to anything that read
+        the folder rather than the process.
+        ``end_state`` is ``completed``, ``failed`` or ``stopped``, beside
+        ``ended_at_utc``.  Everything else in the document is kept as it
+        was written.  Best effort: nothing raises.
+        """
+
+        if self.manifest_path is None:
+            return
+        from datetime import datetime, timezone
+
+        from gpuwm.supervisor import atomic_write_json
+
+        try:
+            document = json.loads(
+                Path(self.manifest_path).read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                return
+            document["ended_at_utc"] = datetime.now(timezone.utc).isoformat()
+            document["end_state"] = str(state)
+            atomic_write_json(self.manifest_path, document)
+        except (OSError, ValueError):
+            pass
+
+    def _live_products_ready(self, entry) -> None:
+        """One frame is readable as pictures, spelled as run-plan spells it."""
+
+        self.emit(
+            "live_products_ready", domain=entry["domain"],
+            valid_time=entry["valid_time"], frame=entry["frame"],
+            pictures=entry["pictures"],
+            render_seconds=entry["render_seconds"],
+            queued=entry["queued"], complete=entry.get("complete", True))
+
     def _first_products_ready(self, receipt) -> None:
         """The early render published.  This is the TTFP number."""
 
@@ -478,17 +755,19 @@ class _ChildProgress:
             frame=receipt["frame"], paths=list(receipt["paths"]),
             render_products=receipt["render_products"],
             render_seconds=receipt["render_seconds"],
-            seconds_from_plan_accepted=elapsed)
+            seconds_from_plan_accepted=elapsed,
+            complete=receipt.get("complete", True))
 
     def output_committed(self, **fields) -> None:
-        """One child history frame is durable.  Draws the first one.
+        """One child history frame is durable.  It is drawn as it lands.
 
         The event is the same one this route always emitted; the
-        dispatch beside it is what makes the analysis frame a picture
-        while the rest of the forecast is still integrating, as it is on
-        every other route.  Only the first frame wins, and
-        :class:`gpuwm.first_products.FirstProducts` decides that, not a
-        counter kept here.
+        dispatch beside it is what makes each frame a picture while the
+        rest of the forecast is still integrating, as it is on every
+        other route.  The analysis frame goes to the early render, which
+        decides for itself that only the first frame wins; every other
+        frame is queued for the every-frame render and this returns at
+        once.  Nothing here raises into the forecast loop.
         """
 
         # The child's own domain, learned from the frames it commits:
@@ -496,10 +775,24 @@ class _ChildProgress:
         # it rather than the root of a hierarchy it does not have.
         self._root_domain = int(fields["domain"])
         self.emit("output_committed", **fields)
+        claimed = False
         if self._first_products is not None:
-            self._first_products.frame_committed(
+            claimed = bool(self._first_products.frame_committed(
                 domain=fields["domain"], valid_time=fields["valid_time"],
-                path=fields["path"])
+                path=fields["path"]))
+        live = self._live_products
+        if live is None:
+            return
+        try:
+            live.frame_committed(domain=int(fields["domain"]),
+                                 valid_time=fields["valid_time"],
+                                 path=fields["path"], draw=not claimed)
+        except Exception as error:  # noqa: BLE001 - telemetry never fails
+            self.warn(
+                "live_products_failed",
+                f"a committed frame could not be queued for drawing "
+                f"({type(error).__name__}: {error}); the end-of-run render "
+                "draws it", frame=str(fields["path"]))
 
     def wait_early_render(self, *, timeout: float | None = _EARLY_RENDER_WAIT) -> None:
         """Join the early render, wherever this run is exiting from.
@@ -569,7 +862,8 @@ class _ChildProgress:
         # empty folder and one nothing could list.
         return count_pictures(root)
 
-    def keep_early_render(self, why: str) -> dict:
+    def keep_early_render(self, why: str, *, requested: bool = False,
+                          discard: bool = False) -> dict:
         """Keep what the early render drew, under a did-not-finish banner.
 
         THE DECISION, recorded where it is enforced: a child that does
@@ -607,6 +901,13 @@ class _ChildProgress:
         A run with no render at all keeps the same shape with a count of
         zero: it drew nothing because it was asked for nothing, which is
         a reading and not a failure to read.
+
+        A STOP (``requested``) has already ended its renders
+        (:meth:`halt_renders`) and is not held here: the unbounded wait
+        is for a run that failed on its own.  ``discard`` removes what a
+        stopped render left before anything is counted
+        (:func:`gpuwm.first_products.discard_stopped_render`), and is
+        passed only when every render has ended.
         """
 
         if self._first_products is None or self.render_plan is None:
@@ -614,10 +915,12 @@ class _ChildProgress:
                     "banner": None, "summary": None}
         from gpuwm.first_products import keep
 
-        self.wait_early_render(timeout=None)
+        if not requested:
+            self.wait_early_render(timeout=None)
         render_dir = Path(self.render_plan["render"])
         kept = keep(render_dir, why=why, stopped=self._stopped,
-                    frames=list(self._frames))
+                    frames=list(self._frames), requested=requested,
+                    discard=discard)
         # A `warning` carrying its own code, because the event
         # vocabulary is a closed schema shared with every reader of
         # every route (:data:`gpuwm.runplan.EVENT_TAGS` for the tag and
@@ -629,44 +932,152 @@ class _ChildProgress:
             banner=kept["banner"], status=kept["status"], why=why)
         return kept
 
-    def close(self) -> None:
+    def close(self, *, wait: bool = True) -> None:
         # The floor under wait_early_render: every exit path closes the
-        # stream, so every exit path waits.
-        self.wait_early_render()
+        # stream, so every exit path waits.  And nothing is drawn after
+        # the stream closes: a run that got here without its finalize
+        # stage stopping the every-frame render (a finalize that raised
+        # before it drew) halts it now rather than leave a render running
+        # past the process that asked for it.  A stop has ended its
+        # renders already and passes ``wait=False``: the desktop kills it
+        # 5 s after asking.
+        self.stop_live_products(halt=True)
+        if wait:
+            self.wait_early_render()
         if self.events is not None:
             self.events.close()
             self.events = None
 
 
 #: Folder names every prepared route uses for its layout rather than for
-#: the run's identity: ``<run>/wrfout/`` holds the frames and ``<run>``
-#: is itself called ``run`` under a stamped folder.  A child named after
-#: one of these would be "Downscale of wrfout".
-_LAYOUT_FOLDERS = frozenset({"wrfout", "run"})
+#: the run's identity: ``<run>/wrfout/`` holds the frames, ``<run>`` is
+#: itself called ``run`` under a stamped folder, and a run-plan forecast
+#: keeps its whole chain under ``<run>/chain/`` (its frames land in
+#: ``<run>/chain/run/wrfout/``).  A child named after one of these would
+#: be "Downscale of wrfout" or "Downscale of chain".
+_LAYOUT_FOLDERS = frozenset({"wrfout", "run", "chain"})
+
+
+def _run_manifest(folder: Path) -> dict | None:
+    """The run manifest in ``folder`` when it carries a name, else None."""
+
+    from gpuwm import runplan
+
+    try:
+        document = json.loads((Path(folder) / runplan.MANIFEST_FILENAME)
+                              .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(document, dict)
+            or document.get("schema") != runplan.MANIFEST_SCHEMA):
+        return None
+    name = document.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return document
+
+
+def _binds(outer: Path, document: dict, producer: Path) -> bool:
+    """True when the run in ``outer`` recorded ``producer`` as its native run.
+
+    Compared by the names below ``outer`` rather than by the whole path,
+    so a run folder copied to another disk or machine keeps the binding
+    its manifest recorded where it ran.
+    """
+
+    native = document.get("native_run")
+    recorded = native.get("run_dir") if isinstance(native, dict) else None
+    if not isinstance(recorded, str):
+        return False
+    try:
+        inside = producer.relative_to(outer).parts
+    except ValueError:
+        return False
+    tail = tuple(part for part in recorded.replace("\\", "/").split("/") if part)
+    return bool(inside) and tail[-len(inside):] == inside
+
+
+def _parent_identity(frame: Path) -> tuple[str, str | None]:
+    """The name a child is called after, and the route of the run it names.
+
+    The parent run's own name first: the ``name`` in its run manifest,
+    which is the name a run browser shows for that run.  It is looked
+    for from the frame's folder upward, through layout folders and
+    stamped run folders (a run-plan forecast's chain claims a stamped
+    folder under ``<run>/chain/``), and no further than the first folder
+    that is neither.  A run found there that another run recorded as its
+    native producer (the ``gpuwm go`` run inside a run-plan forecast's
+    chain) gives way to that run, because that is the run a person
+    started.
+
+    Where no manifest says, the nearest ancestor that is not a layout
+    folder names the parent, so the stamped run folder names it on the
+    prepared routes and the history directory itself does everywhere
+    else (a WRF parent, a copied folder).  The route is then ``None``.
+
+    The walk starts from the frame's absolute path: ``gpuwm downscale
+    chain/run/wrfout`` run from inside the parent's run folder hands the
+    frames on as typed, and a relative path runs out of folders at
+    ``.`` before it reaches the run folder and its manifest.  ``abspath``
+    rather than ``resolve``, so a folder reached through a link keeps
+    the name it was given.
+    """
+
+    from gpuwm.run_stamp import is_run_folder
+
+    frame = Path(os.path.abspath(frame))
+    found = None
+    for ancestor in frame.parents:
+        if not ancestor.name:
+            break
+        document = _run_manifest(ancestor)
+        if document is not None:
+            found = ancestor, document
+            break
+        if ancestor.name not in _LAYOUT_FOLDERS and not is_run_folder(ancestor):
+            break
+    if found is not None:
+        folder, document = found
+        for outer in folder.parents:
+            if not outer.name:
+                break
+            binder = _run_manifest(outer)
+            if binder is not None and _binds(outer, binder, folder):
+                folder, document = outer, binder
+        route = document.get("route")
+        return (document["name"].strip(),
+                route if isinstance(route, str) else None)
+    for ancestor in frame.parents:
+        if ancestor.name and ancestor.name not in _LAYOUT_FOLDERS:
+            return ancestor.name, None
+    return frame.parent.name, None
 
 
 def _parent_label(frame: Path) -> str:
-    """The parent folder a child is named after: the nearest ancestor of
-    its first history frame that is not a layout folder, so the stamped
-    run folder names the parent on the prepared routes and the history
-    directory itself does everywhere else."""
+    """The parent name a child is called after (see :func:`_parent_identity`)."""
 
-    for ancestor in frame.parents:
-        if ancestor.name and ancestor.name not in _LAYOUT_FOLDERS:
-            return ancestor.name
-    return frame.parent.name
+    return _parent_identity(frame)[0]
 
 
 def child_run_name(frame: Path, *, grid_id: int, ratio: int, dx: float) -> str:
     """``Downscale of <parent> · d03 ×3 · 1.33 km``: the run browser's name.
 
+    ``<parent>`` is the parent run's own name as its manifest gives it
+    (see :func:`_parent_identity`).  A parent that is itself a downscale
+    already reads ``Downscale of <run> · d02 ×3 · 4 km``, so its child
+    extends that name with its own grid rather than wrapping it in a
+    second "Downscale of".
+
     Three significant figures on the spacing, so a grandchild at a third
     of 4 km reads as 1.33 km rather than a long fraction, and 4 km stays
     ``4 km``.
     """
-    return (f"Downscale of {_parent_label(frame)} "
-            f"· d{int(grid_id):02d} ×{int(ratio)} "
+    grid = (f"d{int(grid_id):02d} ×{int(ratio)} "
             f"· {float(dx) / 1000.0:.3g} km")
+    parent, route = _parent_identity(frame)
+    if route == "downscale":
+        return f"{parent} · {grid}"
+    return f"Downscale of {parent} · {grid}"
 
 
 def _sha256(path: Path) -> str:
@@ -766,6 +1177,141 @@ def child_cadence(cfg, *, health_interval_seconds: float | None = None
         steps=steps, output_steps=output_steps, restart_steps=restart_steps,
         health_steps=health_steps,
         checkpoint_due=checkpoint_schedule(steps, restart_steps))
+
+
+def child_checkpoint_retention(requested: int | None = None) -> int | None:
+    """How many complete checkpoint sets a child keeps; ``None`` keeps every one.
+
+    ``requested`` is ``--keep-checkpoints`` (0 keeps every set).  Without
+    it, the run-plan knob decides when it is set
+    (:data:`gpuwm.resume.KEEP_CHECKPOINTS_ENV`, which ``gpuwm run-plan``
+    and ``gpuwm go`` export for what they start), and otherwise the one set
+    every forecast route keeps (:data:`gpuwm.resume.DEFAULT_KEEP_CHECKPOINTS`).
+
+    One set is all a child needs: a child is never resumed (it is re-run,
+    :func:`gpuwm.resume.offline_child_resume_refusal`), and a downscale
+    from this child binds its physics from the newest set.  Keeping every
+    hourly set was the breakage: an 11 hour 250 m child kept 11 sets of
+    2.59 GB, 28.5 GB beside 14 GB of history, with nothing warning first.
+    """
+    from gpuwm.resume import (
+        DEFAULT_KEEP_CHECKPOINTS, KEEP_CHECKPOINTS_ENV, checkpoint_retention)
+
+    if requested is not None:
+        if int(requested) < 0:
+            raise OfflineChildContractError(
+                f"--keep-checkpoints {requested} is negative; 0 keeps every "
+                "checkpoint set")
+        return int(requested) or None
+    if os.environ.get(KEEP_CHECKPOINTS_ENV, "").strip():
+        try:
+            return checkpoint_retention()
+        except ValueError as error:
+            raise OfflineChildContractError(str(error)) from None
+    return DEFAULT_KEEP_CHECKPOINTS
+
+
+class ChildCheckpoints:
+    """A child's checkpoint sets: each written whole, then the older ones removed.
+
+    A child's set is one file, its own grid.  ``write`` publishes one set
+    at the path it is handed (:func:`gpuwm.io.restart.write_restart`
+    writes a temporary file and renames it), and only then are the sets
+    beyond the newest ``keep`` removed (``None`` keeps every one), so the
+    directory always holds one complete set and holds at most ``keep`` + 1
+    while a set is being written.
+    """
+
+    def __init__(self, outdir: Path, *, grid_id: int, keep: int | None,
+                 write) -> None:
+        self.outdir = Path(outdir)
+        self.grid_id = int(grid_id)
+        self.keep = keep
+        self._write = write
+        self.written: list[Path] = []
+        self.retired: list[Path] = []
+
+    def emit(self, valid_time) -> tuple[Path, list[Path]]:
+        """Write the set valid at ``valid_time``; returns it and the sets it retired."""
+        from gpuwm.io.restart import restart_filename
+        from gpuwm.resume import retire_superseded_checkpoints
+
+        path = Path(self._write(self.outdir / restart_filename(
+            valid_time, domain=f"d{self.grid_id:02d}")))
+        self.written.append(path)
+        # 0 is "keep every set" to the retirer; None would read the
+        # environment again instead of the answer this run settled on.
+        retired = retire_superseded_checkpoints(self.outdir, self.keep or 0)
+        self.retired.extend(retired)
+        return path, retired
+
+    @property
+    def last(self) -> Path | None:
+        return self.written[-1] if self.written else None
+
+    def on_disk(self) -> list[Path]:
+        return [path for path in self.written if path.exists()]
+
+
+def child_history_frames(cadence: ChildCadence) -> int:
+    """How many history frames a child on ``cadence`` writes.
+
+    The initial frame, every whole ``output_interval_s``, and the last
+    step when the run does not end on one.
+    """
+    steps, every = int(cadence.steps), int(cadence.output_steps)
+    return 1 + steps // every + (1 if steps % every else 0)
+
+
+def child_disk_remedy(projection: dict) -> str:
+    """The ways out of a child that would not fit on its disk, in this door's own flags.
+
+    Only the ways that shrink THIS projection are named.  Fewer products
+    are offered whenever the child draws pictures: the shared per-product
+    table also prices fewer products when no renderer catalog is available.
+    Fewer checkpoint sets are offered only when it holds more than the
+    two that keeping one needs.  Naming a flag that leaves the figure where
+    it is sent a user whose child drew nothing back to --render-products
+    for the same refusal.
+    """
+    ways = ["Free some disk", "pick a smaller child (--child-size) or a shorter one (--hours)",
+            "write its history less often (--output-interval-seconds)"]
+    if projection.get("picture_bytes"):
+        ways.append("draw fewer products (--render-products; none draws nothing)")
+    if int(projection.get("checkpoint_sets_held") or 0) > 2:
+        ways.append("keep one checkpoint set (--keep-checkpoints 1)")
+    ways.append("put --out on a disk with more room")
+    return ", ".join(ways[:-1]) + ", or " + ways[-1]
+
+
+def child_disk_projection(cfg, cadence: ChildCadence, *,
+                          keep_checkpoints: int | None, render_products,
+                          outdir: Path) -> dict:
+    """What this child will write, against the free space where it will write it.
+
+    ONE function for the plan review and the run, as :func:`child_cadence`
+    is: ``gpuwm downscale`` puts this block in the plan and refuses on it
+    before the child starts, and the runner door, which no plan review
+    stands in front of, refuses on the same answer.  ``refusal`` is the
+    sentence when the projection is larger than the free space, else None.
+    Pictures use the same measured per-product, horizontal-grid table as
+    forecasts. ``pictures_per_frame`` reports the catalog count when it
+    is available; it does not choose the pricing model.
+    """
+    from gpuwm import disk_budget
+
+    projection = disk_budget.projected_child_bytes(
+        cfg, history_frames=child_history_frames(cadence),
+        checkpoints_written=len(cadence.checkpoint_due),
+        keep_checkpoints=keep_checkpoints,
+        render_products=render_products)
+    free = disk_budget.free_bytes(Path(outdir))
+    refusal = disk_budget.disk_refusal(
+        projection, free, subject="this child", remedy=child_disk_remedy(projection))
+    return dict(projection, keep_checkpoints=int(keep_checkpoints or 0),
+                free_bytes=free,
+                fits=None if free is None else refusal is None,
+                refusal=refusal)
 
 
 def _memory_snapshot(cp) -> dict[str, int]:
@@ -1071,6 +1617,68 @@ def child_health_log_fields(record) -> dict:
             "w_max": w_max, "w_max_state": w_max_state}
 
 
+def w_max_location(record, *, nz: int, ny: int, nx: int) -> dict | None:
+    """Where one health record's |w| maximum is, and how far from an edge.
+
+    ``record["w_argmax"]`` is the flat index of the maximum on w's own
+    ``(nz + 1, ny, nx)`` grid, which both health kernels reduce on every
+    check (:func:`gpuwm.core.dycore.decode_stability_record`).  Returned
+    as ``{"cell": {"k", "j", "i"}, "edge": name, "edge_cells": n}``: the
+    lateral edge nearest the cell and how many cells in from it it sits,
+    0 being the boundary row itself.  ``None`` when the record carries no
+    finite maximum or no index inside the grid, because a place for a
+    number that went is not a place.
+    """
+
+    w_max = record.get("w_max")
+    index = record.get("w_argmax")
+    if index is None or w_max is None:
+        return None
+    try:
+        if not math.isfinite(float(w_max)):
+            return None
+        nz, ny, nx, index = int(nz), int(ny), int(nx), int(index)
+    except (TypeError, ValueError):
+        return None
+    if ny <= 0 or nx <= 0 or not 0 <= index < (nz + 1) * ny * nx:
+        return None
+    k, rest = divmod(index, ny * nx)
+    j, i = divmod(rest, nx)
+    edge, cells = min((("south", j), ("north", ny - 1 - j),
+                       ("west", i), ("east", nx - 1 - i)),
+                      key=lambda item: item[1])
+    return {"cell": {"k": k, "j": j, "i": i}, "edge": edge,
+            "edge_cells": cells}
+
+
+def child_health_trend_row(*, step, model_seconds, record, cfg) -> dict:
+    """One health check as the run loop keeps it for the capsule.
+
+    Both readings in the carrying shape :func:`child_health_log_fields`
+    produces, plus WHERE the |w| maximum was (``w_max_cell``) and the
+    lateral edge nearest it (``w_max_edge``), both ``null`` on a check
+    whose maximum was not measured.  The place is kept because it is the
+    one location a blow-up leaves that means anything: the survey taken
+    after the fields have gone can only box what had already spread, and
+    the last measured maximum's place is the nearest thing to where the
+    climb started.
+    """
+
+    fields = child_health_log_fields(record)
+    where = (w_max_location(record, nz=cfg.nz, ny=cfg.ny, nx=cfg.nx)
+             if fields["w_max_state"] == READING_MEASURED else None)
+    return {"step": int(step),
+            "model_seconds": float(model_seconds),
+            "w_max": fields["w_max"],
+            "w_max_state": fields["w_max_state"],
+            "cfl": fields["cfl"],
+            "cfl_state": fields["cfl_state"],
+            "w_max_cell": None if where is None else where["cell"],
+            "w_max_edge": (None if where is None else
+                           {"edge": where["edge"],
+                            "cells": where["edge_cells"]})}
+
+
 #: How far back the non-finite capsule reads the health record, in MODEL
 #: seconds.  Five minutes: long enough that a reader is shown a trend
 #: rather than two samples, short enough that every number quoted belongs
@@ -1174,24 +1782,142 @@ def _plain_list(names) -> str:
     return ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
+def _survey_box(entry: dict) -> dict:
+    """A surveyed carrier's bounding box, axes in (k, j, i) order."""
+
+    box = {str(label): [int(bounds[0]), int(bounds[1])]
+           for label, bounds in (entry.get("bounding_box") or {}).items()}
+    order = {"k": 0, "j": 1, "i": 2}
+    return dict(sorted(box.items(), key=lambda item: order.get(item[0], 3)))
+
+
+def _survey_edges(entry: dict) -> list[str]:
+    """The lateral edges a surveyed box reaches, on the carrier's own grid.
+
+    Read from the entry when the survey wrote them, and derived from its
+    box and shape when it did not, so an entry built by hand or by an
+    older survey is judged the same way.
+    """
+
+    from gpuwm.core.dycore import nonfinite_box_edges
+
+    if entry.get("edges") is not None:
+        return [str(edge) for edge in entry["edges"]]
+    return nonfinite_box_edges(entry.get("bounding_box"), entry.get("shape"))
+
+
+def _box_text(box: dict) -> str:
+    return ", ".join(f"{label} {bounds[0]}-{bounds[1]}"
+                     for label, bounds in box.items())
+
+
+def _box_cell(box: dict) -> dict | None:
+    """The one cell a box is, when it is one cell; otherwise ``None``."""
+
+    if not box or any(bounds[0] != bounds[1] for bounds in box.values()):
+        return None
+    return {label: bounds[0] for label, bounds in box.items()}
+
+
+def _edge_clause(edges, *, cell: bool) -> str:
+    if not edges:
+        return ""
+    plural = "s" if len(edges) > 1 else ""
+    if cell:
+        return f", on the {_plain_list(edges)} edge{plural}"
+    return f", a box that touches the {_plain_list(edges)} edge{plural}"
+
+
 def _survey_line(entry: dict) -> str:
     """One surveyed carrier, as the capsule prints it.
 
     One cell is named and nothing else, because a bounding box around a
     single cell is that cell written twice.  Many cells are a count and
     the box they fall inside, which is the difference between a column
-    that went, a plume that went, and a field that has gone entirely.
+    that went, a plume that went, and a field that has gone entirely.  No
+    single cell of many is named: which of them went first is not
+    something a survey taken afterwards can know.
     """
 
     from gpuwm.core.dycore import format_survey_cell
 
-    cell = format_survey_cell(entry["first_cell"])
-    if int(entry["count"]) == 1:
-        return f"{entry['field']}: 1 cell at {cell}"
-    box = ", ".join(f"{label} {bounds[0]}-{bounds[1]}"
-                    for label, bounds in entry["bounding_box"].items())
+    box = _survey_box(entry)
+    edges = _survey_edges(entry)
+    cell = _box_cell(box)
+    if int(entry["count"]) == 1 and cell is not None:
+        return (f"{entry['field']}: 1 cell at {format_survey_cell(cell)}"
+                + _edge_clause(edges, cell=True))
     return (f"{entry['field']}: {int(entry['count']):,} cells of "
-            f"{int(entry['size']):,}, first at {cell}, all inside {box}")
+            f"{int(entry['size']):,}, all inside {_box_text(box)}"
+            + _edge_clause(edges, cell=False))
+
+
+def _nonfinite_extent(fields) -> tuple[dict, list[str], int]:
+    """The box every surveyed carrier's non-finite cells fall inside.
+
+    The union of the carriers' own boxes, the edges any of them reaches,
+    and the cells counted between them.  A staggered carrier's box is on
+    its own grid, one wider along its stagger, so the union is the range
+    of indices the non-finite values occupy and not a claim about any one
+    field.
+    """
+
+    from gpuwm.core.dycore import NONFINITE_SURVEY_EDGES
+
+    box: dict = {}
+    reached: set[str] = set()
+    total = 0
+    for entry in fields:
+        total += int(entry["count"])
+        reached.update(_survey_edges(entry))
+        for label, (low, high) in _survey_box(entry).items():
+            if label in box:
+                box[label] = [min(box[label][0], low),
+                              max(box[label][1], high)]
+            else:
+                box[label] = [low, high]
+    order = {"k": 0, "j": 1, "i": 2}
+    box = dict(sorted(box.items(), key=lambda item: order.get(item[0], 3)))
+    edges = [name for _axis, _end, name in NONFINITE_SURVEY_EDGES
+             if name in reached]
+    return box, edges, total
+
+
+def _found_text(fields) -> str:
+    """What the check found, in the words the survey can stand behind.
+
+    The fields, the box they fall inside and how many cells, and whether
+    that box touches a lateral edge.  One cell is named only when the
+    whole non-finite set IS one cell.
+    """
+
+    from gpuwm.core.dycore import format_survey_cell
+
+    if not fields:
+        return "non-finite values"
+    names = [str(entry["field"]) for entry in fields]
+    box, edges, total = _nonfinite_extent(fields)
+    cell = _box_cell(box)
+    if cell is not None:
+        return (f"{_plain_list(names)} non-finite at one cell, "
+                f"{format_survey_cell(cell)}"
+                + _edge_clause(edges, cell=True))
+    if len(names) == 1:
+        counted = f" in {total:,} cell{'s' if total != 1 else ''}"
+    else:
+        counted = f", {total:,} cells between them"
+    return (f"{_plain_list(names)} non-finite{counted}, all inside "
+            f"{_box_text(box)}" + _edge_clause(edges, cell=False))
+
+
+def _edge_distance_text(edge: dict | None) -> str:
+    if not edge:
+        return ""
+    cells = int(edge["cells"])
+    if cells == 0:
+        return f", on the {edge['edge']} edge"
+    return (f", {cells} cell{'s' if cells != 1 else ''} in from the "
+            f"{edge['edge']} edge")
 
 
 def describe_nonfinite_child(*, step, total_steps, model_seconds,
@@ -1210,6 +1936,19 @@ def describe_nonfinite_child(*, step, total_steps, model_seconds,
     leaving the 0.19-0.21 band -- a reading that says plainly the time
     step was not what ran out -- and every one of those numbers was
     dropped at the moment it mattered.
+
+    WHAT THE SENTENCE CLAIMS, and no more.  The fields found non-finite
+    at the health check after step N, the box they fall inside with its
+    cell count, and whether that box touches a lateral edge.  It used to
+    name "the cell W went non-finite at", which was the lowest
+    memory-order index of the whole non-finite set: always that set's
+    lowest level and southmost row, so a block that had spread down to
+    the ground read as a blow-up at k=0 on its south edge, and W, which
+    is simply first in the survey's list, read as the field that failed
+    first.  A single cell is named only when the set is one cell.  The
+    last measured |w| maximum's place, which the trend rows carry, is
+    the nearest thing to an origin the record holds, and the message
+    says it as that.
 
     Returns the capsule as a document: ``summary`` is the one sentence
     the run-plan ``failed`` event carries and a run view shows first,
@@ -1234,22 +1973,7 @@ def describe_nonfinite_child(*, step, total_steps, model_seconds,
               if row.get("w_max_state") == READING_MEASURED]
     fields = list((survey or {}).get("fields") or [])
     survey_error = (survey or {}).get("error")
-
-    names = [str(entry["field"]) for entry in fields]
-    if fields:
-        from gpuwm.core.dycore import format_survey_cell
-
-        cell = format_survey_cell(fields[0]["first_cell"])
-        blew = f"{names[0]} went non-finite at cell {cell}"
-        # The other carriers ride a clause of their own after the full
-        # stop, never inside the sentence: read in the middle they push
-        # the model second and the step off the end of the one line a run
-        # view shows, which are the two facts the old refusal had.
-        also = (f"  {_plain_list(names[1:])} went with it."
-                if len(names) > 1 else "")
-    else:
-        blew = "its fields went non-finite"
-        also = ""
+    box, edges, _total = _nonfinite_extent(fields)
 
     if len(finite) >= 2:
         span = (float(finite[-1]["model_seconds"])
@@ -1258,13 +1982,17 @@ def describe_nonfinite_child(*, step, total_steps, model_seconds,
                 + ", ".join(_reading(row, "w_max") for row in finite)
                 + f" m/s over the {span:g} model seconds before ")
     elif len(finite) == 1:
-        lead = (f"w_max was {_reading(finite[0], 'w_max')} m/s at the health "
-                "check before ")
+        lead = (f"w_max read {_reading(finite[0], 'w_max')} m/s one check "
+                "before ")
     else:
         lead = ""
-    summary = (f"The child blew up: {lead}{blew}, at model second "
-               f"{_number(model_seconds, 8)} of {_number(run_seconds, 8)} "
-               f"and step {int(step)} of {int(total_steps)}.{also}")
+    # The step and the model second come BEFORE the survey's findings:
+    # a run view shows one line of this sentence, and those are the two
+    # facts the old refusal had.
+    summary = (f"The child blew up: {lead}the health check after step "
+               f"{int(step)} of {int(total_steps)} (model second "
+               f"{_number(model_seconds, 8)} of {_number(run_seconds, 8)}) "
+               f"found {_found_text(fields)}.")
 
     paragraphs = [summary]
     if survey_error:
@@ -1272,14 +2000,50 @@ def describe_nonfinite_child(*, step, total_steps, model_seconds,
             "The field survey could not be taken, so this capsule names no "
             f"cell: {survey_error}")
     elif fields:
-        paragraphs.append("Non-finite carriers at that check:\n"
-                          + "\n".join(f"  {_survey_line(entry)}"
-                                       for entry in fields))
+        paragraphs.append(
+            "Non-finite fields at that check, listed dynamics first and "
+            "then moisture, which is not the order they failed in:\n"
+            + "\n".join(f"  {_survey_line(entry)}" for entry in fields))
     else:
         paragraphs.append(
             "No allocated carrier was still non-finite when the survey ran, "
             "so the reading came from the health record's own maxima (u, w "
             "and theta') and nothing narrower.")
+
+    before = [row for row in finite if int(row["step"]) < int(step)]
+    located = [row for row in before if row.get("w_max_cell")]
+    when = []
+    if before:
+        # u, w and theta' only: those three maxima are all the check
+        # reads, so a moisture carrier the survey lists may have gone
+        # long before and the sentence must not date it.
+        previous = int(before[-1]["step"])
+        when.append(
+            f"The check after step {previous}, {int(step) - previous} "
+            "steps earlier, found u, w and theta' finite; the check reads "
+            "only those three, and a survey taken afterwards cannot say "
+            "which cell or which field went first.")
+    elif fields:
+        when.append("A survey taken after the fields have gone cannot say "
+                    "which cell or which field went first.")
+    last_w_max = None
+    if located:
+        from gpuwm.core.dycore import format_survey_cell
+
+        row = located[-1]
+        last_w_max = {"step": int(row["step"]),
+                      "model_seconds": float(row["model_seconds"]),
+                      "w_max": row["w_max"],
+                      "cell": dict(row["w_max_cell"]),
+                      "edge": (None if not row.get("w_max_edge")
+                               else dict(row["w_max_edge"]))}
+        when.append(
+            f"The last |w| maximum measured, {_reading(row, 'w_max')} m/s "
+            f"at the check after step {int(row['step'])}, was at "
+            f"{format_survey_cell(row['w_max_cell'])}"
+            f"{_edge_distance_text(row.get('w_max_edge'))}.")
+    if when:
+        paragraphs.append(" ".join(when))
 
     if quoted:
         rows = []
@@ -1293,6 +2057,10 @@ def describe_nonfinite_child(*, step, total_steps, model_seconds,
             # this guard covered the field that went and missed the field
             # nothing measured.
             unit = "" if w_max in READING_STATES_WITHOUT_A_NUMBER else " m/s"
+            if unit and row.get("w_max_cell"):
+                from gpuwm.core.dycore import format_survey_cell
+
+                unit += f" at {format_survey_cell(row['w_max_cell'])}"
             rows.append(
                 f"  step {int(row['step'])}"
                 f"  model second {_number(row['model_seconds'], 8)}"
@@ -1328,6 +2096,9 @@ def describe_nonfinite_child(*, step, total_steps, model_seconds,
         "health_cadence_seconds": (None if cadence_seconds is None
                                    else float(cadence_seconds)),
         "fields": fields,
+        "nonfinite_box": box or None,
+        "nonfinite_edges": edges,
+        "last_w_max": last_w_max,
         "surveyed": list((survey or {}).get("surveyed") or []),
         "survey_error": survey_error,
         "trend": quoted,
@@ -1368,9 +2139,10 @@ def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:
     time zero stays in ``START_DATE``, where WRF puts it.  A parent that
     carries no provenance (a stock-WRF archive, or a pre-1.4.1 file)
     hands the child nothing, and the child says nothing rather than
-    inventing an analysis.
+    inventing an analysis.  Opened through :func:`open_parent_history`,
+    so a frame that cannot be read is refused naming it.
     """
-    with netCDF4.Dataset(path) as dataset:
+    with open_parent_history(path, netCDF4.Dataset) as dataset:
         try:
             dx = float(dataset.getncattr("DX"))
             dy = float(dataset.getncattr("DY"))
@@ -1491,10 +2263,46 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     is empty and the emit is a no-op.
     """
 
+    from gpuwm import ownership
+    from gpuwm.offline_child import output_owner_path
+
+    # A folder this call reserves itself (the direct door; ``gpuwm
+    # downscale`` reserves before it gets here and releases after) gives
+    # up its owner file when the run ends, however it ends.  Only a claim
+    # this call took is released: one an outer caller holds stays held.
+    outdir = getattr(args, "outdir", None)
+    owner_path = None if outdir is None else output_owner_path(outdir)
+    held_before = None if owner_path is None else ownership.held_claim(owner_path)
+    try:
+        # A stop is a way this run ends, recorded like the others: SIGTERM
+        # raises where the child is, as SIGINT always has, and both reach
+        # the stop path below (:func:`stop_on_signal`).
+        with stop_on_signal():
+            return _run_with_receipts(args)
+    finally:
+        held_after = None if owner_path is None else ownership.held_claim(owner_path)
+        if held_after is not None and held_after is not held_before:
+            held_after.release()
+
+
+def _run_with_receipts(args: argparse.Namespace) -> dict[str, object]:
     progress = _ChildProgress()
     try:
         report = _run(args, progress)
     except BaseException as error:
+        if _stopped_by_user(error):
+            # A STOP IS NOT A FAILURE.  It was published as one -- event
+            # ``failed``, report FAIL, "Why it stopped: KeyboardInterrupt"
+            # -- and a SIGTERM was not published at all.
+            with _stop_signals_held():
+                _record_stop(progress, error)
+            raise
+        # Drawing stops before anything is counted, so the banner, the
+        # report and the folder agree and no picture lands after them.
+        # A stop draws nothing more (the desktop kills a run 5 s after
+        # asking it to stop); a child that failed on its own finishes
+        # the frames it already wrote.
+        progress.stop_live_products(halt=_stopped_by_user(error))
         # The run did not finish, so it KEEPS what it drew and says so
         # twice: the early render's pictures stay where they are under a
         # banner naming the stop, and the same facts go into the report
@@ -1519,9 +2327,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         # this same hole three exception classes narrower.
         _publish_failure_report(progress, _stop_capsule(error), kept=kept)
         progress.failed(error)
+        progress.end("failed")
         progress.close()
         raise
     if str(report["result"]) != "PASS":
+        progress.stop_live_products()
         kept = progress.keep_early_render(
             "the child's own health check refused this forecast")
         if progress.render_plan is not None:
@@ -1545,11 +2355,26 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         try:
             _finish_child_render(progress, report=report)
         except BaseException as error:
+            if _stopped_by_user(error):
+                # Stopped while the pictures were being drawn: the
+                # forecast finished, so its report keeps its verdict and
+                # records the stop beside it.
+                with _stop_signals_held():
+                    _record_stop(progress, error, report=report)
+                if isinstance(error, (KeyboardInterrupt, ChildStopped)):
+                    raise
+                # The render stage's own spelling of a Ctrl-C
+                # (GoInterrupted) is an ordinary exception, which the CLI
+                # boundary would print as a traceback at exit 1; the stop
+                # leaves this door as the Ctrl-C it was, at exit 130.
+                raise KeyboardInterrupt from error
             # Before the failure event, so the stream a reader tails
             # ends on the failure rather than on a picture published by
             # a thread that was still running when it was raised.
+            progress.stop_live_products(halt=True)
             progress.wait_early_render()
             progress.failed(error, stage="finalize")
+            progress.end("failed")
             progress.close()
             raise
     progress.emit(
@@ -1561,8 +2386,158 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         first_products_seconds=progress.first_products_seconds,
         **({"render_summary": progress._render_summary}
            if progress._render_summary is not None else {}))
+    progress.end("completed" if str(report["result"]) == "PASS"
+                 else "failed")
     progress.close()
     return report
+
+
+def _stopped_by_user(error: BaseException) -> bool:
+    """Whether the child ended because it was asked to stop.
+
+    The interrupt spellings the run-plan door already recognises
+    (:func:`gpuwm.runplan._is_interrupt`: a ``KeyboardInterrupt``, and a
+    stage that answered the same Ctrl-C), and :class:`ChildStopped`,
+    which is what a SIGTERM becomes here (:func:`stop_on_signal`).
+    """
+
+    from gpuwm.runplan import _is_interrupt
+
+    return isinstance(error, ChildStopped) or _is_interrupt(error)
+
+
+def _stop_signal(error: BaseException) -> tuple[str, int]:
+    """``(signal name, exit code)`` for a stop.
+
+    SIGTERM exits 143 and SIGINT 130, the shell's 128 + the signal, so a
+    stop reads the same to a script whichever signal asked for it.
+    """
+
+    if isinstance(error, ChildStopped):
+        return error.signal_name, int(error.code)
+    return "SIGINT", 130
+
+
+def _stop_why(signal_name: str) -> str:
+    """The banner's ``Why it stopped`` line for a stop."""
+
+    return f"it was stopped by request ({signal_name})"
+
+
+def _stop_message(progress: "_ChildProgress", *, signal_name: str,
+                  pictures: int | None, finished: bool) -> str:
+    """The one sentence a stop publishes: the event, the report, the log.
+
+    Where the forecast got to, and what is on disk, in the banner's own
+    wording (:func:`gpuwm.first_products.banner_text`), so the three
+    documents say one thing.
+    """
+
+    from gpuwm.first_products import _stop_sentence
+
+    frames = len(progress._frames)
+    if finished:
+        where = ("The forecast had finished and every frame is on disk; "
+                 "the pictures were being drawn.")
+    else:
+        where = _stop_sentence(progress._stopped)
+        where += (f"  The {frames} frame{'s' if frames != 1 else ''} "
+                  "written before the stop "
+                  f"{'are' if frames != 1 else 'is'} on disk."
+                  if frames else "  No frame was written before the stop.")
+    if pictures is None:
+        held = ""
+    elif pictures:
+        had, verb, _them = _pictures_phrase(pictures)
+        held = f"  {had} drawn before the stop {verb} kept."
+    else:
+        held = ""
+    return f"Stopped by request ({signal_name}).  {where}{held}"
+
+
+def _record_stop(progress: "_ChildProgress", error: BaseException, *,
+                 report: dict | None = None) -> None:
+    """Write a stop down everywhere a finished or failed run is written.
+
+    In order: every render is ended (:meth:`_ChildProgress.halt_renders`)
+    so nothing is drawn after the stop; what a stopped render left is
+    removed and the rest is kept under a banner that says the run was
+    stopped by request (:meth:`_ChildProgress.keep_early_render`);
+    ``report.json`` records ``result`` ``STOPPED`` with a ``stop`` block
+    and the pictures' ``products`` block; the stream ends on the stop
+    (:meth:`_ChildProgress.stopped`); and the run manifest gets its end.
+
+    ``report`` is the finished forecast's own report, for a stop that
+    landed while the pictures were being drawn: the forecast's verdict
+    stands, and the stop is recorded beside it.
+
+    Every step is best effort, because a stop that could not write one
+    document must still write the others and still exit.
+    """
+
+    from gpuwm.first_products import (
+        DID_NOT_FINISH_STATUS, count_pictures, discard_stopped_render)
+
+    signal_name, exit_code = _stop_signal(error)
+    stage = ("finalize" if report is not None
+             else progress._current_stage or "forecast")
+    try:
+        ended = progress.halt_renders()
+    except Exception:  # noqa: BLE001 - the stop is still written down
+        ended = False
+    command = (None if progress.render_plan is None
+               else _render_command_text(progress.render_plan))
+    try:
+        if report is None:
+            kept = progress.keep_early_render(
+                _stop_why(signal_name), requested=True, discard=ended)
+            pictures = kept.get("pictures")
+            message = _stop_message(progress, signal_name=signal_name,
+                                    pictures=pictures, finished=False)
+            document = {"result": "STOPPED",
+                        "pipeline": CHILD_REPORT_PIPELINE}
+            products = dict(
+                status="KEPT", run_status=DID_NOT_FINISH_STATUS,
+                reason=_did_not_finish_capsule(kept),
+                pictures_on_disk=pictures,
+                pictures_on_disk_error=kept.get("pictures_error"),
+                banner=kept.get("banner"),
+                discarded_unfinished=kept.get("discarded", 0),
+                render_command=command)
+        else:
+            discarded = 0
+            if progress.render_plan is not None and ended:
+                discarded = len(discard_stopped_render(
+                    Path(progress.render_plan["render"]))["removed"])
+            pictures, uncounted = ((0, None) if progress.render_plan is None
+                                   else progress.pictures_drawn())
+            message = _stop_message(progress, signal_name=signal_name,
+                                    pictures=pictures, finished=True)
+            document = report
+            products = dict(
+                status="STOPPED", run_status="stopped",
+                reason=("the render was stopped by request before it "
+                        "finished; the forecast finished and every frame "
+                        "is on disk, so the rest draw with the command "
+                        "beside this"),
+                pictures_on_disk=pictures,
+                pictures_on_disk_error=uncounted,
+                discarded_unfinished=discarded,
+                render_command=command)
+        document["stop"] = {
+            "requested": True, "signal": signal_name,
+            "exit_code": exit_code, "stage": stage, "summary": message,
+            "stopped_at": (None if progress._stopped is None
+                           else dict(progress._stopped))}
+        _record_products(progress, document, **products)
+    except Exception:  # noqa: BLE001 - the stop is still written down
+        message = f"Stopped by request ({signal_name})."
+    try:
+        progress.stopped(stage=stage, message=message,
+                         signal_name=signal_name, exit_code=exit_code)
+    finally:
+        progress.end("stopped")
+        progress.close(wait=False)
 
 
 def _first_sentence(error: BaseException) -> str:
@@ -1675,13 +2650,13 @@ def _kept_sentence(kept: dict, render_dir) -> str:
                 "the top of it says where the forecast stopped")
     count = int(kept.get("pictures") or 0)
     if not count:
-        return ("the child did not finish; its early render had published no "
-                f"picture yet, and the banner at the top of {render_dir} says "
-                "where the forecast stopped")
+        return ("the child did not finish; no picture had been drawn yet, "
+                f"and the banner at the top of {render_dir} says where the "
+                "forecast stopped")
     had, verb, them = _pictures_phrase(count)
-    return (f"the child did not finish; the {had} the early render had "
-            f"already drawn {verb} kept, and the banner beside {them} says "
-            "where the forecast stopped")
+    return (f"the child did not finish; the {had} drawn while it ran "
+            f"{verb} kept, and the banner beside {them} says where the "
+            "forecast stopped")
 
 
 def _did_not_finish_capsule(kept: dict) -> str:
@@ -1708,17 +2683,17 @@ def _did_not_finish_capsule(kept: dict) -> str:
                 "run did write and its checkpoints are on disk.")
     count = int(kept.get("pictures") or 0)
     if not count:
-        return ("this child did not finish.  Its early render had published "
-                "no picture yet, so there is none to keep; the frames it did "
-                "write and its checkpoints are on disk.")
+        return ("this child did not finish.  No picture had been drawn yet, "
+                "so there is none to keep; the frames it did write and its "
+                "checkpoints are on disk.")
     had, verb, them = _pictures_phrase(count)
     banner = kept.get("banner")
     if banner is None:
-        return (f"this child did not finish; the {had} the early render had "
-                f"already drawn {verb} kept.  Next: open {where}.  Every "
-                "picture there was drawn before the forecast stopped.")
-    return (f"this child did not finish; the {had} the early render had "
-            f"already drawn {verb} kept.  Next: open {where} to see "
+        return (f"this child did not finish; the {had} drawn while it ran "
+                f"{verb} kept.  Next: open {where}.  Every picture there is "
+                "of a frame written before the forecast stopped.")
+    return (f"this child did not finish; the {had} drawn while it ran "
+            f"{verb} kept.  Next: open {where} to see "
             f"{them}, and {Path(banner).name} beside {them} says where the "
             "forecast stopped and that every picture there is from before "
             "it.")
@@ -1858,6 +2833,13 @@ def _finish_child_render(progress: "_ChildProgress", *,
         _finish_render(progress.render_plan, observer=progress,
                        door="downscale")
     except GoStageFailed as failure:
+        if failure.code == 130 or failure.code == -int(signal.SIGINT):
+            # The render answered the Ctrl-C its whole process group got
+            # before this process observed its own: that is the user's
+            # stop, not a render that failed.
+            from gpuwm.go_cli import GoInterrupted
+
+            raise GoInterrupted("render", None) from failure
         command = _render_command_text(progress.render_plan)
         early = progress.early_pictures()
         drawn, uncounted = progress.pictures_drawn()
@@ -1920,9 +2902,28 @@ def _finish_child_render(progress: "_ChildProgress", *,
         render_command=_render_command_text(progress.render_plan))
 
 
+#: Two-dimensional-looking names that start with Q and are not species.
+_NON_SPECIES_Q = frozenset({"Q2", "QFX", "QSFC", "QKE", "QKE_ADV"})
+
+
+def _interpolation_price(contract, placement, cfg):
+    """The device price of interpolating this parent onto this child."""
+    from gpuwm.ingest.preparation_price import price_downscale_interpolation
+
+    frame = contract.frames[0]
+    dimensions = dict(frame.dimensions)
+    species = sum(1 for name in frame.variables
+                  if name.startswith("Q") and name not in _NON_SPECIES_Q)
+    return price_downscale_interpolation(
+        parent_nx=int(placement.parent_nx), parent_ny=int(placement.parent_ny),
+        parent_nz=int(dimensions.get("bottom_top", cfg.nz)),
+        parent_fields=8 + species, child_cfg=cfg)
+
+
 def _run(args: argparse.Namespace,
          progress: "_ChildProgress") -> dict[str, object]:
     import cupy as cp
+    from gpuwm.ingest.preprocess_backend import decide_preparation_device
     from gpuwm.core import streaming
     from gpuwm.core.refl import consume_refl_10cm, refl_10cm_is_stashed
     from gpuwm.ingest.lateral_bc import (
@@ -1931,7 +2932,7 @@ def _run(args: argparse.Namespace,
         lateral_boundary_reload_count,
         lateral_boundary_resident_bytes,
     )
-    from gpuwm.io.restart import restart_filename, write_restart
+    from gpuwm.io.restart import write_restart
     from gpuwm.io.wrfout import wrfout_filename
 
     started = time.perf_counter()
@@ -1985,6 +2986,10 @@ def _run(args: argparse.Namespace,
     # after the whole of it has been read.
     require_runnable_child_radiation_from_archive(
         cfg, (args.parent_history[0] if args.parent_history else None))
+    # How many checkpoint sets this child keeps, settled once: the door
+    # hands its own answer on, and the runner door reads the same knob.
+    keep_checkpoints = child_checkpoint_retention(
+        getattr(args, "keep_checkpoints", None))
     if args.parent_restart is not None:
         binding = bind_parent_physics_from_gpuwm_restart(args.parent_restart)
     else:
@@ -2047,6 +3052,21 @@ def _run(args: argparse.Namespace,
     # checkpoint_due is the cadence.
     cadence = child_cadence(
         cfg, health_interval_seconds=float(args.health_interval_seconds))
+    # THE DISK, before the parent archive is interpolated and before the
+    # child takes a step: the same projection the plan review refused on,
+    # asked again here for the runner door, which no review stands in
+    # front of.  A child that fills its disk stops partway with a torn
+    # frame and can stop other work on that disk.
+    disk = child_disk_projection(
+        cfg, cadence, keep_checkpoints=keep_checkpoints,
+        render_products=render_products, outdir=outdir)
+    if disk["refusal"] is not None:
+        from gpuwm.explain import layered
+
+        raise OfflineChildContractError(layered(
+            disk["refusal"][0].upper() + disk["refusal"][1:] + ".",
+            "Refused before the child started.  Bytes per cell: "
+            f"{disk['basis']}.  Pictures: {disk['picture_basis']}."))
     # The parent tape's own level count, off the dimensions
     # ``validate_parent_history`` already read, so the regime statement in
     # a refusal costs no second open of the archive.  ``None`` from a tape
@@ -2113,16 +3133,25 @@ def _run(args: argparse.Namespace,
     # whole archive had been interpolated.  A card that is genuinely too
     # small refuses here, before anything is interpolated or allocated on
     # the device, with the measured figure and the way out.
+    #
+    # The card is read on EVERY [tiles] setting, off included, because it
+    # is what the child is priced on as well as what [tiles] is decided on.
+    # With [tiles] off the runner used to price on no card at all, so the
+    # estimator fell back to the 170-SM reference profile and report.json
+    # carried an envelope larger than the card the child then ran on
+    # (17,033,346,128 B for a 552x552x49 child on a 15.47 GiB card that the
+    # review and a --tiles=auto run both priced at 14,922,267,728 B).
     from tilestream.autoplan import CannotPlan
 
     try:
+        card = downscale_pricing.cold_card(tiles)
         # The estimator's default forcing model, as the fitted sizing and
         # the review price it: the child's boundary intervals are streamed
         # from the host one at a time, so counting every archived interval
         # as retained on the device would price this child a third above
         # what it holds and stream a child that fits.
         pricing = downscale_pricing.price_child(
-            cfg, tiles, machine=downscale_pricing.cold_machine(tiles),
+            cfg, tiles, machine=card.machine, profile=card.profile,
             basis=downscale_pricing.MEASURED_BASIS)
     except CannotPlan as error:
         raise OfflineChildContractError(str(error)) from error
@@ -2139,9 +3168,13 @@ def _run(args: argparse.Namespace,
         ratio=int(placement.parent_grid_ratio),
         start_time=contract.start_time,
         parent={
-            "run_dir": str(Path(contract.frames[0].path).parent),
+            # Absolute, because a run browser finds the parent run by the
+            # folder names in this path; a relative one typed at the
+            # command line names no run folder at all.  The checkpoint
+            # the same way, so the record names one file wherever read.
+            "run_dir": os.path.abspath(Path(contract.frames[0].path).parent),
             "restart": (None if args.parent_restart is None
-                        else str(args.parent_restart)),
+                        else os.path.abspath(args.parent_restart)),
             "frames": len(contract.frames),
             "cadence_seconds": float(contract.interval_seconds),
         },
@@ -2154,10 +3187,22 @@ def _run(args: argparse.Namespace,
     progress.arm_render(outdir=outdir, render_products=render_products)
     progress.emit("stage_started", stage="initialize", phase="preprocess")
 
+    # WHERE THE INTERPOLATION RUNS, PRICED BEFORE IT ALLOCATES.  The
+    # boundary interpolation holds every parent field on the PARENT's
+    # extent and levels, which a child-sized price cannot see.  auto (the
+    # default) interpolates on the CPU when that does not fit the card's
+    # free memory; an explicit cuda that cannot fit is refused by name
+    # (A65).  The child state itself is the forecast's, on the card either
+    # way, and was priced above.
+    preprocess_backend, preprocess_selection = decide_preparation_device(
+        args.preprocess_backend, _interpolation_price(contract, placement, cfg))
+    if preprocess_selection is not None:
+        _log("preprocess_backend_selection", **preprocess_selection)
+
     initial = interpolate_parent_initial_state(
         contract.frames[0].path, placement,
         physics_binding=binding, target_mp_physics=cfg.mp_physics,
-        backend=args.preprocess_backend,
+        backend=preprocess_backend,
         child_eta_levels=cfg.eta_levels, child_cfg=cfg)
     conversion = initial.receipt.get("conversion")
     if conversion is not None:
@@ -2171,7 +3216,7 @@ def _run(args: argparse.Namespace,
     prepared = build_offline_lateral_boundaries(
         contract, placement,
         target_mp_physics=cfg.mp_physics,
-        backend=args.preprocess_backend,
+        backend=preprocess_backend,
         child_eta_levels=cfg.eta_levels, child_cfg=cfg,
         spec_bdy_width=cfg.spec_bdy_width,
         spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
@@ -2262,34 +3307,36 @@ def _run(args: argparse.Namespace,
                                   valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                   path=str(path), bytes=path.stat().st_size)
 
-    checkpoint_paths: list[Path] = []
-    carriers_refreshed = 0
-
-    def emit_checkpoint() -> None:
-        # A DISCOVERABLE set (gpuwm.io.restart.restart_filename's instant
-        # naming, the one gpuwm.resume.discover_checkpoint_sets recognises),
-        # so this run can be the parent of the next downscale.  The
-        # streamed state is refreshed first, exactly as the history writer
-        # does: a streamed domain's forecast lives in the pinned host store
-        # and this DomainState is the snapshot that filled it, so without
-        # the copy every checkpoint would be the initial condition under a
-        # later clock.  Zero and a getattr when resident.
-        nonlocal carriers_refreshed
-        carriers_refreshed = streaming.refresh_streamed_state(stepper, child)
-        valid = initial.valid_time + timedelta(
-            seconds=float(clock.elapsed_seconds))
-        path = write_restart(
-            outdir / restart_filename(valid, domain=f"d{cfg.grid_id:02d}"),
-            child, cfg,
+    # A DISCOVERABLE set (gpuwm.io.restart.restart_filename's instant
+    # naming, the one gpuwm.resume.discover_checkpoint_sets recognises), so
+    # this run can be the parent of the next downscale, and only the
+    # newest ``keep_checkpoints`` of them stay on disk.
+    checkpoints = ChildCheckpoints(
+        outdir, grid_id=cfg.grid_id, keep=keep_checkpoints,
+        write=lambda path: write_restart(
+            path, child, cfg,
             # The scheme conversion this child was born through, source
             # and target named, so a record built from this restart
             # carries both ends of the seam; absent for a same-scheme
             # child, whose header is what it always was.
             tree_header=(None if conversion is None else {
-                "offline_microphysics_conversion": _jsonable(conversion)}))
-        checkpoint_paths.append(Path(path))
+                "offline_microphysics_conversion": _jsonable(conversion)})))
+    carriers_refreshed = 0
+
+    def emit_checkpoint() -> None:
+        # The streamed state is refreshed first, exactly as the history
+        # writer does: a streamed domain's forecast lives in the pinned
+        # host store and this DomainState is the snapshot that filled it,
+        # so without the copy every checkpoint would be the initial
+        # condition under a later clock.  Zero and a getattr when resident.
+        nonlocal carriers_refreshed
+        carriers_refreshed = streaming.refresh_streamed_state(stepper, child)
+        valid = initial.valid_time + timedelta(
+            seconds=float(clock.elapsed_seconds))
+        path, retired = checkpoints.emit(valid)
         _log("child_checkpoint", elapsed_seconds=float(clock.elapsed_seconds),
-             path=str(path), bytes=Path(path).stat().st_size)
+             path=str(path), bytes=path.stat().st_size,
+             retired=[str(old) for old in retired])
 
     progress.emit("stage_started", stage="forecast", phase="integrate")
     emit_output()
@@ -2322,18 +3369,16 @@ def _run(args: argparse.Namespace,
         if step_index % health_steps == 0 or step_index == steps:
             child_health = child_stability(child, cfg)
             health_fields = child_health_log_fields(child_health)
-            trend.append({"step": int(step_index),
-                          "model_seconds": float(clock.elapsed_seconds),
-                          # Both readings in the carrying shape the
-                          # health decoder produced them in, state words
-                          # included: the row goes into the capsule and
-                          # from there into report.json, and a number
-                          # that went is null with its state beside it
-                          # rather than a token no strict reader takes.
-                          "w_max": health_fields["w_max"],
-                          "w_max_state": health_fields["w_max_state"],
-                          "cfl": health_fields["cfl"],
-                          "cfl_state": health_fields["cfl_state"]})
+            # Both readings in the carrying shape the health decoder
+            # produced them in, state words included, and WHERE the |w|
+            # maximum was: the row goes into the capsule and from there
+            # into report.json, a number that went is null with its state
+            # beside it, and the last measured maximum's place is the one
+            # location the capsule can offer as near an origin.
+            health_row = child_health_trend_row(
+                step=step_index, model_seconds=clock.elapsed_seconds,
+                record=child_health, cfg=cfg)
+            trend.append(health_row)
             del trend[:-(trend_depth + 1)]
             memory = _memory_snapshot(cp)
             child_pool_reserved_peak = max(
@@ -2341,6 +3386,8 @@ def _run(args: argparse.Namespace,
             _log("child_step", step=step_index, total_steps=steps,
                  elapsed_seconds=float(clock.elapsed_seconds),
                  **health_fields,
+                 w_max_cell=health_row["w_max_cell"],
+                 w_max_edge=health_row["w_max_edge"],
                  boundary_device_reload_count=lateral_boundary_reload_count(child),
                  memory=memory,
                  wall_seconds=time.perf_counter() - started)
@@ -2352,8 +3399,8 @@ def _run(args: argparse.Namespace,
                           # The reader that offers "downscale from this
                           # run" takes its checkpoint directory from here,
                           # as it does for every other route.
-                          **({"last_checkpoint": str(checkpoint_paths[-1])}
-                             if checkpoint_paths else {}))
+                          **({"last_checkpoint": str(checkpoints.last)}
+                             if checkpoints.last is not None else {}))
             if child_health["nan"]:
                 # WHICH field, WHERE, and the climb that got there -- the
                 # survey taken once, here, on the way out.  A streamed
@@ -2392,7 +3439,7 @@ def _run(args: argparse.Namespace,
             # clock, stated there rather than inferred from the output
             # cadence happening to coincide.
             emit_checkpoint()
-    restart = checkpoint_paths[-1]
+    restart = checkpoints.last
     sample = np.asarray(step_seconds, dtype=np.float64)
     warm = sample[1:] if sample.size > 1 else sample
     _verify_file_receipts(
@@ -2427,7 +3474,8 @@ def _run(args: argparse.Namespace,
             "child_nx": placement.child_nx,
             "child_ny": placement.child_ny,
         },
-        "preprocess_backend": args.preprocess_backend,
+        "preprocess_backend": preprocess_backend,
+        "preprocess_backend_selection": preprocess_selection,
         # Which cadence flag the invoker gave (audit finding 5): True
         # means the ceiling was the archive's own cadence, accepted via
         # --accept-parent-cadence; False means an explicit
@@ -2478,11 +3526,16 @@ def _run(args: argparse.Namespace,
         # the two documents side by side and find one answer.
         "streaming": pricing.plan_entry(),
         "streamed_carriers_refreshed": carriers_refreshed,
-        # Every checkpoint this run wrote, on the child's own
-        # restart_interval_s, under the instant naming the next downscale
-        # discovers.  The last one is the run's end state.
+        # The checkpoints this run leaves on disk, written on the child's
+        # own restart_interval_s under the instant naming the next
+        # downscale discovers; the last one is the run's end state.  How
+        # many it wrote and how many it keeps are beside them, and the
+        # disk block is the projection the run was admitted on.
         "restart_interval_s": float(cfg.restart_interval_s),
-        "checkpoints": [str(path) for path in checkpoint_paths],
+        "checkpoints": [str(path) for path in checkpoints.on_disk()],
+        "checkpoints_written": len(checkpoints.written),
+        "keep_checkpoints": int(keep_checkpoints or 0),
+        "disk": disk,
         "boundary_intervals": len(prepared.boundaries.intervals),
         "boundary_device_resident_bytes": boundary_bytes,
         "boundary_device_reload_count": lateral_boundary_reload_count(child),
@@ -2526,6 +3579,8 @@ def _run(args: argparse.Namespace,
 
 
 def _parser() -> argparse.ArgumentParser:
+    from gpuwm.resume import checkpoint_sets_argument
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent-history", type=Path, nargs="+", required=True)
     evidence = parser.add_mutually_exclusive_group(required=True)
@@ -2548,8 +3603,8 @@ def _parser() -> argparse.ArgumentParser:
                         help="child-grid wrfinput/history file supplying "
                              "land identity and soil warm-start state "
                              "(required for surface-physics children)")
-    parser.add_argument("--preprocess-backend", choices=("cuda", "cpu"),
-                        default="cuda")
+    parser.add_argument("--preprocess-backend", choices=("cuda", "cpu", "auto"),
+                        default="auto")
     parser.add_argument("--health-interval-seconds", type=float, default=60.0)
     parser.add_argument("--render-products", default=None, metavar="LIST",
                         dest="render_products",
@@ -2559,6 +3614,12 @@ def _parser() -> argparse.ArgumentParser:
                              "nothing, because this runner is the engine "
                              "door; `gpuwm downscale` is the door that "
                              "defaults to drawing")
+    parser.add_argument("--keep-checkpoints", type=checkpoint_sets_argument,
+                        default=None, dest="keep_checkpoints", metavar="N",
+                        help="how many complete checkpoint sets the child "
+                             "keeps in --outdir (default 1, the newest, "
+                             "which a downscale from this child binds to); "
+                             "0 keeps every set")
     parser.add_argument("--outdir", type=Path, required=True)
     return parser
 
@@ -2568,7 +3629,15 @@ def main(argv=None) -> int:
     if arguments == ["--show-capabilities"]:
         print(json.dumps(_CAPABILITIES, sort_keys=True))
         return 0
-    report = run(_parser().parse_args(arguments))
+    try:
+        report = run(_parser().parse_args(arguments))
+    except KeyboardInterrupt:
+        # The contract `gpuwm.cli.main` keeps for every subcommand: one
+        # line and exit 130, not a traceback.  The stop itself is already
+        # written into the run's own records.
+        print("gpuwm.offline_child_run: stopped by request (SIGINT); the "
+              "run folder records the stop.", file=sys.stderr)
+        return 130
     return 0 if report["result"] == "PASS" else 1
 
 

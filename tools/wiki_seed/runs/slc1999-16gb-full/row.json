@@ -1,0 +1,29 @@
+{
+ "card_gb": 16,
+ "rung": "nest-12-3-1-400x400",
+ "start": "1999-08-11T12:00Z",
+ "length_h": 12,
+ "fitted_grid": "12 km 170 by 170 points (2028 by 2028 km); 3 km 336 by 336 points (1005 by 1005 km); 1 km 408 by 402 points (407 by 401 km); 49 levels",
+ "memory": {
+  "need_gib": 11.83,
+  "budget_gib": 14.54
+ },
+ "disk_gib": 45.4,
+ "output": {
+  "history_interval_s": 3600,
+  "nest_history_interval_s": 1800,
+  "keep_checkpoints": 1
+ },
+ "intent": {
+  "root_dx_km": 12,
+  "chain": "4,3",
+  "buffer_km": "800,300,0",
+  "source": "era5",
+  "cycle": "1999-08-11T12",
+  "hours": 12,
+  "era5_provider": "arco",
+  "history_interval_s": 3600,
+  "nest_history_interval_s": 1800,
+  "card": "16gb"
+ }
+}

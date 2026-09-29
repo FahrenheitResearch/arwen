@@ -14,7 +14,9 @@ from typing import Mapping, Sequence
 import uuid
 
 from gpuwm.ingest.prepared_cache import (
+    HEADER_PARTIAL_NAME,
     PreparedCacheReader,
+    _prepared_cache_staging_path,
     prepared_cache_identity,
     write_prepared_cache,
 )
@@ -24,8 +26,13 @@ from gpuwm.native_wrf_contract import (
     write_native_geometry_receipt,
     write_native_static_cache,
 )
+from gpuwm import fetch_guard, filesystem_paths
+from gpuwm.fetch_guard import WINDOWS_WIDEST_PID
 from gpuwm.wrf_direct import (
+    ROOT_EXPORT_DIRNAME,
     PreparedDomainArtifacts,
+    domain_artifacts_manifest_temporary,
+    export_staging_path,
     write_domain_artifacts_manifest,
 )
 
@@ -87,6 +94,176 @@ def _atomic_staging_sibling(
             or any(character not in "0123456789abcdef" for character in token)):
         raise ValueError("atomic directory staging nonce must be 10 lowercase hex")
     return Path(output).with_name(f".d-{token}")
+
+
+def deepest_published_hierarchy_path(
+        output: Path, grid_ids: Sequence[int] = (1,)) -> Path:
+    """The longest path :func:`write_native_hierarchy_artifacts` publishes.
+
+    Every file the tree holds once it is renamed to ``output``: its
+    receipt and manifest, and per domain the receipt, the static cache,
+    the geometry receipt and the prepared cache's header and payloads.
+    Payloads are named ``aNNNNN.npy`` and every domain folder ``dNN``
+    (WRF allows 21 domains), so the list is exact whatever the array
+    count.  Every forecast runner and every bundle already on disk reads
+    this layout, so a door that publishes it measures this path against
+    the host's path limit instead of the layout being shortened.
+    """
+
+    output = Path(output)
+    candidates = [output / "receipt.json", output / "domain-artifacts.json"]
+    for grid_id in grid_ids:
+        candidates.extend(_domain_files(
+            output / "domains" / f"d{int(grid_id):02d}"))
+    return _longest(candidates)
+
+
+def _domain_files(domain: Path) -> tuple[Path, ...]:
+    """The files :func:`write_native_domain_artifacts` leaves in ``domain``."""
+
+    cache = domain / "prepared-cache"
+    return (domain / "receipt.json", domain / "native-static.npz",
+            domain / "geometry-receipt.json", cache / "header.json",
+            cache / "a00000.npy")
+
+
+def _longest(paths) -> Path:
+    return max(paths, key=lambda path: len(str(path)))
+
+
+#: The folder below a door's output root that holds its domain tree.
+HIERARCHY_ARTIFACTS_DIRNAME = "hierarchy-artifacts"
+
+#: The folder below a door's output root that holds the unchanged-WRF files.
+WRF_EXPORT_DIRNAME = "wrf-native-input"
+
+
+def hierarchy_bundle_write_paths(
+        output_root: Path, *, wrf_export: bool = True) -> tuple[Path, ...]:
+    """The deepest path of each kind a door writes to publish a domain tree.
+
+    A door that prepares a domain tree (``hrrr_hierarchy_direct``,
+    ``gfs_direct``, ``era5_direct`` and ``mapped_direct``) builds its
+    whole bundle in a staging sibling of ``output_root`` and publishes it
+    with one rename, so a deep root is written at two depths:
+
+    * published: ``hierarchy-artifacts/domains/dNN/prepared-cache/header.json``
+      below ``output_root``;
+    * staged: the door's sibling (``.d-`` and ten hex characters;
+      ``mapped_direct``'s ``.tmp-`` and eight is as wide), holding the
+      tree writer's own ``.d-`` staging and its manifest's temporary
+      name, each domain's ``.d-`` staging, the ``.p-`` staging of that
+      domain's prepared cache with its header written aside
+      (``header.json.tmp``), and, when the door writes the
+      unchanged-WRF files, ``wrf-native-input.tmp-<pid>/
+      .root-export.tmp-<pid>/manifest.json``.
+
+    Process ids are counted at their widest on Windows, ten digits.  The
+    staged paths do not depend on the output name, which the sibling
+    replaces, so for a short name they are the deepest.  The statics
+    corridor set, the source evidence and the other files at the top of
+    a bundle sit shallower than these.
+    """
+
+    root = Path(output_root).absolute()
+    nonce = "f" * 10
+    staging = _atomic_staging_sibling(root, nonce=nonce)
+    artifacts = staging / HIERARCHY_ARTIFACTS_DIRNAME
+    tree_staging = _atomic_staging_sibling(artifacts, nonce=nonce)
+    domain_staging = _atomic_staging_sibling(
+        tree_staging / "domains" / "d01", nonce=nonce)
+    cache_staging = _prepared_cache_staging_path(
+        domain_staging / "prepared-cache", nonce=nonce)
+    paths = [
+        deepest_published_hierarchy_path(root / HIERARCHY_ARTIFACTS_DIRNAME),
+        deepest_published_hierarchy_path(artifacts),
+        _longest(_domain_files(domain_staging)),
+        cache_staging / HEADER_PARTIAL_NAME,
+        domain_artifacts_manifest_temporary(
+            tree_staging / "domain-artifacts.json",
+            pid=WINDOWS_WIDEST_PID, token="f" * 12),
+    ]
+    if wrf_export:
+        export = export_staging_path(
+            staging / WRF_EXPORT_DIRNAME, pid=WINDOWS_WIDEST_PID)
+        paths.append(export_staging_path(
+            export / ROOT_EXPORT_DIRNAME, pid=WINDOWS_WIDEST_PID)
+            / "manifest.json")
+    return tuple(paths)
+
+
+def published_path_refusal(
+        output_root: Path, *, wrf_export: bool = True,
+        also: Sequence[Path] = ()) -> str | None:
+    """Why a domain tree prepared at ``output_root`` would break here.
+
+    The one check every door that prepares a domain tree makes, right
+    after it knows it will: the deepest of
+    :func:`hierarchy_bundle_write_paths` and of ``also`` (other paths the
+    preparation writes because of where ``output_root`` is) against
+    Windows' path limit.  The breakage it prevents: past the limit
+    Windows reports the file missing, so a staged path fails the
+    preparation partway through, and a published one lets it run to the
+    end and publish, after which the forecast cannot open its own inputs.
+    A 125-character folder holding a 92-character output name put
+    ``hierarchy-artifacts/domains/d01/prepared-cache/header.json`` at 277
+    characters.
+
+    None when the limit does not bind: off Windows, or where the machine
+    has set LongPathsEnabled to 1 (read by
+    :func:`gpuwm.fetch_guard.windows_path_limit`), or when
+    ``output_root`` is in the extended ``\\\\?\\`` spelling, which opens at
+    any length and is what ``gpuwm go`` and ``gpuwm run-plan`` hand a
+    stage for a deep run folder
+    (:func:`gpuwm.filesystem_paths.deep_io_path`).
+
+    A limit of the measure: an exporter that refuses the domain's physics
+    before it writes (``stock_wrf_export`` optional) is counted as if it
+    wrote its staging; that path is eight characters deeper than the
+    next and the deepest only for output names under 28 characters.
+    """
+
+    if filesystem_paths.is_extended(output_root):
+        return None
+    limit = fetch_guard.windows_path_limit()
+    if limit is None:
+        return None
+    root = Path(output_root).absolute()
+    paths = (*hierarchy_bundle_write_paths(root, wrf_export=wrf_export),
+             *(Path(path) for path in also))
+    deepest = _longest(paths)
+    length = len(str(deepest))
+    if length <= limit:
+        return None
+
+    def over(inside: bool) -> int:
+        lengths = [len(str(path)) for path in paths
+                   if (root in path.parents) is inside]
+        return max(0, max(lengths, default=0) - limit)
+
+    def characters(count: int) -> str:
+        return f"{count} character{'' if count == 1 else 's'}"
+
+    in_root, in_folder = over(True), over(False)
+    if in_folder == 0:
+        remedy = f"an --output-root at least {characters(in_root)} shorter"
+    else:
+        remedy = (f"an --output-root in a folder at least "
+                  f"{characters(in_folder)} shorter")
+        if in_root > in_folder:
+            remedy += (f", and at least {characters(in_root)} shorter "
+                       "as a whole")
+    return (
+        f"refusing output root {root}: the deepest file the preparation "
+        f"writes would have a path of {length} characters, and Windows "
+        f"refuses paths longer than {limit} characters unless long paths "
+        "are enabled, which they are not on this computer.  Windows would "
+        "report that file missing: a staged file stops the preparation "
+        "partway, and a published one lets it finish and then stops the "
+        f"forecast from opening its own inputs.  Use {remedy}, or, as "
+        "administrator, set LongPathsEnabled to 1 (DWORD) under "
+        "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem and "
+        f"restart.  Longest path: {deepest}")
 
 
 def _forcing_hours(values: Sequence[int]) -> tuple[int, ...]:
@@ -436,6 +613,11 @@ def write_native_hierarchy_artifacts(
 __all__ = [
     "NativeDomainArtifactBuild",
     "NativeHierarchyArtifactBuild",
+    "HIERARCHY_ARTIFACTS_DIRNAME",
+    "WRF_EXPORT_DIRNAME",
+    "deepest_published_hierarchy_path",
+    "hierarchy_bundle_write_paths",
+    "published_path_refusal",
     "write_native_domain_artifacts",
     "write_native_hierarchy_artifacts",
 ]

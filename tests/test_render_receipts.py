@@ -237,3 +237,89 @@ def test_the_node_side_gallery_publishes_a_receipt(tmp_path):
     assert summary["rendered_png_count"] == 2
     assert sorted(row["name"] for row in summary["rendered_families"]) == [
         "2m_temperature", "composite_reflectivity"]
+
+
+def _prior_receipts(root, count, failures=()):
+    """``count`` small, valid receipts already filed in ``root``."""
+    directory = root / ".render-receipts"
+    directory.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for index in range(count):
+        ident = f"{index:032x}"
+        payload = json.dumps({
+            "schema": receipts.INVOCATION_SCHEMA, "id": ident,
+            "created_utc": "2026-09-27T00:00:00+00:00",
+            "output_root": str(root), "engine": "rust",
+            "requested_spec": "temperature", "layout": "nested",
+            "rendered": [], "skipped": [], "failures": list(failures)}).encode()
+        (directory / f"{ident}.json").write_bytes(payload)
+        total += len(payload)
+    return total
+
+
+def test_a_folder_drawn_through_a_long_run_keeps_publishing(tmp_path):
+    """One receipt per pass: a long run drawn while it runs files thousands.
+
+    They are small and fit the aggregate byte bound many times over, so the
+    next pass publishes and the summary counts every one of them.
+    """
+    from gpuwm.render_layout import fs_path
+    root = Path(fs_path(tmp_path, descend=True)).resolve()
+    prior = _prior_receipts(root, 4096)
+    assert prior < receipts._MAX_RECEIPT_BYTES // 4
+    summary = _publish(root, [_png(root, "temperature", "next")], spec="temperature")
+    assert summary["invocation_count"] == 4097
+    assert summary["rendered_png_count"] == 1
+    assert len(summary["receipt_paths"]) + summary["additional_receipts"] == 4097
+    assert receipts.read_summary(root)["invocation_count"] == 4097
+
+
+def test_receipts_past_the_aggregate_byte_bound_are_refused(tmp_path, monkeypatch):
+    from gpuwm.render_layout import fs_path
+    root = Path(fs_path(tmp_path, descend=True)).resolve()
+    prior = _prior_receipts(root, 3, failures=["x" * 2048])
+    monkeypatch.setattr(receipts, "_MAX_RECEIPT_BYTES", prior - 1)
+    with pytest.raises(ValueError, match="aggregate byte bound"):
+        receipts.summarize(root)
+
+
+def test_long_valid_selections_publish_a_bounded_summary(tmp_path):
+    """A long selection must not stop publication.
+
+    Four invocations, each asking for 128 stored fields under 128-character
+    names (the viewer's own bounds), filled the status envelope with the
+    preview lists themselves, and the summary refused with "exceeds its
+    status bound" once no reason text was left to drop.
+    """
+    from gpuwm.remote_processed_v2 import _products
+    selections = []
+    for batch in range(4):
+        names = [f"var:field_{batch}_{index:03d}_" + "x" * 100 for index in range(128)]
+        assert _products(names) == sorted(names)
+        selections.append(",".join(names))
+        summary = _publish(tmp_path, [], [(name, "not stored in this frame") for name in names],
+                           spec=selections[-1])
+    assert Path(summary["summary_path"]).stat().st_size <= receipts._MAX_STATUS_BYTES
+    assert receipts.read_summary(tmp_path) == summary
+    assert summary["requested_family_count"] == 512
+    assert summary["skipped_count"] == 512 and summary["undrawn_family_count"] == 512
+    for rows, count, total in (("requested_specs", "additional_requested_specs", 4),
+                               ("requested_families", "additional_requested_families", 512),
+                               ("skipped_families", "additional_skipped_families", 512),
+                               ("undrawn_families", "additional_undrawn_families", 512)):
+        assert len(summary[rows]) + summary[count] == total, rows
+    assert summary["additional_requested_specs"] > 0
+    exact = [json.loads(path.read_text(encoding="utf-8"))
+             for path in (tmp_path / ".render-receipts").glob("*.json")]
+    assert sorted(row["requested_spec"] for row in exact) == sorted(selections)
+    assert all(len(row["skipped"]) == 128 for row in exact)
+
+
+def test_a_short_selection_keeps_every_preview_row(tmp_path):
+    summary = _publish(tmp_path, [], [("var:temperature_2m", "not stored")],
+                       spec="var:temperature_2m")
+    assert summary["requested_specs"] == ["var:temperature_2m"]
+    assert summary["requested_families"] == ["var:temperature_2m"]
+    assert summary["additional_requested_specs"] == 0
+    assert summary["additional_requested_families"] == 0
+    assert summary["additional_undrawn_families"] == 0

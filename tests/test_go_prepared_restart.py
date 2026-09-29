@@ -358,3 +358,43 @@ def test_chain_summary_counts_history_without_readiness_receipts(tmp_path):
         (forecast / "ready" / (name + ".json")).write_text('{"status":"committed"}')
     (forecast / "wrfout_unused_directory").mkdir()
     assert runplan._chain_summary(tmp_path / "chain")["wrfout_count"] == 2
+
+
+def test_chain_summary_reads_the_run_folder_go_stamped(tmp_path):
+    """`gpuwm go` stamps a run folder under the chain it is pointed at, so
+    the forecast lands in chain/run-<stamp>/run.  Reading chain/run alone
+    completed a passing two-frame run as wrfout_count 0, status null."""
+
+    from gpuwm import run_stamp
+
+    chain = tmp_path / "chain"
+    claimed = run_stamp.allocate(chain, init="2026-07-29T18")
+    forecast = claimed / "run"
+    (forecast / "wrfout").mkdir(parents=True)
+    for hour in (18, 19):
+        (forecast / "wrfout" / f"wrfout_d01_2026-07-29_{hour}_00_00").write_bytes(
+            b"history file")
+    (forecast / "report.json").write_text(json.dumps({"status": "PASS"}))
+    (forecast / "progress.json").write_text(json.dumps(
+        {"status": "PASS", "model_elapsed_seconds": 3600.0}))
+    summary = runplan._chain_summary(chain)
+    assert summary["wrfout_count"] == 2
+    assert summary["status"] == "PASS" and summary["nan_free"] is True
+    assert summary["completed_seconds"] == 3600.0
+    assert summary["forecast_root"] == str(forecast)
+    assert summary["render_root"] == str(claimed / "png")
+    assert summary["report"] == str(forecast / "report.json")
+
+
+def test_chain_summary_prefers_an_unstamped_run_where_one_exists(tmp_path):
+    """--run-stamp off writes chain/run itself, and that is what is read."""
+
+    from gpuwm import run_stamp
+
+    chain = tmp_path / "chain"
+    (chain / "run").mkdir(parents=True)
+    (chain / "run" / "report.json").write_text(json.dumps({"status": "PASS"}))
+    run_stamp.allocate(chain, init="2026-07-29T18")
+    summary = runplan._chain_summary(chain)
+    assert summary["forecast_root"] == str(chain / "run")
+    assert summary["status"] == "PASS"

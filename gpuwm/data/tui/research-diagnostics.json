@@ -2,9 +2,9 @@
   "schema": "arwen.research.diagnostics.v1",
   "scope": "A reviewed subset of products supported by the ArWen WRF-history import path. Product membership is source-capability metadata, not forecast-skill or GPU qualification. The renderer still checks actual saved fields and complete time windows.",
   "authority": {
-    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "a81294e9d7adc6849999cf1d2ce849aac55d0722a5df1433a9c1eb76e4212fc5",
-    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "e50760e9de54703272358baf586ca583789e3a1089e61b10211f663fd6ec2efe",
-    "tools/rustwx/crates/rustwx-products/src/windowed.rs": "21b66ff8a1040deec9dfa1b0eb4664e9842f5813454e8ccef710bdf40eebe42b"
+    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "4839e0ea4d62dde145ae34a0b2853a5f9791f6797c55acc7f0dd0c341b025a12",
+    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "bc8d07a3ac59278aa349ef28c5efc2b9126c61ce822488b93b8e0a6182dbc5fc",
+    "tools/rustwx/crates/rustwx-products/src/windowed.rs": "b85e58440a4d3397b2384fcaaf22870c0cf140f511e405799791fc4e27480dd7"
   },
   "products": {
     "10m_wind_1h_max": {
@@ -255,7 +255,7 @@
     "uh_2to5km_run_max": {
       "kind": "windowed",
       "minimum_hours": 1,
-      "input_note": "run max of stored sub-hourly 1 h max 2-5 km UH planes (WRF UP_HELI_MAX per-history-interval max at F001, F002, F003: reset each history frame, the exact trailing 1 h max at this hourly cadence)"
+      "input_note": "run max of stored sub-hourly 1 h max 2-5 km UH planes (WRF UP_HELI_MAX per-history-interval max at F001, F002, F003: reset at each history write, so this is the exact trailing 1 h max when history is written hourly; a run with sub-hourly history is exact only when rendered with its frames between the hours)"
     },
     "var:wrf_lapse_rate_0_3km": {
       "kind": "generic",

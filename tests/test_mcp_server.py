@@ -29,6 +29,8 @@ import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 
+from gpuwm import proc_identity
+
 import numpy as np
 import pytest
 
@@ -343,6 +345,8 @@ def test_a_second_gpu_launch_is_refused_naming_the_running_job(client):
         # This pytest process's own pid: alive for the whole test, so
         # the liveness check cannot reclaim the lock underneath it.
         "wrapper_pid": os.getpid(),
+        # ...and its identity: a bare pid names no process (it could be reused).
+        "wrapper_process": proc_identity.identify(os.getpid()),
         "created_utc": "2026-08-31T00:00:00+00:00",
     }), encoding="utf-8")
     try:

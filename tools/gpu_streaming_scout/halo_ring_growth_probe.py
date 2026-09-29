@@ -12,7 +12,7 @@ Output JSON carries, per P and per ring depth 0..K: ``max_frac`` (largest
 partition as a fraction of the global mesh -- what must fit the card) and
 ``redundancy`` (sum of locals over global -- the wasted-compute multiplier).
 
-Measured for task #260; see Downloads/GPUWM-HEX-SINGLE-CARD-STREAMING.md.
+Measured for task #260; see the single-card streaming record.
 """
 
 import sys, json

@@ -164,6 +164,42 @@ def test_the_printed_corridor_flag_reaches_the_hierarchy(tmp_path, capsys):
         "hierarchy command without it, so the corridor is never sealed")
 
 
+def test_the_configs_acknowledgements_reach_the_hierarchy(tmp_path, capsys):
+    """A shortwave-only tree's acknowledgement survives every door.
+
+    The suite requires ``constant-downward-longwave-v1`` and the wizard
+    writes it into ``[experiment]``, but the hierarchy stage imports the
+    namelists, which cannot spell it.  The printed chain left it off,
+    ``gpuwm prep`` refused ``--ack`` beside ``--root-preparation`` as
+    unused, and run-plan composed the stage without it, so every such
+    tree was refused at the hierarchy import after its fetch and root
+    preparation, asking for the declaration its own config carries.
+    """
+    from gpuwm.experiment import load_experiment
+
+    config = tmp_path / "les.toml"
+    assert cli_main([
+        "domain", "--point=35.55,-97.5", "--card", "24gb",
+        "--root-dx", "2.25", "--chain", "3", "--source", "hrrr",
+        "--cycle", "2026-07-29T18", "--hours", "1",
+        "--physics-profile", "wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        "--out", str(config)]) == 0
+    capsys.readouterr()
+    experiment = load_experiment(config)
+    assert "constant-downward-longwave-v1" in experiment.acknowledgements
+
+    chain = domain_wizard.hrrr_route_commands(
+        config, experiment, profile=None, data_dir=str(tmp_path / "data"))
+    hierarchy = [command for command in _commands(chain, "gpuwm prep")
+                 if "--root-preparation" in command]
+    assert hierarchy, chain
+    at = hierarchy[0].index("--ack")
+    assert hierarchy[0][at + 1] == "constant-downward-longwave-v1"
+    assert cli_main(hierarchy[0][1:] + ["--dry-run"]) == 0
+    composed = capsys.readouterr().out
+    assert "--ack constant-downward-longwave-v1" in composed, composed
+
+
 # ---------------------------------------------------------------------------
 # One spelling, three doors
 # ---------------------------------------------------------------------------

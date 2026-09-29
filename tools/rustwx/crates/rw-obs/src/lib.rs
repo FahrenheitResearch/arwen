@@ -12,6 +12,10 @@
 pub mod pack;
 pub mod seam;
 pub mod net;
+pub mod bufr;
+pub mod bufr_obs;
+pub mod table;
+pub mod tar;
 
 use std::error::Error;
 

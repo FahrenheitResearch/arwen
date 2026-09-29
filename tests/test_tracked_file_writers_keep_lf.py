@@ -78,6 +78,19 @@ _WRITERS = (
      "tools/rustwx/crates/static-fields/tests/fixtures/highres/meta.json"),
 )
 
+
+def _skip_where_not_exported(script: str) -> None:
+    """The public tree carries no `evidence/` (RELEASE-EXCLUDE.txt).
+
+    There the four evidence writers do not exist and every case over them
+    failed on the public CI. They are skipped only where `evidence/` itself is
+    absent, so a checkout that has it and lacks one of them still fails, and
+    the collected count stays what tools/battery/list_census.json records.
+    """
+    if script.startswith("evidence/") and not (ROOT / "evidence").is_dir():
+        pytest.skip("this tree does not carry evidence/")
+
+
 #: Text-mode writes left alone, per script, keyed by the receiver as
 #: `ast.unparse` spells it -- because the destination is NOT tracked and
 #: the platform's line ending there is nobody's business.  `fit_arms.py`
@@ -130,6 +143,7 @@ def test_the_writer_uses_no_translating_write(script, destination):
     `mutation_study_snow.py` already writes `newline=""` and both spellings
     say the same thing to the platform.
     """
+    _skip_where_not_exported(script)
 
     allowed = _UNTRACKED_TEXT_WRITES.get(script, set())
     tree = ast.parse((ROOT / script).read_bytes().decode("utf-8"))
@@ -164,6 +178,7 @@ def test_the_destination_is_tracked_and_still_lf(script, destination):
     table is a description of a repository that no longer exists, which
     is how allowlists rot.
     """
+    _skip_where_not_exported(script)
 
     listed = subprocess.check_output(
         ["git", "ls-files", "--error-unmatch", "--", destination],
@@ -225,6 +240,7 @@ def test_the_fixed_spelling_survives_what_the_old_one_did_not(
     demonstrate, so that half is skipped there and the round trip stands
     on its own -- Windows is where the failure lives.
     """
+    _skip_where_not_exported(script)
 
     real = (ROOT / destination).read_bytes()
     text = real.decode("utf-8")

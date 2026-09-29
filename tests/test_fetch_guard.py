@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 import textwrap
@@ -253,6 +253,71 @@ def test_a_waiting_writer_announces_before_it_refuses(tmp_path):
     assert lines == [] or any("waiting up to" in line for line in lines)
 
 
+class _FakeClock:
+    """A monotonic clock the waiter's own sleeps advance."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.mark.parametrize("grows_until_s", [0.0, 10.0])
+def test_the_budget_runs_from_the_holders_last_progress(tmp_path,
+                                                        grows_until_s):
+    """A holder still making progress is waited for past the budget; one
+    that stops is refused a budget after it stopped.
+
+    The concrete breakage: a flat budget refused a preparation waiting on
+    a 2.28 GB land-cover download that was still arriving, on any link
+    slower than the file's size over the budget.
+    """
+    target = tmp_path / "run"
+    flag = tmp_path / "held.flag"
+    child = _spawn_holder("fetch-out", target, flag, 60)
+    clock = _FakeClock()
+    lines: list[str] = []
+    try:
+        _await_flag(flag, child)
+        # The holder's staged bytes grow with the clock until it stalls.
+        lock = fetch_guard.OutputLock(
+            "fetch-out", target, timeout_s=2.0, progress=lines.append,
+            clock=clock, sleeper=clock.sleep,
+            holder_progress=lambda: min(clock.now, grows_until_s))
+        with pytest.raises(fetch_guard.FetchLockBusy) as caught:
+            lock.acquire()
+    finally:
+        flag.with_suffix(".release").write_text("go", encoding="utf-8")
+        child.wait(timeout=60)
+
+    busy = caught.value
+    assert busy.idle_s == pytest.approx(2.0)
+    assert busy.waited_s == pytest.approx(grows_until_s + 2.0)
+    assert "refuses rather than interleave" in str(busy)
+    assert "shown no progress for 2 s" in str(busy)
+    assert any("no progress for 2 s" in line for line in lines), lines
+
+
+def test_a_zero_budget_still_fails_fast_with_a_progress_probe(tmp_path):
+    target = tmp_path / "run"
+    flag = tmp_path / "held.flag"
+    child = _spawn_holder("fetch-out", target, flag, 60)
+    try:
+        _await_flag(flag, child)
+        reads = []
+        with pytest.raises(fetch_guard.FetchLockBusy):
+            fetch_guard.hold("fetch-out", target, timeout_s=0,
+                             holder_progress=lambda: reads.append(1) or
+                             len(reads)).acquire()
+    finally:
+        flag.with_suffix(".release").write_text("go", encoding="utf-8")
+        child.wait(timeout=60)
+
+
 def test_lock_timeout_env_is_the_wait_budget(tmp_path, monkeypatch):
     monkeypatch.setenv(fetch_guard.LOCK_TIMEOUT_ENV, "0")
     assert fetch_guard.OutputLock("fetch-out", tmp_path).timeout_s == 0.0
@@ -273,7 +338,70 @@ def test_staging_names_are_unique_per_call(tmp_path):
     target = tmp_path / "receipt.json"
     seen = {fetch_guard._staging_path(target, "publish") for _ in range(50)}
     assert len(seen) == 50
-    assert all(str(os.getpid()) in path.name for path in seen)
+    assert all(path.parent == tmp_path for path in seen)
+
+
+def test_a_staging_name_never_repeats_the_target_name():
+    """A deep folder must not fail on a name that exists only in transit.
+
+    The staging name used to be ``<target name>.<tag>-<pid>-<time_ns>.tmp``,
+    35 characters longer than the file it publishes.  Under a runtime root
+    of 150 characters the geography resume record
+    ``<archive>.tar.bz2.fetch-resume.json`` still fits in Windows' 259, and
+    its staging copy did not, so every geography setup failed on a file
+    that would have been renamed away a moment later.
+    """
+
+    root = PureWindowsPath("C:\\" + "r" * 147)
+    sidecar = (root / "case-data" / "WPS_GEOG" / ".fetch-geog"
+               / ("modis_landuse_20class_30s_with_lakes.tar.bz2"
+                  ".fetch-resume.json"))
+    staging = fetch_guard._staging_path(sidecar, "geog")
+
+    assert len(str(root)) == 150
+    assert len(str(sidecar)) < 260
+    assert staging.parent == sidecar.parent
+    assert len(str(staging)) < 260
+    assert len(staging.name) <= fetch_guard.STAGING_NAME_CHARS
+    assert len(str(staging)) <= len(str(sidecar))
+    # The same budget whatever the target is called.
+    other = fetch_guard._staging_path(sidecar.with_name("x" * 120), "geog")
+    assert len(other.name) == len(staging.name)
+
+
+@pytest.mark.parametrize("length, shorter", [(260, "1 character shorter"),
+                                              (275, "16 characters shorter")])
+def test_a_refused_path_names_its_length_and_the_cut(monkeypatch, length,
+                                                     shorter):
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+    path = "C:\\" + "p" * (length - 3)
+    error = FileNotFoundError(2, "No such file or directory", "short.tmp",
+                              None, path)
+
+    text = fetch_guard.local_write_refusal("geog", Path("short"), error,
+                                           "nothing was downloaded")
+
+    assert f"a path of {length} characters" in text
+    assert shorter in text
+    assert text.endswith(f"Path: {path}")
+
+
+def test_atomic_write_never_reuses_an_existing_staging_file(tmp_path,
+                                                            monkeypatch):
+    """A short name is only safe if it is also claimed exclusively."""
+
+    target = tmp_path / "receipt.json"
+    tokens = iter(["0123456789", "0123456789", "abcdefabcd"])
+    monkeypatch.setattr(fetch_guard, "_staging_token", lambda: next(tokens))
+    squatter = fetch_guard._staging_path(target, "publish", "0123456789")
+    squatter.write_bytes(b"another writer's bytes")
+
+    fetch_guard.atomic_write_text(target, "mine\n")
+
+    assert target.read_text() == "mine\n"
+    assert squatter.read_bytes() == b"another writer's bytes"
+    assert not fetch_guard._staging_path(target, "publish",
+                                         "abcdefabcd").exists()
 
 
 @pytest.mark.parametrize("payload", ["first\n", "second, longer\n", ""])

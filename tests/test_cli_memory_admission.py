@@ -7,7 +7,9 @@ import pytest
 from gpuwm import cli
 
 
-@pytest.mark.parametrize("capacity", ["device_budget_bytes", "host_available_bytes"])
+# The device half of this admission is retired (A65): the case is priced
+# before its first device allocation instead.  The host half still refuses.
+@pytest.mark.parametrize("capacity", ["host_available_bytes"])
 @pytest.mark.parametrize("explain", [False, True])
 def test_initialization_budget_refusal_is_readable_at_cli(
         tmp_path, monkeypatch, capsys, capacity, explain):

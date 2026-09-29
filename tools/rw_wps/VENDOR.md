@@ -1,6 +1,6 @@
 # Vendored donor snapshot: rw-wps + its grib-core and netcrust
 
-Unmodified snapshot of Drew's Rust mapping/composition engine, vendored for
+Unmodified snapshot of the project's Rust mapping/composition engine, vendored for
 the 2.5.0 mapped-engine port (Python boundary ruling, 2026-08-16).
 
 - Donor repository: a private working checkout of

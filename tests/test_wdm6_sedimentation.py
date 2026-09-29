@@ -100,10 +100,21 @@ def evolving_transport(tmp_path_factory):
         pytest.skip("the CPU mirror needs a C++ compiler")
     source = Path(__file__).resolve().parents[1] / "gpuwm/core/kernels/wdm6.cu"
     text = source.read_text()
-    start = text.index("        int mstep = 1;", text.index("// ---- rain mass+number"))
+    # The kernel sets its rain sub-step count while it loads the column,
+    # as the largest wdm6_rain_steps over the levels, and the rain block
+    # then runs that many sub-steps.  The mirror takes the same schedule
+    # from the same production function before the block.
+    schedule_site = "            int steps = wdm6_rain_steps(den[k], delz[k], dtcld);"
+    assert text.count(schedule_site) == 1
+    start = text.index("        // ---- rain mass+number")
     end = text.index("        // ---- snow + graupel", start)
-    block = text[start:end]
-    loop = "        for (int n = 1; n <= mstep; ++n) {"
+    block = ("        int mstep = 1;\n"
+             "        for (int k = 0; k < nz; ++k) {\n"
+             "            int steps = wdm6_rain_steps(den[k], delz[k], dtcld);\n"
+             "            if (steps < 0) { out[3] = -1.0; return; }\n"
+             "            if (steps > mstep) mstep = steps;\n"
+             "        }\n" + text[start:end])
+    loop = "        for (int n = 0; n < mstep; ++n) {"
     assert block.count(loop) == 1
     block = block.replace(loop, loop + "\nfor(int j=0;j<nz;++j) "
         "out[2]=fmax(out[2],(double)fmaxf(work1r[j],workn[j])*dtcld/mstep);")

@@ -275,6 +275,150 @@ def test_printed_fetch_step_plans_through_the_real_planner(
         area=flags.get("--area"), out=Path(flags["--out"]))
 
 
+def _printed_fetch_arguments(printed):
+    """Read executable fetch lines, including unnumbered supplement commands."""
+    import re
+    import shlex
+
+    commands = []
+    for line in printed.split("next:", 1)[1].splitlines():
+        match = re.fullmatch(r"(?:\d+\.\s+)?(gpuwm\s+fetch\b.*)", line.strip())
+        if match:
+            commands.append(shlex.split(match[1], comments=True)[1:])
+    return commands
+
+
+class RemoteAcquisitionReached(Exception):
+    pass
+
+
+def _stop_at_remote_acquisition(monkeypatch):
+    from gpuwm import fetch as acquisition, era5_acquisition, era5_arco
+
+    def remote_boundary(*args, **kwargs):
+        raise RemoteAcquisitionReached
+
+    monkeypatch.setattr(acquisition, "require_published_cycle", remote_boundary)
+    monkeypatch.setattr(era5_acquisition, "_client", remote_boundary)
+    monkeypatch.setattr(era5_arco, "retrieve_era5_arco", remote_boundary)
+
+
+def test_printed_fetch_arguments_include_indented_supplements():
+    printed = '''gpuwm fetch --out ignored
+next:
+  1. gpuwm fetch --out "primary inputs"
+     # Stage the local inputs, then acquire their supplement:
+     gpuwm fetch --retrieve --out "supplement inputs"
+     # gpuwm fetch --out commented
+  2. gpuwm check config.toml
+'''
+    assert _printed_fetch_arguments(printed) == [
+        ["fetch", "--out", "primary inputs"],
+        ["fetch", "--retrieve", "--out", "supplement inputs"],
+    ]
+
+
+@pytest.mark.parametrize("source", wizard_planable_source_ids())
+def test_printed_chain_parses_with_matching_acquisition(
+        tmp_path, capsys, monkeypatch, source):
+    """Every printed fetch reaches transport, including local-source supplements."""
+    import shlex
+    from gpuwm.cli import build_parser
+
+    _stop_at_remote_acquisition(monkeypatch)
+
+    rc, out = _emit(tmp_path / "command paths", source, "--explain")
+    assert rc == 0
+    printed = capsys.readouterr().out
+    for argv in _printed_fetch_arguments(printed):
+        with pytest.raises(RemoteAcquisitionReached):
+            cli_main(argv)
+    if source not in _sources_with_public_bytes():
+        return
+
+    commands = {}
+    for line in printed.split("next:")[-1].splitlines():
+        line = line.strip()
+        if len(line) > 3 and line[:3] in ("1. ", "2. ", "3. "):
+            argv = shlex.split(line[3:], comments=True)
+            assert argv[0] == "gpuwm"
+            commands[argv[1]] = build_parser().parse_args(argv[1:])
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    fetch = commands["fetch"]
+    assert fetch.source == config["fetch"]["source"]
+    assert fetch.out.resolve() == Path(config["fetch"]["out"]).resolve()
+    assert commands["check"].config.resolve() == out.resolve()
+    launch = commands.get("go", commands.get("run"))
+    assert launch.config.resolve() == out.resolve()
+    if "go" in commands:
+        assert launch.data_dir.resolve() == fetch.out.resolve()
+    else:
+        from gpuwm.fetch import era5_combined_name
+        forcing = out.parent / config["case_data"]["forcing"][0]
+        assert forcing.resolve() == (
+            fetch.out / era5_combined_name(fetch.era5_provider)).resolve()
+
+
+_TEMPLATE_SOURCES = tuple(source for source in wizard_planable_source_ids()
+                          if get_source_adapter(source).fetch_requires_retrieve)
+
+
+@pytest.mark.parametrize("source", _TEMPLATE_SOURCES)
+@pytest.mark.parametrize("explain", [False, True])
+def test_template_source_retrieves_by_default(tmp_path, capsys, monkeypatch, source, explain):
+    from gpuwm.runplan import _fetch_arguments_from_hints
+
+    _stop_at_remote_acquisition(monkeypatch)
+    rc, out = _emit(tmp_path / "command paths", source,
+                    *(["--explain"] if explain else []))
+    assert rc == 0
+    commands = _printed_fetch_arguments(capsys.readouterr().out)
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert config["fetch"]["retrieve"] is True
+    # Automatic launches consume the same hints without printing a separate fetch.
+    if not commands:
+        commands = [["fetch", *_fetch_arguments_from_hints(
+            config["fetch"], out=Path(config["fetch"]["out"]))]]
+    for argv in commands:
+        assert "--retrieve" in argv
+        with pytest.raises(RemoteAcquisitionReached):
+            cli_main(argv)
+
+
+@pytest.mark.parametrize("explain", [False, True])
+@pytest.mark.parametrize("source", [source for source in _TEMPLATE_SOURCES if source == "era5"])
+@pytest.mark.parametrize("selection,transport", [
+    (["--era5-provider", "cds"], "cds"),
+    (["--era5-provider", "arco"], "arco"),
+    (["--era5-product", "ensemble_members", "--member", "3"], "cds"),
+])
+def test_printed_reanalysis_fetch_retrieves_by_default(
+        tmp_path, capsys, monkeypatch, source, explain, selection, transport):
+    """Execute the printed CLI through dispatch, stopping at the remote transfer."""
+    import shlex
+    from gpuwm import era5_acquisition, era5_arco
+
+    calls = []
+    monkeypatch.setattr(era5_acquisition, "retrieve_era5",
+                        lambda **kwargs: calls.append(("cds", kwargs)))
+    monkeypatch.setattr(era5_arco, "retrieve_era5_arco",
+                        lambda **kwargs: calls.append(("arco", kwargs)))
+    rc, out = _emit(tmp_path / "command paths", source, *selection,
+                    *(["--explain"] if explain else []))
+    assert rc == 0
+    line = next(line.strip()[3:] for line in capsys.readouterr().out.splitlines()
+                if line.strip().startswith("1. gpuwm fetch "))
+    assert cli_main(shlex.split(line)[1:]) == 0
+    assert len(calls) == 1, "printed fetch wrote a template instead of retrieving inputs"
+    assert calls[0][0] == transport
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert config["fetch"]["retrieve"] is True
+    assert calls[0][1]["out"].resolve() == Path(config["fetch"]["out"]).resolve()
+    assert calls[0][1]["hours"] == config["fetch"]["hours"]
+    assert calls[0][1]["cadence"] == config["fetch"]["cadence"]
+    assert calls[0][1].get("member") == config["fetch"].get("member")
+
+
 @pytest.mark.parametrize("source", sorted(_sources_with_public_bytes()))
 def test_hand_written_fetch_table_validates_for_every_routed_source(source):
     """A hand-written ``[fetch]`` table naming a routed source loads.

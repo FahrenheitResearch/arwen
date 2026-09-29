@@ -6,7 +6,7 @@ lagrange_setup / lagrange_interp at the reference run's Registry defaults
 force_sfc_in_vinterp=1, zap_close_levels=500, t_extrap_type=2,
 extrap_type=2).  Closed-form pins are hand-computed from those formulas;
 the met_em pin reproduces the ingest audit's measurement method
-(.superpowers/sdd/codex/audit-findings-ingest.json, findings 1-2).
+(the ingest audit's findings 1-2).
 """
 
 import os
@@ -272,6 +272,210 @@ def test_wrf_vert_interp_gpu_matches_float64_authority():
             cp.asarray(source, cp.float32),
             cp.full((ny, nx), 200.0, cp.float32),
             cp.asarray(target, cp.float32))
+
+
+# ---------------------------------------------------------------------------
+# Column depth: the kernel's compiled tiers and the CPU bridge above them
+# ---------------------------------------------------------------------------
+
+def _deep_columns(nsource, seed, *, ny=6, nx=9, ntarget=49):
+    """Synthetic bottom-up isobaric columns ``nsource`` levels deep.
+
+    The same construction as the authority test above, at any depth: some
+    columns have the surface inside the source column (below-ground levels,
+    one zapped close to the surface), the rest have it below every level,
+    and one target sits below ground.  Everything is rounded to FP32 once
+    and returned in float64, so the float64 authority sees exactly the
+    geometry the device sees and no zap decision can differ by rounding.
+    """
+    rng = np.random.default_rng(seed)
+    base = np.geomspace(100000.0, 1000.0, nsource)
+    source = base[:, None, None] * (
+        1.0 + rng.normal(0.0, 0.001, (nsource, ny, nx)))
+    source = np.sort(source, axis=0)[::-1]
+    values = (300.0 - 60.0 * np.log(100000.0 / source)
+              + rng.normal(0.0, 1.5, source.shape))
+    psfc = rng.uniform(95000.0, 103500.0, (ny, nx))
+    psfc[0, 0] = source[0, 0, 0] + 300.0
+    psfc[1, 1] = source[1, 1, 1] + 300.0
+    sfc_values = 288.0 + rng.normal(0.0, 2.0, (ny, nx))
+    weight = np.geomspace(1.0, 0.02, ntarget)[:, None, None]
+    target = (psfc[None] - 50.0) * weight + 10050.0 * (1.0 - weight)
+    target[0, 2, 2] = psfc[2, 2] + 500.0
+
+    def f32(array):
+        return np.asarray(array, dtype=np.float32).astype(np.float64)
+
+    return f32(source), f32(values), f32(psfc), f32(sfc_values), f32(target)
+
+
+def test_each_column_depth_names_its_engine_and_why():
+    from gpuwm.ingest.vert import (WRF_VERT_INTERP_LEVEL_TIERS,
+                                   wrf_vertical_route)
+
+    assert WRF_VERT_INTERP_LEVEL_TIERS == (64, 160, 256)
+    expected = {37: 64, 63: 64, 64: 160, 137: 160, 159: 160, 160: 256,
+                255: 256}
+    for source_levels, tier in expected.items():
+        route = wrf_vertical_route(source_levels)
+        assert route["backend"] == "cuda"
+        assert route["source_levels"] == source_levels
+        assert route["column_levels"] == source_levels + 1
+        assert route["kernel_level_tier"] == tier
+        assert f"fits the CUDA kernel's {tier}-level tier" in route["reason"]
+    for source_levels in (256, 300):
+        route = wrf_vertical_route(source_levels)
+        assert route["backend"] == "cpu"
+        assert route["kernel_level_tier"] is None
+        assert route["column_levels"] == source_levels + 1
+        assert "top tier of 256 levels" in route["reason"]
+        assert "CPU bridge" in route["reason"]
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_a_137_level_source_prepares_on_the_cuda_backend():
+    """ERA5's 137 model levels (138 with the surface) run on the card.
+
+    This preparation used to stop at ``prepare_wrf_vertical`` with
+    "column exceeds the kernel's 64-level capacity" on the default CUDA
+    backend.  The receipt is taken BEFORE the preparation, the way every
+    preparation route takes it, and still records what ran.
+    """
+    import cupy as cp
+    from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+
+    source, values, psfc, sfc_values, target = _deep_columns(137, 137)
+    backend = resolve_preprocess_backend("cuda")
+    receipt = backend.receipt()
+    plan = backend.prepare_wrf_vertical(
+        cp.asarray(source, cp.float32), cp.asarray(psfc, cp.float32),
+        cp.asarray(target, cp.float32))
+    for extrap in ("constant", "temperature"):
+        for logp in (True, False):
+            got = plan.apply(cp.asarray(values, cp.float32),
+                             cp.asarray(sfc_values, cp.float32),
+                             interp_in_logp=logp, extrap=extrap)
+            assert isinstance(got, cp.ndarray)
+            reference = np_wrf_real_vert_interp(
+                values, sfc_values, source, psfc, target,
+                interp_in_logp=logp, extrap=extrap)
+            np.testing.assert_allclose(cp.asnumpy(got), reference,
+                                       rtol=3.0e-5, atol=5.0e-3)
+
+    assert receipt["vertical_interpolation"] == [{
+        "source_levels": 137,
+        "column_levels": 138,
+        "backend": "cuda",
+        "kernel_level_tier": 160,
+        "reason": ("the 138-level column (137 source levels plus the "
+                   "surface) fits the CUDA kernel's 160-level tier"),
+    }]
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_the_column_tier_is_an_allocation_size_and_moves_no_bit():
+    """The same columns through every tier that holds them: equal bytes.
+
+    40 levels runs on the 64 binary every shallow source has always used;
+    compiling the arrays wider must not move one bit of it, and the 137
+    level case must read the same from the 160 and 256 tiers.
+    """
+    import cupy as cp
+    from dataclasses import replace
+    from gpuwm.ingest.vert import (
+        WRF_VERT_INTERP_LEVEL_TIERS,
+        _prepare_wrf_vert_interp_geometry,
+        _wrf_vert_interp_gpu_prepared,
+    )
+
+    for nsource, seed, own_tier in ((40, 40, 64), (137, 1370, 160)):
+        source, values, psfc, sfc_values, target = _deep_columns(
+            nsource, seed)
+        plan = _prepare_wrf_vert_interp_geometry(
+            cp.asarray(source, cp.float32), cp.asarray(psfc, cp.float32),
+            cp.asarray(target, cp.float32))
+        assert plan.kernel_level_tier == own_tier
+        tiers = [tier for tier in WRF_VERT_INTERP_LEVEL_TIERS
+                 if tier >= own_tier]
+        for extrap in ("constant", "temperature"):
+            for logp in (True, False):
+                outputs = [
+                    cp.asnumpy(_wrf_vert_interp_gpu_prepared(
+                        cp.asarray(values, cp.float32),
+                        cp.asarray(sfc_values, cp.float32),
+                        replace(plan, kernel_level_tier=tier),
+                        interp_in_logp=logp, extrap=extrap))
+                    for tier in tiers]
+                assert np.isfinite(outputs[0]).all()
+                for tier, output in zip(tiers[1:], outputs[1:]):
+                    assert output.tobytes() == outputs[0].tobytes(), (
+                        nsource, tier, extrap, logp)
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_a_column_deeper_than_the_top_tier_runs_on_the_cpu_bridge():
+    """300 levels: the CUDA backend hands the plan to the CPU bridge.
+
+    The answer comes back on the device like any other plan's, equal to
+    the bridge's own output, and the receipt says which engine ran it,
+    at what depth, why, and which bridge library it was.
+    """
+    import hashlib
+
+    import cupy as cp
+    from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+    from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+    from gpuwm.ingest.vert import wrf_vert_interp_gpu
+
+    try:
+        bridge = CpuPreprocessBackend()
+    except (FileNotFoundError, OSError) as exc:
+        pytest.skip(f"native CPU bridge is not built: {exc}")
+    source, values, psfc, sfc_values, target = _deep_columns(300, 300)
+    backend = resolve_preprocess_backend("cuda")
+    plan = backend.prepare_wrf_vertical(
+        cp.asarray(source, cp.float32), cp.asarray(psfc, cp.float32),
+        cp.asarray(target, cp.float32))
+    for extrap in ("constant", "temperature"):
+        for logp in (True, False):
+            got = plan.apply(cp.asarray(values, cp.float32),
+                             cp.asarray(sfc_values, cp.float32),
+                             interp_in_logp=logp, extrap=extrap)
+            assert isinstance(got, cp.ndarray)
+            direct = bridge.wrf_vertical_interpolate(
+                values, sfc_values, source, psfc, target,
+                interp_in_logp=logp, extrap=extrap)
+            np.testing.assert_array_equal(cp.asnumpy(got), direct)
+            public = wrf_vert_interp_gpu(
+                cp.asarray(values, cp.float32),
+                cp.asarray(sfc_values, cp.float32),
+                cp.asarray(source, cp.float32),
+                cp.asarray(psfc, cp.float32),
+                cp.asarray(target, cp.float32),
+                interp_in_logp=logp, extrap=extrap)
+            np.testing.assert_array_equal(cp.asnumpy(public), direct)
+            reference = np_wrf_real_vert_interp(
+                values, sfc_values, source, psfc, target,
+                interp_in_logp=logp, extrap=extrap)
+            np.testing.assert_allclose(direct, reference,
+                                       rtol=3.0e-5, atol=5.0e-3)
+
+    [route] = backend.receipt()["vertical_interpolation"]
+    assert route["backend"] == "cpu"
+    assert route["kernel_level_tier"] is None
+    assert (route["source_levels"], route["column_levels"]) == (300, 301)
+    assert route["reason"] == (
+        "the 301-level column (300 source levels plus the surface) is "
+        "deeper than the CUDA kernel's top tier of 256 levels, so the "
+        "parallel CPU bridge ran this vertical interpolation")
+    assert route["cpu_bridge"] == {
+        "name": bridge.path.name,
+        "sha256": hashlib.sha256(bridge.path.read_bytes()).hexdigest(),
+        "abi_version": bridge.abi_version,
+    }
 
 
 def _met_em_subsample():

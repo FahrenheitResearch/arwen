@@ -30,9 +30,17 @@ wall clock of model step 1.  That is the case
 
 The architecture is read from the entry itself.  A CuPy cache file is
 the 40-character SHA1 of the blob followed by the blob, and for a cubin
-that blob is a CUDA ELF whose ``e_flags`` carries the SM version in its
-second byte.  An entry that does not decode -- a PTX fallback, a
-truncated write, a future CuPy layout -- counts as **possibly this
+that blob is a CUDA ELF whose ``e_flags`` carries the SM version.  WHERE
+in ``e_flags`` depends on the ELF layout the compiler wrote, which the
+header names in ``EI_OSABI`` and ``EI_ABIVERSION``, and real caches hold
+both (:data:`_SM_SHIFT_BY_LAYOUT`).  Reading one layout's byte out of
+the other's header was a measured false notice: NVRTC 12.9.86 wrote
+every sm_86 cubin with ``e_flags`` 0x00560556, the second byte of that
+is 0x05, and every warm run on an RTX 3080 announced a recompile "for
+sm_86 (the cache carries sm_5)" while it was already stepping.
+
+An entry that does not decode -- a PTX fallback, a truncated write, a
+layout this module has not measured -- counts as **possibly this
 card's**, never as evidence against it: announcing a two-minute compile
 on the strength of a file we could not read is a false positive that
 teaches a reader to ignore the line.
@@ -46,9 +54,12 @@ returns ``None`` rather than raising when there is no card to ask.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import struct
+import threading
+import time
 from pathlib import Path
 
 #: Environment variable CuPy consults for its kernel cache location.
@@ -70,6 +81,33 @@ _HASH_PREFIX_BYTES = 40
 
 #: Offset of ``e_flags`` inside a 64-bit ELF header.
 _ELF_FLAGS_OFFSET = 48
+
+#: ``e_ident`` bytes and header fields the decode checks before it
+#: trusts ``e_flags``: a 64-bit little-endian ELF for ``EM_CUDA``.
+_EI_CLASS = 4
+_EI_DATA = 5
+_EI_OSABI = 7
+_EI_ABIVERSION = 8
+_ELFCLASS64 = 2
+_ELFDATA2LSB = 1
+_ELF_MACHINE_OFFSET = 18
+_EM_CUDA = 190
+
+#: Where each CUDA ELF layout keeps the SM in ``e_flags``, keyed by the
+#: header's ``(EI_OSABI, EI_ABIVERSION)``: the shift to the SM byte.
+#: Every row is measured from real CuPy cache entries, not inferred:
+#:
+#: * ``(0x33, 7)``: the SM is the LOW byte.  NVRTC 12.9.86 on an RTX
+#:   3080 wrote all 159 entries of the cache behind the false notice
+#:   this way, ``e_flags`` 0x00560556 (0x56 = 86; the third byte repeats
+#:   it, and the second byte, 0x05, is not an SM at all).
+#: * ``(0x41, 8)``: the SM is the SECOND byte.  The RTX 5070 Ti node's
+#:   1,468 sm_120 entries carry ``e_flags`` 0x06007802, and sm_86 entries
+#:   in this layout carry 0x06005604.
+#:
+#: A header naming any other layout decodes to unknown: guessing a byte
+#: is how "sm_5" was announced.
+_SM_SHIFT_BY_LAYOUT = {(0x33, 7): 0, (0x41, 8): 8}
 
 #: The smallest prefix that can answer "which architecture is this?".
 _PROBE_BYTES = _HASH_PREFIX_BYTES + _ELF_FLAGS_OFFSET + 4
@@ -119,11 +157,30 @@ def _entry_architecture(path: str) -> str | None:
             head = handle.read(_PROBE_BYTES)
     except OSError:
         return None
-    blob = head[_HASH_PREFIX_BYTES:]
-    if len(blob) < _ELF_FLAGS_OFFSET + 4 or blob[:4] != b"\x7fELF":
+    return cubin_architecture(head[_HASH_PREFIX_BYTES:])
+
+
+def cubin_architecture(blob: bytes) -> str | None:
+    """The SM a CUDA ELF header names, read where its layout keeps it.
+
+    ``None`` for anything that is not a 64-bit little-endian CUDA ELF in
+    a layout listed in :data:`_SM_SHIFT_BY_LAYOUT`.  The one decoder for
+    a cubin's SM in this tree: the kernel cache census reads entries
+    through it, and the receipt tools' SASS fallback names its
+    ``nvdisasm -b`` target with it.
+    """
+
+    if (len(blob) < _ELF_FLAGS_OFFSET + 4 or blob[:4] != b"\x7fELF"
+            or blob[_EI_CLASS] != _ELFCLASS64
+            or blob[_EI_DATA] != _ELFDATA2LSB):
+        return None
+    if struct.unpack_from("<H", blob, _ELF_MACHINE_OFFSET)[0] != _EM_CUDA:
+        return None
+    shift = _SM_SHIFT_BY_LAYOUT.get((blob[_EI_OSABI], blob[_EI_ABIVERSION]))
+    if shift is None:
         return None
     flags = struct.unpack_from("<I", blob, _ELF_FLAGS_OFFSET)[0]
-    architecture = (flags >> 8) & 0xFF
+    architecture = (flags >> shift) & 0xFF
     return str(architecture) if architecture else None
 
 
@@ -286,9 +343,69 @@ def kernel_compile_notice(cache_dir: Path | None = None, *,
         cache_dir, compute_capability=compute_capability).notice
 
 
+#: The run-plan ``warning`` code a kernel compile travels under, and the
+#: words a page shows for it.  One event per module the loader actually
+#: compiled (it wrote to the kernel cache); a module loaded from the cache
+#: says nothing, so a warm run emits none.
+COMPILE_PROGRESS_CODE = "kernel_compile_progress"
+COMPILE_PROGRESS_LABEL = "compiling GPU kernels"
+
+_compile_tally_lock = threading.Lock()
+_compile_tally = {"modules": 0, "seconds": 0.0}
+
+
+def _cache_file_count(directory: Path) -> int:
+    """Files in the kernel cache, without opening any of them."""
+
+    try:
+        with os.scandir(directory) as scan:
+            return sum(1 for entry in scan if entry.is_file())
+    except OSError:
+        return 0
+
+
+@contextlib.contextmanager
+def observe_module_compile(module_key: str):
+    """Around one module's compile: publish it if it really compiled.
+
+    Nothing is measured unless a run installed an event sink
+    (:func:`gpuwm.progress.event_sink`), so a forecast nobody watches pays
+    nothing.  Watched, the cache is counted before and after: entries
+    written means NVRTC ran, and the event carries the module, its seconds
+    and the running totals, under :data:`COMPILE_PROGRESS_CODE`.
+    """
+
+    from gpuwm import progress
+
+    if not progress.event_sinks_installed():
+        yield
+        return
+    directory = cupy_kernel_cache_dir()
+    before = _cache_file_count(directory)
+    started = time.perf_counter()
+    yield
+    seconds = time.perf_counter() - started
+    written = _cache_file_count(directory) - before
+    if written <= 0:
+        return
+    with _compile_tally_lock:
+        _compile_tally["modules"] += 1
+        _compile_tally["seconds"] += seconds
+        modules = _compile_tally["modules"]
+        total = _compile_tally["seconds"]
+    progress.emit_event(
+        "warning", code=COMPILE_PROGRESS_CODE,
+        message=COMPILE_PROGRESS_LABEL, phase=COMPILE_PROGRESS_LABEL,
+        module=module_key, seconds=round(seconds, 3),
+        cache_entries_written=int(written), modules_compiled=modules,
+        compile_seconds=round(total, 3))
+
+
 __all__ = [
-    "ARCHITECTURE_MISSING", "COLD_CACHE", "COMPILING_STATUS",
+    "ARCHITECTURE_MISSING", "COLD_CACHE", "COMPILE_PROGRESS_CODE",
+    "COMPILE_PROGRESS_LABEL", "COMPILING_STATUS",
     "CUPY_CACHE_ENV", "KernelCacheState", "cupy_kernel_cache_dir",
     "current_compute_capability", "kernel_cache_is_cold",
-    "kernel_cache_state", "kernel_compile_notice", "scan_kernel_cache",
+    "kernel_cache_state", "kernel_compile_notice",
+    "observe_module_compile", "scan_kernel_cache",
 ]

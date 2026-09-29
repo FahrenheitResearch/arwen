@@ -7,7 +7,7 @@ use rustwx_core::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 mod members;
-pub use members::{DeclaredMember, declared_member, declared_members, selected_member_product, product_member, member_url};
+pub use members::{DeclaredMember, DeclaredRewrite, declared_member, declared_members, selected_member_product, product_member, member_url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductFamily {

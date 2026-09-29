@@ -265,6 +265,22 @@ reproduce them, not because their proofs are optional:
       public. It skips only what needs a wheel installed outside the checkout
       and executable target-native binaries, and its receipt names those
       skips, so a dry-run receipt is never mistaken for the cut's.
+- [ ] Ask the packaged NetCDF reader whether it proves a classic file
+      whole.  With the release wheel and its bundle installed,
+
+          python -c "import sys; from gpuwm import netcdf_bridge as n; \
+            print(n.Dataset(sys.argv[1]).extent_checked)" <a gpuwm wrfout>
+
+      must print `True`.  Since 2.8.0 `rw_netcdf` itself refuses a
+      history frame cut off partway through its data and reads a value
+      its writer never set as missing.  A reader built before that still
+      gives right answers, because Python repeats the missing-value rule
+      on what it returns and proves each classic parent frame whole by
+      decoding the variable stored last.  That decode is the cost: a
+      full read of one field, often a 3-D record field written out as
+      f64 planes, for every classic parent frame of a downscale in every
+      process.  The bundles are built from the tagged commit, so `None`
+      here means a stale `rw_netcdf` reached a bundle.
 - [ ] BEFORE THE TAG, run the one skipped leg that can be run locally:
       `python tools/probe_library_abi.py --receipt <path>`, after
       `cargo build --release --locked` in `tools/grib1_bridge` and in

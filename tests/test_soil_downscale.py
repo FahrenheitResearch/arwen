@@ -15,6 +15,8 @@ import pathlib
 import numpy as np
 import pytest
 
+from conftest import capability_gap
+
 from gpuwm.core.noah import SOIL_COLS, load_tables, pack_params
 from gpuwm.ingest.horiz import _WPS_FULL_CHAIN, wps_masked_field_interpolate
 from gpuwm.ingest.soil import preprocess_noah_soil
@@ -110,6 +112,9 @@ def quilted():
     fine-scale categorical map, which is what the 30 arc-second soil
     database is.
     """
+    gap = capability_gap("wps_masked_chain_bridge")
+    if gap is not None:
+        pytest.skip(gap)
     source_lat = np.arange(48.0, 56.0 + 1e-9, SOURCE_STEP)
     source_lon = np.arange(0.0, 12.0 + 1e-9, SOURCE_STEP)
     grid_lon, grid_lat = np.meshgrid(

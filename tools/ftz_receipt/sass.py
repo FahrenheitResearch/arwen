@@ -65,8 +65,6 @@ SASS_INSTRUCTION = re.compile(
     r"(?P<op>[A-Z][A-Z0-9_]*)"
     r"(?P<mods>(?:\.[A-Za-z0-9_]+)*)")
 
-_ARCH_MASK = 0x00FF00
-
 
 class DisassemblyUnavailable(Exception):
     """No SASS could be produced.  Carries the reason, never a guess."""
@@ -135,11 +133,28 @@ def _sections(blob: bytes) -> list[tuple[str, int, int]]:
 
 
 def elf_sm_arch(blob: bytes) -> str:
-    """``SM120``-style target read from the cubin's own e_flags."""
+    """``SM120``-style target read from the cubin's own e_flags.
+
+    Where ``e_flags`` keeps the SM depends on the CUDA ELF layout the
+    header names, so the byte is chosen by
+    :func:`gpuwm.kernel_compile_notice.cubin_architecture`, the tree's
+    one decoder.  Reading the second byte of every object named an
+    ``EI_OSABI`` 0x33 / ``EI_ABIVERSION`` 7 sm_86 cubin (``e_flags``
+    0x00560556) ``SM5``, and ``nvdisasm -b SM5`` is not that object's
+    target.  A header this decoder cannot place raises rather than
+    guessing a byte.
+    """
     if blob[:4] != b"\x7fELF":
         raise DisassemblyUnavailable("not an ELF object")
-    e_flags = struct.unpack_from("<I", blob, 48)[0]
-    return f"SM{(e_flags & _ARCH_MASK) >> 8:d}"
+    from gpuwm.kernel_compile_notice import cubin_architecture
+
+    architecture = cubin_architecture(blob)
+    if architecture is None:
+        raise DisassemblyUnavailable(
+            "the object's ELF header is not a 64-bit CUDA ELF in a layout "
+            f"whose SM byte is known (EI_OSABI 0x{blob[7]:02x}, "
+            f"EI_ABIVERSION {blob[8]})")
+    return f"SM{architecture}"
 
 
 def text_sections(blob: bytes) -> list[tuple[str, bytes]]:
@@ -179,7 +194,19 @@ def disassemble(exe: str, blob: bytes) -> dict:
                     "kernels": sorted(
                         name for name, _ in text_sections(blob))}
 
-        arch = elf_sm_arch(blob)
+        try:
+            arch = elf_sm_arch(blob)
+        except DisassemblyUnavailable as refusal:
+            attempts.append({
+                "method": "sections",
+                "argv": "nvdisasm -b SM<arch> <.text.*>",
+                "returncode": None,
+                "stderr": "",
+            })
+            return {"available": False, "attempts": attempts,
+                    "reason": "the installed disassembler refused the "
+                              "container and the sections fallback has no "
+                              f"target to name: {refusal}"}
         chunks: list[str] = []
         kernels: list[str] = []
         for name, body in text_sections(blob):

@@ -860,13 +860,52 @@ def case_diagnostic_scatter(rung: str = "full fast cadence", *,
 # C.  the restart
 # --------------------------------------------------------------------------
 
+def header_equivalence(mono_header: dict, st_header: dict) -> dict:
+    """The header half of :func:`case_header_equivalence`, on two dicts.
+
+    Every key must be present in both headers with an equal value, except
+    the two that say WHEN and HOW the file was written rather than WHAT it
+    holds:
+
+    * ``created`` is a wall-clock timestamp.
+    * ``written_mode`` (``restart.WRITTEN_MODE_HEADER_KEY``) names the
+      memory road that wrote the file.  It is provenance and never identity
+      (``restart.written_mode_note``): the resident writer stamps
+      ``resident`` and the streamed writer does not stamp at all yet, so
+      demanding equality here reported four equivalent checkpoints as
+      different.  What IS checked is that the streamed file never claims the
+      resident road: a streamed header must name ``streamed`` or nothing,
+      because a stamp saying ``resident`` on a store-written file is the
+      one wrong answer this key can give.
+
+    Everything else is still compared, so a key restart.py grows is still
+    caught here.
+    """
+    from gpuwm.io import restart
+
+    provenance = {"created", restart.WRITTEN_MODE_HEADER_KEY}
+    mono_keys = set(mono_header) - provenance
+    st_keys = set(st_header) - provenance
+    value_diff = sorted(
+        key for key in mono_keys | st_keys
+        if mono_header.get(key) != st_header.get(key))
+    st_mode = restart.header_written_mode(st_header)
+    return {
+        "keys_equal": mono_keys == st_keys,
+        "values_equal": not value_diff,
+        "value_diff": value_diff,
+        "streamed_written_mode": st_mode,
+        "written_mode_ok": st_mode in (None, restart.STREAMED_WRITTEN_MODE),
+    }
+
+
 def case_header_equivalence(rung: str) -> dict:
     """A streamed checkpoint must BE a monolithic checkpoint, not resemble one.
 
     Header keys, header values, member set, member ORDER and member bytes,
     all compared against a real ``restart.write_restart`` from the resident
-    state the store was filled from.  ``created`` is a wall-clock timestamp
-    and is the only permitted difference.
+    state the store was filled from.  ``created`` and ``written_mode`` are
+    the only permitted differences (:func:`header_equivalence`).
 
     This comparison is also the drift guard for
     :func:`tilestream.checkpoint.store_restart_header`: if restart.py grows a
@@ -887,9 +926,7 @@ def case_header_equivalence(rung: str) -> dict:
 
     mono_header, mono_arrays = restart._load_restart(mono, with_arrays=True)
     st_header, st_arrays = restart._load_restart(streamed, with_arrays=True)
-    value_diff = sorted(
-        key for key in set(mono_header) | set(st_header)
-        if key != "created" and mono_header.get(key) != st_header.get(key))
+    header = header_equivalence(mono_header, st_header)
     member_bytes_diff = sorted(
         key for key in set(mono_arrays) & set(st_arrays)
         if not np.array_equal(
@@ -898,9 +935,7 @@ def case_header_equivalence(rung: str) -> dict:
     record = {
         "rung": rung,
         "members": len(st_arrays),
-        "keys_equal": set(mono_header) == set(st_header),
-        "values_equal": not value_diff,
-        "value_diff": value_diff,
+        **header,
         "member_set_equal": set(mono_arrays) == set(st_arrays),
         "member_order_equal": list(mono_arrays) == list(st_arrays),
         "member_bytes_equal": not member_bytes_diff,
@@ -909,6 +944,7 @@ def case_header_equivalence(rung: str) -> dict:
         "streamed_bytes": streamed.stat().st_size,
     }
     record["equivalent"] = (record["keys_equal"] and record["values_equal"]
+                            and record["written_mode_ok"]
                             and record["member_set_equal"]
                             and record["member_order_equal"]
                             and record["member_bytes_equal"])
@@ -1581,7 +1617,9 @@ def main(argv=None) -> int:
             print(f"        {rec['members']} members, "
                   f"{rec['streamed_bytes'] / 1e6:.1f} MB; header keys "
                   f"equal={rec['keys_equal']}, values equal (modulo "
-                  f"created)={rec['values_equal']}, member order "
+                  f"created, written_mode)={rec['values_equal']}, "
+                  f"streamed written_mode="
+                  f"{rec['streamed_written_mode']!r}, member order "
                   f"equal={rec['member_order_equal']}, bytes "
                   f"equal={rec['member_bytes_equal']}")
             if rec["value_diff"]:

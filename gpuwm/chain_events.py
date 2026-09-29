@@ -44,6 +44,8 @@ number the published tree contradicts -- see :data:`TTFP_DEFINITION`.
 from __future__ import annotations
 
 import json
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -53,6 +55,18 @@ from gpuwm import LAUNCH_MONOTONIC, LAUNCH_UNIX_MS
 #: Where the chain's event stream lands, inside the run root.  The same
 #: filename run-plan uses, in the same grammar, on purpose.
 CHAIN_EVENTS_FILENAME = "events.jsonl"
+
+#: The stage whose subprocess draws each frame as it lands: the forecast
+#: runner arms its own every-frame render
+#: (:class:`gpuwm.live_products.LandingRenders`) when `go` asks it to.
+FORECAST_STAGE = "forecast"
+
+#: How often, while the forecast stage runs, the runner's every-frame
+#: record (``live-products.json``) is read for frames this stream has not
+#: carried yet.  One small JSON read a second; a frame's pictures take
+#: seconds to draw, so this adds at most a second to when a reader of
+#: the stream hears of them.
+LIVE_RELAY_SECONDS = 1.0
 
 #: The stage that covers everything before the first subprocess: the
 #: CLI's own boot and imports, the config, the capability gate, the
@@ -184,11 +198,26 @@ class GoChainEvents:
                                 else int(launch_unix_ms))
         self._events = None
         self._stages: list[dict[str, Any]] = []
-        self._open: dict[str, Any] | None = None
+        #: The stages running now, by label.  Two overlap on a chained
+        #: preparation: the forecast starts at the prepared head while the
+        #: prepare stage builds the remaining boundary intervals.
+        self._open: dict[str, dict[str, Any]] = {}
         self._data_dir: Path | None = None
         self._run_dir: Path | None = None
         self._render_dir: Path | None = None
         self.path: Path | None = None
+        # The forecast stage's every-frame relay (:meth:`relay_live_products`).
+        self._relay_thread: threading.Thread | None = None
+        self._relay_stop = threading.Event()
+        self._relay_lock = threading.Lock()
+        self._relayed: set[tuple[str, int]] = set()
+        self._relay_since_ms: int | None = None
+        # The words for each preparation step (:meth:`warn`); a stage's
+        # two output pipes are read on two threads.
+        from gpuwm.prep_progress import PrepProgress
+
+        self._prep_words = PrepProgress()
+        self._said_lock = threading.Lock()
 
     # -- lifecycle -----------------------------------------------------
 
@@ -226,6 +255,10 @@ class GoChainEvents:
                      started_unix_ms=self._launch_unix_ms)
 
     def close(self) -> None:
+        # A chain that ended inside its forecast stage (an interrupt, a
+        # failure raised past the stage) still carries every frame the
+        # runner drew before it ended.
+        self._stop_live_relay()
         events, self._events = self._events, None
         if events is not None:
             try:
@@ -236,14 +269,23 @@ class GoChainEvents:
     # -- the chain's own hooks ----------------------------------------
 
     def stage_begin(self, *, label: str, command) -> None:
-        self._open = {
+        opened = {
             "stage": label,
             "started_monotonic": time.monotonic(),
             "started_unix_ms": int(time.time() * 1000),
         }
+        self._open[label] = opened
         self._emit("stage_started", stage=label,
                    command=[str(part) for part in command],
-                   started_unix_ms=self._open["started_unix_ms"])
+                   started_unix_ms=opened["started_unix_ms"])
+        if label == FORECAST_STAGE:
+            self._start_live_relay(opened["started_unix_ms"])
+
+    def prepare_head_ready(self, *, head_sha256: str) -> None:
+        """The preparation published its head; the forecast starts now."""
+
+        self._emit("prepare_head_ready", head_sha256=str(head_sha256),
+                   ready_unix_ms=int(time.time() * 1000))
 
     def stage_heartbeat(self, *, label: str, elapsed_seconds: float,
                         progress) -> None:
@@ -255,18 +297,142 @@ class GoChainEvents:
         # heartbeats.
         return None
 
+    def stage_warning(self, *, label: str, code: str, message: str,
+                      **fields) -> None:
+        # run-plan's own ``warning`` record, so one reader serves both
+        # doors.  The chain composes these from artifacts after a stage
+        # has exited; the stage's captured stderr never reaches here.
+        self._emit("warning", code=code, message=message, stage=label,
+                   **fields)
+
+    def warn(self, code: str, message: str, **fields) -> None:
+        """A run observer's ``warn``: onto the stream, and said in the terminal.
+
+        The hook :func:`gpuwm.go_cli._run_stage` sends each preparation
+        step record to while a stage runs (``preparation_progress``), and
+        the render stage sends its warnings to.  THE BREAKAGE: this
+        observer had no ``warn``, so ``gpuwm go`` on the GFS chain in a
+        terminal dropped every step its preparer wrote and printed only
+        the stage heartbeat, and ``events.jsonl`` carried no step either.
+        A step is said as ``gpuwm prep`` says it, under its stage; any
+        other warning goes to stderr, where a terminal command's reader
+        sees it.
+        """
+
+        self._emit("warning", code=code, message=message, **fields)
+        if code == "preparation_progress":
+            with self._said_lock:
+                said = self._prep_words.event(fields.get("preparation"))
+            if said is not None:
+                print(f"     .. {said}", flush=True)
+            return
+        print(f"warning: {message}", file=sys.stderr, flush=True)
+
     def stage_end(self, *, label: str, exit_code: int, ok: bool,
                   elapsed_seconds: float, progress) -> None:
-        started_unix_ms = None
-        if self._open is not None and self._open["stage"] == label:
-            started_unix_ms = self._open["started_unix_ms"]
-        self._open = None
+        opened = self._open.pop(label, None)
+        started_unix_ms = (None if opened is None
+                           else opened["started_unix_ms"])
+        if label == FORECAST_STAGE:
+            # Every frame the runner drew lands in the stream before the
+            # stage that drew it closes.
+            self._stop_live_relay()
         extra: dict[str, Any] = {}
         if label == "fetch" and self._data_dir is not None:
             extra = self._fetch_fields()
         self._finish(label, wall_seconds=float(elapsed_seconds), ok=bool(ok),
                      exit_code=int(exit_code),
                      started_unix_ms=started_unix_ms, **extra)
+
+    # -- each frame the forecast runner drew, as it lands ---------------
+
+    def relay_live_products(self) -> int:
+        """Carry each frame the runner drew since the forecast stage began.
+
+        THE BREAKAGE: ``gpuwm go`` runs its forecast as a subprocess, and
+        the runner's every-frame render told only that subprocess's
+        stdout.  On the routes `go` does not host (a GFS start, single or
+        nested), every frame was drawn while the forecast ran and recorded
+        in ``live-products.json``, yet this stream carried no
+        ``live_products_ready``: a reader of ``events.jsonl`` (the page's
+        map viewer redraws on that event) learned of no picture until the
+        run ended, where run-plan and a downscaled child say each frame as
+        it is drawn.
+
+        Read from the runner's own record, as every number here is
+        (module docstring).  Only a frame published after the forecast
+        stage began is carried, so a record left in the folder by an
+        earlier run is never announced as this one's, and each frame once.
+        Returns how many frames this call carried.  Never raises.
+        """
+
+        from gpuwm.live_products import read_receipt
+
+        directory = self._render_dir
+        since = self._relay_since_ms
+        if directory is None or since is None:
+            return 0
+        try:
+            record = read_receipt(Path(directory))
+        except Exception:  # noqa: BLE001 - telemetry never fails a chain
+            return 0
+        if record is None:
+            return 0
+        fresh = []
+        with self._relay_lock:
+            for entry in record.get("frames", []):
+                if not isinstance(entry, dict):
+                    continue
+                published = entry.get("published_unix_ms")
+                if not isinstance(published, int) or published < since:
+                    continue
+                key = (str(entry.get("frame")), published)
+                if key in self._relayed:
+                    continue
+                self._relayed.add(key)
+                fresh.append(entry)
+            for entry in sorted(fresh,
+                                key=lambda item: item["published_unix_ms"]):
+                published = entry["published_unix_ms"]
+                written = entry.get("written")
+                self._emit(
+                    "live_products_ready", domain=entry.get("domain"),
+                    valid_time=entry.get("valid_time"),
+                    frame=entry.get("frame"),
+                    pictures=len(written) if isinstance(written, list) else 0,
+                    render_seconds=entry.get("render_seconds"),
+                    complete=entry.get("complete", True),
+                    published_unix_ms=published,
+                    seconds_from_launch=round(
+                        (published - self._launch_unix_ms) / 1000.0, 6))
+        return len(fresh)
+
+    def _start_live_relay(self, since_unix_ms: int) -> None:
+        self._stop_live_relay()
+        if self._render_dir is None or self._events is None:
+            return
+        self._relay_since_ms = int(since_unix_ms)
+        stop = threading.Event()
+        self._relay_stop = stop
+
+        def _watch() -> None:
+            while not stop.wait(LIVE_RELAY_SECONDS):
+                self.relay_live_products()
+
+        thread = threading.Thread(target=_watch, name="gpuwm-go-live-relay",
+                                  daemon=True)
+        self._relay_thread = thread
+        thread.start()
+
+    def _stop_live_relay(self) -> None:
+        """End the watch, then carry what landed since its last look."""
+
+        thread, self._relay_thread = self._relay_thread, None
+        if thread is None:
+            return
+        self._relay_stop.set()
+        thread.join(LIVE_RELAY_SECONDS * 5)
+        self.relay_live_products()
 
     def arm_first_products(self, render_plan) -> None:
         # `go` offers every observer the chance to render the first

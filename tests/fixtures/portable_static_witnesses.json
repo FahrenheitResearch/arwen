@@ -1,0 +1,218 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "bridge": "static_fields.dll (fresh explicit build)",
+  "bridge_sha256": "e24157475b189b1ad3a0ef62df1ec54cac9d6627a947ee7bbeb8a18741a2b9f8",
+  "grids": {
+    "2000": {
+      "overlap_sha256": {
+        "HGT_M": "59f32c9610f9bb9e7a0a20cb47f06ebda4ce6a3ca3850615d3bca45b61f97e8e",
+        "LANDMASK": "9994b4ec9505c3edf1fe0439fd421f24336c4895ff83d5be5cfd0bafcbee5a47",
+        "LU_INDEX": "70b7fc26197a12ed4ad37097ed793198977547a6b9118f5d98c3405c5c57e18b",
+        "LANDUSEF": "a98b050613333987b13efafedc7c6e66fed15a96267398cf1a92a9061be29e5d",
+        "SOILCTOP": "8b3257a8e15b89a2e3d17325fd0e5d8ed086af90d964eaf68263bfeb01b4e7de",
+        "SCT_DOM": "e162510824b971d37b64c30bd50d0801b3d616ae846717462ac90d771721d991",
+        "SOILCBOT": "8b3257a8e15b89a2e3d17325fd0e5d8ed086af90d964eaf68263bfeb01b4e7de",
+        "SCB_DOM": "e162510824b971d37b64c30bd50d0801b3d616ae846717462ac90d771721d991",
+        "GREENFRAC": "45c4e9948e9f82761f2c174894a1fd9fdbbcc0e1367efb9a0ff4d316657310da",
+        "LAI12M": "51896891a8645577f407afc0cfa541719c5a8ba516b56fa60cf43f51beae712f",
+        "ALBEDO12M": "92a8a33b2519cd3c82c2d4529fe564717d715158783038469fbbd0c894bb0b4b",
+        "SNOALB": "6a5f5891dde8cc8073868e23706a8c0ddb66b1ffb998494c818b70d8817b4524",
+        "SOILTEMP": "dabe9c72e8489f6c9cc40161ca93791f974b02f7c27a31df80e841eb3a9825b3",
+        "TMN": "ef01362802703f8c761a5693086c89efd12e62aa797bd67208bb2e10d573dc2d"
+      },
+      "grid_definition": {
+        "nest_of": {
+          "map_proj": "lambert",
+          "ref_lat": 35.0,
+          "ref_lon": -97.0,
+          "truelat1": 30.0,
+          "truelat2": 60.0,
+          "stand_lon": -97.0,
+          "dx": 6000.0,
+          "dy": 6000.0,
+          "e_we": 97,
+          "e_sn": 97,
+          "known_x": 48.5,
+          "known_y": 48.5,
+          "moad_cen_lat": 35.0,
+          "moad_cen_lon": -97.0
+        },
+        "i_parent_start": 41,
+        "j_parent_start": 41,
+        "parent_grid_ratio": 3,
+        "dx": 2000.0,
+        "dy": 2000.0,
+        "e_we": 31,
+        "e_sn": 31
+      },
+      "terrain_spacing_degrees": 0.008333333333333333
+    },
+    "1000": {
+      "overlap_sha256": {
+        "HGT_M": "85495d1055071ad16a88feb23689f08db41c76eda508899e37ed7753f3e7ded9",
+        "LANDMASK": "5ecc630dbc4437ae56fa5a7fcf554d203392874cb6cb97b11995cab22063da9d",
+        "LU_INDEX": "5716c195764373ca1bc249d79116e1a6f85fd56c0affe92f406315a28381a3e5",
+        "LANDUSEF": "70d265db2e3bfa7aac1593dbd4be32e979348bfed570294fd7f251c3a3f3099f",
+        "SOILCTOP": "8b3257a8e15b89a2e3d17325fd0e5d8ed086af90d964eaf68263bfeb01b4e7de",
+        "SCT_DOM": "e162510824b971d37b64c30bd50d0801b3d616ae846717462ac90d771721d991",
+        "SOILCBOT": "8b3257a8e15b89a2e3d17325fd0e5d8ed086af90d964eaf68263bfeb01b4e7de",
+        "SCB_DOM": "e162510824b971d37b64c30bd50d0801b3d616ae846717462ac90d771721d991",
+        "GREENFRAC": "2c3000b70c30b02edd517811edc34515d405ea9c27e2d8698766f568080879d7",
+        "LAI12M": "21e0ca8ee1a3e103b84076e5d99e3c0dec1b2608538f44f13893b911344cfedb",
+        "ALBEDO12M": "764df58dd2fcbfc29f29d98f9c10ef9645ac037b238fd98f7e024cd1c67bb3e2",
+        "SNOALB": "5181a58794d27f5d7ada6c956c1ef1a0371b1c600ef8e70c093717d0e37306bf",
+        "SOILTEMP": "0dc35005ac496eb64be2ac2b24f96ad4f0dd78f0fbb2af56ce53dd762f571808",
+        "TMN": "5601b77ea41815856050fc348925c27c9d526a426152e0e04aba3a738de4d05f"
+      },
+      "grid_definition": {
+        "nest_of": {
+          "map_proj": "lambert",
+          "ref_lat": 35.0,
+          "ref_lon": -97.0,
+          "truelat1": 30.0,
+          "truelat2": 60.0,
+          "stand_lon": -97.0,
+          "dx": 3000.0,
+          "dy": 3000.0,
+          "e_we": 97,
+          "e_sn": 97,
+          "known_x": 48.5,
+          "known_y": 48.5,
+          "moad_cen_lat": 35.0,
+          "moad_cen_lon": -97.0
+        },
+        "i_parent_start": 41,
+        "j_parent_start": 41,
+        "parent_grid_ratio": 3,
+        "dx": 1000.0,
+        "dy": 1000.0,
+        "e_we": 31,
+        "e_sn": 31
+      },
+      "terrain_spacing_degrees": 0.008333333333333333
+    },
+    "500": {
+      "overlap_sha256": {
+        "HGT_M": "61ce137130f53451f7ffa218f5148980d1a73c6f7bf3b148470d97a426fc03bb",
+        "LANDMASK": "cb5ab3b17699ecf83fbf35783bca7ddbb80c13da312f947c55527bb1625f6d23",
+        "LU_INDEX": "2bbdbbd972641e95f12d83c47e1bb59f41d6df2de11a0e50009ebca84e9528a2",
+        "LANDUSEF": "2c7c9ad7c9855b14f63d3f55e9dfc512210416ef1ccc22350e6829d5d35f68f2",
+        "SOILCTOP": "8b3257a8e15b89a2e3d17325fd0e5d8ed086af90d964eaf68263bfeb01b4e7de",
+        "SCT_DOM": "e162510824b971d37b64c30bd50d0801b3d616ae846717462ac90d771721d991",
+        "SOILCBOT": "8b3257a8e15b89a2e3d17325fd0e5d8ed086af90d964eaf68263bfeb01b4e7de",
+        "SCB_DOM": "e162510824b971d37b64c30bd50d0801b3d616ae846717462ac90d771721d991",
+        "GREENFRAC": "142819934d4caec637bfec2b7068e5bbb4404778cb036d8949791e74f073194b",
+        "LAI12M": "c7ccee38078e0a21eafd9cb9a0af4a426847b7dc9dd8aa2b8aaabb78eac7d0f7",
+        "ALBEDO12M": "991b90b6dd655c76a9fe689934301910bc7e5431d8a10d6647506598c7a82fba",
+        "SNOALB": "aa4079d413730e3ad58cd663dddf7a33bfe58d3ce574009f4c1b5cb0047fd85a",
+        "SOILTEMP": "2ce7c78e647e7f7afff31e4f7c33883e89c075a7520b37a02f320345749ee4ac",
+        "TMN": "02b986b19c842dd0000ea85e5b8fd99301e5640c954af02b95fe93060e8bcb39"
+      },
+      "grid_definition": {
+        "nest_of": {
+          "map_proj": "lambert",
+          "ref_lat": 35.0,
+          "ref_lon": -97.0,
+          "truelat1": 30.0,
+          "truelat2": 60.0,
+          "stand_lon": -97.0,
+          "dx": 1500.0,
+          "dy": 1500.0,
+          "e_we": 97,
+          "e_sn": 97,
+          "known_x": 48.5,
+          "known_y": 48.5,
+          "moad_cen_lat": 35.0,
+          "moad_cen_lon": -97.0
+        },
+        "i_parent_start": 41,
+        "j_parent_start": 41,
+        "parent_grid_ratio": 3,
+        "dx": 500.0,
+        "dy": 500.0,
+        "e_we": 31,
+        "e_sn": 31
+      },
+      "terrain_spacing_degrees": 0.008333333333333333
+    },
+    "root_9000": {
+      "overlap_sha256": {
+        "HGT_M": "2be7e580c3d65b2a56c4382d73475db718981038178b1abe3065f88ca73338a2",
+        "LANDMASK": "79c3bff722808a7649b52f834b8a1378d5e1226901e3dec1fa55941c5edee214",
+        "LU_INDEX": "6ca65abdf59a8bcf3e82f044249ad1d9afe67f2c5b5f2184e5b374aba5f7ee7b",
+        "LANDUSEF": "cd9b67aed954c4f820a726441234c498f8e12224fe6bb86d820c5280e1b83c18",
+        "SOILCTOP": "95f926fbe722bbba1c461ccec237225b49c12905473a7350094173625071f315",
+        "SCT_DOM": "f012cc1f7277211d1d6a69ac055ed4e437db779c18e21625411c44b3046a05c7",
+        "SOILCBOT": "95f926fbe722bbba1c461ccec237225b49c12905473a7350094173625071f315",
+        "SCB_DOM": "f012cc1f7277211d1d6a69ac055ed4e437db779c18e21625411c44b3046a05c7",
+        "GREENFRAC": "80c7ae923567fc8e4ac6dc99ab08e78bee27998968c990d43a41e5aa24c807c1",
+        "LAI12M": "fc45f1f19665feba03ecad438d7706e0a32dad7c1d7af77b4f06c8b90ed9887d",
+        "ALBEDO12M": "0f77f9859a5e3e038ae53d4bfcab49aa45266b97cf993e5624e6753e8c211001",
+        "SNOALB": "c172ee05cd08e66e514f7ec88654eb7a7bf6a93c7a31b023fd417e0d1b7a7026",
+        "SOILTEMP": "29ef540507f8b4ddce5c859c999ec7572e20dd6ead481450fdafd48734b5979f",
+        "TMN": "49caaebc60c92440cb7cfaefa241c0795d7a21b57a4c5d371f964827d82b3513"
+      },
+      "grid_definition": {
+        "map_proj": "lambert",
+        "ref_lat": 39.5,
+        "ref_lon": -84.0,
+        "truelat1": 38.0,
+        "truelat2": 41.0,
+        "stand_lon": -84.0,
+        "dx": 9000.0,
+        "dy": 9000.0,
+        "e_we": 52,
+        "e_sn": 45,
+        "known_x": 26.0,
+        "known_y": 22.5,
+        "moad_cen_lat": 39.5,
+        "moad_cen_lon": -84.0
+      },
+      "terrain_spacing_degrees": 0.008333333333333333
+    },
+    "off_center_2000": {
+      "overlap_sha256": {
+        "HGT_M": "1c16b27c4754c7a6722d9e3a728ddf7153c4d3fb8bd30b5ae0227a103dbd61c2",
+        "LANDMASK": "b31e8f1e8ebc68ea049d210338192ae03e6281c3ab1055a1d8309bc88a027728",
+        "LU_INDEX": "334015e033ef22862b9706d73f1f16db79f92b3c4d93f765c264722188a8d822",
+        "LANDUSEF": "a872d01afee615d1b3f76d82224abe2cb3f994758b2d32690ff4d5305a3b94ef",
+        "SOILCTOP": "f597d2a65b5bd865ee8c23bd61d0d4ddc087d81bdd63d17a3a67fa82ce4d9d61",
+        "SCT_DOM": "8fcccd3afb46efcb7147b7c340ccb8867036dd8c131044319cd475fdcc1f193d",
+        "SOILCBOT": "f597d2a65b5bd865ee8c23bd61d0d4ddc087d81bdd63d17a3a67fa82ce4d9d61",
+        "SCB_DOM": "8fcccd3afb46efcb7147b7c340ccb8867036dd8c131044319cd475fdcc1f193d",
+        "GREENFRAC": "c7220e0493bd896d54593b57f08c17fd62d6ce9a0640a3c50283a11b9bfcdc51",
+        "LAI12M": "e75aa0ee00642aa8db5d2b7a1a434d5a9bd80047f654bd250ebc7d9b9e47ffb8",
+        "ALBEDO12M": "5c42cbc28c23b7f044346b819663424746fd7d4408a7163c5d17a11232220965",
+        "SNOALB": "078799d1ca007f33281d13cdd49393d488eb1381c90b127dc40d5e8a4e8b154d",
+        "SOILTEMP": "16dfb0ed095939bc0c1f796e63449c7ac5e9a009f3eb7d7218a21283ae9fbda9",
+        "TMN": "8f2773966f801cdc4447b99abbb0eca8aae085ed64d914b467fe0575eb5faa09"
+      },
+      "grid_definition": {
+        "nest_of": {
+          "map_proj": "lambert",
+          "ref_lat": 35.0,
+          "ref_lon": -92.0,
+          "truelat1": 30.0,
+          "truelat2": 60.0,
+          "stand_lon": -97.0,
+          "dx": 6000.0,
+          "dy": 6000.0,
+          "e_we": 257,
+          "e_sn": 257,
+          "known_x": 128.5,
+          "known_y": 128.5,
+          "moad_cen_lat": 35.0,
+          "moad_cen_lon": -92.0
+        },
+        "i_parent_start": 89,
+        "j_parent_start": 89,
+        "parent_grid_ratio": 3,
+        "dx": 2000.0,
+        "dy": 2000.0,
+        "e_we": 241,
+        "e_sn": 241
+      },
+      "terrain_spacing_degrees": 0.008333333333333333
+    }
+  }
+}

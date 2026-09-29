@@ -1095,10 +1095,11 @@ impl App {
     fn companion_context(&self) -> serde_json::Value {
         let config = self.editor.as_ref().map(|editor| &editor.path);
         let hash = config.and_then(|path| fs::read(path).ok()).map(|bytes| companion::digest(&bytes));
+        let products = self.session_render_products();
         serde_json::json!({"config_path":config,"config_sha256":hash,"python":self.python,"cwd":self.cwd,
             "output_root":self.output,"geog_root":(!self.geog_root.as_os_str().is_empty()).then_some(&self.geog_root),
             "prepared_root":(!self.prepared.as_os_str().is_empty()).then_some(&self.prepared),
-            "render_products":self.session_render_products(),
+            "render_products":products.as_ref().ok(),"render_products_error":products.as_ref().err(),
             "experimental_features":{"local_da":self.enable_local_da},
             "plot_preferences_path":config.map(|path| plotsettings::sidecar(path)),
             "current_job_dir":self.job.as_ref().map(|job| &job.dir),"target":self.companion_target(),
@@ -1388,7 +1389,7 @@ impl App {
                 }
                 (remote::Update::NativePlotsSynced(reply),companion::Action::SyncNativePlots{job,..})=>{
                     details["job_id"]=serde_json::json!(job);details["native_plots"]=reply["native_plots"].clone();
-                    Ok(if reply["native_plots"]["waiting"]==true{"Native plots are still being prepared."}else{"Native plot gallery ready."}.into())
+                    Ok(remote::native_plots_message(&reply["native_plots"]))
                 }
                 _=>Err("The node returned a different operation; no success was assumed.".into()),
             }
@@ -1558,7 +1559,7 @@ impl App {
                 "action":if job["action"]=="start-plan"{"run-plan"}else{job["action"].as_str().unwrap_or("remote")},
                 "state":job["state"],"exit_code":job["exit_code"],"remote_output_root":job["outdir"],
                 "source_config_path":job["source_config_path"],"source_config_sha256":job["source_config_sha256"],
-                "error":job["error"],"stage":job["stage"],"phase":job["phase"],"phase_updated_unix_ms":job["phase_updated_unix_ms"],"model_elapsed_seconds":job["model_elapsed_seconds"],"valid_time":job["valid_time"],"render_summary":job["render_summary"],"progress":job["progress"],"pipeline_progress":job["pipeline_progress"],
+                "error":job["error"],"render_warning":job["render_warning"],"stage":job["stage"],"phase":job["phase"],"phase_updated_unix_ms":job["phase_updated_unix_ms"],"model_elapsed_seconds":job["model_elapsed_seconds"],"valid_time":job["valid_time"],"render_summary":job["render_summary"],"progress":job["progress"],"pipeline_progress":job["pipeline_progress"],
                 "background_maps":job["background_maps"],"native_plots":job["native_plots"],
                 "manifest_ready":false,"log_path":null,"progress_path":null,"events_path":null,"ready_dir":null})).unwrap_or_default()
         }else{self.job.as_ref().map(|job| companion::job_status(job, &self.output)).unwrap_or(serde_json::Value::Null)};
@@ -1681,9 +1682,13 @@ impl App {
                     else if self.checked_companion_target(request.target.as_ref()).is_err() { Err("The execution target changed. Review again.".into()) }
                     else {
                         let cwd = self.cwd.clone();
-                        let products = body.render_products.clone()
-                            .unwrap_or_else(|| self.session_render_products());
-                        let built = downscale_guide(body, &cwd, &self.output, &products).request(&cwd);
+                        // A session selection that cannot be drawn is refused
+                        // here in its own words; the children must not be
+                        // drawn as the default set in its place.
+                        let built = match body.render_products.clone().map_or_else(|| self.session_render_products(), Ok) {
+                            Ok(products) => downscale_guide(body, &cwd, &self.output, &products).request(&cwd),
+                            Err(error) => Err(error),
+                        };
                         match built {
                             // The guide's own refusals travel verbatim: an
                             // output directory that already exists, both or
@@ -1930,15 +1935,19 @@ impl App {
             .unwrap_or_else(|| Ok(plotsettings::Selection::default()))
     }
     fn plot_spec(&self) -> Result<String, String> {
-        self.plot_selection().map(|selection| selection.spec)
+        let has_section = self.nodes.store.selected()
+            .is_some_and(|node| !node.render_section.trim().is_empty());
+        self.plot_selection().and_then(|selection| plotsettings::for_section(&selection.spec, has_section))
     }
     /// The product spec this session draws with, as the companion status
     /// already publishes it. One expression, read by the status document
     /// and by every launch that inherits it, so a downscaled child cannot
-    /// be drawn as a different set than the forecast beside it.
-    fn session_render_products(&self) -> String {
+    /// be drawn as a different set than the forecast beside it. A selection
+    /// that cannot be drawn (a cross-section with no line) is its error, never
+    /// the default set: that fallback published and drew pictures the person
+    /// did not choose while the plots screen still showed their choice.
+    fn session_render_products(&self) -> Result<String, String> {
         self.plot_spec()
-            .unwrap_or_else(|_| guide::DEFAULT_RENDER_PRODUCTS.into())
     }
     fn begin_plots(&mut self) {
         if self.nodes.store.selected().is_some() {
@@ -1950,7 +1959,10 @@ impl App {
             self.plot_catalog.request(&self.python, &self.cwd);
             match self.plot_selection() {
                 Ok(selection) => {
-                    self.dialog = Some(Dialog::Plots(plotsettings::Form::from_selection(selection)))
+                    let mut form = plotsettings::Form::from_selection(selection);
+                    form.has_section = self.nodes.store.selected()
+                        .is_some_and(|node| !node.render_section.trim().is_empty());
+                    self.dialog = Some(Dialog::Plots(form))
                 }
                 Err(error) => self.status = error,
             }
@@ -1981,9 +1993,12 @@ impl App {
         let directory=self.companion.session.as_ref().unwrap().directory.join("workspace");
         fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
         let id=format!("tui-review-{}",remote::stamp());let path=directory.join(format!("{id}.json"));
-        let plan=serde_json::json!({"schema":"gpuwm.run-plan.v1","name":id,"route":"prepared",
+        let mut plan=serde_json::json!({"schema":"gpuwm.run-plan.v1","name":id,"route":"prepared",
             "config":{"path":config},"output_root":self.output.join(format!("run-{id}")),
             "run_options":{"render_products":products}});
+        if !node.render_section.trim().is_empty() {
+            plan["run_options"]["render_section"] = serde_json::json!(node.render_section.trim());
+        }
         let bytes=serde_json::to_vec_pretty(&plan).map_err(|e|e.to_string())?;
         use std::io::Write;
         let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?;
@@ -5714,9 +5729,10 @@ fn snapshot_screen(app: &mut App, screen: &str) -> Result<(), String> {
             ));
         }
         "plots" => {
-            app.dialog = Some(Dialog::Plots(plotsettings::Form::from_selection(
-                app.plot_selection()?,
-            )))
+            let mut form = plotsettings::Form::from_selection(app.plot_selection()?);
+            form.has_section = app.nodes.store.selected()
+                .is_some_and(|node| !node.render_section.trim().is_empty());
+            app.dialog = Some(Dialog::Plots(form))
         }
         "guide" => app.dialog = Some(Dialog::Guide(Guide::new(Kind::New, &app.cwd, &app.output))),
         "modes" => app.dialog = Some(Dialog::Workflows(workflows::Browser::default())),
@@ -5935,6 +5951,34 @@ fn interactive_session(app: &mut App, mut tick: impl FnMut(&mut App, &mut ratatu
     result
 }
 
+/// The capture sizes a read-only snapshot accepts, inclusive.
+const SNAPSHOT_COLUMNS: std::ops::RangeInclusive<u16> = 1..=400;
+const SNAPSHOT_ROWS: std::ops::RangeInclusive<u16> = 1..=160;
+
+/// One snapshot dimension, refused by option name and range.  A bare
+/// `parse::<u16>()?` printed "ParseIntError { kind: InvalidDigit }" for
+/// -1 and "PosOverflow" for 65536, naming neither the option nor the
+/// sizes it takes.
+fn snapshot_dimension(
+    option: &str,
+    value: String,
+    range: std::ops::RangeInclusive<u16>,
+    unit: &str,
+) -> Result<u16, String> {
+    value
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|size| range.contains(size))
+        .ok_or_else(|| {
+            format!(
+                "{option} {value} is not a snapshot size: pass a whole number of {unit} from {} to {}",
+                range.start(),
+                range.end()
+            )
+        })
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let mut app = App::new()?;
@@ -6005,16 +6049,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ))
             }
             "--snapshot-width" => {
-                snapshot_width = args
-                    .next()
-                    .ok_or("--snapshot-width needs columns")?
-                    .parse::<u16>()?
+                snapshot_width = snapshot_dimension(
+                    "--snapshot-width",
+                    args.next().ok_or("--snapshot-width needs columns")?,
+                    SNAPSHOT_COLUMNS,
+                    "columns",
+                )?
             }
             "--snapshot-height" => {
-                snapshot_height = args
-                    .next()
-                    .ok_or("--snapshot-height needs rows")?
-                    .parse::<u16>()?
+                snapshot_height = snapshot_dimension(
+                    "--snapshot-height",
+                    args.next().ok_or("--snapshot-height needs rows")?,
+                    SNAPSHOT_ROWS,
+                    "rows",
+                )?
             }
             "--snapshot-screen" => {
                 snapshot_selection = args.next().ok_or("--snapshot-screen needs a screen name")?
@@ -6044,9 +6092,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if headless_companion { return Err("--headless-companion cannot be combined with a read-only snapshot.".into()); }
         if open_companion { return Err("--open-companion cannot be combined with a read-only snapshot.".into()); }
         if connect_node{return Err("--connect-node cannot be combined with a read-only snapshot.".into());}
-        if !(1..=400).contains(&snapshot_width) || !(1..=160).contains(&snapshot_height) {
-            return Err("Snapshot dimensions must be 1..400 columns and 1..160 rows".into());
-        }
         snapshot_screen(&mut app, &snapshot_selection)?;
         return Ok(snapshot(
             &mut app,
@@ -6102,6 +6147,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::theme::SKY;
+
+    #[test]
+    fn snapshot_dimensions_are_refused_by_option_and_range() {
+        for (option, range, unit) in [
+            ("--snapshot-width", SNAPSHOT_COLUMNS, "columns"),
+            ("--snapshot-height", SNAPSHOT_ROWS, "rows"),
+        ] {
+            for bad in ["-1", "0", "65536", "nan", "1.5", ""] {
+                let refusal = snapshot_dimension(option, bad.to_string(), range.clone(), unit)
+                    .unwrap_err();
+                assert!(refusal.starts_with(option), "{refusal}");
+                assert!(refusal.contains(&format!("from 1 to {}", range.end())), "{refusal}");
+                assert!(!refusal.contains("ParseIntError"), "{refusal}");
+            }
+            let too_large = (range.end() + 1).to_string();
+            assert!(snapshot_dimension(option, too_large, range.clone(), unit).is_err());
+            assert_eq!(snapshot_dimension(option, "1".into(), range.clone(), unit), Ok(1));
+            assert_eq!(
+                snapshot_dimension(option, range.end().to_string(), range.clone(), unit),
+                Ok(*range.end())
+            );
+        }
+    }
 
     #[test]
     fn local_da_opt_in_is_explicit_in_every_new_companion_context() {
@@ -6649,7 +6717,7 @@ mod tests {
             assert!(text.contains("SSH host must be"), "{text}");
             assert_eq!(app.nodes.store.selected().unwrap().host, "weather-node");
             app.node_intent(node_ui::Intent::Select(None));
-            assert_eq!(app.plot_spec().unwrap().split(',').count(), 25);
+            assert_eq!(app.plot_spec().unwrap().split(',').count(), 22);
             assert_eq!(fs::read_to_string(&local).unwrap(), original);
             fs::remove_file(&app.nodes.path).unwrap();
             fs::remove_file(&local).unwrap();
@@ -6669,7 +6737,7 @@ mod tests {
             let screen = render_at(&mut app, width, height);
             capture_screen("plots-presets", width, height, &mut app);
             assert!(
-                screen.contains("General (25 plots)") && screen.contains("Customize"),
+                screen.contains("General (22 plots)") && screen.contains("Customize"),
                 "{screen}"
             );
             for index in 0..plotsettings::presets().len() {
@@ -6772,7 +6840,7 @@ mod tests {
         let mut app = loaded_app("name='argv only'\n");
         app.prepared = app.cwd.join("prepared input with spaces");
         let default = app.plot_spec().unwrap();
-        assert_eq!(default.split(',').count(), 25);
+        assert_eq!(default.split(',').count(), 22);
         assert_eq!(App::new().unwrap().plot_spec().unwrap(), default);
         let config = app.editor.as_ref().unwrap().path.clone();
         for wanted in [
@@ -7417,9 +7485,12 @@ mod tests {
             &fs::read(app.job.as_ref().unwrap().dir.join("result.json")).unwrap(),
         )
         .unwrap();
+        // The worker records the sentence the CLI printed as a refusal, which
+        // is not an exception: no exception type may stand in its place.
         assert!(
-            result["error"].is_null(),
-            "Ordinary exit 2 must be readable without an exception field"
+            result["error"].is_null() || result["error"]["type"] == "Refusal",
+            "Ordinary exit 2 must be readable without an exception field: {}",
+            result["error"]
         );
         // Preserve the actual parser failure, then append a bounded display fixture for the reported memory refusal.
         use std::io::Write;
@@ -8375,6 +8446,34 @@ mod tests {
         assert!(app.companion_artifacts.is_none()&&response["artifact_manifest_path"].is_null());
     }
     #[test]
+    fn companion_native_plots_for_a_sections_only_run_answer_with_the_nodes_note(){
+        // A run that asked only for cross-sections never publishes a map
+        // gallery, so "still being prepared" was a promise nothing keeps.
+        let mut app=loaded_app("a=1\n");
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.last_job=Some("job-1".into());
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node.clone());
+        let target=companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())};
+        app.companion.session=Some(companion::Session::test_session(&app.output).unwrap());
+        let session=app.companion.session.as_ref().unwrap().directory.clone();
+        let note="This run asked only for cross-section pictures, which need a line this viewer cannot take, so it has no map products to show here. The run draws its sections itself.";
+        for(id,extra,expected)in [
+            ("sections-1",serde_json::json!({"map_products":false,"selection_basis":note}),note),
+            ("maps-1",serde_json::json!({"map_products":true,"selection_basis":"the products this request named"}),"Native plots are still being prepared."),
+        ]{
+            let request=companion::Request{id:id.into(),name:"sync_native_plots".into(),
+                action:companion::Action::SyncNativePlots{job:"job-1".into(),domain:1,sequence:1},target:Some(target.clone()),
+                plan_sha256:None,config_sha256:None,review_id:None,review_sha256:None};
+            app.companion_remote=Some(CompanionRemoteRequest{request,node:node.clone(),source:serde_json::Value::Null});
+            let mut plots=serde_json::json!({"schema":"arwen.native-plots.v1","job_id":"job-1","domain":1,"sequence":1,"waiting":true});
+            for(key,value)in extra.as_object().unwrap(){plots[key]=value.clone();}
+            app.finish_companion_remote(&remote::Update::NativePlotsSynced(serde_json::json!({"native_plots":plots})));
+            let response=companion::read_json(&session.join(format!("responses/{id}.json")),65536).unwrap();
+            assert_eq!(response["ok"],true);
+            assert_eq!(response["message"],expected);
+            assert_eq!(response["native_plots"]["waiting"],true);
+        }
+    }
+    #[test]
     fn companion_open_configuration_preserves_remote_target_and_hardware_identity(){
         let mut app=loaded_app("a=1\n");
         let directory=app.editor.as_ref().unwrap().path.parent().unwrap().to_path_buf();
@@ -8493,6 +8592,23 @@ mod tests {
         let wrong=companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:"0".repeat(64)};
         assert!(app.select_companion_target(&wrong).is_err());assert_eq!(app.nodes.store.active,Some(node.id));
         app.nodes.store.nodes[0].config="/explicit/advanced.toml".into();assert!(!app.current_setup_uses_staged_node());
+    }
+    #[test]
+    fn companion_current_setup_plan_carries_the_node_cross_section_line() {
+        let mut app = loaded_app("a=1\n");
+        let mut node = remote::Node::blank();
+        node.host = "fixture-node".into();
+        node.workspace = "/owned/work".into();
+        node.plot_products = Some("xsec:wa".into());
+        app.nodes.store.active = Some(node.id.clone());
+        app.nodes.store.nodes = vec![node];
+        assert!(app.current_setup_review_request().unwrap_err().contains("cannot locate the slice"));
+        app.nodes.store.nodes[0].render_section = "-35,100,-36,99".into();
+        let request = app.current_setup_review_request().unwrap();
+        let companion::Action::ReviewPlan(path) = &request.action else { panic!("staged review"); };
+        let plan = companion::read_json(path, 65536).unwrap();
+        assert_eq!(plan["run_options"]["render_products"], "xsec:wa");
+        assert_eq!(plan["run_options"]["render_section"], "-35,100,-36,99");
     }
     #[test]
     fn companion_explicit_nodes_and_focus_setup_preserve_the_visible_draft(){
@@ -8664,12 +8780,40 @@ mod tests {
     fn the_session_product_spec_has_one_reader_and_one_fallback(){
         let app=loaded_app("a=1
 ");
-        let spec=app.session_render_products();
+        let spec=app.session_render_products().unwrap();
         // The session's own selection, not a literal kept here: the status
         // document and every launch that inherits it read one expression.
         assert_eq!(spec,plotsettings::Selection::default().spec);
         assert!(!spec.is_empty());
         assert_eq!(app.companion_context()["render_products"],serde_json::json!(spec));
+        assert!(app.companion_context()["render_products_error"].is_null());
+    }
+    #[test]
+    fn a_session_section_without_a_line_is_refused_and_never_drawn_as_the_default_set(){
+        let mut app=loaded_app("a=1\n");
+        let config=app.editor.as_ref().unwrap().path.clone();
+        plotsettings::save(&config,&plotsettings::Selection{label:"Custom".into(),spec:"xsec:wa".into()},None).unwrap();
+        let error=app.session_render_products().unwrap_err();
+        assert!(error.contains("xsec:wa")&&error.contains("cannot locate the slice"),"{error}");
+        // The status document says why it has no spec instead of naming the default set.
+        let context=app.companion_context();
+        assert!(context["render_products"].is_null(),"{context}");
+        assert_eq!(context["render_products_error"],serde_json::json!(error));
+        // A downscale that inherits the session's selection is refused in the same words.
+        let parent=config.with_file_name("parent-run");fs::create_dir_all(&parent).unwrap();
+        let out=config.with_file_name("downscaled");
+        let session=companion::Session::test_session(&app.output).unwrap();
+        let directory=session.directory.clone();let session_id=session.id.clone();
+        app.companion.session=Some(session);
+        fs::write(directory.join("requests/downscale-fixture.json"),serde_json::to_vec(&serde_json::json!({
+            "schema":"arwen.companion-request.v1","session_id":session_id,"id":"downscale-fixture",
+            "action":"launch_downscale","target":{"kind":"local"},"parent_run_dir":parent,
+            "point":{"lat":39.5,"lon":-84.0},"out_dir":out,"mode":"plan"})).unwrap()).unwrap();
+        app.poll_companion_requests();
+        let response=companion::read_json(&directory.join("responses/downscale-fixture.json"),65536).unwrap();
+        assert_eq!(response["ok"],false,"{response}");
+        assert_eq!(response["message"],serde_json::json!(error),"{response}");
+        assert!(app.job.is_none()&&!out.exists());
     }
     #[test]
     fn companion_launch_available_status_keeps_queue_and_tui_review_exclusive(){

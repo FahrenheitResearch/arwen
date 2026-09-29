@@ -98,7 +98,7 @@ def wrf_sixth_order_diffusion(field, mut, c1, c2, factor, dt, opt, name,
     coupled tendency, zero outside the WRF loop bounds.
 
     Cross-checked against the blind independent derivation
-    handoffs/CLAUDE-FABLE-GPUWM-DIFF6-XORACLE-20260727.md: same bounds
+    the diff6 cross-oracle record (2026-07-27): same bounds
     tables (its section 2), same flux-form/per-face-limiter/mass-average
     associations (its section 1), and digit-level agreement with its
     FP32 oracle's worked example (tests below).
@@ -420,7 +420,7 @@ def test_mirror_matches_wrf_loop_oracle_with_slope_taper(stagger):
 
 # ---------------------------------------------------------------------------
 # independent FP32 authority (CPU): blind source-only derivation
-# handoffs/CLAUDE-FABLE-GPUWM-DIFF6-XORACLE-20260727.md section 3,
+# the diff6 cross-oracle record (2026-07-27) section 3,
 # transcribed verbatim (per-operation FP32 rounding in WRF's source
 # association), plus its deterministic 8x8 worked example whose printed
 # expected values are pinned digit-for-digit below.

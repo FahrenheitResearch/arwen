@@ -174,17 +174,24 @@ def test_host_state_estimate_uses_actual_fields_and_retained_times():
     assert long.device.peak_envelope_bytes == short.device.peak_envelope_bytes
 
 
-@pytest.mark.parametrize('capacity', ['device_budget_bytes', 'host_available_bytes'])
-def test_remaining_initialization_refuses_only_measured_capacity(tmp_path, capacity):
+def test_remaining_initialization_refuses_only_measured_capacity(tmp_path):
     from types import SimpleNamespace
     from gpuwm.config import RunConfig
     from gpuwm.ingest.case_store import CaseStoreRequest, admit_case_initialization
     cfg = RunConfig(nx=31, ny=27, nz=9, dx=10000., dy=10000., ztop=16000., dt=30., run_seconds=60.)
     met = SimpleNamespace(fields={'actual': np.zeros((17, 27, 31))})
-    request = CaseStoreRequest(tmp_path/'cache', resources={capacity: 1})
+    request = CaseStoreRequest(tmp_path/'cache', resources={'host_available_bytes': 1})
     with pytest.raises(MemoryError, match='initialization'):
         admit_case_initialization(request, cfg, met, (0, 1, 2))
-    assert request.backend == 'cuda'
+    assert request.backend == 'auto'
+    # The DEVICE half is retired (A65): it ran after horizontal
+    # interpolation had allocated and could only refuse.  The case is now
+    # priced before its first device allocation, and auto moves the
+    # transforms to the CPU (tests/test_preparation_price.py); the estimate
+    # is still recorded here.
+    device = CaseStoreRequest(tmp_path/'device', resources={'device_budget_bytes': 1})
+    record = admit_case_initialization(device, cfg, met, (0, 1, 2))
+    assert record['device_initialization_envelope_bytes'] > record['device_budget_bytes'] == 1
     unknown = CaseStoreRequest(tmp_path/'unknown')
     report = admit_case_initialization(unknown, cfg, met, (0, 1, 2))
     assert report['device_budget_bytes'] is None
@@ -262,7 +269,7 @@ def test_ordinary_dispatch_decides_before_preparation_and_keeps_elapsed_clock(tm
         initial_result=SimpleNamespace(state=state, initial_perturbation=None))
     def prepare(*args, **kwargs):
         events.append('prepare')
-        assert kwargs['store_request'].backend == 'cuda'
+        assert kwargs['store_request'].backend == 'auto'
         return prepared
     monkeypatch.setattr(runtime, 'prepare_experiment_case', prepare)
     monkeypatch.setattr(runtime, 'clear_forcing_caches', lambda: events.append('release'))
@@ -285,6 +292,7 @@ def test_ordinary_dispatch_decides_before_preparation_and_keeps_elapsed_clock(tm
         wrfout_paths: tuple = ()
         trajectory_digest: object = None
         frame_records: tuple | None = None
+        moisture_floor_receipts: object = None
     def integrate(*args, **kwargs):
         assert kwargs['stepper'] is stepper
         assert state._streamed_domain is stepper

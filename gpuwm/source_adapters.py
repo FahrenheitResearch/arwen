@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import hashlib
+import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping
@@ -128,6 +129,8 @@ class SourceAdapter:
     forcing_interval_seconds: float | None = None
     #: The acquisition consumes every native frame; a cadence cannot subsample it.
     fetch_entire_window: bool = False
+    #: The default fetch transport writes a template unless retrieval is requested.
+    fetch_requires_retrieve: bool = False
     #: The smallest pressure (Pa) this source's CERTIFIED inventory serves
     #: -- the top of the ladder its route decodes, a published fact of the
     #: source like its cadence.  ``None`` means the column reaches at
@@ -140,6 +143,15 @@ class SourceAdapter:
     #: tests/test_ptop_default.py against the packaged mapping's own
     #: level table.
     certified_source_top_pa: float | None = None
+    #: The smallest pressure (Pa) this source's FETCH reaches when a run
+    #: asks for a model top above ``certified_source_top_pa``: the fetch
+    #: extends the certified ladder upward along the levels the product
+    #: publishes (``gpuwm fetch --p-top-pa``).  ``None`` means the fetch
+    #: takes no model top, so the certified ladder is all a run gets.
+    #: Every door that downloads for a configuration reads this through
+    #: :func:`fetch_model_top_pa`, so a run whose own ladder tops out
+    #: above the certified one fetches the levels it needs with no flag.
+    extendable_source_top_pa: float | None = None
     #: Where this source's native grid reaches, or ``None`` for a global
     #: product.  A declared window (see :mod:`gpuwm.source_coverage`) is what
     #: lets `gpuwm domain` refuse an out-of-coverage plan AT PLAN TIME with
@@ -188,6 +200,14 @@ class SourceAdapter:
     # requirement for children initialized by a different target operation.
     root_target_interior_axis: int | None = field(
         default=None, compare=False, repr=False, kw_only=True)
+    #: What the source's bytes ARE, for a person choosing between them:
+    #: ``"forecast"`` (a model run forward from a start), ``"analysis"``
+    #: (the forecast system's own estimate of the weather at each cycle)
+    #: or ``"reanalysis"`` (one fixed system re-run over the past).  A
+    #: column because the horizon cannot say it: an analysis cycle also
+    #: publishes short forecasts, and a front end that inferred the kind
+    #: from ``max_forecast_hour == 0`` called GDAS a global forecast model.
+    record_kind: str = field(default="forecast", kw_only=True)
     #: Canonical analysis fields this row's own route serves, for a
     #: consumer that locates something in them -- today the cyclone
     #: seeder.  A ROW'S OWN STATEMENT, never a consumer's table: a row
@@ -297,11 +317,14 @@ def _adapter(
     member_set: str | None = None,
     forcing_interval_seconds: float | None = None,
     fetch_entire_window: bool = False,
+    fetch_requires_retrieve: bool = False,
     certified_source_top_pa: float | None = None,
+    extendable_source_top_pa: float | None = None,
     coverage: CoverageWindow | None = None,
     cycles: CycleGrid | None = None,
     archives: tuple[ArchiveWindow, ...] = (),
     root_target_interior_axis: int | None = None,
+    record: str = "forecast",
     notes: str = "",
     seed_fields: tuple[str, ...] = (),
     time_axis: str | None = None,
@@ -341,11 +364,14 @@ def _adapter(
         member_set=member_set,
         forcing_interval_seconds=forcing_interval_seconds,
         fetch_entire_window=fetch_entire_window,
+        fetch_requires_retrieve=fetch_requires_retrieve,
         certified_source_top_pa=certified_source_top_pa,
+        extendable_source_top_pa=extendable_source_top_pa,
         coverage_window=coverage,
         cycle_grid=cycles,
         archive_windows=archives,
         root_target_interior_axis=root_target_interior_axis,
+        record_kind=record,
         display_name=name,
         credentials=tuple(credentials),
         notes=notes,
@@ -387,6 +413,19 @@ _NORTH_AMERICA_32KM_LAMBERT = LambertGridWindow(
 _ICON_EU_WINDOW = RegularLatLonWindow(
     south=29.5, west=-23.5, north=70.5, east=62.5, nx=1377, ny=657)
 
+#: Where ICON-D2 publishes values, as a window a whole domain can sit in.
+#: The model domain is a tilted quadrilateral over Germany and its
+#: neighbours, and DWD masks its 13 km lateral boundary strip in every
+#: record, so the published cells do not fill any lat/lon box.  The largest
+#: box they fill is lat 43.66..57.70, lon -0.42..17.64 (measured from the
+#: 2026-09-27 12Z 0.02-degree bitmap); this window is that box shrunk by the
+#: normalization halo (0.25 degrees) and one more grid step, so a domain
+#: inside it never asks the remapper for a cell DWD did not publish.  The
+#: counts are the window's points at the 0.02-degree step the preparation
+#: remaps onto, so a refusal names the index the preparation would read.
+_ICON_D2_WINDOW = RegularLatLonWindow(
+    south=44.0, west=0.0, north=57.3, east=17.3, nx=866, ny=666)
+
 
 #: The personal Copernicus CDS API key, declared as the row fact it is.
 #:
@@ -410,6 +449,25 @@ _COPERNICUS_CDS_KEY = SourceCredential(
         "commands later with its own exception if it is absent"
     ),
     obtain_url="https://cds.climate.copernicus.eu",
+)
+
+#: The analysis-ready ERA5 store: the same reanalysis on its 0.25 degree
+#: grid, hourly, 37 pressure levels, read without an account key through
+#: gpuwm.era5_arco.  Its ``.zattrs`` carries the store's own bounds,
+#: ``valid_time_stop_era5t`` naming the last preliminary day it holds.
+_ERA5_ARCO_ARCHIVE = ArchiveWindow(
+    "arco", "1940-01-01T00",
+    "Google's analysis-ready ERA5 store holds the reanalysis from 1940, "
+    "extended with preliminary ERA5T days as they are published; the "
+    "store publishes its own last day.",
+    ("https://cloud.google.com/storage/docs/public-datasets/era5",
+     "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/"
+     "full_37-1h-0p25deg-chunk-1.zarr-v3/.zattrs"),
+    checked_at="2026-09-25",
+    user_note="Recent dates are preliminary ERA5T; their publication time can vary.",
+    bounds_url=("https://storage.googleapis.com/gcp-public-data-arco-era5/ar/"
+                "full_37-1h-0p25deg-chunk-1.zarr-v3/.zattrs"),
+    bounds_stop_keys=("valid_time_stop_era5t", "valid_time_stop"),
 )
 
 _ERA5_ARCHIVE = ArchiveWindow(
@@ -437,6 +495,97 @@ _HRRR_NATIVE_ARCHIVE = ArchiveWindow(
     ("https://registry.opendata.aws/noaa-hrrr-pds/",
      "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/?list-type=2&max-keys=2&prefix=hrrr.20140730/conus/hrrr.t18z.wrfnatf00",
      "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/?list-type=2&max-keys=2&prefix=hrrr.20140730/conus/hrrr.t18z.wrfprsf00"),
+)
+
+
+#: The next six bounds were MEASURED on 2026-09-25 by asking each archive
+#: for the exact object this program's route reads (the f000 of the
+#: route's own path template) and bisecting on the day: the first day
+#: named holds it, the day before does not.  The listing URL is the
+#: evidence and reproduces the answer.  Each is where the CURRENT layout
+#: begins, so a date before it answers no in plain words at the date
+#: picker instead of failing at the download.
+_GEFS_ARCHIVE = ArchiveWindow(
+    "aws", "2020-09-23T00",
+    "The GEFS v12 atmos/pgrb2ap5 layout this route reads starts with the "
+    "2020-09-23 implementation; older objects in the bucket are GEFS v11 "
+    "under other paths. Not every cycle of the first days is present.",
+    ("https://noaa-gefs-pds.s3.amazonaws.com/?list-type=2&max-keys=5&prefix=gefs.20200923/00/atmos/pgrb2ap5/gec00",
+     "https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gefs.php"),
+    checked_at="2026-09-25",
+)
+_AIGEFS_ARCHIVE = ArchiveWindow(
+    "aws", "2025-06-01T00",
+    "The ensemble's own bucket begins on 2025-06-01; the product did not "
+    "exist before it.",
+    ("https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/?list-type=2&delimiter=/&max-keys=3&prefix=EAGLE_ensemble/",),
+    checked_at="2026-09-25",
+)
+_AIFS_OPEN_ARCHIVE = ArchiveWindow(
+    "aws", "2025-02-25T06",
+    "AIFS single entered operations on 2025-02-25; the mirror's "
+    "aifs-single objects begin at its 06Z cycle.",
+    ("https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com/?list-type=2&max-keys=5&prefix=20250225/06z/aifs-single/0p25/oper/",
+     "https://www.ecmwf.int/en/forecasts/datasets/open-data"),
+    checked_at="2026-09-25",
+)
+_RAP_ARCHIVE = ArchiveWindow(
+    "aws", "2021-04-26T00",
+    "The mirror's rap.YYYYMMDD awip32 objects begin on 2021-02-22 with the "
+    "00 to 09 UTC runs only (their whole forecasts, f00 on); every hour of "
+    "the day begins on 2021-04-26 00 UTC. 2021-02-21 holds none. Older RAP "
+    "runs are kept only by NCEI, which this route does not read.",
+    ("https://noaa-rap-pds.s3.amazonaws.com/?list-type=2&delimiter=/&prefix=rap.2021022",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210222/rap.t00z.awip32f00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210425/rap.t09z.awip32f00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210425/rap.t10z.awip32f00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210426/rap.t12z.awip32f00.grib2",
+     "https://registry.opendata.aws/noaa-rap/"),
+    checked_at="2026-09-25",
+    early_start="2021-02-22T00", early_hours=tuple(range(10)),
+)
+_RRFS_OPS_ARCHIVE = ArchiveWindow(
+    "aws", "2026-08-13T00",
+    "The operational RRFS bucket begins on 2026-08-13, the day after the "
+    "prototype feed stopped; the prototype's objects are not read.",
+    ("https://noaa-rrfs-ops-pds.s3.amazonaws.com/?list-type=2&max-keys=5&prefix=rrfs.20260813/00/rrfs.t00z.prslev",),
+    checked_at="2026-09-25",
+)
+
+
+#: Publisher doors that keep a rolling window with no archive behind them,
+#: measured 2026-09-25 by listing each door.  The fetch route table
+#: declares the same hours on the same host rows (held equal by
+#: tests/test_fetch_passed_cycle.py), so the date guidance, the fetch
+#: ladder and the ``--cycle latest`` walk-back read one measurement.
+_ECMWF_OPEN_DOOR = ArchiveWindow(
+    "ecmwf", "",
+    "ECMWF's own open-data door keeps its last four days of cycles; older "
+    "cycles are read from the mirror.",
+    ("https://data.ecmwf.int/forecasts/",),
+    checked_at="2026-09-25", retention_hours=72.0,
+)
+_ICON_EU_DOOR = ArchiveWindow(
+    "dwd", "",
+    "DWD's open-data door keeps about one day of ICON-EU cycles and there "
+    "is no archive behind it.",
+    ("https://opendata.dwd.de/weather/nwp/icon-eu/grib/00/t/",),
+    checked_at="2026-09-25", retention_hours=24.0,
+)
+_ICON_D2_DOOR = ArchiveWindow(
+    "dwd", "",
+    "DWD's open-data door keeps the newest run of each of ICON-D2's eight "
+    "daily cycles, replacing a run when the same hour's next run starts "
+    "to publish, and there is no archive behind it.",
+    ("https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/t_2m/",),
+    checked_at="2026-09-27", retention_hours=24.0,
+)
+_MSC_DATAMART_DOOR = ArchiveWindow(
+    "msc", "",
+    "MSC Datamart keeps 30 day directories with the oldest partly pruned, "
+    "so 29 days are counted; there is no archive behind it.",
+    ("https://dd.weather.gc.ca/",),
+    checked_at="2026-09-25", retention_hours=696.0,
 )
 
 
@@ -493,9 +642,17 @@ _ADAPTERS = (
             # table states a horizon in; held in step with
             # gpuwm.hrrr_forecast's constants by a test.
             horizons=(((0, 6, 12, 18), 48), (None, 18)),
+            # Measured on the public mirror for every cycle of
+            # 2026-09-24..26: a synoptic run's f048 lands 1 h 47 min to
+            # 1 h 49 min after its start, an off-synoptic run's f018
+            # 1 h 25 min to 1 h 26 min after.  Three hours is the fetch
+            # route table's measured lag for hrrr-prs.
+            usual_delay_hours=3.0,
             basis="HRRR initializes every hour; publication is "
                   "decided by the per-object completeness probe, "
-                  "not by a declared delay"),
+                  "not by a declared delay; a whole run is usually "
+                  "published within 3 hours of its start (measured "
+                  "2026-09-26 on the public mirror)"),
         coverage=_CONUS_3KM_LAMBERT,
         notes=(
             "Certified slice: one CONUS Lambert specified domain, WSM6, YSU, "
@@ -552,6 +709,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gem-gdps",
+        archives=(_MSC_DATAMART_DOOR,),
         name="GEM GDPS (Canadian global)",
         # `gem` is an ALIAS, not only the upstream model id.  The 2026-08-17
         # model battery measured `--source gem` refusing by name on every
@@ -628,6 +786,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "icon-eu",
+        archives=(_ICON_EU_DOOR,),
         name="ICON-EU (DWD regional)",
         aliases=("dwd-icon-eu", "icon-eu-regular"),
         upstream_model_id="icon-eu",
@@ -670,6 +829,42 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
+        "icon-d2",
+        archives=(_ICON_D2_DOOR,),
+        name="ICON-D2 2.2 km (DWD, Germany)",
+        aliases=("icon-2km", "dwd-icon-d2"),
+        upstream_model_id="icon-d2",
+        default_product="icosahedral-model-level",
+        required_products=("model-level", "single-level", "soil-level",
+                           "time-invariant", "grid-coordinates"),
+        max_hour=48,
+        decoder="gdt101_remap + vendored grib-core + mapped engine",
+        upstream_ingest="native_gdt101_normalization_then_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-icon-d2-grib2-v1",
+        level_mapping="65-height-model-level-to-explicit-wrf-eta-v1",
+        cadence_mapping="uniform-hourly-forecast-series-v1",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="icon-d2-grib2-v1",
+        forcing_interval_seconds=3600.0,
+        # The measured top mass-level pressure plus a warm-season margin.
+        certified_source_top_pa=6000.0,
+        coverage=_ICON_D2_WINDOW,
+        notes=(
+            "DWD's convection-permitting ICON-D2, nominal 2.2 km, on its "
+            "native R19B07 mesh of 542,040 cells over Germany and its "
+            "neighbours. The same GDT-101 normalization as ICON global "
+            "remaps the WPS domain plus a 0.25-degree halo to 0.02 degrees "
+            "and seals raw-to-normalized provenance before prep. 65 "
+            "height-based model levels with pressure and five condensate species, "
+            "TERRA soil, once-per-cycle sea ice. Cycles every 3 h, each to "
+            "f048, hourly forcing. Data: Deutscher Wetterdienst, CC BY 4.0. "
+            "No observation assimilation or stock-WRF certification is implied."
+        ),
+    ),
+    _adapter(
         "hrrr-ak",
         name="HRRR Alaska", aliases=("hrrrak", "hrrr-alaska"),
         default_product="sfc", required_products=("sfc", "nat"), max_hour=48,
@@ -694,18 +889,27 @@ _ADAPTERS = (
         runnable=True,
         runner="gfs_pgrb2_0p25_v1",
         forcing_interval_seconds=10800.0,
-        # The certified 21-level pgrb2 ladder stops at 100 hPa; deeper
-        # tops exist upstream but fetching them is the explicit
-        # `gpuwm fetch --p-top-pa` act, so a bare emission stays here.
+        # The certified 21-level pgrb2 ladder stops at 100 hPa.  The
+        # product publishes every field up to 0.01 hPa, and the fetch
+        # extends the ladder to a run's own model top, so a run asking
+        # for 50 hPa fetches the 70 and 50 hPa levels by default.
         certified_source_top_pa=10000.0,
+        extendable_source_top_pa=1.0,
         # No delay is declared because the completeness probe decides
         # publication object by object; a delay could only start the
         # walk after a cycle the probe would have accepted.
         cycles=CycleGrid(
             hours=(0, 6, 12, 18), search_hours=48,
+            # Measured on the public mirror for every cycle of
+            # 2026-09-24..26: pgrb2.0p25 f000 lands 3 h 32 min to
+            # 3 h 50 min after the start and f384 5 h 12 min to
+            # 5 h 30 min after it.
+            usual_delay_hours=6.0,
             basis="NCEP runs the global system at 00/06/12/18 UTC; "
                   "publication is decided by the per-object "
-                  "completeness probe"),
+                  "completeness probe; a whole run is usually "
+                  "published within 6 hours of its start (measured "
+                  "2026-09-26 on the public mirror)"),
         notes=(
             "Certified slice: one specified Lambert domain, GFS pgrb2.0p25 "
             "with complete 1000..100-hPa state and exact four Noah soil "
@@ -723,6 +927,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gdas",
+        record="analysis",
         forecast_time_owner="gdas_forecast_hours",
         archives=(_GLOBAL_PGRB2_ARCHIVE,),
         name="GDAS analysis (0.25 degree)", aliases=("gdas-0p25", "gdas-0.25"),
@@ -744,9 +949,15 @@ _ADAPTERS = (
         forcing_interval_seconds=3600.0,
         cycles=CycleGrid(
             hours=(0, 6, 12, 18), search_hours=48,
+            # Measured on the public mirror for every cycle of
+            # 2026-09-24..26: pgrb2.0p25 f009 lands 7 h 1 min to
+            # 7 h 20 min after the start.
+            usual_delay_hours=8.0,
             basis="the analysis cycle runs on the global system's "
                   "00/06/12/18 UTC grid; publication is decided by "
-                  "the per-object completeness probe"),
+                  "the per-object completeness probe; a whole cycle is "
+                  "usually published within 8 hours of its start "
+                  "(measured 2026-09-26 on the public mirror)"),
         notes=(
             "NCEP's analysis cycle through the GENERIC mapped route as a "
             "packaged profile: one pgrb2.0p25 file per hourly valid time "
@@ -772,6 +983,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gefs",
+        archives=(_GEFS_ARCHIVE,),
         name="GEFS (global ensemble member)", aliases=("gefs-ensemble",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
         file_family="GRIB2",
@@ -844,22 +1056,27 @@ _ADAPTERS = (
             "AIGFS publishes no soil temperature or moisture, no land-sea "
             "mask, no orography, no skin temperature, no surface pressure "
             "(PRMSL only) and no 2 m humidity; the hybrid profile borrows "
-            "exactly that state from the SAME CYCLE's GDAS 0.25-degree "
+            "the land-surface state from the SAME CYCLE's GDAS 0.25-degree "
             "analysis (the caller's one supplement) through the "
-            "cross-source composition, and a donor from any other cycle "
-            "or grid refuses by name."
+            "cross-source composition and derives surface pressure at "
+            "every lead from AIGFS's own PRMSL at the analysis terrain "
+            "height, and a donor from any other cycle or grid refuses by "
+            "name."
         ),
         notes=(
             "NCEP's GraphCast-based 0.25-degree AI forecast as pure table "
             "data, RUNNABLE as a HYBRID: the operational atmosphere (six "
             "3-D fields on 13 pressure levels topping at 50 hPa, plus 2 m "
-            "temperature and 10 m wind) rides the generic mapped route "
-            "while the seven canonicals the product does not publish are "
-            "composition_bound to the same-cycle GDAS analysis donor, "
-            "decoded through the donor's own SHA-256-pinned mapping under "
-            "the source_cycle_analysis_broadcast clock (one analysis "
-            "record, carried to every lead, carried times named in the "
-            "receipt).  The atmosphere-only profile "
+            "temperature, 10 m wind and PRMSL) rides the generic mapped "
+            "route while the six land-surface canonicals the product does "
+            "not publish are composition_bound to the same-cycle GDAS "
+            "analysis donor, decoded through the donor's own SHA-256-pinned "
+            "mapping under the source_cycle_analysis_broadcast clock (one "
+            "analysis record, carried to every lead, carried times named "
+            "in the receipt).  Surface pressure, which AIGFS does not "
+            "publish either, is derived at every lead from its own PRMSL "
+            "and isobaric heights at the analysis terrain height, so the "
+            "column mass follows the forecast.  The atmosphere-only profile "
             "aigfs-nomads-grib2-v1 remains shipped as the solo-refusal "
             "record.  ACQUISITION IDENTITY "
             "IS PART OF THE PRODUCT: operational bytes are NOMADS-only "
@@ -878,6 +1095,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "aigefs",
+        archives=(_AIGEFS_ARCHIVE,),
         name="AIGEFS (NOAA AI global ensemble member)", aliases=("ai-gefs",),
         kind=SourceKind.ENSEMBLE_MEMBERS,
         file_family="GRIB2",
@@ -940,6 +1158,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "ecmwf-open-data",
+        archives=(_ECMWF_OPEN_DOOR,),
         name="ECMWF IFS (open data, 0.25 degree)", aliases=("ecmwf", "ifs"),
         file_family="GRIB2",
         decoder=(
@@ -960,7 +1179,11 @@ _ADAPTERS = (
         notes=(
             "ECMWF's open-data IFS oper product through the GENERIC mapped "
             "route: one 0.25-degree global GDT-0 GRIB2 file per three-hourly "
-            "step carries the 14-level pressure state, the surface/2 m/10 m "
+            "step carries the 14-level pressure state (earlier publications "
+            "carry 13 levels without 10 hPa, spell the soil layers on "
+            "depth-below-land surfaces and carry no surface geopotential; "
+            "the mapping's era ladder, record aliases and terrain "
+            "derivation read them), the surface/2 m/10 m "
             "fields, in-band surface geopotential for terrain (converted to "
             "metres by the declared unit scale) and the four IFS soil "
             "layers, which the source addresses by ordinal on fixed-surface "
@@ -979,6 +1202,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "aifs",
+        archives=(_ECMWF_OPEN_DOOR, _AIFS_OPEN_ARCHIVE),
         name="ECMWF AIFS single (open data)",
         aliases=("aifs-v2", "aifs-single"),
         file_family="GRIB2",
@@ -1024,6 +1248,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "rap",
+        archives=(_RAP_ARCHIVE,),
         name="RAP (32 km North America)",
         aliases=("rap-awip32",),
         file_family="GRIB2",
@@ -1118,6 +1343,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "rrfs",
+        archives=(_RRFS_OPS_ARCHIVE,),
         name="RRFS (operational 3 km CONUS)",
         aliases=("rrfs-ops",),
         file_family="GRIB2",
@@ -1207,11 +1433,12 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5",
+        record="reanalysis",
         time_axis="analysis_times",
         selection_owner="gpuwm.era5_member",
         seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
                      'northward_wind', 'mean_sea_level_pressure'),
-        archives=(_ERA5_ARCHIVE,),
+        archives=(_ERA5_ARCO_ARCHIVE, _ERA5_ARCHIVE),
         name="ERA5 reanalysis (ECMWF)",
         credentials=(_COPERNICUS_CDS_KEY,),
         upstream_model_id=None,
@@ -1232,6 +1459,7 @@ _ADAPTERS = (
         case_data_file="era5-combined.grib",
         case_data_vtable="data/vtables/Vtable.ERA5_CDO",
         forcing_interval_seconds=21600.0,
+        fetch_requires_retrieve=True,
         # THE ROW THAT MADE THE COLUMN.  `--cycle latest` used to be
         # refused here with the sentence "a reanalysis published with
         # a delay of several days" -- which describes a DELAY, and a
@@ -1264,6 +1492,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5-l137",
+        record="reanalysis",
         time_axis="analysis_times",
         archives=(_ERA5_ARCHIVE,),
         name="ERA5 reanalysis (native 137 model levels)",
@@ -1332,6 +1561,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "20crv3",
+        record="reanalysis",
         time_axis="analysis_times",
         name="20CRv3 reanalysis (member, GRIB2)",
         aliases=("20cr", "twentycrv3", "20crv3-member"),
@@ -1369,6 +1599,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "20crv3-cf",
+        record="reanalysis",
         time_axis="analysis_times",
         name="20CRv3 reanalysis (ensemble mean, NetCDF)",
         aliases=("20crv3-netcdf", "20cr-netcdf", "20cr-cf"),
@@ -1560,6 +1791,39 @@ def source_coverage_window(source: str) -> CoverageWindow | None:
     """SOURCE's declared native-grid window, or ``None`` when it is global."""
 
     return get_source_adapter(source).coverage_window
+
+
+def fetch_model_top_pa(source, p_top_pa) -> float | None:
+    """The model top (Pa) a download for SOURCE must reach, or ``None``.
+
+    ``p_top_pa`` is the model top of the run the download is for (its
+    ``[shared].p_top``).  ``None`` means the request stays exactly as it
+    was: the source's certified ladder already reaches that top, its row
+    declares no certified top, or its fetch takes no model top (then the
+    preparation's vertical-coverage refusal names the gap).  Otherwise
+    the answer is ``p_top_pa`` itself, the value ``gpuwm fetch
+    --p-top-pa`` takes, so the fetch extends its ladder to the levels the
+    run's own top needs.  A top above everything the product publishes is
+    still returned: the fetch refuses it before any download, naming the
+    deepest top it can serve.
+
+    Read from the registry row, never from a list of model names, so
+    ``gpuwm go``, ``gpuwm run-plan``, the desktop and the download price
+    all ask the same table the same question.
+    """
+
+    if not source or p_top_pa is None or isinstance(p_top_pa, bool):
+        return None
+    try:
+        top = float(p_top_pa)
+        adapter = get_source_adapter(str(source))
+    except (TypeError, ValueError):
+        return None
+    ceiling = adapter.certified_source_top_pa
+    if (adapter.extendable_source_top_pa is None or ceiling is None
+            or not math.isfinite(top) or top <= 0.0 or top >= float(ceiling)):
+        return None
+    return top
 
 
 def _current_config_sha256(name: str, canonical_sha256: str) -> str:

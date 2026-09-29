@@ -462,6 +462,10 @@ struct ResolvedRenderScene {
     /// One label per entry of `value_ticks` when the request named its
     /// ticks; empty when the labels are the drawn values themselves.
     tick_labels: Vec<String>,
+    /// The step the automatic ticks were cut on, `None` when the ticks
+    /// came from a style or a request: the places a drawn-value label
+    /// needs so that a tick between whole numbers reads as itself.
+    tick_step: Option<f64>,
     colorbar_label: String,
     overlay_levels: Vec<f32>,
     highlight_overlay: Option<f32>,
@@ -501,7 +505,7 @@ impl ResolvedRenderScene {
             return Err(CrossSectionError::EmptyColorRamp);
         }
 
-        let (value_ticks, tick_labels) = if !request.colorbar_ticks.is_empty() {
+        let (value_ticks, tick_labels, tick_step) = if !request.colorbar_ticks.is_empty() {
             (
                 request.colorbar_ticks.iter().map(|(value, _)| *value).collect(),
                 request
@@ -509,18 +513,23 @@ impl ResolvedRenderScene {
                     .iter()
                     .map(|(_, label)| label.clone())
                     .collect(),
+                None,
             )
         } else if request.value_ticks.is_empty() {
-            (
-                declared_style
-                    .as_ref()
-                    .map(|style| style.value_ticks().to_vec())
-                    .filter(|ticks| !ticks.is_empty())
-                    .unwrap_or_else(|| nice_value_ticks(min_value, max_value, 7)),
-                Vec::new(),
-            )
+            match declared_style
+                .as_ref()
+                .map(|style| style.value_ticks().to_vec())
+                .filter(|ticks| !ticks.is_empty())
+            {
+                Some(ticks) => (ticks, Vec::new(), None),
+                None => (
+                    nice_value_ticks(min_value, max_value, 7),
+                    Vec::new(),
+                    Some(nice_value_tick_step(min_value, max_value, 7)),
+                ),
+            }
         } else {
-            (request.value_ticks.clone(), Vec::new())
+            (request.value_ticks.clone(), Vec::new(), None)
         };
 
         let uses_default_overlay = request_uses_default_overlays(request);
@@ -579,6 +588,7 @@ impl ResolvedRenderScene {
             max_value,
             value_ticks,
             tick_labels,
+            tick_step,
             colorbar_label,
             overlay_levels,
             highlight_overlay,
@@ -1987,6 +1997,7 @@ fn draw_colorbar(
         None,
     );
 
+    let value_labels = value_tick_labels(&scene.value_ticks, scene.tick_step);
     for (index, &tick) in scene.value_ticks.iter().enumerate() {
         if tick < scene.min_value || tick > scene.max_value {
             continue;
@@ -2008,7 +2019,7 @@ fn draw_colorbar(
             .tick_labels
             .get(index)
             .cloned()
-            .unwrap_or_else(|| format_scalar_value(tick));
+            .unwrap_or_else(|| value_labels[index].clone());
         canvas.draw_text(
             label_x as i32,
             y.round() as i32 - text_line_height(1, canvas.type_scale) as i32 / 2,
@@ -2409,11 +2420,16 @@ fn nice_value_ticks(min: f32, max: f32, desired_count: usize) -> Vec<f32> {
     // whole unit gave that colourbar exactly two ticks -- its two ends --
     // with nothing in between to read a value against.  `nice_step` already
     // refuses a non-positive span.
-    let step = nice_step((max - min).abs() / desired_count.max(1) as f64);
+    let step = nice_value_tick_step(min as f32, max as f32, desired_count);
     ranged_ticks(min, max, step)
         .into_iter()
         .map(|tick| tick as f32)
         .collect()
+}
+
+/// The step [`nice_value_ticks`] cuts `min..max` on.
+fn nice_value_tick_step(min: f32, max: f32, desired_count: usize) -> f64 {
+    nice_step((max as f64 - min as f64).abs() / desired_count.max(1) as f64)
 }
 
 /// A tick loop may not run away.
@@ -2648,6 +2664,71 @@ fn format_scalar_value(value: f32) -> String {
     } else {
         format!("{value:.1}")
     }
+}
+
+/// The places `step` needs to be written exactly, at most six.
+fn places_for_step(step: f64) -> usize {
+    if !step.is_finite() || step <= 0.0 {
+        return 0;
+    }
+    (0..=6)
+        .find(|places| {
+            let scaled = step * 10f64.powi(*places as i32);
+            (scaled - scaled.round()).abs() <= 1e-6 * scaled.abs().max(1.0)
+        })
+        .unwrap_or(6)
+}
+
+/// The places [`format_scalar_value`] gives `value` on its own.
+fn own_places(value: f32) -> usize {
+    let magnitude = value.abs();
+    if value == 0.0 {
+        0
+    } else if magnitude < 1.0 {
+        (2 - magnitude.log10().ceil() as i32).clamp(1, 5) as usize
+    } else if (value - value.round()).abs() <= 0.05 || magnitude >= 100.0 {
+        0
+    } else {
+        1
+    }
+}
+
+/// The colourbar's drawn-value labels, as one set.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a section bar whose ticks
+/// sit between whole numbers prints them rounded. At 100 and above a
+/// value is written with no places, so a real theta section cut to 6 km
+/// (305.3 to 320.9 K, ticks every 2.5 K) labelled 307.5 as `308`, 312.5
+/// as `312` and 317.5 as `318`, and a quarter step below 100 printed
+/// 1.25 as `1.2`. Each label now carries at least the places the tick
+/// step needs, so a bar on whole-number steps is spelled exactly as
+/// before and a bar on 2.5 or 0.25 steps reads its own values.
+fn value_tick_labels(ticks: &[f32], step: Option<f64>) -> Vec<String> {
+    let step = step.or_else(|| {
+        let mut sorted: Vec<f64> = ticks.iter().map(|tick| f64::from(*tick)).collect();
+        sorted.sort_by(f64::total_cmp);
+        sorted
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .filter(|gap| *gap > 0.0)
+            .min_by(f64::total_cmp)
+    });
+    let step_places = step.map_or(0, places_for_step);
+    ticks
+        .iter()
+        .map(|tick| {
+            if step_places <= own_places(*tick) {
+                return format_scalar_value(*tick);
+            }
+            let text = format!("{tick:.step_places$}");
+            let trimmed = text.trim_end_matches('0').trim_end_matches('.');
+            if trimmed.is_empty() || trimmed == "-" || trimmed == "-0" {
+                "0".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect()
 }
 
 fn contour_label_for_level(value: f32, units: Option<&str>) -> String {
@@ -3288,6 +3369,48 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["0", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6"]
         );
+    }
+
+    #[test]
+    fn a_section_bar_between_whole_numbers_reads_its_own_values() {
+        // Measured on a real theta section cut to 6 km: 305.25 to 320.88 K
+        // on a 2.5 K step, drawn as 305, 308, 310, 312, 315, 318, 320, 321.
+        let (lo, hi) = (305.25204f32, 320.88f32);
+        let ticks = nice_value_ticks(lo, hi, 7);
+        let labels = value_tick_labels(&ticks, Some(nice_value_tick_step(lo, hi, 7)));
+        assert_eq!(
+            labels,
+            ["305.3", "307.5", "310", "312.5", "315", "317.5", "320", "320.9"]
+        );
+        // A quarter step below 100 printed 1.25 as 1.2 and 1.75 as 1.8.
+        assert_eq!(
+            value_tick_labels(&[1.0, 1.25, 1.5, 1.75, 2.0], None),
+            ["1", "1.25", "1.5", "1.75", "2"]
+        );
+    }
+
+    #[test]
+    fn a_section_bar_on_whole_steps_is_spelled_as_before() {
+        for (lo, hi) in [
+            (305.25204f32, 316.4611f32),
+            (284.48618, 305.13718),
+            (0.0, 0.6),
+            (0.0, 0.0009),
+            (-30.0, 12.0),
+        ] {
+            let ticks = nice_value_ticks(lo, hi, 7);
+            let usual: Vec<String> = ticks.iter().map(|tick| format_scalar_value(*tick)).collect();
+            assert_eq!(
+                value_tick_labels(&ticks, Some(nice_value_tick_step(lo, hi, 7))),
+                usual,
+                "{lo}..{hi}"
+            );
+        }
+        for style in crate::style::ALL_CROSS_SECTION_PRODUCTS {
+            let ticks = style.default_value_ticks();
+            let usual: Vec<String> = ticks.iter().map(|tick| format_scalar_value(*tick)).collect();
+            assert_eq!(value_tick_labels(ticks, None), usual, "{style:?}");
+        }
     }
 
     #[test]

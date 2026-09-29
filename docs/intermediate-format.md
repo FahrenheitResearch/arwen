@@ -113,6 +113,16 @@ ignored, because a dropped key runs a default under the name of your value.
   must equal `units` exactly.
 - If `levels` is non-empty it must equal the file's coordinate values exactly.
   A mismatch is refused, not interpolated.
+- `era_ladders` (GRIB only, optional) lists the whole ladders other
+  publications of the same product carry, each drawn from `levels`:
+  `"era_ladders": [[5000, 10000, ..., 100000]]` beside a `levels` that also
+  has 1000 Pa.  A GRIB decode stacks the largest declared ladder every
+  vertical field's records carry in full, so a file from the other side of
+  a publisher's level change prepares on the levels it has; a level that no
+  declared ladder omits still refuses by name.  The receipt's
+  `source_vertical_ladder` entry names the absent levels and one warning
+  says so.  The NetCDF decoder does not read it, and a NetCDF mapping that
+  declares it is refused.
 - `hybrid_sigma_pressure` additionally requires `surface_pressure_field`,
   naming the declared field (in Pa, on `y`/`x`) that closes p = A + B·ps.
   The A/B coefficients arrive through one of two channels:
@@ -178,7 +188,7 @@ Keyed by **canonical name** (§3). Each entry:
 
 | Key | Meaning |
 |---|---|
-| `selectors` | Ordered list. NetCDF selectors take `name` and/or `standard_name`; at least one is required. `name` may be a single spelling or an **ordered list of accepted spellings of the same variable**. Each selector must resolve to **exactly one** variable — see §2.5.1. |
+| `selectors` | Ordered list. NetCDF selectors take `name` and/or `standard_name`; at least one is required. `name` may be a single spelling or an **ordered list of accepted spellings of the same variable**. Each selector must resolve to **exactly one** variable; see §2.5.1. On a GRIB pressure-level or single-plane field the order is a preference: a record answers the first selector it matches, so a later selector stands in only at a level no earlier one published. A GRIB selector may carry `scale`, the factor that takes its records to `units.source` (geopotential listed beside geopotential height, `"scale": 0.10197162129779283`). |
 | `selector_stack_axis` | NetCDF only. Stacks several single-layer variables into one axis (`"soil"` for `stl1..stl4`). |
 | `units.source` | Must equal the variable's `units` attribute **exactly**, as a string. No unit parsing, no equivalence: `"m s**-1"` does not match `"m s-1"`. |
 | `units.scale` / `units.offset` | Applied as `value * scale + offset` to reach `units.target`. |
@@ -188,6 +198,7 @@ Keyed by **canonical name** (§3). Each entry:
 | `staggering` | `none`, `x`, `y`, `z`. |
 | `missing` | `{"kind":"reject"}` refuses any gap; `{"kind":"value","value":0.0}` fills; `{"kind":"attribute","name":"_FillValue"}` reads the marker from a named attribute (NetCDF only). |
 | `derivation` | Names a `derivations` entry instead of `selectors`. |
+| `when_absent` | GRIB2 `terrain_height` only, beside its `selectors`: how terrain is derived when the composition's terrain files carry no terrain record at all. See §2.6. |
 
 `scale_factor` / `add_offset` **packing is honoured automatically** — the
 NetCDF library unpacks before ArWen sees the values, and `_FillValue` /
@@ -240,6 +251,39 @@ form throughout.
 The same principle governs georeferencing (§6): identity comes from the CF
 attributes the file declares, not from a name hardcoded here.
 
+#### 2.5.2 Records an earlier publication spells differently (`record_aliases`)
+
+A GRIB2 publisher can change how it encodes a record between releases of
+one product while the record itself stays the same.  A top-level
+`record_aliases` list names each earlier spelling and the spelling the
+selectors read:
+
+```jsonc
+"record_aliases": [
+  { "record":   { "discipline": 192, "category": 128, "parameter": 170,
+                  "level_type": 106, "level_value": 7 },
+    "reads_as": { "discipline": 2, "category": 3, "parameter": 18,
+                  "level_type": 151, "level_value": 1,
+                  "second_level_type": 151, "second_level_value": 2 } }
+]
+```
+
+`record` compares only the keys it declares (`discipline`, `category`,
+`parameter` required; `level_type`, `level_value`, `second_level_type`,
+`second_level_value`, `pdt` optional), so a key the publisher wrote as a
+missing value can be left out.  `reads_as` rewrites the keys it declares;
+without `second_level_type` and `second_level_value` the record reads as
+one with no second surface.  Every later check (the selectors, the soil
+layer contract, the duplicate refusals) then sees one spelling, and a
+file carrying both spellings of one record refuses as a duplicate.
+
+Refused at load: an alias on a GRIB1 or NetCDF mapping (nothing would read
+it), a `record` some selector already reads as spelled (the alias would
+change what a current file decodes to), two aliases that can name one
+record, and a `reads_as` that no field or more than one field reads.  The
+preparation receipt counts the records read this way per field under
+`source_composition.record_aliases`.
+
 ### 2.6 `derivations`
 
 Computed fields, declared not inferred:
@@ -256,8 +300,46 @@ Computed fields, declared not inferred:
 | `geopotential_height_hydrostatic` | `temperature`, `specific_humidity`, `surface_geopotential_height`, optional `gravity_m_s2` (hybrid verticals only; needs N+1 interface coefficients) |
 | `volumetric_soil_moisture_from_layer_mass` | `layer_mass`, `layer_bounds_m`, optional `water_density_kg_m3` |
 | `soil_surface_node_from_shallowest` | `source` |
+| `surface_pressure_from_sea_level` | `sea_level_pressure`, `level_height`, `pressure`, `surface_height` (WRF real's sfcprs3 relation, per valid time: a surface under 50 m takes sea-level pressure plus the lowest layer's gradient, a higher one is interpolated in log pressure between the levels whose heights bracket it) |
 
 Dependency cycles and missing dependencies are refused at load.
+
+On a `pressure` vertical, `geopotential_height` needs no derivation to be
+complete. Where the source publishes none, or leaves levels out, each missing
+value is integrated with the hypsometric equation from the frame's own
+temperature and specific humidity, anchored on the nearest level of the same
+column that carries the source's own height, or on its surface pressure and
+terrain height when no level does. Every value the source publishes is kept.
+The preparation receipt counts the derived values under
+`source_composition.completed_fields`, and preparation prints one warning.
+
+`fields.terrain_height.when_absent` declares how terrain is made when a
+composition's terrain files carry no terrain record at all (a publisher
+that did not include surface geopotential in some releases of a
+product).  One operation exists:
+
+```jsonc
+"when_absent": { "operation": "height_at_surface_pressure",
+                 "geopotential_height": "geopotential_height",
+                 "temperature": "air_temperature",
+                 "specific_humidity": "specific_humidity",
+                 "surface_pressure": "surface_pressure",
+                 "surface_temperature": "air_temperature_2m",
+                 "surface_dewpoint": "dewpoint_2m" }
+```
+
+Each column's terrain is the height of its surface pressure on its own
+pressure-level geopotential height: the hypsometric equation from the
+first level above the ground down to the surface pressure, with the mean
+virtual temperature of that layer.  The surface temperature and humidity
+are interpolated in log pressure between the two levels that bracket the
+surface; below the deepest level they come from the 2 m temperature and
+dewpoint, as WPS and real extrapolate.  It is derived once, from the
+primary's first valid time, and broadcast like a published analysis
+terrain.  Every named field must be decoded directly by the mapping, the
+vertical must be `pressure` in Pa or hPa, and a surface above the highest
+level refuses by count.  The receipt records the derivation under
+`source_composition.alignment.derived`, and preparation prints one warning.
 
 ### 2.7 `target`
 
@@ -268,6 +350,13 @@ Declares what the initialization needs: `max_dom`, `target_vertical_levels`,
 mapped field's `target_axes`, `location` and `units.target`, and the full
 canonical set of §3 must be present with exactly the axes, location and units
 given there.
+
+`boundary_interval_seconds` is the one spacing a forcing series must have.
+A target that also declares `"accept_boundary_interval_multiples": true`
+takes a uniform series at any whole multiple of it instead, for a product
+whose every valid time on that spacing is published: a 3-hourly series of
+an hourly publisher is then accepted, and a spacing that is not a whole
+multiple is still refused. The key needs `boundary_interval_seconds`.
 
 ---
 

@@ -14,6 +14,37 @@ from gpuwm.source_cycles import CycleGrid
 NOW = datetime(2026, 9, 6, 15, 25)
 
 
+@pytest.mark.parametrize("transport", [None, "aws", "ecmwf"])
+@pytest.mark.parametrize("cycle,reason", [
+    ("2024-01-15T00", "pressure"),
+    ("2024-02-15T00", "pressure"),
+    ("2024-03-01T00", "pressure"),
+    ("2024-03-10T00", "soil"),
+    ("2024-03-18T06", "soil"),
+    ("2024-03-18T12", None),
+    ("2024-03-20T00", None),
+])
+def test_publication_eras_own_calendar_and_fetch_refusals(transport, cycle, reason):
+    from gpuwm import fetch_routes
+    from gpuwm.source_availability import verdict
+
+    document = availability("ifs", 3, now=NOW, transport=transport)
+    assert document["earliest"] == "2024-03-18T12"
+    if reason is None:
+        assert validate_cycle(document, cycle)[0] == cycle
+        assert verdict(document, cycle, now=NOW)["state"] == "yes"
+        fetch_routes.resolve_request("ifs", cycle=parse_cycle(cycle), hours=3, host=transport)
+    else:
+        with pytest.raises(ValueError, match=reason) as fetch_error:
+            fetch_routes.resolve_request("ifs", cycle=parse_cycle(cycle), hours=3, host=transport)
+        with pytest.raises(ValueError) as calendar_error:
+            validate_cycle(document, cycle)
+        assert str(calendar_error.value) == str(fetch_error.value)
+        answer = verdict(document, cycle, now=NOW)
+        assert answer["state"] == "no"
+        assert answer["why"] == str(fetch_error.value)
+
+
 def test_current_transport_layout_bound_is_not_the_scientific_record_start():
     for source in ("gfs", "gfs-0p25", "gdas"):
         document = availability(source, 6, now=NOW)
@@ -87,7 +118,12 @@ def test_explicit_hourly_analysis_start_matches_the_actual_native_request():
         assert retrieved == times
 
 
-def test_undeclared_retention_never_becomes_an_unlimited_archive():
+def test_undeclared_retention_never_becomes_an_unlimited_archive(monkeypatch):
+    # A row whose archive start is not written down: the real row with its
+    # measured window removed, so the rule stays tested after every real
+    # row declares one.
+    undeclared = replace(source_adapters.get_source_adapter("aifs"), archive_windows=())
+    monkeypatch.setattr(source_adapters, "get_source_adapter", lambda _source: undeclared)
     document = availability("aifs", 6, now=NOW)
     assert document["earliest"] is None
     assert all(row["record_start"] is None for row in document["transports"])
@@ -190,3 +226,73 @@ def test_saved_fetch_span_and_lead_are_not_shortened_to_the_experiment_window(tm
     assert availability(source, hours, now=NOW)["cycle_hours"] == [0, 6, 12, 18]
     # Editing run duration does not silently reduce an existing fetch request.
     assert _context(None, 3, config, None)[1] == 30
+
+
+# A GFS cycle six hours old at 06:04Z: the schedule allows it, but its
+# objects are not on any host yet.
+LIVE = datetime(2026, 9, 26, 6, 4)
+
+
+def _nothing_from_06z(url):
+    return ".t06z." not in url
+
+
+def _stand_in(probe):
+    from gpuwm.source_availability import publication_refusal
+
+    return lambda document, cycle, now=None: publication_refusal(
+        document, cycle, now=now, probe=probe)
+
+
+def test_a_start_the_fetch_would_refuse_is_not_offered_as_available():
+    from gpuwm.fetch import require_published_cycle
+    from gpuwm.source_availability import verdict
+
+    document = availability("gfs", 6, now=LIVE)
+    # The publication schedule alone calls it available; that was the defect.
+    assert verdict(document, "2026-09-26T06", now=LIVE)["state"] == "yes"
+    answer = verdict(document, "2026-09-26T06", now=LIVE,
+                     confirm=_stand_in(_nothing_from_06z))
+    assert answer["state"] == "no"
+    # One source of truth: the sentence is the fetch's own refusal.
+    with pytest.raises(RuntimeError) as refused:
+        require_published_cycle("gfs", datetime(2026, 9, 26, 6), 6, now=LIVE,
+                                probe=_nothing_from_06z)
+    assert answer["why"] == str(refused.value)
+    assert "2026-09-26T00Z" in answer["why"]
+    assert verdict(document, "2026-09-26T00", now=LIVE,
+                   confirm=_stand_in(_nothing_from_06z))["state"] == "yes"
+
+
+def test_the_probe_asks_for_the_runs_last_hour():
+    from gpuwm.source_availability import verdict
+
+    asked = []
+
+    def probe(url):
+        asked.append(url)
+        return True
+
+    verdict(availability("gfs", 48, now=LIVE), "2026-09-26T00", now=LIVE,
+            confirm=_stand_in(probe))
+    assert asked and all(".f048" in url for url in asked)
+
+
+def test_an_old_start_is_judged_by_the_archive_bounds_without_a_probe():
+    from gpuwm.source_availability import verdict
+
+    def probe(url):
+        raise AssertionError(f"an old start must not be probed: {url}")
+
+    document = availability("gfs", 6, now=LIVE)
+    assert verdict(document, "2026-09-20T00", now=LIVE,
+                   confirm=_stand_in(probe))["state"] == "yes"
+
+
+def test_latest_is_the_newest_start_the_fetch_accepts():
+    from gpuwm.source_availability import confirmed_latest
+
+    document = availability("gfs", 6, now=LIVE)
+    assert document["latest_candidate"] == "2026-09-26T06"
+    assert confirmed_latest(document, now=LIVE, probe=_nothing_from_06z) == "2026-09-26T00"
+    assert confirmed_latest(document, now=LIVE, probe=lambda url: True) == "2026-09-26T06"

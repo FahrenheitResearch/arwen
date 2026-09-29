@@ -63,9 +63,12 @@ is left exactly where it is.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 from pathlib import Path
 import shutil
+import socket
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -389,25 +392,76 @@ def fetch_asset_from_url(root: Path, asset: TableAsset, url: str) -> Path:
     final = root / asset.filename
     with fetch_guard.hold("fetch-tables", root):
         temp = _staging_path(root, asset)
-        counter = ByteCounter(
-            f"gpuwm fetch-tables: {asset.filename}", asset.bytes)
-        try:
-            with urllib.request.urlopen(url) as response, \
-                    temp.open("wb") as sink:
-                while True:
-                    block = response.read(_TRANSFER_BLOCK_BYTES)
-                    if not block:
-                        break
-                    sink.write(block)
-                    counter.advance(len(block))
-        except (urllib.error.URLError, OSError) as error:
-            temp.unlink(missing_ok=True)
-            raise TableAssetError(
-                f"{asset.filename}: download failed from {url}: {error}")
-        finally:
-            counter.close()
+        attempts = max(1, int(TRANSFER_ATTEMPTS))
+        for attempt in range(1, attempts + 1):
+            try:
+                _transfer(url, temp, asset)
+                break
+            except _TransientTransfer as stall:
+                temp.unlink(missing_ok=True)
+                if attempt == attempts:
+                    raise TableAssetError(
+                        f"{asset.filename}: download from {url} stalled "
+                        f"{attempts} times ({stall}); check the network "
+                        "connection and run gpuwm fetch-tables again, or "
+                        "stage the file from a local copy with --from")
+                print(f"gpuwm fetch-tables: {asset.filename}: {stall}; "
+                      f"retrying ({attempt + 1} of {attempts})",
+                      file=sys.stderr)
+                time.sleep(RETRY_PAUSE_SECONDS * attempt)
+            except (urllib.error.URLError, OSError) as error:
+                temp.unlink(missing_ok=True)
+                raise TableAssetError(
+                    f"{asset.filename}: download failed from {url}: {error}")
         _stage(temp, final, asset)
     return final
+
+
+#: Seconds one socket operation (connecting, or waiting for the next
+#: block of the body) may take before the transfer counts as stalled.
+#: There was no deadline at all: a host that answered 200 and then sent
+#: nothing held `gpuwm setup` forever with no progress and no message.
+SOCKET_TIMEOUT_SECONDS = 60.0
+#: Whole-transfer attempts before a stall is a refusal.
+TRANSFER_ATTEMPTS = 3
+#: Pause before a retry, times the attempt number.
+RETRY_PAUSE_SECONDS = 2.0
+
+
+class _TransientTransfer(Exception):
+    """A stall or a server-side failure worth one more try."""
+
+
+def _transfer(url: str, temp: Path, asset: TableAsset) -> None:
+    counter = ByteCounter(
+        f"gpuwm fetch-tables: {asset.filename}", asset.bytes)
+    try:
+        with urllib.request.urlopen(
+                url, timeout=SOCKET_TIMEOUT_SECONDS) as response, (
+                    temp.open("wb")) as sink:
+            while True:
+                block = response.read(_TRANSFER_BLOCK_BYTES)
+                if not block:
+                    break
+                sink.write(block)
+                counter.advance(len(block))
+    except urllib.error.HTTPError as error:
+        if error.code >= 500:
+            raise _TransientTransfer(f"the server answered {error.code}") from None
+        raise
+    except (TimeoutError, socket.timeout):
+        raise _TransientTransfer(
+            f"no data for {SOCKET_TIMEOUT_SECONDS:g} s") from None
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, (TimeoutError, socket.timeout,
+                                     ConnectionError)):
+            raise _TransientTransfer(str(error.reason) or "connection timed out") from None
+        raise
+    except (ConnectionError, http.client.HTTPException) as error:
+        # a connection dropped mid-body, or a body shorter than announced
+        raise _TransientTransfer(str(error) or type(error).__name__) from None
+    finally:
+        counter.close()
 
 
 def fetch_asset_from_dir(root: Path, asset: TableAsset,
@@ -429,6 +483,14 @@ def fetch_asset_from_dir(root: Path, asset: TableAsset,
                 f"{asset.filename}: copy from {source} failed: {error}")
         _stage(temp, final, asset)
     return final
+
+
+def _packaged_copy_is_valid(packaged: Path, asset: TableAsset) -> bool:
+    try:
+        validate_table_assets(packaged, (asset,))
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def stage_classic_tables(args) -> int:
@@ -461,12 +523,46 @@ def stage_classic_tables(args) -> int:
         print(f"gpuwm fetch-tables: staging into {root} (outside the "
               "install, so a wheel upgrade cannot delete it)")
 
-    valid, invalid, absent = classify_assets(root)
-    for line in invalid:
+    from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+
+    # Every table already in the root is pin-checked, the mp=28
+    # activation table included: it used to be skipped whenever a file of
+    # its name existed, so an empty CCN_ACTIVATE.BIN passed setup and
+    # this command's "verified" summary and failed the first mp=28
+    # forecast at load.  In the root this command owns, a damaged copy of
+    # a table the package carries is replaced by the verified packaged
+    # bytes; anywhere else it is refused, because an operator's mirror is
+    # theirs to repair.
+    self_chosen = root != packaged and staging_is_self_chosen(root)
+    repaired: list[TableAsset] = []
+    refusals: list[str] = []
+    for asset in (*CLASSIC_TABLE_ASSETS, *AEROSOL_TABLE_ASSETS):
+        if not (root / asset.filename).is_file():
+            continue
+        try:
+            validate_table_assets(root, (asset,))
+            continue
+        except (ValueError, OSError) as error:
+            damage = str(error)
+        if self_chosen and _packaged_copy_is_valid(packaged, asset):
+            print(f"gpuwm fetch-tables: {asset.filename} in {root} is "
+                  f"damaged ({damage}); replacing it with the verified "
+                  "copy from the package")
+            try:
+                fetch_asset_from_dir(root, asset, packaged)
+            except TableAssetError as error:
+                refusals.append(str(error))
+                continue
+            repaired.append(asset)
+            continue
+        refusals.append(damage)
+    for line in refusals:
         print(f"gpuwm fetch-tables: REFUSED: {line} -- an existing file "
               "is never overwritten; delete it and re-run")
-    if invalid:
+    if refusals:
         return 2
+
+    valid, invalid, absent = classify_assets(root)
 
     # A staged root has to hold the WHOLE set: resolution asks whether a
     # root is complete, so downloading the two externalized assets into
@@ -500,8 +596,7 @@ def stage_classic_tables(args) -> int:
         # its first microphysics step with MissingAerosolTableAsset,
         # while the packaged copy sat in site-packages the whole time.
         # Copied under the identical pin verification; a copy already
-        # present is left alone.
-        from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+        # present was pin-checked (and repaired) above.
         for asset in AEROSOL_TABLE_ASSETS:
             if (root / asset.filename).is_file():
                 continue
@@ -529,6 +624,12 @@ def stage_classic_tables(args) -> int:
     fetchable = [asset for asset in absent
                  if asset.filename in EXTERNALIZED_TABLE_FILENAMES]
     if not fetchable and not copied:
+        if repaired:
+            validate_table_assets(root)
+            print(f"gpuwm fetch-tables: table root {root} repaired "
+                  f"({', '.join(a.filename for a in repaired)}) and "
+                  "byte-valid")
+            return 0
         print(f"gpuwm fetch-tables: all {len(valid)} table assets at "
               f"{root} verified (exact size + SHA-256); nothing to fetch")
         return 0

@@ -78,14 +78,17 @@ def test_the_summary_and_the_first_repair_come_from_the_registry_table(
     and the next scheme refused the same way never had one.  The rule
     carries its reason and its remedy now, so both are read off the table.
 
-    THE TABLE IS EMPTY TODAY.  The rule this began with, Milbrandt-Yau
-    against RTE+RRTMGP, retired with the defect it described: the adapter
-    carries the scheme's own cloud-optics row, every implemented scheme
-    radiates under both variants, and no option declares a ``refused_when``
-    rule.  So the door is measured both ways: against the tracked registry,
-    where no rule fires and the generic sentence stands, and against a rule
-    handed to it, where the summary and the first repair must be the rule's
-    own words and the rule's own edit.
+    NO RULE FIRES ON THIS DRAFT TODAY.  The rule this began with,
+    Milbrandt-Yau against RTE+RRTMGP, retired with the defect it
+    described: the adapter carries the scheme's own cloud-optics row and
+    every implemented scheme radiates under both variants.  The table is
+    not empty -- microphysics off is refused on an HRRR start, whose
+    analyzed condensate it cannot keep -- but that rule is scoped to its
+    source and this draft runs Milbrandt-Yau.  So the door is measured
+    both ways: against the tracked registry, where no rule fires and the
+    generic sentence stands, and against a rule handed to it, where the
+    summary and the first repair must be the rule's own words and the
+    rule's own edit.
     """
     from gpuwm import physics_compat
     from gpuwm.companion_physics import GENERIC_SUMMARY
@@ -93,9 +96,10 @@ def test_the_summary_and_the_first_repair_come_from_the_registry_table(
     from gpuwm.physics_registry import _conditional_refusals, physics_registry
 
     registry = physics_registry()
-    assert not [rule for component in registry["components"].values()
-                for option in component["options"].values()
-                for rule in _conditional_refusals(option.get("constraints", {}))]
+    rules = [rule for component in registry["components"].values()
+             for option in component["options"].values()
+             for rule in _conditional_refusals(option.get("constraints", {}))]
+    assert all(rule.get("sources") for rule in rules), rules
     assert conditional_refusals_for(dict(DRAFT)) == []
     source, _ = configured_case(tmp_path)
     result = repairs(draft(source))
@@ -422,9 +426,17 @@ def test_a_refusal_another_choice_would_clear_leaves_its_option_reachable(
 
 def test_a_door_no_installed_choice_escapes_closes_the_option(tmp_path,
                                                               monkeypatch):
-    """The wall, on a shipped setup, measured before it is claimed.
+    """The walls, on shipped setups, measured before they are claimed.
 
-    There were two.  The second was a SOURCE-ROUTE wall: aerosol-aware
+    There were two, and both are retired.  The first was the nested
+    km_opt=2 refusal: TKE 1.5-order on the shipped LES tree put a km_opt=2
+    child under a km_opt=2 parent, which raised NotImplementedError for
+    want of a run although the child cold-starts its own TKE either way,
+    as WRF's does.  That tree is admitted with a warning now, and so is
+    SASE on a nest, so both cells are open at every scope; the closing
+    rule itself is measured with a staged NotImplementedError in
+    test_a_door_one_other_choice_escapes_is_reported_but_closes_nothing.
+    The second was a SOURCE-ROUTE wall: aerosol-aware
     Thompson was closed whenever the configured source was the native
     HRRR route, on the premise that the route carried no aerosol lateral
     boundary condition.  It carries one -- the WIF climatology ingest
@@ -440,12 +452,13 @@ def test_a_door_no_installed_choice_escapes_closes_the_option(tmp_path,
     a greyed cell and the refusal a prepared run meets are one sentence.
     """
 
-    les = ask(shipped(tmp_path, "les_nest_250m_grayzone.toml"), 0)
-    turbulence = option_row(les, "turbulence", "tke-1.5-order")
-    assert turbulence["available"] is False
-    assert turbulence["reasons"][0]["kind"] == NOT_IMPLEMENTED
-    assert turbulence["reasons"][0]["closes"] is True
-    assert turbulence["reasons"][0]["at"] == AT_SAVE
+    les = shipped(tmp_path, "les_nest_250m_grayzone.toml")
+    for grid_id in (0, 1, 2, 3):
+        result = ask(les, grid_id)
+        for option_id in ("tke-1.5-order", "closure-supplied"):
+            row = option_row(result, "turbulence", option_id)
+            assert row["available"] is True, (grid_id, option_id,
+                                              row["reasons"])
     hrrr = shipped(tmp_path, "hrrr_native_3km_demo.toml")
     unstage_wif(monkeypatch, tmp_path)
     route = option_row(ask(hrrr, 0), "microphysics", "thompson-aerosol-mp28")

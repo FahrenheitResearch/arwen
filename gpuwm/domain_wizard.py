@@ -86,6 +86,7 @@ from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
                                   ENVELOPE_UNMODELLED_BYTES,
                                   EXTERNAL_MARGIN_BYTES, GIB,
                                   INGEST_PEAK_ENVELOPE_BASIS,
+                                  PROBE_REASON_NO_RUNTIME,
                                   ReservePolicy,
                                   card_local_memory_profile,
                                   device_memory_probe_reason,
@@ -94,6 +95,7 @@ from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
                                   estimate_phases,
                                   profile_from_device_probe,
                                   unknown_platform_note)
+from gpuwm.cli_numbers import positive_float, positive_int
 from gpuwm.experiment import ExperimentConfig, build_experiment
 from gpuwm.explain import explain_enabled, warn
 from gpuwm.fetch import parse_cycle
@@ -108,6 +110,8 @@ from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
                                   NSSL2_PROFILE_ID,
                                   RUC_PROFILE_ID,
                                   THOMPSON_LEGACY_RRTMG_PROFILE_ID,
+                                  THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+                                  THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
                                   THOMPSON_PROFILE_ID,
                                   THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
                                   WSM6_PROFILE_ID,
@@ -122,14 +126,16 @@ from gpuwm.physics_menu import (WIZARD_PHYSICS_PROFILES,
                                 profile_route_blocker)
 from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
 from gpuwm.source_adapters import (get_source_adapter, source_adapters,
-                                   source_coverage_window,
                                    source_forcing_interval_seconds,
                                    wizard_planable_source_ids)
-from gpuwm.source_coverage import points_outside, window_centre
+# config_source_coverage_refusal and its geometry live in source_coverage so
+# the RW-WPS wheel, which excludes this module, can review a config too.
+from gpuwm.source_coverage import (_root_coverage_gap, _root_grid,
+                                   config_source_coverage_refusal)
 from gpuwm.static.projection import (EARTH_RADIUS_M, POLE_CLEARANCE_CELLS,
                                      WRF_MAP_PROJ_CODES,
-                                     footprint_contains_pole, _wrap180,
-                                     projection_class)
+                                     footprint_contains_pole,
+                                     footprint_longitude_span, _wrap180)
 
 #: Card tiers -> total VRAM (GiB).  ``--vram-gib`` accepts anything else.
 CARD_VRAM_GIB = {"12gb": 12.0, "16gb": 16.0, "24gb": 24.0, "32gb": 32.0}
@@ -478,10 +484,11 @@ _FIT_POLE_CLEARANCE_CELLS = 4.0 * _POLE_CLEARANCE_CELLS
 #: 4,800 km tall Lambert domain reaches into the high Arctic.  So the
 #: oversized-footprint advisory still fires on a capped point fit, by
 #: design: the download IS large and the reader should hear it once.  It
-#: fires saying which bound chose the size and naming ``--polygon``,
-#: because on this bound the card is no longer the lever
-#: (:func:`point_request_bound`).  A fetch that spans the whole band
-#: keeps its own separate warning, which the cap did not silence.
+#: fires saying which bound chose the size and naming
+#: ``--point-extent-km`` and ``--polygon``, because on this bound the
+#: card is no longer the lever (:func:`point_request_bound`).  A fetch
+#: that spans the whole band keeps its own separate warning, which the
+#: cap did not silence.
 #:
 #: It caps every fit that starts from a point -- :func:`fit_ladder` is
 #: also the sizer behind ``gpuwm domain-fit --point``, the starter
@@ -490,17 +497,72 @@ _FIT_POLE_CLEARANCE_CELLS = 4.0 * _POLE_CLEARANCE_CELLS
 #: :func:`fit_polygon_ladder`, which never consults this number, so
 #: asking for more ground than the cap is done by drawing it, with
 #: ``gpuwm domain --polygon``.
+#:
+#: The number is the DEFAULT of ``--point-extent-km`` on ``gpuwm domain``
+#: and ``gpuwm domain-fit``, not a limit of the engine.  What the flag
+#: cannot move is what keeps a point fit a valid domain: the projection's
+#: polar envelope, one trip around the globe in longitude (a Mercator
+#: root has no pole to stop it, so without this a large enough extent
+#: wrapped the grid onto its own ground), the source's coverage and
+#: one-crop bound, and the card (or, streamed, the tiling fit).  Nor can
+#: it shrink a root below the smallest one its ladder hosts: an extent
+#: under that gets the smallest root, and the plan summary says so
+#: instead of reporting a cap that did not bind.
 POINT_FIT_MAX_EXTENT_KM = 6000.0
 
-#: Names for the two bounds a POINT request carries, as
-#: :func:`point_request_bound` returns them and
+
+def point_extent_argument(value: str) -> float:
+    """``--point-extent-km`` as a finite positive number of kilometres."""
+
+    import argparse as _argparse
+
+    try:
+        extent = float(value)
+    except ValueError:
+        raise _argparse.ArgumentTypeError(
+            f"--point-extent-km must be a number of kilometres, got "
+            f"{value!r}") from None
+    if not math.isfinite(extent) or extent <= 0.0:
+        raise _argparse.ArgumentTypeError(
+            f"--point-extent-km must be a finite positive number of "
+            f"kilometres, got {value!r}")
+    return extent
+
+
+def refuse_point_extent_on_polygon(point_extent_km, polygon) -> None:
+    """A non-default ``--point-extent-km`` beside ``--polygon`` refuses.
+
+    A drawn area is sized to the drawing and never reads the point
+    extent, so accepting the value there would drop it silently and run
+    a domain the reader did not ask for.
+    """
+
+    if polygon is not None and point_extent_km is not None \
+            and float(point_extent_km) != POINT_FIT_MAX_EXTENT_KM:
+        raise ValueError(
+            f"--point-extent-km {float(point_extent_km):g} sizes a --point "
+            "request; a --polygon is sized to the drawing and would drop "
+            "it.  Remove --point-extent-km, or draw the ground you want")
+
+
+#: Names for what decided a POINT request's size when the card did not,
+#: as :func:`point_request_bound` and :func:`fit_ladder` report them and
 #: :func:`point_fit_cap_note` speaks them.  They are constants because
 #: three call sites compare against them and a fourth prints them; a
 #: literal that drifted in one of the four would silently stop the fit
 #: and the plan summary agreeing.
+#:
+#: Three are bounds that shrink a fit: the requested extent, the
+#: projection pole, and one trip around the globe in longitude.  The
+#: fourth is the floor: a requested extent below the smallest root the
+#: ladder hosts gets that smallest root, which is not a cap binding and
+#: must not be reported as one.
 POINT_FIT_EXTENT_SCOPE = "REQUESTED EXTENT"
 POINT_FIT_PROJECTION_SCOPE = "PROJECTION"
-POINT_FIT_SCOPES = (POINT_FIT_EXTENT_SCOPE, POINT_FIT_PROJECTION_SCOPE)
+POINT_FIT_BAND_SCOPE = "LONGITUDE BAND"
+POINT_FIT_FLOOR_SCOPE = "SMALLEST LAYOUT"
+POINT_FIT_SCOPES = (POINT_FIT_EXTENT_SCOPE, POINT_FIT_PROJECTION_SCOPE,
+                    POINT_FIT_BAND_SCOPE, POINT_FIT_FLOOR_SCOPE)
 
 #: Degrees of latitude the SUGGESTED FORCING BOX keeps clear of a pole.
 #:
@@ -533,9 +595,9 @@ MAX_FETCH_ABS_LAT = max_fetch_abs_lat()
 #: into the grid's own envelope -- see ``fetch_area_hint``), so both
 #: keep the small margin.  GFS uses
 #: :func:`gpuwm.fetch.gfs_suggested_fetch_margin_deg`: the GFS front
-#: door's donor-coverage proof must find every model lake's nearest
-#: source-water donor INSIDE the crop, so the wizard's suggested area
-#: carries that documented margin instead of being rejected downstream.
+#: door takes every model lake's nearest source-water donor from the
+#: crop, so the wizard's suggested area carries that documented margin
+#: and each lake's donor is its nearest GFS water.
 _FETCH_MARGIN_DEG = 2.0
 
 
@@ -756,6 +818,27 @@ def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
     # these sources publish.
     return 1
 
+
+def fetch_window(source: str, hours: float, start_hour: int = 0,
+                 cadence: int | None = None) -> tuple[int | None, int]:
+    """(spacing, length) of the download a forecast of ``hours`` asks for.
+
+    What this door writes into ``[fetch]``: the source's own file spacing
+    (``cadence``, when the caller names none) and the length rounded up to
+    a whole number of those steps, so a 3-hour forecast from files that
+    come every 6 hours downloads hours 0 and 6.  The date guidance
+    (:mod:`gpuwm.source_availability`) asks its questions about this same
+    download; asking the fetch about the 3-hour window no run requests
+    raised inside a page request and failed the whole source list.  A
+    source whose fetch takes no spacing downloads the length as asked.
+    """
+
+    if cadence is None:
+        cadence = _fetch_cadence_h(source, start_hour)
+    if cadence is None:
+        return None, math.ceil(hours)
+    return cadence, max(cadence, math.ceil(hours / cadence) * cadence)
+
 #: Default output cadences, root and nest, in seconds.
 #:
 #: They were bare literals inside :func:`_domain_tables` with no knob,
@@ -846,17 +929,24 @@ def emitted_model_top_pa(source: str | None) -> float:
     """The model top (Pa) a config emitted for SOURCE carries.
 
     The default, unless the source's registry row declares a certified
-    inventory top the default sits above (``certified_source_top_pa``
-    -- e.g. the GFS 21-level ladder stops at 100 hPa).  Without the
-    bound, a bare ``gpuwm domain --source gfs`` emission would ask for
-    a model top its own certified inventory cannot cover and refuse at
-    preparation, after the user already paid for the acquisition.
+    inventory top the default sits above (``certified_source_top_pa``)
+    that its fetch cannot extend to the default
+    (``extendable_source_top_pa``).  Without the bound, a bare
+    ``gpuwm domain --source X`` emission would ask for a model top its
+    own source cannot cover and refuse at preparation, after the user
+    already paid for the acquisition.  A source whose fetch reaches the
+    default when asked (GFS: its certified ladder stops at 100 hPa, and
+    every door that downloads for a config asks for the config's own
+    top) gets the default like any other.
     """
 
     if source is None:
         return DEFAULT_MODEL_TOP_PA
-    ceiling = get_source_adapter(source).certified_source_top_pa
-    if ceiling is None:
+    adapter = get_source_adapter(source)
+    ceiling = adapter.certified_source_top_pa
+    reach = adapter.extendable_source_top_pa
+    if ceiling is None or (reach is not None
+                           and float(reach) <= DEFAULT_MODEL_TOP_PA):
         return DEFAULT_MODEL_TOP_PA
     return max(DEFAULT_MODEL_TOP_PA, float(ceiling))
 
@@ -1076,10 +1166,14 @@ def oversized_footprint_advisory(area: str, *,
     Measured on the shipped 2.7.2 door's own argument shape, that was
     every mid-latitude point request -- the advisory fired at 30, 41.5,
     48.5 and 60 N and named a flag that changed nothing.  When a request
-    bound is in force the sentence names ``--polygon`` instead, which is
-    how a point request asks for different ground and is the one lever
-    that still moves the answer.  It makes no claim about ``--vram-gib``
-    in that branch: a resident fit (``--tiles off``) on a small enough
+    bound is in force the sentence names ``--point-extent-km``, which is
+    the direct way to ask a point for less ground, and ``--polygon``,
+    which is how it asks for different ground; those are the levers
+    that still move the answer.  When the fit sat on the smallest root
+    its ladder hosts, neither of them can make it smaller, and the
+    sentence names ``--root-dx`` instead.  It makes no claim about
+    ``--vram-gib`` in that branch: a resident fit (``--tiles off``) on a
+    small enough
     card is still bounded by memory below the extent cap, and saying
     otherwise would install the mirror image of the defect being fixed.
 
@@ -1105,13 +1199,19 @@ def oversized_footprint_advisory(area: str, *,
     box = (f"this domain is much wider than the documented examples: the "
            f"fetch command below downloads a {lon_span:.0f} x "
            f"{lat_span:.0f} degree --area box")
+    if request_bound == POINT_FIT_FLOOR_SCOPE:
+        return [
+            f"{box}.  This is the smallest root the ladder hosts, so no "
+            f"card and no --point-extent-km makes it smaller -- a finer "
+            f"--root-dx KM does, for a smaller first run; narrowing "
+            f"--area on its own would starve the domain it feeds"]
     if request_bound is not None:
         return [
             f"{box}.  A point carries no extent, so the fit chose this "
             f"one and stopped on the {request_bound}, not on the card "
-            f"-- draw the ground you want with --polygon for a smaller "
-            f"first run; narrowing --area on its own would starve the "
-            f"domain it feeds"]
+            f"-- lower --point-extent-km, or draw the ground you want "
+            f"with --polygon, for a smaller first run; narrowing --area "
+            f"on its own would starve the domain it feeds"]
     return [
         f"{box}, so pass --vram-gib N (or a "
         f"finer --root-dx KM) for a smaller first run -- narrowing "
@@ -1298,6 +1398,10 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
         f"--valid-time {cycle_text}",
         *lead,
         *corridor,
+        # The config's acknowledgements: this stage imports the
+        # namelists, which cannot spell them.
+        *(f"--ack {acknowledgement}"
+          for acknowledgement in exp.acknowledgements),
     )
     # The tree runner binds its preparation receipt rather than a
     # namelist digest, so --wps-namelist is left off the forecast line:
@@ -1311,6 +1415,79 @@ def hrrr_route_commands(out: "Path", exp: ExperimentConfig, *,
             + "# the last command reads the hierarchy's own preparation "
             "receipt off the\n"
             "#   tree it is pointed at; no digest is copied by hand.")
+
+
+def local_staging_lines(source: str, *, cycle: str, hours, cadence,
+                        start_hour: int, area: str, out: str) -> list[str]:
+    """How to fill a hand-staged source's folder, read from its row.
+
+    Two kinds of line, both from the source's refusal row in the
+    acquisition-route table: the provider request for the bytes no fetch
+    door serves (dates, hours and area of THIS config filled in, one
+    request per date so no request asks for an hour outside the window),
+    and a ``gpuwm fetch`` line for each supplement a fetch door does
+    serve, written into the same folder.  Empty for a source whose row
+    declares no folder layout, and nothing here names a model.
+    """
+
+    from gpuwm import fetch_routes
+    from gpuwm.fetch import parse_area
+
+    layout = fetch_routes.source_root_layout(source)
+    if layout is None:
+        return []
+    lines: list[str] = []
+    request = layout["request"]
+    try:
+        first = datetime.strptime(str(cycle), "%Y-%m-%dT%H") + timedelta(
+            hours=int(start_hour or 0))
+        step = int(cadence) if cadence else int(
+            source_forcing_interval_seconds(source)) // 3600
+        box = parse_area(str(area)).as_cds()
+    except (TypeError, ValueError):
+        request = None
+    if request is not None:
+        days: dict[str, list[str]] = {}
+        for index in range(math.ceil(float(hours) / step) + 1):
+            when = first + timedelta(hours=index * step)
+            days.setdefault(f"{when:%Y-%m-%d}", []).append(f"{when:%H:%M:%S}")
+        lines.append(f"#   {request['dataset']} request"
+                     + (", one per date:" if len(days) > 1 else ":"))
+        lattice = request.get("lattice_deg")
+        if lattice:
+            # Inward onto the provider's lattice: the points the surface
+            # analysis fetched for this same --area delivers, so the two
+            # files share exactly one grid whichever way the provider
+            # anchors an interpolated request's area.
+            north, west, south, east = box
+            box = [math.floor(north / lattice + 1e-9) * lattice,
+                   math.ceil(west / lattice - 1e-9) * lattice,
+                   math.ceil(south / lattice - 1e-9) * lattice,
+                   math.floor(east / lattice + 1e-9) * lattice]
+        area_text = "/".join(f"{value + 0.0:g}" for value in box)
+        for day, times in days.items():
+            lines.append(f"#     {request['keywords']} date={day} "
+                         f"time={'/'.join(times)} area={area_text}")
+    for row in layout["supplements"]:
+        if row["fetch"] is None:
+            continue
+        donor = str(row["fetch"]["source"])
+        parts = [f"gpuwm fetch --source {donor}", f"--cycle {cycle}",
+                 f"--hours {hours}"]
+        if source_fetch_takes_a_crop_box(donor):
+            parts.append(f"--area={area}" if str(area).startswith("-")
+                         else f"--area {area}")
+        if cadence is not None and cadence != _SOURCE_CADENCE_H.get(donor):
+            parts.append(f"--cadence {cadence}")
+        if fetch_routes.supplement_fetch_retrieves(row["fetch"]):
+            parts.append("--retrieve")
+        if start_hour:
+            parts.append(f"--forecast-start-hour {start_hour}")
+        parts.append(f"--out {out}")
+        lines.append(f"#   and beside it the {row['role']} file "
+                     f"({row['match'][0]}), from this fetch:")
+        lines.append(" ".join(parts))
+    return lines
 
 
 def final_step_command(out: "Path", *, source: str, profile: str | None,
@@ -1381,7 +1558,9 @@ def profile_switches(profile: str | None) -> dict:
 
 
 def physics_summary(profile: str | None, *,
-                    cu_physics: int | None = None) -> str:
+                    cu_physics: int | None = None,
+                    switches: dict | None = None,
+                    label: str | None = None) -> str:
     """One line naming what the emitted suite actually runs.
 
     ``cu_physics`` overrides the suite's cumulus switch with the one the
@@ -1392,9 +1571,13 @@ def physics_summary(profile: str | None, *,
     :func:`_radiation_words` exists to remove -- worse here, because the
     line and the table it describes sit in the same file.  Callers
     describing a SUITE rather than an emission leave it None.
+
+    ``switches`` and ``label`` describe a switch table that is no suite:
+    a physics mix's root as the file runs it (:func:`with_physics_mix`).
     """
 
-    switches = profile_switches(profile)
+    if switches is None:
+        switches = profile_switches(profile)
     selected = (int(switches["cu_physics"]) if cu_physics is None
                 else int(cu_physics))
     cumulus = ({1: "Kain-Fritsch cumulus",
@@ -1402,9 +1585,10 @@ def physics_summary(profile: str | None, *,
                                                 "parameterized cumulus")
                if selected
                else "NO cumulus parameterization")
-    label = profile if profile is not None else (
-        "product default suite (supported, not yet WRF-verified; every "
-        "runner executes it as written)")
+    if label is None:
+        label = profile if profile is not None else (
+            "product default suite (supported, not yet WRF-verified; every "
+            "runner executes it as written)")
     return (f"{label}: mp_physics {switches['mp_physics']}, "
             f"{_radiation_words(switches)} (radt "
             f"{float(switches['radt']):g} min), {cumulus}, "
@@ -1432,12 +1616,39 @@ _SHARED_CERTIFIED = shared_physics(DEFAULT_PHYSICS_PROFILE)
 
 
 class DomainFitError(ValueError):
-    """The requested ladder cannot fit; only typed memory failures are retryable."""
+    """The requested ladder cannot fit; only typed memory failures are retryable.
 
-    def __init__(self, message, *, resource=None, phases=None):
+    ``budget_bytes`` is the budget a layout's ``phases`` were held to when
+    the refusal is that the layout does not fit the card.  With both,
+    :meth:`memory_record` gives the figures the sentence prints, so a
+    front end shows how much a too-big draft needs without reading them
+    back out of the words, which are worded differently for a source
+    whose preprocessing is priced and for one whose preprocessing is not.
+    """
+
+    def __init__(self, message, *, resource=None, phases=None,
+                 budget_bytes=None):
         super().__init__(message)
         self.resource = resource
         self.phases = phases
+        self.budget_bytes = budget_bytes
+
+    def memory_record(self) -> dict | None:
+        """The priced layout's peak envelope against its budget, in bytes.
+
+        The fields :func:`fit_memory` gives for a layout that fits, as far
+        as a refusal knows them.  ``None`` when this refusal is not the
+        card's, or its budget was not positive.
+        """
+
+        if self.phases is None or self.budget_bytes is None \
+                or self.budget_bytes <= 0:
+            return None
+        return {
+            "peak_envelope_bytes": int(self.phases.peak_envelope_bytes),
+            "budget_bytes": int(self.budget_bytes),
+            "binding_phase": self.phases.binding_phase,
+        }
 
 
 class DomainFitCancelled(RuntimeError):
@@ -2103,6 +2314,17 @@ def derived_time_step_s(ref_lat: float, root_dx_m: float, *,
                     else float(history_interval_s))
     child_history = (DEFAULT_NEST_HISTORY_INTERVAL_S if nest_history_interval_s is None
                      else float(nest_history_interval_s))
+    # Fraction() raises OverflowError on an infinity and ValueError on a
+    # NaN, neither naming the interval; the parser refuses both by option
+    # name, and a programmatic caller gets a named sentence here.  The
+    # nest interval is read only when there is a nest.
+    intervals = [("history interval", root_history)]
+    if ratios:
+        intervals.append(("nest history interval", child_history))
+    for name, value in intervals:
+        if not (math.isfinite(value) and value > 0):
+            raise ValueError(f"the {name} must be a finite number of seconds "
+                             f"above zero, not {value:g}")
     # Match the loader's exact event representations; no epsilon or rounding.
     periods = [Fraction(str(run_seconds)), Fraction(root_history)]
     ratio_product = 1
@@ -2160,6 +2382,102 @@ def _clock_keys(dt: Fraction) -> dict[str, int]:
         keys["time_step_fract_num"] = remainder.numerator
         keys["time_step_fract_den"] = remainder.denominator
     return keys
+
+
+#: ``gpuwm domain --clock``: how the emitted run steps.  ``adaptive``
+#: writes ``use_adaptive_time_step = true`` into ``[shared]`` and nothing
+#: else, so every domain keeps WRF's own bounds for its spacing;
+#: ``fixed`` writes nothing and the run keeps one step; ``auto`` (the
+#: door's default) is adaptive where :func:`clock_decision` finds the
+#: grid inside what the adaptive clock and the terrain clock both cover.
+CLOCK_CHOICES = ("auto", "adaptive", "fixed")
+DEFAULT_CLOCK = "auto"
+
+
+def _clock_band_misses(time_step: Fraction, root_dx_m: float,
+                       ratios: tuple[int, ...]) -> list[str]:
+    """Domains whose first step lies outside the adaptive clock's bounds.
+
+    Left at -1, a domain's bounds are WRF's fill-ins for its spacing,
+    ``NINT(3*dx km)`` and ``NINT(8*dx km)`` seconds
+    (:func:`gpuwm.core.adaptive_clock.wrf_default_clamps`), and its first
+    step is the configured one (the adaptive driver's named divergence
+    from WRF's ``4*dx``).  A floor above that step is applied every step
+    after the first (max first, min second, as WRF clamps), so the run
+    would never again take the step this door chose for the grid; a floor
+    of 0 s lets the step shrink below one tick of the clock lattice.
+    """
+
+    from gpuwm.core.adaptive_clock import wrf_default_clamps
+
+    misses = []
+    dt = Fraction(time_step)
+    dx = float(root_dx_m)
+    for index in range(len(ratios) + 1):
+        if index:
+            dt /= int(ratios[index - 1])
+            dx /= int(ratios[index - 1])
+        _, top, floor = wrf_default_clamps(dx, dx)
+        if floor <= 0 or not floor <= dt <= top:
+            misses.append(
+                f"d{index + 1:02d} at {dx:g} m starts at {float(dt):g} s, "
+                f"outside the {floor}..{top} s the adaptive clock allows "
+                "a grid of that spacing")
+    return misses
+
+
+def clock_decision(choice: str, *, time_step: Fraction, root_dx_m: float,
+                   ratios: tuple[int, ...]) -> tuple[bool, str]:
+    """``(adaptive, why)`` for a ``--clock`` choice on this grid.
+
+    ``auto`` is adaptive when two tables agree the grid is covered: every
+    domain's first step sits inside the adaptive clock's bounds for its
+    spacing (:func:`_clock_band_misses`), and every spacing lies within
+    the spacings the terrain clock's stability map measured
+    (:func:`gpuwm.terrain_clock.measured_map`), which is what caps the
+    adaptive step over steep ground at launch.  The tropical clock
+    (2.5 s per km) always starts below the 3 s per km floor, so ``auto``
+    keeps it fixed.  ``adaptive`` on a grid outside those bounds is
+    REFUSED, naming the domain: the controller would clamp the step
+    above the one the grid was given for the whole run.
+    """
+
+    if choice not in CLOCK_CHOICES:
+        raise ValueError(f"--clock must be one of {', '.join(CLOCK_CHOICES)}, "
+                         f"got {choice!r}")
+    if choice == "fixed":
+        return False, "--clock fixed"
+    misses = _clock_band_misses(time_step, root_dx_m, ratios)
+    if choice == "adaptive":
+        if misses:
+            raise ValueError(
+                "--clock adaptive cannot run this grid: "
+                + "; ".join(misses) + ".  The adaptive clock clamps every "
+                "step after the first to those bounds, so the run would "
+                "step outside the one this grid was given for its whole "
+                "length (the tropical clock's 2.5 s per km sits under the "
+                "3 s per km floor).  Use --clock fixed.")
+        return True, "--clock adaptive"
+    if misses:
+        return False, "auto kept the fixed step: " + "; ".join(misses)
+    from gpuwm.terrain_clock import measured_map
+
+    mapped = sorted({row.dx_m for row in measured_map().rows})
+    spacings = [float(root_dx_m)]
+    for ratio in ratios:
+        spacings.append(spacings[-1] / int(ratio))
+    outside = [f"{value:g} m" for value in spacings
+               if not mapped[0] * (1 - 1e-9) <= value <= mapped[-1] * (1 + 1e-9)]
+    if outside:
+        return False, (
+            "auto kept the fixed step: " + ", ".join(outside) + " lies "
+            f"outside the {mapped[0]:g}..{mapped[-1]:g} m spacings the "
+            "terrain clock's stability map measured, so nothing would cap "
+            "the adaptive step over steep ground there")
+    return True, (
+        "auto chose adaptive: every grid starts inside the adaptive "
+        "clock's bounds and within the terrain clock's measured spacings "
+        f"({mapped[0]:g}..{mapped[-1]:g} m)")
 
 
 def snap_cadences_to_clock(time_step: Fraction | int | float,
@@ -2302,11 +2620,8 @@ def _domain_tables(dims: list[tuple[int, int]],
     """
     root_physics = {key: profile_switches(profile)[key]
                     for key in _PER_DOMAIN_PHYSICS}
-    if (int(root_physics.get("cu_physics", 0))
-            and not cumulus_requested
-            and convection_permitting(float(root_dx_m) / 1000.0)):
-        root_physics["cu_physics"] = 0
-        root_physics["cudt_minutes"] = 0.0
+    root_physics = root_cumulus(root_physics, float(root_dx_m) / 1000.0,
+                                cumulus_requested=cumulus_requested)
     # The author reconciles its own two derivations (dt from --root-dx,
     # cadences from the profile) rather than emitting a file the loader
     # refuses: see snap_cadences_to_clock (UX finding N14).  It runs
@@ -2577,7 +2892,7 @@ def gray_zone_advisory(chain_km, shared: dict) -> list[str]:
     stderr at config load.  Recommending a configuration and separately
     warning about it is not a fix; the recipe now is one that holds.
 
-    SINCE THE AUTO-SWITCH (Drew, 2026-08-16) the recipe's key is also
+    SINCE THE AUTO-SWITCH (project ruling, 2026-08-16) the recipe's key is also
     the running default: a config that leaves ``mix_isotropic`` unset
     and violates the criterion runs isotropic anyway
     (``gpuwm.experiment.resolve_auto_mix_isotropic``, announced at load
@@ -2656,6 +2971,40 @@ def convection_permitting(dx_km: float) -> bool:
     """
 
     return float(dx_km) < CUMULUS_CONVECTION_PERMITTING_DX_KM
+
+
+def root_cumulus(switches, root_dx_km: float, *,
+                 cumulus_requested: bool) -> dict:
+    """``switches`` with the root's cumulus retired where the grid resolves it.
+
+    The switch half of the rule :func:`_domain_tables` emits and
+    :func:`cumulus_retired_note` reports: an active scheme on a root
+    below the convection-permitting bound goes to ``cu_physics = 0``
+    (``cudt_minutes = 0.0``) unless the user asked for cumulus.  Every
+    caller that describes what a root will run reads this function, so
+    a description cannot disagree with the emission.
+    """
+
+    switches = dict(switches)
+    if (int(switches.get("cu_physics", 0) or 0)
+            and not cumulus_requested
+            and convection_permitting(root_dx_km)):
+        switches["cu_physics"] = 0
+        switches["cudt_minutes"] = 0.0
+    return switches
+
+
+def cumulus_requested_by(args) -> bool:
+    """Whether this invocation asked for the root's cumulus.
+
+    ``--cumulus suite`` or ``--cumulus grid`` when given; otherwise
+    naming ``--physics-profile`` is the request.
+    """
+
+    stated = getattr(args, "cumulus", None)
+    if stated is not None:
+        return stated == "suite"
+    return getattr(args, "physics_profile", None) is not None
 
 
 def cumulus_retired_note(profile: str | None, root_dx_km: float, *,
@@ -2813,17 +3162,6 @@ def cumulus_by_domain(dims, ratios, *,
                 cumulus_requested=cumulus_requested)]
 
 
-def _root_grid(projection: dict, nx: int, ny: int,
-               root_dx_m: float = ROOT_DX_M):
-    cls = projection_class(projection["map_proj"])
-    return cls(
-        ref_lat=projection["ref_lat"], ref_lon=projection["ref_lon"],
-        truelat1=projection["truelat1"], truelat2=projection["truelat2"],
-        stand_lon=projection["stand_lon"],
-        dx=float(root_dx_m), dy=float(root_dx_m),
-        e_we=nx + 1, e_sn=ny + 1)
-
-
 def _footprint_contains_pole(projection: dict, nx: int, ny: int,
                              root_dx_m: float = ROOT_DX_M,
                              margin_cells: float = _POLE_CLEARANCE_CELLS
@@ -2858,7 +3196,8 @@ def _footprint_contains_pole(projection: dict, nx: int, ny: int,
 
 
 def point_request_bound(projection: dict, nx: int, ny: int,
-                        root_dx_m: float = ROOT_DX_M
+                        root_dx_m: float = ROOT_DX_M,
+                        max_extent_km: float = POINT_FIT_MAX_EXTENT_KM
                         ) -> tuple[str, str] | None:
     """Which bound says this layout is larger than a POINT may ask for,
     and why -- or ``None`` when neither does.
@@ -2877,10 +3216,24 @@ def point_request_bound(projection: dict, nx: int, ny: int,
       itself reaches the pole, and a point so close to one that even the
       minimum layout contains it.
 
-    * a maximum extent (:data:`POINT_FIT_MAX_EXTENT_KM`).  A point
-      carries no extent at all, so "as much ground as this card can
-      hold" is an answer to a question nobody asked; with streaming on
-      it is not even bounded by the card.
+    * a maximum extent, ``max_extent_km`` (``--point-extent-km``,
+      default :data:`POINT_FIT_MAX_EXTENT_KM`).  A point carries no
+      extent at all, so "as much ground as this card can hold" is an
+      answer to a question nobody asked; with streaming on it is not
+      even bounded by the card.
+
+    * one trip around the globe in longitude
+      (:func:`gpuwm.static.projection.footprint_longitude_span`).  The
+      pole bound never fires on Mercator, and on the Lambert cones this
+      wizard opens the band is crossed before the pole margin is reached.
+      While the extent was fixed at 6,000 km neither could happen; once
+      the extent became an argument, ``--point-extent-km 60000`` at the
+      equator sized a 5000 x 4000 Mercator root running 540 degrees of
+      longitude and the door printed PASS, and at 26 N a 2646 x 2116
+      Lambert root running 407.  A root past this bound holds
+      the same ground twice and integrates the two copies apart, so the
+      fit shrinks to stay inside it.  A drawn area never reaches it: a
+      polygon cannot describe more than one turn.
 
     Monotone in scale, which is what :func:`fit_ladder`'s bisection
     requires: growing a centered root moves its poleward edge further
@@ -2900,12 +3253,13 @@ def point_request_bound(projection: dict, nx: int, ny: int,
 
     dx_km = float(root_dx_m) / 1000.0
     extent_km = max(nx, ny) * dx_km
-    if extent_km > POINT_FIT_MAX_EXTENT_KM:
+    if extent_km > float(max_extent_km):
         return (POINT_FIT_EXTENT_SCOPE,
                 f"a {nx} x {ny} root at {dx_km:g} km spans "
                 f"{extent_km:.0f} km, past the "
-                f"{POINT_FIT_MAX_EXTENT_KM:.0f} km a point request "
-                "is sized to (draw the area to ask for more ground)")
+                f"{float(max_extent_km):.0f} km a point request "
+                "is sized to (raise --point-extent-km, or draw the area "
+                "to ask for more ground)")
     if _footprint_contains_pole(projection, nx, ny, root_dx_m,
                                 _FIT_POLE_CLEARANCE_CELLS):
         pole = "north" if projection["truelat1"] >= 0.0 else "south"
@@ -2913,11 +3267,25 @@ def point_request_bound(projection: dict, nx: int, ny: int,
                 f"a {nx} x {ny} root at {dx_km:g} km reaches the "
                 f"{pole} pole, where lat-lon source interpolation "
                 "and static-tile windowing are not pole-capable")
+    # Asked after the pole: a footprint around the pole also winds a
+    # full turn, and the pole is the accurate name for that one.
+    span_deg = footprint_longitude_span(projection, nx, ny, root_dx_m)
+    if span_deg >= 360.0:
+        return (POINT_FIT_BAND_SCOPE,
+                f"a {nx} x {ny} root at {dx_km:g} km runs "
+                f"{span_deg:.0f} degrees of longitude, more than once "
+                "around the globe, so its grid would hold the same "
+                "ground twice and integrate the two copies apart")
     return None
 
 
-def point_fit_cap_note(scope: str, dims, root_dx_m: float = ROOT_DX_M) -> str:
+def point_fit_cap_note(scope: str, dims, root_dx_m: float = ROOT_DX_M,
+                       point_extent_km: float | None = None) -> str:
     """One plain sentence of plan-summary fact for a capped point fit.
+
+    ``point_extent_km`` is the extent the request asked for; the floor
+    sentence quotes it, because there the root is LARGER than that and
+    the reader has to see both numbers to see why.
 
     Not a warning, and deliberately not on stderr.  The cap is the
     DEFAULT sizing of a request that carries no extent, so it fires on
@@ -2943,14 +3311,39 @@ def point_fit_cap_note(scope: str, dims, root_dx_m: float = ROOT_DX_M) -> str:
     extent_km = max(nx, ny) * dx_km
     if scope == POINT_FIT_EXTENT_SCOPE:
         return (f"point request: extent capped at {extent_km:.0f} km "
-                f"({nx}x{ny} at {dx_km:g} km), memory allows more; draw "
-                f"the ground you want with --polygon for a larger domain")
+                f"({nx}x{ny} at {dx_km:g} km), memory allows more; raise "
+                f"--point-extent-km or draw the ground you want with "
+                f"--polygon for a larger domain")
     if scope == POINT_FIT_PROJECTION_SCOPE:
         return (f"point request: extent capped at {extent_km:.0f} km "
                 f"({nx}x{ny} at {dx_km:g} km) to stay clear of the "
                 f"projection pole, memory allows more; move --point "
                 f"equatorward for a larger domain")
+    if scope == POINT_FIT_BAND_SCOPE:
+        return (f"point request: extent capped at {extent_km:.0f} km "
+                f"({nx}x{ny} at {dx_km:g} km) so the root runs less than "
+                f"once around the globe, memory allows more; this is the "
+                f"widest root a point can take")
+    if scope == POINT_FIT_FLOOR_SCOPE:
+        asked = ("the requested extent" if point_extent_km is None
+                 else f"--point-extent-km {float(point_extent_km):g}")
+        return (f"point request: root extent {extent_km:.0f} km "
+                f"({nx}x{ny} at {dx_km:g} km) is the smallest root this "
+                f"ladder hosts, larger than {asked}; a finer root "
+                f"spacing gives a smaller root")
     raise ValueError(f"not a point-request bound: {scope!r}")
+
+
+def point_extent_note(dims, root_dx_m: float = ROOT_DX_M,
+                      point_extent_km: float = POINT_FIT_MAX_EXTENT_KM) -> str:
+    """The plan-summary fact for a point fit that no request bound stopped:
+    the extent it used and the ``--point-extent-km`` it stayed inside."""
+
+    nx, ny = dims[0]
+    dx_km = float(root_dx_m) / 1000.0
+    return (f"point request: extent {max(nx, ny) * dx_km:.0f} km "
+            f"({nx}x{ny} at {dx_km:g} km), inside --point-extent-km "
+            f"{float(point_extent_km):.0f}")
 
 
 def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
@@ -3221,26 +3614,13 @@ def source_coverage_refusal(projection: dict, nx: int, ny: int, *,
     everything, and there is no bound to state.
     """
 
-    window = source_coverage_window(source)
-    if window is None:
+    gap = _root_coverage_gap(projection, nx, ny, source=source,
+                             root_dx_m=root_dx_m)
+    if gap is None:
         return None
-    latitude, longitude = _root_grid(
-        projection, nx, ny, root_dx_m).latlon_c()
-    outside = points_outside(window, latitude, longitude)
-    if not bool(outside.any()):
-        return None
-    index = int(np.argmax(outside))
-    bad_lat = float(np.asarray(latitude).reshape(-1)[index])
-    bad_lon = float(np.asarray(longitude).reshape(-1)[index])
-    centre_lat, centre_lon = window_centre(window)
     return (
-        f"the {nx}x{ny} root's point at lat/lon ({bad_lat:.4f}, "
-        f"{_wrap180(bad_lon):.4f}) {window.locate(bad_lat, bad_lon)}; "
-        f"{int(outside.sum())} of {outside.size} root mass points are "
-        f"outside it.  {source}'s grid is centred at "
-        f"({centre_lat:.2f}, {centre_lon:.2f}) -- move {target_option} "
-        f"inside that grid, shrink the ladder, or choose a source whose "
-        f"coverage includes this domain")
+        f"{gap} -- move {target_option} inside that grid, shrink the "
+        f"ladder, or choose a source whose coverage includes this domain")
 
 
 def _posix(path) -> str:
@@ -3309,8 +3689,20 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   level_buffers_km: tuple[float, ...] | None = None,
                   history_interval_s: float | None = None,
                   nest_history_interval_s: float | None = None,
-                  acknowledgements: tuple[str, ...] = ()) -> str:
+                  acknowledgements: tuple[str, ...] = (),
+                  physics_mix: dict | None = None,
+                  clock: str = "fixed") -> str:
     """The emitted TOML text (the exact bytes the wizard validates).
+
+    ``clock`` is ``gpuwm domain --clock`` (:func:`clock_decision`).  An
+    adaptive emission writes ``use_adaptive_time_step = true`` into
+    ``[shared]`` and states the clock in the header; a fixed one writes
+    the same bytes it always did.  The library default is ``fixed`` so a
+    caller that does not ask keeps its file.
+
+    ``physics_mix`` is a ``gpuwm physics-catalog --check`` request whose
+    ``choices`` replace the suite's own schemes (``--physics-choices``):
+    see :func:`with_physics_mix`.
 
     ``acknowledgements`` is written into ``[experiment]`` verbatim and is
     the ONLY source of that field.  Until 2026-08-09 this function wrote
@@ -3531,6 +3923,15 @@ def render_config(*, name: str, start_time: datetime, hours: int,
         if retired else
         "Taken verbatim from gpuwm.physics_compat, so this file passes "
         "the prepared-")
+    mix_line = ""
+    if physics_mix:
+        # The file runs the picked schemes, so it says so, and it does not
+        # claim to be the suite verbatim.
+        mix_line = (f"# PHYSICS MIX: {physics_mix_words(physics_mix.get('choices') or {})} "
+                    "replace the suite's own schemes.\n")
+        verbatim_claim = (
+            "The switches below are that mix, not the suite verbatim, and "
+            "no suite is asserted, so this file passes the prepared-")
     if level_buffers_km is None:
         # This is the original point header byte-for-byte.  Polygon support
         # must not perturb existing point-authored artifacts.
@@ -3541,6 +3942,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             f"{projection['ref_lat']:g},{projection['ref_lon']:g}, ladder "
             f"{'-'.join(f'{v:g}' for v in chain_km)} km.\n"
             f"# PHYSICS: {physics_summary(profile, cu_physics=root_cu)}.\n"
+            + mix_line +
             f"# {verbatim_claim}\n"
             "# forecast runner's profile guard as emitted.  Child dx/dt "
             "derive exactly from\n"
@@ -3555,6 +3957,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             f"# Polygon buffers by domain level (outer to inner): "
             f"{buffers} km.\n"
             f"# PHYSICS: {physics_summary(profile, cu_physics=root_cu)}.\n"
+            + mix_line +
             f"# {verbatim_claim}\n"
             "# forecast runner's profile guard as emitted.  Child dx/dt "
             "derive exactly from\n"
@@ -3591,6 +3994,25 @@ def render_config(*, name: str, start_time: datetime, hours: int,
         header += f"# {line}\n"
     for line in cumulus_gray_zone_advisory(chain_km, cu_by_domain):
         header += f"# {line}\n"
+    adaptive, _ = clock_decision(clock, time_step=time_step,
+                                 root_dx_m=root_dx_m, ratios=ratios)
+    if adaptive:
+        # The one key.  The bounds stay WRF's per-spacing fill-ins (-1),
+        # because a clamp written once into [shared] reaches every nest
+        # in seconds (docs/ADAPTIVE-TIMESTEP.md, "A shared clamp is a
+        # per-domain trap"), and the first step stays the time_step
+        # below.  The terrain clock and the steep-ground substep rule run
+        # at launch and write their own ceiling and substep floor onto
+        # the domains that need them.
+        shared["use_adaptive_time_step"] = True
+        header += (
+            "# CLOCK: adaptive.  Each grid starts at the time_step below "
+            "and then follows\n"
+            "# its own Courant number between 3 and 8 s per km of its "
+            "spacing; over steep\n"
+            "# ground the terrain clock caps it at launch.  Re-emit with "
+            "`--clock fixed`\n"
+            "# for one step throughout.\n")
     parts = [
         header,
         _render_table("experiment", experiment),
@@ -3630,18 +4052,145 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             comment="Declared inputs for the config-driven "
                     "check/static/ingest/run front door (ERA5 native-GRIB1 "
                     "route; era5_z_invariant source orography)."))
-    return "\n".join(parts)
+    return with_physics_mix("\n".join(parts), physics_mix)
+
+
+def physics_mix_words(choices) -> str:
+    """The picked schemes in a line: ``microphysics thompson-mp8, pbl myj``."""
+
+    words = []
+    for family, choice in sorted(dict(choices).items()):
+        if isinstance(choice, dict):
+            choice = ", ".join(f"{key} {value}" for key, value in sorted(choice.items()))
+        words.append(f"{str(family).replace('_', ' ')} {choice}")
+    return ", ".join(words)
+
+
+def physics_mix_request(text: str | None, *, source: str,
+                        profile: str | None) -> dict | None:
+    """``--physics-choices`` as the check request the mix is written with.
+
+    ``text`` is the JSON object the flag carries (family to scheme, or
+    for radiation a ``{"longwave": n, "shortwave": n}`` pair).  The
+    suite it changes is the named one, else the source's default, which
+    is what the check takes when it names no suite.
+    """
+
+    if text is None:
+        return None
+    try:
+        choices = json.loads(text)
+    except ValueError as error:
+        raise ValueError(f"--physics-choices must be a JSON object of family to scheme: {error}") from None
+    if not isinstance(choices, dict) or not choices or not all(
+            isinstance(key, str) and isinstance(value, (str, dict)) for key, value in choices.items()):
+        raise ValueError("--physics-choices must be a JSON object of family to scheme, for example "
+                         '{"microphysics": "thompson-mp8"}')
+    mix = {"choices": choices, "source": source}
+    if profile is not None:
+        mix["suite"] = profile
+    return mix
+
+
+def with_physics_mix(text: str, physics_mix: dict | None) -> str:
+    """``text`` running the mix's schemes in place of its suite's own.
+
+    The write is the one ``gpuwm physics-catalog --check JSON --into
+    EXPERIMENT.toml`` makes (:func:`gpuwm.physics_catalog.apply_to_experiment`):
+    the engine's check answers at this file's own root spacing first, and
+    a refused mix is refused in its words.  Every size the fit tries is
+    rendered through here, so the card is priced for the schemes that
+    run, not the suite they replace; each is loaded by the caller, as
+    every rendering is (:func:`experiment_from_text`).  ``None`` leaves
+    the text as is.
+    """
+
+    if not physics_mix:
+        return text
+    from gpuwm.physics_catalog import CatalogError, apply_to_experiment
+
+    try:
+        mixed = apply_to_experiment(text, physics_mix, load=False)
+    except CatalogError as error:
+        raise ValueError(f"--physics-choices: {error}") from None
+    # The header's PHYSICS line was written for the suite the mix
+    # replaced; it names what the root now runs instead, since the line
+    # and the switches it describes sit in the same file.
+    return re.sub(r"^# PHYSICS: .*$", lambda _: f"# PHYSICS: {mix_physics_summary(mixed, physics_mix)}.",
+                  mixed, count=1, flags=re.M)
+
+
+def mix_physics_summary(text: str, physics_mix: dict) -> str:
+    """:func:`physics_summary` of a mixed file's root, as the file runs it."""
+
+    from gpuwm.physics_catalog import default_suite
+
+    document = tomllib.loads(text)
+    root = {**(document.get("shared") or {}), **((document.get("domain") or [{}])[0])}
+    base = physics_mix.get("suite") or default_suite(physics_mix.get("source"))
+    return physics_summary(None, switches=root, label=f"schemes picked over {base}")
+
+
+#: What each ``isftcflx`` value does, in the words the emitted file carries.
+#: The kernel implements all three (gpuwm/core/kernels/sfclay.cu); only the
+#: MM5 surface layer reads it, and the loader refuses it on any other.
+ISFTCFLX_WORDS = {
+    0: "standard MM5 roughness over water",
+    1: "Donelan drag, which levels off in strong wind, with a constant "
+       "heat and moisture roughness (WRF's tropical cyclone option)",
+    2: "Donelan drag with Garratt heat and moisture roughness",
+}
+
+
+def with_surface_flux_option(text: str, isftcflx: int | None) -> str:
+    """``text`` with ``isftcflx`` set tree-wide in ``[shared]``.
+
+    The one physics switch a caller may set beside a named suite: it does
+    not select the suite (it is not a profile selector key) and it moves
+    no memory, so the fit is unchanged.  ``None`` leaves the text as is.
+    """
+    if isftcflx is None:
+        return text
+    value = int(isftcflx)
+    if value not in ISFTCFLX_WORDS:
+        raise ValueError(f"--isftcflx must be 0, 1 or 2, got {isftcflx!r}")
+    lines = text.splitlines(keepends=True)
+    try:
+        start = next(i for i, line in enumerate(lines)
+                     if line.strip() in ("[shared]", '["shared"]'))
+    except StopIteration:
+        raise ValueError("the emitted config has no [shared] table to "
+                         "carry --isftcflx") from None
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].lstrip().startswith("[")), len(lines))
+    lines = lines[:start + 1] + [line for line in lines[start + 1:end]
+                                 if not line.lstrip().startswith("isftcflx")] + lines[end:]
+    note = f"# Surface flux over water: isftcflx = {value}, {ISFTCFLX_WORDS[value]}.\n"
+    lines[start + 1:start + 1] = [note, f"isftcflx = {value}\n"]
+    return "".join(lines)
 
 
 def experiment_from_text(text: str, *, source: str) -> ExperimentConfig:
-    """Round-trip emitted TEXT through the real loaders (advisory [fetch]
-    and [case_data] are split off exactly as the CLI loaders do)."""
+    """Round-trip emitted TEXT through the real loaders (advisory [fetch],
+    [case_data] and [static] are split off exactly as the CLI loaders do).
+
+    [static] is validated here and consumed where the statics are built:
+    each preparation route reads it back from the config file
+    (:func:`gpuwm.static.highres_production.load_static_highres`).  Left
+    in, it stopped ``gpuwm go`` on any config that turned the
+    high-resolution overlay on, before a byte was fetched.
+    """
     raw = tomllib.loads(text)
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
         validate_fetch_hints(fetch_table, source=source)
     raw.pop("case_data", None)
+    static_table = raw.pop("static", None)
+    if static_table is not None:
+        from gpuwm.static.highres_production import parse_static_table
+        parse_static_table(static_table, source=source,
+                           base_dir=Path(source).parent)
     return build_experiment(raw, source=source)
 
 
@@ -3683,9 +4232,40 @@ def sizing_budget_bytes(exp: ExperimentConfig, *, free_bytes: int,
     return int(free_bytes) - EXTERNAL_MARGIN_BYTES
 
 
+@dataclass(frozen=True)
+class LighterProfiles:
+    """What a memory refusal may say about the physics suite.
+
+    ``fitting`` is the advice: suites that price below the refused one
+    AND fit the refused budget, in the order a reader should try them.
+    ``lightest`` is the cheapest admissible suite that prices below the
+    refused one, as ``(name, bytes)``, whether or not it fits; it lets a
+    refusal with nothing to advise say how close the lightest came.
+    ``compared`` says the shipped suites were priced against the refused
+    one at all; when they were and none is lighter, the refusal says
+    that too, rather than falling silent on the suite.
+    """
+
+    fitting: tuple[str, ...] = ()
+    lightest: tuple[str, int] | None = None
+    compared: bool = False
+
+
 def _lighter_profiles_than(profile: str | None, source: str,
-                           price_bytes) -> list[str]:
-    """Shipped suites this source can run that PRICE less than ``profile``.
+                           price_bytes, *,
+                           budget_bytes: int) -> LighterProfiles:
+    """Shipped suites this source can run that PRICE less than ``profile``
+    and fit ``budget_bytes``.
+
+    A suite that is cheaper but still over the budget is not advice.
+    Naming one sends the reader straight back into the refusal that
+    named it: a small declared card refused a source's default suite at
+    4.28 GiB against a 3.75 GiB budget, advised first a suite that
+    prices 4.00 GiB at the same layout, and refused that one too.
+    ``budget_bytes`` is the budget the refusal compared against, and a
+    candidate is kept only when its envelope at the refused layout is
+    within it.  That is the comparison that refused, so a suite named
+    here is admitted at that layout.
 
     Ranked by the estimator's own peak envelope at the refused layout --
     ``price_bytes(profile_name) -> int | None`` -- never by a species
@@ -3715,10 +4295,10 @@ def _lighter_profiles_than(profile: str | None, source: str,
     """
 
     if profile is None:
-        return []
+        return LighterProfiles()
     cost = price_bytes(profile)
     if cost is None:
-        return []
+        return LighterProfiles()
     lighter = []
     for candidate in WIZARD_PHYSICS_PROFILES:
         if candidate == profile:
@@ -3733,7 +4313,85 @@ def _lighter_profiles_than(profile: str | None, source: str,
         if candidate_cost is None or candidate_cost >= cost:
             continue
         lighter.append((candidate_cost, candidate))
-    return [name for _cost, name in sorted(lighter, reverse=True)][:3]
+    if not lighter:
+        return LighterProfiles(compared=True)
+    lightest_cost, lightest_name = min(lighter)
+    fitting = [(candidate_cost, candidate)
+               for candidate_cost, candidate in lighter
+               if candidate_cost <= budget_bytes]
+    return LighterProfiles(
+        fitting=tuple(name for _cost, name in sorted(fitting, reverse=True))[:3],
+        lightest=(lightest_name, lightest_cost), compared=True)
+
+
+def _minimum_layout_memory_remedy(*, lighter: LighterProfiles,
+                                  envelope_bytes: int, free_bytes: int,
+                                  budget_bytes: int, source: str,
+                                  shallower: str | None) -> str:
+    """The ways out of a memory refusal at a ladder's minimum layout.
+
+    Only levers that move this refusal are named.  A lighter suite is
+    named only when it fits (:func:`_lighter_profiles_than`); when a
+    lighter suite exists and none fits, the sentence says so and how far
+    the lightest is over, rather than leaving a reader to find out by
+    being refused again.  A shallower ladder is named only when one was
+    priced and fits: ``shallower`` is the flags that request it
+    (:func:`_ladder_request_flags`), for the deepest ladder that drops
+    nests from this one and fits the same budget at its own minimum
+    layout.  A single-domain ladder has no nest to drop, and on a nested
+    ladder whose root alone is over the budget, dropping nests is
+    refused again the same way.  The card is always a way out, and it
+    is named with the free memory this suite needs at this layout: the
+    budget is free memory less the external margin, so that is the
+    envelope plus the margin, measured against what this card presents.
+    """
+
+    need_free = envelope_bytes + EXTERNAL_MARGIN_BYTES
+    levers = []
+    if shallower is not None:
+        levers.append(f"a shallower ladder ({shallower} fits at its "
+                      f"minimum layout)")
+    if lighter.fitting:
+        levers.append(f"a lighter --physics-profile "
+                      f"({', '.join(lighter.fitting)})")
+    levers.append(f"a larger card (this suite needs about "
+                  f"{need_free / GIB:.2f} GiB free at this layout, and this "
+                  f"card presents about {free_bytes / GIB:.2f} GiB)")
+    if len(levers) == 1:
+        remedy = f"choose {levers[0]}"
+    else:
+        remedy = f"choose {', '.join(levers[:-1])}, or {levers[-1]}"
+    if not lighter.fitting and lighter.lightest is not None:
+        name, cost = lighter.lightest
+        over = cost - budget_bytes
+        remedy = (f"no lighter shipped --physics-profile fits this budget "
+                  f"either: the lightest {source} can run, {name}, needs "
+                  f"{cost / GIB:.2f} GiB here, {over / GIB:.2f} GiB over; "
+                  + remedy)
+    elif not lighter.fitting and lighter.compared:
+        remedy = (f"no lighter shipped --physics-profile fits this budget "
+                  f"either: none that {source} can run prices below this "
+                  f"one here; " + remedy)
+    return remedy
+
+
+def _ladder_request_flags(ratios: tuple[int, ...], root_dx_m: float) -> str:
+    """The ``gpuwm domain`` flags that request this ladder.
+
+    A preset is named by ``--ladder``; any other root spacing or chain by
+    ``--root-dx`` and, when it has nests, ``--chain``.  A refusal that
+    names a ladder as its way out names it in the form the reader types.
+    """
+
+    ratios = tuple(int(ratio) for ratio in ratios)
+    if float(root_dx_m) == ROOT_DX_M:
+        for preset, preset_ratios in LADDER_RATIOS.items():
+            if tuple(preset_ratios) == ratios:
+                return f"--ladder {preset}"
+    flags = f"--root-dx {float(root_dx_m) / 1000.0:g}"
+    if ratios:
+        flags += " --chain " + ",".join(str(ratio) for ratio in ratios)
+    return flags
 
 
 def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
@@ -3817,7 +4475,55 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
     elif decision.stream and phases.streamed is None:
         raise DomainFitError(
             f"--tiles {options.mode}: the shared planner could not price this domain")
+    # THE STREAMED FORECAST'S HOST RAM, on the admission ``gpuwm go``
+    # refuses with.  The planner above weighs the pinned store and arena
+    # alone; the run also holds the lateral-boundary series beside them, so
+    # a layout whose store just fit was emitted here and refused by go
+    # before the download.  Typed as a host failure, so the fit shrinks
+    # the layout rather than stopping.
+    refusal = phases.streamed_host_refusal()
+    if refusal is not None:
+        raise DomainFitError(f"--tiles {options.mode}: {refusal}",
+                             resource="host", phases=phases)
+    # THE INGEST TERM ON THE CPU ROAD.  A [tiles] declaration prepares a
+    # CPU-prepared source on the host, so ``ingest_envelope_bytes`` is zero
+    # and the device comparison above never sees the preparation at all.
+    # Its working set is host RAM instead, and it is weighed here against
+    # the same machine the planner was handed.  Unweighed, a card larger
+    # than the host's RAM sizes a domain whose preparation cannot be held,
+    # and the preparation dies after the download.  The wall is the
+    # preparation's floor (what it certainly holds at once); the search
+    # below steers on its estimated peak.  Typed as a host failure, so the
+    # fit shrinks the layout rather than stopping.
+    refusal = phases.host_preparation_refusal()
+    if refusal is not None:
+        raise DomainFitError(f"--tiles {options.mode}: {refusal}",
+                             resource="host", phases=phases)
     return phases
+
+
+def _host_preparation_over_fit_target(phases) -> str | None:
+    """Why a candidate's CPU preparation leaves the host no fit headroom.
+
+    The search keeps the same headroom off the host's RAM that it keeps
+    off the card's budget (:func:`fit_headroom_bytes`), weighed with the
+    preparation's estimated peak
+    (:attr:`PhaseMemoryEstimate.host_preparation_bytes`), so a fitted
+    layout does not land on the host wall either.  Steering only: the wall
+    itself is refused on the preparation's floor by
+    :meth:`PhaseMemoryEstimate.host_preparation_refusal`, and a minimum
+    layout that fits the wall is still offered.
+    """
+
+    host = getattr(phases, "host_ram_bytes", None)
+    need = getattr(phases, "host_preparation_bytes", 0)
+    if host is None or not need:
+        return None
+    target = host - fit_headroom_bytes(host)
+    if need <= target:
+        return None
+    return (f"CPU preparation holds {need} bytes of host RAM, over the "
+            f"{target} byte host fit target (including headroom)")
 
 
 def _exhausted_point_bound_remedy(scope: str) -> str:
@@ -3835,6 +4541,12 @@ def _exhausted_point_bound_remedy(scope: str) -> str:
         return ("every rung of this ladder reaches it, so no card and no "
                 "smaller layout clears the pole: the centre is what "
                 "moves -- request a point further from it")
+    if scope == POINT_FIT_BAND_SCOPE:
+        return ("every rung of this ladder runs more than once around the "
+                "globe, so no card makes one fit: a finer root spacing is "
+                "what moves")
+    # Only the cyclone door takes this road, and it sizes to the default
+    # extent: it has no --point-extent-km to raise.
     return ("every rung of this ladder is past it, so no card buys more "
             "ground here: draw the ground you want with --polygon")
 
@@ -3887,9 +4599,16 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                stop_out: dict | None = None,
                candidate_scales: tuple[float, ...] | None = None,
                cancelled=None,
+               physics_mix: dict | None = None,
+               clock: str = "fixed",
+               point_extent_km: float = POINT_FIT_MAX_EXTENT_KM,
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Largest centered layout whose peak envelope fits the budget, with
     headroom left over.
+
+    ``point_extent_km`` is the largest root extent per axis the point
+    request is sized to (``--point-extent-km``); see
+    :func:`point_request_bound`.
 
     ``device_profile`` is the CARD the non-pool terms are priced against
     -- the one this machine MEASURED when no ``--card``/``--vram-gib``
@@ -3952,6 +4671,11 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         stop_out.clear()
     if (ladder is None) == (ratios is None):
         raise ValueError("fit_ladder takes exactly one of ladder / ratios")
+    if (isinstance(point_extent_km, bool)
+            or not isinstance(point_extent_km, (int, float))
+            or not math.isfinite(point_extent_km) or point_extent_km <= 0):
+        raise ValueError("point_extent_km must be a finite positive number "
+                         f"of kilometres, got {point_extent_km!r}")
     if ratios is None:
         ratios = LADDER_RATIOS[ladder]
     label = layout_label or (ladder if ladder is not None else "-".join(
@@ -3989,7 +4713,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                 cumulus_requested=cumulus_requested,
                 acknowledgements=acknowledgements, nz=nz, tiles=tiles,
                 history_interval_s=history_interval_s,
-                nest_history_interval_s=nest_history_interval_s)
+                nest_history_interval_s=nest_history_interval_s,
+                physics_mix=physics_mix, clock=clock)
             exp = experiment_from_text(text, source=f"<candidate {label}>")
         check_fit_cancelled(cancelled)
         # Every PHASE, not just the forecast.  Sizing a domain against the
@@ -4005,7 +4730,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             exp, free_bytes=free_bytes, vram_gib=vram_gib,
             forcing_interval_seconds=interval, profile=device_profile)
         check_fit_cancelled(cancelled)
-        return dims, exp, phases.peak_envelope_bytes, budget
+        return dims, exp, phases.peak_envelope_bytes, budget, phases
 
     def uncovered(exp, dims) -> str | None:
         """Why the SOURCE cannot force this layout, if it cannot.
@@ -4020,9 +4745,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
 
         THREE checks, and the order matters.  HRRR's certified route
         knows more than the grid rectangle -- the interpolation stencil
-        plus the surface-fallback halo need real source cells outside
-        the target on every side, and the donor-search margin rides
-        along -- so its own refusal runs first and is the stricter one.
+        needs real source cells outside the target on every side -- so
+        its own refusal runs first and is the stricter one.
         Every other regional source is bounded by its declared window
         (:func:`source_coverage_refusal`), which is what turned ICON-EU
         over a central-US domain from a preparation traceback into a
@@ -4081,7 +4805,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         """
 
         return point_request_bound(projection, dims[0][0], dims[0][1],
-                                   root_dx_m)
+                                   root_dx_m, point_extent_km)
 
     if candidate_scales is not None:
         # A bounded, largest-first search over an authored ladder of
@@ -4105,7 +4829,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         binding: tuple[str, str] | None = None
         for scale in candidate_scales:
             try:
-                dims, exp, envelope, budget = candidate(scale)
+                dims, exp, envelope, budget, phases = candidate(scale)
             except DomainFitError as error:
                 check_fit_cancelled(cancelled)
                 if error.resource not in {"vram", "host", "memory"}:
@@ -4118,6 +4842,12 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                 last_error = DomainFitError(
                     f"{dims}: peak {envelope} bytes exceeds the {target} byte "
                     "fit target (including headroom)", resource="vram")
+                binding = last_bound = None
+                continue
+            host_short = _host_preparation_over_fit_target(phases)
+            if host_short is not None:
+                last_error = DomainFitError(f"{dims}: {host_short}",
+                                            resource="host")
                 binding = last_bound = None
                 continue
             bounded = over_extent(dims)
@@ -4147,7 +4877,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"No candidate in the bounded {label} search fits: {last_error}"
             + ("" if last_bound is None
                else "; " + _exhausted_point_bound_remedy(last_bound)),
-            resource=last_error.resource, phases=last_error.phases) from last_error
+            resource=last_error.resource, phases=last_error.phases,
+            budget_bytes=last_error.budget_bytes) from last_error
 
     # The MINIMUM layout is a property of the ladder, not a constant: a
     # chain deeper than any preset needs a larger root before its
@@ -4155,7 +4886,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     min_scale = _min_hosting_scale(ratios, clearance_rows=clearance_rows,
                                    minimum_axis=minimum_axis,
                                    dimensions_builder=dimensions_builder)
-    dims, exp, envelope, budget = candidate(min_scale)
+    dims, exp, envelope, budget, _phases = candidate(min_scale)
     #: The part of the envelope no grid can move: this suite's CUDA
     #: context, the local-memory backing store of its kernel set, and the
     #: measured residue.  When THAT alone is the whole card there is
@@ -4175,7 +4906,111 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         profile=device_profile)
     grid_independent = (floor_estimate.envelope_intercept_bytes
                         + ENVELOPE_UNMODELLED_BYTES)
+    min_dims = dims
+
+    # Candidate suites are PRICED at this exact minimum layout by the same
+    # estimator that refuses, so a suite whose envelope is larger (the
+    # legacy-RRTMG call-peak workspace measured 2.1x the rte-rrtmgp
+    # default on the 3080) can never be advised, and neither can one
+    # that is cheaper but still over the budget.  Scheme choices the
+    # request carries ride along: following the advice keeps them, with
+    # the named suite as the base they change (:func:`physics_mix_request`
+    # names the suite the request names).
+    def _price(candidate_profile: str) -> int | None:
+        candidate_mix = (None if not physics_mix
+                         else {**physics_mix, "suite": candidate_profile})
+        try:
+            candidate_text = render_config(
+                name=name, start_time=start_time, hours=hours,
+                projection=projection, dims=min_dims, ratios=ratios,
+                fetch_hints=_candidate_fetch_hints(source),
+                case_data=None, root_dx_m=root_dx_m,
+                profile=candidate_profile,
+                # Pricing a suite the user would have to NAME to get,
+                # so it is priced as a named suite: verbatim.
+                cumulus_requested=True,
+                acknowledgements=acknowledgements, nz=nz, tiles=tiles,
+                history_interval_s=history_interval_s,
+                nest_history_interval_s=nest_history_interval_s,
+                physics_mix=candidate_mix, clock=clock)
+            candidate_exp = experiment_from_text(
+                candidate_text, source=f"<candidate {label} "
+                                       f"{candidate_profile}>")
+            return _sizing_phases(
+                candidate_exp, machine=target_machine,
+                forcing_intervals=forcing_intervals,
+                free_bytes=free_bytes, source=source,
+                forcing_interval_seconds=interval,
+                vram_gib=vram_gib,
+                profile=device_profile).peak_envelope_bytes
+        except Exception:
+            return None
+
+    def _lighter_that_fit() -> LighterProfiles:
+        # A template is scientific authority, not a named suite we may
+        # replace; and with no budget at all nothing can fit it.
+        if candidate_builder is not None or budget <= 0:
+            return LighterProfiles()
+        return _lighter_profiles_than(profile, source, _price,
+                                      budget_bytes=budget)
+
+    def _shallower_that_fits() -> str | None:
+        # Dropping nests is a way out only when the shallower ladder's
+        # own minimum layout fits the budget, priced by the same
+        # estimator with the same suite, and the source still forces it:
+        # the two checks that ladder's own fit makes before it can
+        # return its minimum layout.  A template's tree is its own, so
+        # it has no shallower ladder this loop can price.
+        if (candidate_builder is not None or dimensions_builder is not None
+                or budget <= 0):
+            return None
+        for depth in range(len(ratios) - 1, -1, -1):
+            shallower = tuple(ratios[:depth])
+            try:
+                shallower_dims = _dims_for_scale(
+                    _min_hosting_scale(shallower,
+                                       clearance_rows=clearance_rows,
+                                       minimum_axis=minimum_axis),
+                    shallower, clearance_rows=clearance_rows)
+                shallower_label = "-".join(
+                    f"{v:g}" for v in _ladder_dx_km(shallower, root_dx_m))
+                shallower_text = render_config(
+                    name=name, start_time=start_time, hours=hours,
+                    projection=projection, dims=shallower_dims,
+                    ratios=shallower,
+                    fetch_hints=_candidate_fetch_hints(source),
+                    case_data=None, root_dx_m=root_dx_m, profile=profile,
+                    cumulus_requested=cumulus_requested,
+                    acknowledgements=acknowledgements, nz=nz, tiles=tiles,
+                    history_interval_s=history_interval_s,
+                    nest_history_interval_s=nest_history_interval_s,
+                    physics_mix=physics_mix, clock=clock)
+                shallower_exp = experiment_from_text(
+                    shallower_text,
+                    source=f"<candidate {shallower_label} below {label}>")
+                shallower_envelope = _sizing_phases(
+                    shallower_exp, machine=target_machine,
+                    forcing_intervals=forcing_intervals,
+                    free_bytes=free_bytes, source=source,
+                    forcing_interval_seconds=interval,
+                    vram_gib=vram_gib,
+                    profile=device_profile).peak_envelope_bytes
+                if shallower_envelope > budget:
+                    continue
+                if uncovered(shallower_exp, shallower_dims) is not None:
+                    continue
+            except Exception:
+                continue
+            return _ladder_request_flags(shallower, root_dx_m)
+        return None
+
     if budget <= 0 or grid_independent >= budget:
+        # No smaller layout on any ladder helps here, so a shallower
+        # ladder is not a way out; the suite and the card are.
+        remedy = _minimum_layout_memory_remedy(
+            lighter=_lighter_that_fit(), envelope_bytes=envelope,
+            free_bytes=free_bytes, budget_bytes=budget, source=source,
+            shallower=None)
         raise DomainFitError(
             f"this card has no budget for ladder {label} at all: the "
             f"suite's grid-independent envelope (CUDA context + the "
@@ -4186,8 +5021,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"is already the whole of about "
             f"{free_bytes / GIB:.2f} GiB free -- before the grid asks for "
             f"a single byte, so no smaller layout on any ladder can "
-            f"help.  Choose a physics profile with a smaller kernel set, "
-            f"or a larger card")
+            f"help; {remedy}")
     smallest_uncovered = uncovered(exp, dims)
     if smallest_uncovered is not None:
         raise DomainFitError(
@@ -4234,48 +5068,40 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # gave every source a full-radiation default, it is the lever a
         # small card most often needs.  Omitting it read as "your card is
         # too small" when a lighter shipped profile fits the same grid.
-        # Candidates are PRICED at this exact layout by the same
-        # estimator that just refused, so a suite whose envelope is
-        # larger -- legacy-RRTMG's call-peak workspace, measured 2.1x
-        # the rte-rrtmgp default on the 3080 -- can never be advised.
-
-        def _price(candidate_profile: str) -> int | None:
-            try:
-                candidate_text = render_config(
-                    name=name, start_time=start_time, hours=hours,
-                    projection=projection, dims=dims, ratios=ratios,
-                    fetch_hints=_candidate_fetch_hints(source),
-                    case_data=None, root_dx_m=root_dx_m,
-                    profile=candidate_profile,
-                    # Pricing a suite the user would have to NAME to get,
-                    # so it is priced as a named suite: verbatim.
-                    cumulus_requested=True,
-                    acknowledgements=acknowledgements, nz=nz, tiles=tiles,
-                    history_interval_s=history_interval_s,
-                    nest_history_interval_s=nest_history_interval_s)
-                candidate_exp = experiment_from_text(
-                    candidate_text, source=f"<candidate {label} "
-                                           f"{candidate_profile}>")
-                return _sizing_phases(
-                    candidate_exp, machine=target_machine, forcing_intervals=forcing_intervals,
-            free_bytes=free_bytes, source=source,
-                    forcing_interval_seconds=interval,
-                    vram_gib=vram_gib,
-                    profile=device_profile).peak_envelope_bytes
-            except Exception:
-                return None
-
-        # A template is scientific authority, not a named suite we may replace.
-        lighter = ([] if candidate_builder is not None else
-                   _lighter_profiles_than(profile, source, _price))
-        remedy = ("choose a shallower ladder, a lighter --physics-profile "
-                  f"({', '.join(lighter)}), or a larger card"
-                  if lighter else
-                  "choose a shallower ladder or a larger card")
+        # Only suites and shallower ladders that fit THIS budget are
+        # named.
+        remedy = _minimum_layout_memory_remedy(
+            lighter=_lighter_that_fit(), envelope_bytes=envelope,
+            free_bytes=free_bytes, budget_bytes=budget, source=source,
+            shallower=_shallower_that_fits())
         raise DomainFitError(
             f"ladder {label} does not fit a {budget / GIB:.1f} GiB "
             f"budget even at the minimum layout ({dims[0][0]}x{dims[0][1]} "
-            f"root): {phases.verdict(budget)}.  {detail}; {remedy}")
+            f"root): {phases.verdict(budget)}.  {detail}; {remedy}",
+            phases=phases, budget_bytes=budget)
+    # A requested extent below the smallest root this ladder hosts.  The
+    # extent bound is monotone in scale, so every layout the bisection
+    # could offer is past it too, and the answer is this minimum layout.
+    # It used to fall through: the bisection rejected every candidate on
+    # the extent, kept the minimum as `best`, and reported the EXTENT as
+    # the bound that capped it, so `--point-extent-km 50` on the 12 km
+    # ladder emitted a 720 km root under a line telling the reader to
+    # raise the value for a larger domain.  Returned here with its own
+    # scope, the plan summary says what happened instead.  Not a
+    # refusal: the root is the closest domain to the request this ladder
+    # has, and a larger one than asked breaks nothing.
+    floored = over_extent(dims)
+    if floored is not None and floored[0] == POINT_FIT_EXTENT_SCOPE:
+        if stop_out is not None:
+            nx, ny = dims[0]
+            dx_km = float(root_dx_m) / 1000.0
+            stop_out["scope"] = POINT_FIT_FLOOR_SCOPE
+            stop_out["reason"] = (
+                f"the smallest root ladder {label} hosts is {nx} x {ny} "
+                f"at {dx_km:g} km, {max(nx, ny) * dx_km:.0f} km across, "
+                f"larger than the {float(point_extent_km):g} km the "
+                "request asked for")
+        return dims, exp
     lo, hi = min_scale, _MAX_SCALE
     best = (dims, exp)
     # WHY the search stopped where it did, kept as it happens.  A memory
@@ -4294,7 +5120,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     for _ in range(36):
         mid = 0.5 * (lo + hi)
         try:
-            dims, exp, envelope, budget = candidate(mid)
+            dims, exp, envelope, budget, phases = candidate(mid)
         except DomainFitError:
             # A layout the experiment loader itself refuses -- neither
             # the card nor the source, so the sentence below would name
@@ -4303,7 +5129,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             binding_reason = None
             continue
         target = budget - fit_headroom_bytes(budget)
-        if envelope > target:
+        if (envelope > target
+                or _host_preparation_over_fit_target(phases) is not None):
             hi = mid
             binding_reason = None
             continue
@@ -4565,6 +5392,8 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        minimum_axis: int | None = None,
                        clearance_rows: int = _CLEARANCE_ROWS,
                        dimensions_builder=None,
+                       physics_mix: dict | None = None,
+                       clock: str = "fixed",
                        ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Fit one polygon-bound ladder, refusing rather than clipping it.
 
@@ -4612,7 +5441,8 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
             cumulus_requested=cumulus_requested,
             acknowledgements=acknowledgements, nz=nz, tiles=tiles,
             history_interval_s=history_interval_s,
-            nest_history_interval_s=nest_history_interval_s)
+            nest_history_interval_s=nest_history_interval_s,
+            physics_mix=physics_mix, clock=clock)
         exp = experiment_from_text(text, source="<polygon candidate>")
     if source == "hrrr":
         try:
@@ -4675,7 +5505,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
             "polygon plus the requested per-level buffers requires "
             f"{layout}, but {detail}; reduce the "
             "buffer, choose fewer levels, increase grid spacing, or use a "
-            "larger card")
+            "larger card", phases=phases, budget_bytes=budget_bytes)
     verify_polygon_containment(exp, footprint, buffers_km)
     return dims, exp
 
@@ -4789,6 +5619,13 @@ def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
         phase = f", binding phase {phases.binding_phase}"
         if not phases.ingest_priced:
             phase += " -- ingest NOT PRICED for this source"
+        host_need = getattr(phases, "host_preparation_bytes", 0)
+        host_ram = getattr(phases, "host_ram_bytes", None)
+        if host_need:
+            phase += (f"; preparation on the CPU holds about "
+                      f"{host_need / GIB:.2f} GiB of "
+                      + ("host RAM" if host_ram is None else
+                         f"the host's {host_ram / GIB:.2f} GiB of RAM"))
     basis = (f"an estimate for a declared {vram_gib:g} GiB card, not a "
              "measurement of hardware in this machine; `gpuwm check` on "
              "the real card is what measures it"
@@ -4801,6 +5638,32 @@ def sizing_summary(exp: ExperimentConfig, estimate, budget_bytes: int,
             f"{budget_bytes / GIB:.2f} GiB budget "
             f"({(budget_bytes - envelope) / GIB:.2f} GiB headroom{phase}) "
             f"-- {basis}")
+
+
+def fit_memory(estimate, phases, budget_bytes: int,
+               sizing: SizingBudget) -> dict:
+    """The card memory this fit priced, as a record a program reads.
+
+    The figures :func:`sizing_summary` prints, before any words are put
+    around them: the binding phase's peak envelope against the budget
+    the fit was held to.  Every route prices here, whether or not
+    ``gpuwm check`` runs after it, so a front end that reads this record
+    gets the same figure for a source whose inputs are already on disk
+    and for one whose inputs are fetched later.  It was read off the
+    check's printed line instead, and a source that defers the check
+    until its inputs are downloaded (ERA5) gave a front end no figure.
+    """
+
+    return {
+        "peak_envelope_bytes": int(phases.peak_envelope_bytes),
+        "budget_bytes": int(budget_bytes),
+        "binding_phase": phases.binding_phase,
+        "alloc_estimate_bytes": int(estimate.alloc_estimate_bytes),
+        "free_bytes": int(sizing.free_bytes),
+        "vram_gib": float(sizing.vram_gib),
+        "sizing_basis": ("measured-available" if sizing.measured
+                         else "declared-capacity"),
+    }
 
 
 def _print_sizing_table(exp: ExperimentConfig, estimate,
@@ -5084,8 +5947,49 @@ class SizingBudget:
     measured: bool = False
 
 
-def resolve_sizing_budget(card: str | None, vram_gib: float | None) -> SizingBudget:
+#: The capacity options a sizing command can accept, in the order a
+#: remedy names them.  Every caller of :func:`resolve_sizing_budget`
+#: passes the ones ITS parser defines, because the helper serves doors
+#: that accept both (``gpuwm domain``), only ``--vram-gib`` (``gpuwm
+#: research hardware``/``create``) and neither (``gpuwm domain-tiles``),
+#: and a remedy naming an option the door rejects ends in exit 2.
+CAPACITY_OPTIONS = ("--card", "--vram-gib")
+
+
+def _capacity_words(declare: tuple[str, ...]) -> dict[str, str]:
+    """The remedy phrases for the capacity options one door accepts."""
+
+    unknown = [option for option in declare if option not in CAPACITY_OPTIONS]
+    if unknown:
+        raise ValueError(f"not a capacity option: {', '.join(unknown)}")
+    offered = [option for option in CAPACITY_OPTIONS if option in declare]
+    spelled = {"--card": f"--card {'/'.join(sorted(CARD_VRAM_GIB))}",
+               "--vram-gib": "--vram-gib N"}
+    sources = {"--card": "a declared tier", "--vram-gib": "a declared GiB figure"}
+    kinds = [sources[option] for option in offered]
+    kinds.append("a measurement of the card in this machine")
+    if len(kinds) == 1:
+        needs = "a measurement of the card in this machine"
+    else:
+        count = {2: "two", 3: "three"}[len(kinds)]
+        needs = (f"one of {count} sources: " + ", ".join(kinds[:-1])
+                 + (", or " if len(kinds) > 2 else " or ") + kinds[-1])
+    return {
+        "slash": "/".join(offered),
+        "or": " or ".join(offered),
+        "spelled": " or ".join(spelled[option] for option in offered),
+        "target": "card" if "--card" in offered else "capacity",
+        "needs": needs,
+    }
+
+
+def resolve_sizing_budget(card: str | None, vram_gib: float | None, *,
+                          declare: tuple[str, ...] = CAPACITY_OPTIONS) -> SizingBudget:
     """Resolve capacity and available memory from one probe or declaration.
+
+    ``declare`` names the capacity options the calling command accepts
+    (:data:`CAPACITY_OPTIONS` or a subset); every remedy below offers
+    those and no others.
 
     Three sources, in the only defensible order:
 
@@ -5122,15 +6026,18 @@ def resolve_sizing_budget(card: str | None, vram_gib: float | None) -> SizingBud
                              "pass a finite positive card capacity in GiB")
         return SizingBudget(capacity, int(card_assumed_free_gib(capacity) * GIB),
                             None, None)
+    words = _capacity_words(tuple(declare))
     probe = device_memory_probe_subprocess()
     total = probe.get("total_bytes") if isinstance(probe, dict) else None
     if isinstance(total, int) and not isinstance(total, bool) and total > 0:
         free = probe.get("free_bytes")
         if (not isinstance(free, int) or isinstance(free, bool)
                 or not 0 <= free <= total):
-            raise ValueError("The local GPU probe did not report valid available memory; "
-                             "make the local card readable or declare --card/--vram-gib "
-                             "to size for another machine.")
+            raise ValueError(
+                "The local GPU probe did not report valid available memory; "
+                "make the local card readable"
+                + (f" or declare {words['slash']} to size for another machine."
+                   if declare else "."))
         measured = total / GIB
         # The SAME probe answer, used WHOLE.  Reading the capacity out of
         # it and dropping the shader census beside it is exactly how a
@@ -5140,36 +6047,54 @@ def resolve_sizing_budget(card: str | None, vram_gib: float | None) -> SizingBud
         card_words = f"{name}, " if name else ""
         basis = ("" if device_profile is None else
                  f"; grid-independent terms {non_pool_basis(device_profile)}")
+        lead = (f"no {words['slash']} declared, so the budget is"
+                if declare else "the budget is")
+        tail = (f"; declare {words['or']} to size for another machine"
+                if declare else "")
         return SizingBudget(measured, free, device_profile, (
-            f"domain: no --card/--vram-gib declared, so the budget is the "
+            f"domain: {lead} the "
             f"measured local card ({card_words}{measured:g} GiB total, "
-            f"{free / GIB:.2f} GiB available); "
-            f"declare --card or --vram-gib to size for another machine"
-            f"{basis}"), measured=True)
+            f"{free / GIB:.2f} GiB available)"
+            f"{tail}{basis}"), measured=True)
     reason = (device_memory_probe_reason()
               or "the local card could not be measured")
-    tiers = "/".join(sorted(CARD_VRAM_GIB))
-    if "CuPy" in reason or "cupy" in reason:
-        way_back = ("or install cupy (pip install 'gpuwm[gpu-cu12]', or "
-                    "'gpuwm[gpu-cu13]' on a CUDA-13 box) so the wizard "
-                    "can measure the local card")
+    # The whole reason, not a word in it: a probe that failed on a CuPy
+    # it did import quotes that error, and "cupy" in its text told the
+    # reader to install the CuPy that was already there.
+    cupy_missing = reason == PROBE_REASON_NO_RUNTIME
+    install_cupy = ("install cupy (pip install 'gpuwm[gpu-cu12]', or "
+                    "'gpuwm[gpu-cu13]' on a CUDA-13 box)")
+    from gpuwm.explain import layered
+    why = ("It used to assume a 24 GiB card when nothing was "
+           "declared, which sized domains for hardware nobody stated exists; "
+           "an assumption is not a budget.  The measurement runs in a "
+           "short-lived subprocess (no CUDA context survives in this "
+           "process) and GPUWM_NO_LOCAL_GPU suppresses it entirely.")
+    if not declare:
+        # A door that plans against the memory it MEASURES has no
+        # declared-capacity route at all, so the only ways back are a
+        # readable card here or running on the machine that has one.
+        way_back = (f"{install_cupy} so it can measure the local card"
+                    if cupy_missing else "make the local card readable")
+        raise ValueError(layered(
+            f"this command plans against the memory it measures on the "
+            f"local card and takes no declared capacity, and {reason}.  "
+            f"Run it on the machine whose card it plans for, or "
+            f"{way_back}; `gpuwm doctor` shows whether the card is readable.",
+            f"The measured memory decides the plan, so the command needs "
+            f"{words['needs']}.  {why}"))
+    if cupy_missing:
+        way_back = f"or {install_cupy} so the wizard can measure the local card"
     else:
         way_back = ("or make the local card readable so the wizard can "
                     "measure it")
-    from gpuwm.explain import layered
     raise ValueError(layered(
         f"this wizard sizes every emitted level against a VRAM budget, "
-        f"and there is none: no --card/--vram-gib was declared, and "
-        f"{reason}.  Declare the target card -- --card {tiers} or "
-        f"--vram-gib N -- {way_back}.",
+        f"and there is none: no {words['slash']} was declared, and "
+        f"{reason}.  Declare the target {words['target']} -- "
+        f"{words['spelled']} -- {way_back}.",
         "The budget decides every grid dimension in the emitted file, so "
-        "the wizard needs one of three sources: a declared tier, a "
-        "declared GiB figure, or a measurement of the card in this "
-        "machine.  It used to assume a 24 GiB card when nothing was "
-        "declared, which sized domains for hardware nobody stated exists; "
-        "an assumption is not a budget.  The measurement runs in a "
-        "short-lived subprocess (no CUDA context survives in this "
-        "process) and GPUWM_NO_LOCAL_GPU suppresses it entirely."))
+        f"the wizard needs {words['needs']}.  {why}"))
 
 
 def _supplied_forcing_schedule(args, start_time):
@@ -5183,6 +6108,15 @@ def _supplied_forcing_schedule(args, start_time):
     from gpuwm.ingest.preflight import build_lbc_records
 
     paths = _resolve_forcing(Path.cwd(), list(args.forcing), "gpuwm domain --forcing")
+    # Before the native inventory opens anything: a missing file used to
+    # leave as a FileNotFoundError traceback from its stat(), and a folder
+    # was read as a zero-length GRIB and refused as "empty".
+    for path in paths:
+        if not path.is_file():
+            what = "is a folder" if path.is_dir() else "does not exist"
+            raise ValueError(
+                f"--forcing {path} {what}; --forcing takes forcing files, "
+                "or a glob pattern that matches files")
     vtable = Path(args.vtable) if args.vtable else _PACKAGED_VTABLE
     times = inspect_era5_forcing_times(paths, vtable)
     if start_time not in times:
@@ -5275,7 +6209,15 @@ def _domain_target_hardware(args, sizing_budget=None):
     return sizing, target_machine, identity is not None
 
 
-def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
+def domain_main(args, *, sizing_budget: SizingBudget | None = None,
+                memory: dict | None = None) -> int:
+    """``gpuwm domain``: fit, write and check one configuration.
+
+    ``memory``, when given, receives :func:`fit_memory`'s record for the
+    written configuration, so an in-process caller reads the priced
+    figure rather than the printed sizing line.
+    """
+
     # FIRST, before any geometry: the source name becomes a registry row,
     # or the run stops with the registry's own words.  Everything below
     # reads the row -- coverage, cadence, forecast horizon -- so a name
@@ -5297,6 +6239,10 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         lat, lon = polygon.center_lat, polygon.center_lon
         level_buffer_values = parse_level_buffers(
             getattr(args, "buffer_km", None))
+    point_extent_km = getattr(args, "point_extent_km", None)
+    refuse_point_extent_on_polygon(point_extent_km, polygon)
+    if point_extent_km is None:
+        point_extent_km = POINT_FIT_MAX_EXTENT_KM
     if args.card is not None and args.vram_gib is not None:
         raise ValueError("--card and --vram-gib are mutually exclusive")
     _refuse_profile_its_source_cannot_prepare(
@@ -5366,12 +6312,13 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         value = getattr(args, key, None)
         if value is not None:
             acquisition[key] = value
-    cadence = acquisition.get("cadence", _fetch_cadence_h(args.source, start_hour))
+    cadence, fetch_hours = fetch_window(args.source, args.hours, start_hour, acquisition.get("cadence"))
     if cadence is not None:
         acquisition["cadence"] = cadence
-        acquisition["hours"] = max(cadence, math.ceil(args.hours / cadence) * cadence)
+        acquisition["hours"] = fetch_hours
     if acquisition.get("era5_product") == "ensemble_members":
         acquisition.setdefault("era5_provider", "cds")
+    if get_source_adapter(args.source).fetch_requires_retrieve:
         acquisition["retrieve"] = True
     from gpuwm.runplan import drivability_for
     acquisition_reachable = (source_has_fetch_front_door(args.source) or
@@ -5430,7 +6377,30 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
     # convection-permitting bound, so neither branch can differ there.
     # A future interactive --root-dx has to decide this deliberately
     # rather than inherit it.
-    cumulus_requested = getattr(args, "physics_profile", None) is not None
+    #
+    # --cumulus says it outright instead: ``grid`` emits the named suite
+    # with its root cumulus left to the grid, the way the derived suite
+    # is emitted, and ``suite`` keeps the suite's cumulus at any spacing.
+    # A front end that composes physics scheme by scheme names the suite
+    # its picks match and says ``grid`` when no cumulus scheme was picked,
+    # so the run gets the cumulus the physics check described.
+    cumulus_requested = cumulus_requested_by(args)
+    # Schemes picked in place of the suite's own (--physics-choices): the
+    # check request every render below writes them with, the fit's
+    # candidates included.
+    physics_mix = physics_mix_request(
+        getattr(args, "physics_choices", None), source=args.source,
+        profile=getattr(args, "physics_profile", None))
+    if physics_mix and "cumulus" in physics_mix["choices"] and getattr(args, "cumulus", None) is None:
+        # A picked cumulus scheme is a request for the root's cumulus, as
+        # the physics check reads it, so the grid does not retire it and
+        # the file does not say it did.
+        cumulus_requested = True
+    # How the run steps (--clock): every render below, the fit's
+    # candidates included, writes the same clock the file will carry.
+    # The interactive session's namespace has no such answer and takes
+    # the door's default.
+    clock = getattr(args, "clock", None) or DEFAULT_CLOCK
 
     # THE NOCTURNAL DECLARATION IS THE USER'S TO MAKE, AND THIS IS WHERE
     # THEY MAKE IT (2026-08-09).
@@ -5534,7 +6504,9 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 forcing_intervals=forcing_intervals,
                 history_interval_s=args.history_interval,
                 nest_history_interval_s=args.nest_history_interval,
-                stop_out=fit_stop)
+                stop_out=fit_stop,
+                physics_mix=physics_mix, clock=clock,
+                point_extent_km=point_extent_km)
         else:
             level_buffers = _buffers_for_levels(
                 level_buffer_values, len(ratios) + 1)
@@ -5551,7 +6523,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 forcing_interval_seconds=forcing_interval_seconds,
                 forcing_intervals=forcing_intervals,
                 history_interval_s=args.history_interval,
-                nest_history_interval_s=args.nest_history_interval)
+                nest_history_interval_s=args.nest_history_interval,
+                physics_mix=physics_mix, clock=clock)
         ladder = "-".join(f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
     else:
         root_dx_m = ROOT_DX_M
@@ -5571,6 +6544,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                     "many levels; use --root-dx / --chain for a custom "
                     "ladder")
         chosen = None
+        shallowest_refusal = None
         for candidate_ladder in ladders:
             try:
                 candidate_ratios = LADDER_RATIOS[candidate_ladder]
@@ -5589,7 +6563,9 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                         forcing_intervals=forcing_intervals,
                         history_interval_s=args.history_interval,
                         nest_history_interval_s=args.nest_history_interval,
-                        stop_out=fit_stop)
+                        stop_out=fit_stop,
+                        physics_mix=physics_mix, clock=clock,
+                        point_extent_km=point_extent_km)
                     candidate_buffers = None
                 else:
                     candidate_buffers = _buffers_for_levels(
@@ -5607,7 +6583,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                         forcing_interval_seconds=forcing_interval_seconds,
                         forcing_intervals=forcing_intervals,
                         history_interval_s=args.history_interval,
-                        nest_history_interval_s=args.nest_history_interval)
+                        nest_history_interval_s=args.nest_history_interval,
+                        physics_mix=physics_mix, clock=clock)
             except DomainFitError as error:
                 if args.ladder != "auto" or fixed_buffer_depth:
                     raise
@@ -5617,6 +6594,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 first_sentence = str(error).split(":", 1)[0]
                 print(f"ladder {candidate_ladder}: does not fit "
                       f"({first_sentence}); trying the next shallower one")
+                shallowest_refusal = error
                 continue
             chosen = (candidate_ladder, dims, candidate_buffers)
             break
@@ -5625,7 +6603,12 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 "no ladder fits the requested card; even the shallowest "
                 f"ladder's smallest layout exceeds the budget a "
                 f"{vram_gib:g} GiB card leaves (about {free_gib:g} GiB "
-                "free, minus this suite's reserve)")
+                "free, minus this suite's reserve)",
+                # The figures are the shallowest ladder's, the layout
+                # this sentence names.
+                phases=getattr(shallowest_refusal, "phases", None),
+                budget_bytes=getattr(shallowest_refusal, "budget_bytes",
+                                     None)) from shallowest_refusal
         ladder, dims, level_buffers = chosen
         ratios = LADDER_RATIOS[ladder]
     # Which bound stopped the POINT fit, if one did -- read off the
@@ -5800,9 +6783,15 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         level_buffers_km=level_buffers,
         history_interval_s=args.history_interval,
         nest_history_interval_s=args.nest_history_interval,
-        acknowledgements=acknowledgements, nz=nz, tiles=tiles)
+        acknowledgements=acknowledgements, nz=nz, tiles=tiles,
+        physics_mix=physics_mix, clock=clock)
+    text = with_surface_flux_option(text, getattr(args, "isftcflx", None))
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
+    # The clock rides on the header line, as the extent does: a line of
+    # its own would push the default emission past its screen.
+    clock_words = (", adaptive time step"
+                   if exp.root.run.use_adaptive_time_step else "")
     interval = (source_forcing_interval_seconds(args.source)
                 if forcing_interval_seconds is None else forcing_interval_seconds)
     estimate = estimate_experiment(
@@ -5827,6 +6816,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
             f"{phases.binding_phase} envelope "
             f"{envelope / GIB:.2f} GiB exceeds the budget "
             f"{budget_gib:.2f} GiB")
+    if memory is not None:
+        memory.update(fit_memory(estimate, phases, budget, sizing))
     if polygon is not None:
         verify_polygon_containment(exp, polygon, level_buffers)
 
@@ -5857,22 +6848,27 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
 
     explain = explain_enabled(args)
     if polygon is None:
+        # The extent the fit used rides on the header line, against the
+        # --point-extent-km it was sized under: a line of its own would
+        # push the default emission past the screen it is held to.
         print(f"gpuwm domain: {name!r} at ({lat:g}, {lon:g}), ladder {ladder} "
               f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
-              f"card {vram_gib:g} GiB")
+              f"card {vram_gib:g} GiB, root extent "
+              f"{max(dims[0]) * root_dx_m / 1000.0:.0f} km "
+              f"(--point-extent-km {point_extent_km:g}){clock_words}")
         # A point carries no extent, so the fit chose one and bounded
         # its own choice.  Stated as fact, once, beside the sizing line
         # that prints the envelope it is under -- never as a warning:
         # this is the ordinary request on the ordinary card.
         if request_bound is not None:
             print("domain: " + point_fit_cap_note(
-                request_bound, dims, root_dx_m))
+                request_bound, dims, root_dx_m, point_extent_km))
     else:
         buffers = ",".join(f"{value:g}" for value in level_buffers)
         print(f"gpuwm domain: {name!r}, polygon center ({lat:g}, {lon:g}), "
               f"ladder {ladder} "
               f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
-              f"buffers {buffers} km, card {vram_gib:g} GiB")
+              f"buffers {buffers} km, card {vram_gib:g} GiB{clock_words}")
         grid_extents = ", ".join(
             f"d{domain.grid_id:02d} {domain.run.nx}x{domain.run.ny} cells "
             f"({domain.run.nx * domain.run.dx / 1000:g}x"
@@ -5895,6 +6891,16 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
             {key: profile_switches(profile)[key]
              for key in _PER_DOMAIN_PHYSICS})[1]:
         print(f"domain: {note}")
+    # Why the file carries the clock it does, behind --explain; the
+    # default screen names an adaptive clock on the header line above.
+    if explain:
+        _, clock_why = clock_decision(clock, time_step=selected_clock,
+                                      root_dx_m=root_dx_m, ratios=ratios)
+        stepping = ("adaptive time step" if root.run.use_adaptive_time_step
+                    else "fixed time step")
+        print(f"domain: {stepping} ({clock_why}); --clock "
+              f"{'fixed' if root.run.use_adaptive_time_step else 'adaptive'}"
+              " changes it")
     if explain:
         _print_sizing_table(exp, estimate, budget, vram_gib,
                             phases=phases, measured_free_bytes=(
@@ -5933,6 +6939,12 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         # for every table-driven model.  The window is stated after the
         # command instead, where it belongs -- it is a prep fact.
         area_flag = ""
+    # The model top this config's ladder needs, when the source's fetch
+    # has to be asked for it: the same registry answer `gpuwm go` reads,
+    # so the pasted command downloads what the run then prepares.
+    from gpuwm.source_adapters import fetch_model_top_pa
+    fetch_top = fetch_model_top_pa(args.source, exp.vertical.p_top)
+    top_flag = (f"--p-top-pa {fetch_top:g} " if fetch_top is not None else "")
     if source_has_fetch_front_door(args.source):
         fetch_command = ("gpuwm fetch "
                          f"--source {args.source} "
@@ -5949,6 +6961,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                             if start_hour else "")
                          + (f"--member {fetch_hints['member']} "
                              if "member" in fetch_hints else "")
+                         + top_flag
                           + f"--out {_printed_path(printed_out)}")
     else:
         # NOT a `gpuwm fetch` line.  This source has a runnable profile
@@ -5969,7 +6982,15 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
             f"#    needs is {fetch_hints['area']}, "
             f"{fetch_hints['hours']} h at {spacing_h} h spacing)",
             f"#   `gpuwm prep --show-source {args.source}` names the exact "
-            f"products this route requires."))
+            f"products this route requires.",
+            # The request and the supplement's own fetch line, from the
+            # source's row, so the folder step 3 reads can be filled by
+            # following step 1 alone.
+            *local_staging_lines(
+                args.source, cycle=fetch_hints["cycle"],
+                hours=fetch_hints["hours"], cadence=cadence,
+                start_hour=start_hour, area=fetch_hints["area"],
+                out=_printed_path(printed_out))))
     # The BARE form is the next step, because it is the one that measures
     # this machine.  v1.4.0 printed only the declared form, and on a real
     # 16 GB card the two returned opposite verdicts on the same file --
@@ -6066,11 +7087,15 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         cumulus_requested=cumulus_requested)
     # The line describes the FILE, not the catalogue entry: the root's
     # emitted cumulus switch, which the grid may have retired.
-    summary = physics_summary(profile, cu_physics=cu_by_domain[0])
+    summary = (mix_physics_summary(text, physics_mix) if physics_mix else
+               physics_summary(profile, cu_physics=cu_by_domain[0]))
     if len(dims) > 1:
         summary += (f" -- one radiation cadence: all {len(dims)} domains "
                     "run the root's radt, nests inherit it")
     print(f"physics: {summary}")
+    if physics_mix:
+        print(f"physics: {physics_mix_words(physics_mix['choices'])} replace the suite's own "
+              "schemes in the file; no suite is asserted")
     # A changed switch is reported on the DEFAULT screen, not behind
     # --explain: the user asked for a suite by not naming one, and the
     # emission moved one of its switches.
@@ -6208,7 +7233,11 @@ def _print_next_steps(fetch_command: str, check_command: str,
     print(f"  1. {acquire[0]}")
     for line in acquire[1:]:
         print(f"     {line}")
-    for note in source_credential_notes(source):
+    # The CDS key is the CDS transport's; a fetch from the keyless ARCO
+    # store needs none, and telling that user to go and get one sends them
+    # to register for an account the command never reads.
+    keyless = "--era5-provider arco" in fetch_command
+    for note in ([] if keyless else source_credential_notes(source)):
         print(f"     {note}")
     print(f"  2. {check_command}"
           + ("   # after the fetch lands" if deferred else ""))
@@ -6242,10 +7271,12 @@ def register_cli(subparsers) -> None:
                              "is refused. A point carries no extent, so "
                              "the fit chooses one: the largest layout "
                              "the budget affords, capped at "
-                             f"{POINT_FIT_MAX_EXTENT_KM:.0f} km per axis "
-                             "and kept clear of the projection pole, "
+                             "--point-extent-km per axis, "
+                             "kept clear of the projection pole, "
                              "where lat-lon source interpolation and "
-                             "static-tile windowing do not work. Both "
+                             "static-tile windowing do not work, and "
+                             "kept to less than one trip around the "
+                             "globe in longitude. These "
                              "caps SHRINK the domain rather than refuse "
                              "it, and the plan summary states which one "
                              "bound; the "
@@ -6259,6 +7290,15 @@ def register_cli(subparsers) -> None:
                              "Negative (southern/western) values work in "
                              "both forms: --point -33.87,151.21 and "
                              "--point=-33.87,151.21")
+    parser.add_argument(
+        "--point-extent-km", type=point_extent_argument,
+        default=POINT_FIT_MAX_EXTENT_KM, metavar="KM",
+        help="largest root extent per axis a --point request is sized to "
+             f"(default {POINT_FIT_MAX_EXTENT_KM:.0f}).  The projection "
+             "pole, one trip around the globe, the source's coverage and "
+             "the card still bound the fit; an extent below the smallest "
+             "root the ladder hosts gets that root.  The plan summary "
+             "states the extent used")
     target.add_argument(
         "--polygon", type=Path, metavar="GEOJSON",
         help="local GeoJSON Polygon, MultiPolygon, Feature, or "
@@ -6269,7 +7309,10 @@ def register_cli(subparsers) -> None:
         "--buffer-km", default=None, metavar="KM[,KM...]",
         help="with --polygon, nonnegative geometry buffer in kilometres; "
              "one value applies to every domain, or supply exactly one "
-             "outer-to-inner value per level. With --ladder auto, a "
+             "outer-to-inner value per level.  Every value is measured "
+             "from the polygon itself, not from the next inner grid: "
+             "'800,300,0' puts the outer grid 800 km from the polygon, "
+             "about 500 km beyond the middle one. With --ladder auto, a "
              "multi-value list selects the preset of that depth "
              "(default: zero)")
     parser.add_argument("--projection", default="auto",
@@ -6331,6 +7374,29 @@ def register_cli(subparsers) -> None:
                              "declare it yourself with --ack.  "
                              + _profile_help_route_note()
                              + _profile_help_default_note())
+    parser.add_argument("--cumulus", default=None, choices=("suite", "grid"),
+                        help="who decides the root's cumulus scheme.  "
+                             "suite: the suite's own scheme at any spacing "
+                             "(what naming --physics-profile means when "
+                             "this is left out).  grid: the suite's scheme "
+                             "is turned off on a root finer than the "
+                             f"{CUMULUS_CONVECTION_PERMITTING_DX_KM:g} km "
+                             "convection-permitting bound, where the "
+                             "dynamics resolve deep convection (what an "
+                             "unnamed suite gets)")
+    parser.add_argument(
+        "--physics-choices", default=None, metavar="JSON",
+        help="schemes to run in place of the suite's own, family by "
+             "family, as the physics composer picks them: "
+             "'{\"microphysics\": \"thompson-mp8\", \"pbl\": \"myj\", "
+             "\"surface_layer\": \"eta-similarity\"}'.  Checked by the "
+             "engine the way `gpuwm physics-catalog --check` checks them "
+             "and written into the config the way `--into` writes them, "
+             "on every size the fit tries, so the card is priced for the "
+             "schemes that run.  The suite (--physics-profile, or the "
+             "source's default) is the base the choices change; no suite "
+             "is asserted, so a mix no named suite matches runs as "
+             "written")
     parser.add_argument(
         "--ack", action="append", default=[], metavar="ID",
         help="declare a governed experiment, written verbatim into the "
@@ -6356,7 +7422,7 @@ def register_cli(subparsers) -> None:
                              "--root-dx.  Sized by the same estimator fit "
                              "loop as the presets")
     parser.add_argument(
-        "--history-interval", type=float, default=None, metavar="SECONDS",
+        "--history-interval", type=positive_float, default=None, metavar="SECONDS",
         help="how often the ROOT domain writes a wrfout, in seconds "
              f"(default {DEFAULT_ROOT_HISTORY_INTERVAL_S:g}).  Must be a "
              "whole number of seconds and a whole number of that "
@@ -6364,13 +7430,33 @@ def register_cli(subparsers) -> None:
              "exact rational dt and refuses the emitted file otherwise, "
              "before it is written")
     parser.add_argument(
-        "--nest-history-interval", type=float, default=None,
+        "--nest-history-interval", type=positive_float, default=None,
         metavar="SECONDS",
         help="the same, for every NESTED domain (default "
              f"{DEFAULT_NEST_HISTORY_INTERVAL_S:g}).  Nests write more "
              "often than the root by default because resolving what the "
              "root cannot, over a shorter window, is the point of "
              "running one.  Ignored for a single-domain ladder")
+    parser.add_argument(
+        "--isftcflx", type=int, choices=(0, 1, 2), default=None,
+        help="surface flux over water on every grid (WRF isftcflx): "
+             "0 standard MM5 roughness, 1 Donelan drag with constant heat "
+             "and moisture roughness (the tropical cyclone option), 2 "
+             "Donelan drag with Garratt heat and moisture roughness.  "
+             "Default: the suite's own (0)")
+    parser.add_argument(
+        "--clock", choices=CLOCK_CHOICES, default=DEFAULT_CLOCK,
+        help="how the run steps.  adaptive: each grid starts at the "
+             "emitted time_step and then follows its own Courant number "
+             "between 3 and 8 s per km of its spacing (WRF's "
+             "use_adaptive_time_step, written into [shared]); the "
+             "terrain clock still caps it over steep ground at launch.  "
+             "fixed: one step throughout.  auto (default): adaptive when "
+             "every grid starts inside those bounds and lies within the "
+             "500 m to 12 km spacings the terrain clock measured, fixed "
+             "otherwise (the tropical clock's 2.5 s per km is always "
+             "fixed).  adaptive on a grid outside the bounds is refused, "
+             "naming the grid")
     parser.add_argument("--hours", type=int, default=6, metavar="N",
                         help="forecast length (run_seconds = N*3600)")
     parser.add_argument(
@@ -6407,7 +7493,7 @@ def register_cli(subparsers) -> None:
                         help="explicit ERA5 product; default reanalysis has no member axis")
     parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
                         help="ERA5 provider; ensemble_members requires CDS")
-    parser.add_argument("--cadence", type=int, default=None, metavar="HOURS",
+    parser.add_argument("--cadence", type=positive_int, default=None, metavar="HOURS",
                         help="boundary spacing in whole hours, validated against the selected product")
     parser.add_argument("--member", default=None,
                         help="ensemble trajectory member; defaults to the route's control")
@@ -6447,7 +7533,8 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = [
-    "CARD_VRAM_GIB", "CUMULUS_CONVECTION_PERMITTING_DX_KM",
+    "CARD_VRAM_GIB", "CLOCK_CHOICES", "CUMULUS_CONVECTION_PERMITTING_DX_KM",
+    "DEFAULT_CLOCK", "clock_decision",
     "CUMULUS_GRAY_ZONE_TOP_DX_KM",
     "DEFAULT_LADDER", "DEFAULT_WIZARD_SOURCE",
     "DomainFitError", "GEOG_DATASETS", "GRAY_ZONE_DX_KM",
@@ -6455,16 +7542,20 @@ __all__ = [
     "ROOT_DX_M", "ROOT_TIME_STEP_S", "TROPICAL_ROOT_TIME_STEP_S",
     "convection_permitting",
     "cumulus_by_domain", "cumulus_gray_zone_advisory",
-    "cumulus_gray_zone_headline", "cumulus_retired_headline",
-    "cumulus_retired_note", "declared_nocturnal_night",
-    "domain_main", "experiment_from_text", "final_step_command",
-    "fit_ladder", "fit_polygon_ladder", "gray_zone_advisory",
+    "cumulus_gray_zone_headline", "cumulus_retired_headline", "root_cumulus",
+    "cumulus_retired_note", "cumulus_requested_by", "declared_nocturnal_night",
+    "domain_main", "experiment_from_text", "fetch_window", "final_step_command",
+    "fit_ladder", "fit_memory", "fit_polygon_ladder", "gray_zone_advisory",
     "load_polygon_footprint", "max_fetch_abs_lat",
     "oversized_footprint_advisory", "parse_chain",
-    "parse_custom_ladder", "parse_level_buffers", "pole_clearance_deg",
+    "parse_custom_ladder", "parse_level_buffers", "physics_mix_request",
+    "physics_mix_words", "pole_clearance_deg", "with_physics_mix",
     "POINT_FIT_EXTENT_SCOPE", "POINT_FIT_MAX_EXTENT_KM",
     "POINT_FIT_PROJECTION_SCOPE", "POINT_FIT_SCOPES",
-    "point_fit_cap_note", "point_request_bound",
+    "POINT_FIT_BAND_SCOPE", "POINT_FIT_FLOOR_SCOPE",
+    "point_extent_argument", "point_extent_note", "point_fit_cap_note",
+    "point_request_bound",
+    "refuse_point_extent_on_polygon",
     "polygon_ladder_dims", "radiation_cadence_advisory",
     "radt_ladder_minutes", "register_cli", "render_config",
     "render_wps_namelist", "root_time_step_s", "seconds_per_km",

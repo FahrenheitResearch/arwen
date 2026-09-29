@@ -306,8 +306,15 @@ def test_no_shipped_build_path_bypasses_the_vendored_registry() -> None:
     only place cargo looks for the source replacement.
     """
 
+    # Every page a reader follows is a build site too: ICON-GLOBAL.md and
+    # mpas-mesh-generation.md built the mapped engine and rustwx this way.
+    pages = [*sorted((_ROOT / "docs").glob("*.md")),
+             *sorted((_ROOT / "docs" / "public").glob("*.md")),
+             *sorted((_ROOT / "docs" / "manual").glob("*.md"))]
+    sites = dict.fromkeys([*_BUILD_SITES,
+                           *(page.relative_to(_ROOT).as_posix() for page in pages)])
     offenders = []
-    for relative in _BUILD_SITES:
+    for relative in sites:
         path = _ROOT / relative
         if not path.is_file():
             continue

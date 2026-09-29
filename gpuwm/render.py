@@ -104,11 +104,13 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
 
-from gpuwm import explain, render_layout, run_stamp
+from gpuwm import explain, render_georef, render_layout, run_stamp
+from gpuwm.cli_numbers import positive_int
 from gpuwm.io.history_selection import PRODUCT_HISTORY_INPUTS
 from gpuwm.science_core import SCIENCE_CORE_REQUIREMENT
 
@@ -141,6 +143,24 @@ _WRFOUT_DOMAIN = re.compile(r"wrfout_(d\d{2})")
 #: :func:`default_source_label`, which appends the executing version.
 DEFAULT_SOURCE_LABEL = "ArWen"
 
+
+
+#: netCDF4 over HDF5 is not thread safe, and netCDF4 1.7 releases the GIL
+#: around its library calls: two threads rendering in one process (two
+#: launches filed at once, as tests/test_render_georef_record.py races
+#: them) crashed the interpreter with an access violation inside a
+#: header read about one run in thirteen.  Every history read here holds
+#: this lock for its whole open.
+_NETCDF_LOCK = threading.RLock()
+
+
+@contextlib.contextmanager
+def _netcdf_read(path):
+    import netCDF4
+
+    with _NETCDF_LOCK:
+        with netCDF4.Dataset(path) as dataset:
+            yield dataset
 
 def default_source_label() -> str:
     """``ArWen 1.8.7`` -- the brand plus the version that is EXECUTING.
@@ -228,8 +248,7 @@ def _domain_tag(path: Path) -> str | None:
     """
 
     try:
-        import netCDF4
-        with netCDF4.Dataset(path) as ds:
+        with _netcdf_read(path) as ds:
             if "GRID_ID" in ds.ncattrs():
                 grid_id = int(ds.getncattr("GRID_ID"))
                 # The rust side accepts 1..=99; anything else is not a
@@ -271,8 +290,7 @@ def _grid_spacing_m(path: Path) -> float | None:
     """The file's own ``DX`` in metres, or None when it declares none."""
 
     try:
-        import netCDF4
-        with netCDF4.Dataset(path) as ds:
+        with _netcdf_read(path) as ds:
             if "DX" not in ds.ncattrs():
                 return None
             spacing = float(ds.getncattr("DX"))
@@ -596,20 +614,36 @@ def parse_products_rust(spec: str) -> str:
     unknown tokens pass through as catalog slugs for the renderer's own
     strict validation -- so ``--products sbcape,srh_0_1km`` works without
     this module re-declaring the rust catalog.
+
+    The list is read with the engine's own tokenizer
+    (:func:`gpuwm.rustwx.product_spec_terms`), so a section's level list
+    stays inside its section and duplicates are whole products, never
+    level numbers.  ``all`` stands for every named product the frames
+    can draw, so a named product beside it adds nothing and is folded
+    into it (the engine refuses a keyword beside a named product in one
+    list).  What ``all`` does not draw keeps its place beside it: the
+    ``variables`` keyword and the storeless families (``xsec:``,
+    ``mesh:``), which the engine splits off before the store list and
+    the render door answers per term.
     """
 
+    from gpuwm.rustwx import (MESH_PREFIXES, SECTION_PREFIX,
+                              VARIABLES_KEYWORD, product_spec_terms)
+
     slugs: list[str] = []
-    for token in spec.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        if token == "all":
-            return "all"
+    for token in product_spec_terms(spec):
         slug = RUST_PRODUCT_ALIASES.get(token, token)
+        if slug.lower() == "all":
+            slug = "all"
         if slug not in slugs:
             slugs.append(slug)
     if not slugs:
         raise ValueError("no products requested")
+    if "all" in slugs:
+        slugs = [slug for slug in slugs
+                 if slug == "all" or slug.startswith(SECTION_PREFIX)
+                 or slug.lower().startswith(MESH_PREFIXES)
+                 or slug.lower() == VARIABLES_KEYWORD]
     return ",".join(slugs)
 
 
@@ -632,12 +666,17 @@ def parse_size(spec: str) -> tuple[int, int]:
 
 
 def parse_products(spec: str) -> tuple[str, ...]:
-    """``refl,t2`` -> product tuple; ``all`` -> every product, in order."""
+    """``refl,t2`` -> product tuple; ``all`` -> every product, in order.
+
+    Read with the engine's own tokenizer
+    (:func:`gpuwm.rustwx.product_spec_terms`), so a section term this
+    engine cannot draw is refused whole rather than by its level list's
+    pieces.
+    """
+    from gpuwm.rustwx import product_spec_terms
+
     names: list[str] = []
-    for token in spec.split(","):
-        token = token.strip()
-        if not token:
-            continue
+    for token in product_spec_terms(spec):
         if token == "all":
             names.extend(name for name in PRODUCTS if name not in names)
             continue
@@ -865,9 +904,7 @@ def history_dropped_variables(path) -> frozenset[str]:
     """
 
     try:
-        import netCDF4
-
-        with netCDF4.Dataset(Path(path)) as dataset:
+        with _netcdf_read(Path(path)) as dataset:
             raw = getattr(dataset, HISTORY_DROPPED_ATTR, "")
     except Exception:
         return frozenset()
@@ -994,9 +1031,7 @@ def _file_variables(path: Path) -> set[str] | None:
     """
 
     try:
-        import netCDF4
-
-        with netCDF4.Dataset(path) as dataset:
+        with _netcdf_read(path) as dataset:
             return set(dataset.variables)
     except Exception:
         return None
@@ -1005,9 +1040,7 @@ def _file_variables(path: Path) -> set[str] | None:
 def _list_products_matplotlib(path: Path) -> list[tuple[str, str, str, str]]:
     """(product, kind, status, detail) rows for the matplotlib catalog."""
 
-    import netCDF4
-
-    with netCDF4.Dataset(path) as ds:
+    with _netcdf_read(path) as ds:
         present = set(ds.variables)
     rows = []
     for product in _MPL_PRODUCT_NEEDS:
@@ -1208,6 +1241,9 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     wanted_times = ({stamp for path in series if path.resolve() not in context
                      for stamp in _history_series_record(path)[1]}
                     if context else None)
+    prior_georef = render_georef.read(outdir / render_georef.GEOREF_FILENAME)
+    engine_georef = None
+    drawn_at: dict[Path, Path] = {}
     with scratch_store(outdir) as store:
         # Context frames supply accumulation baselines. Render them only in
         # owned scratch so previously published first pictures retain bytes
@@ -1218,16 +1254,37 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
             section=section)
         if not available:
             return [], [], unavailable
-        written, failures, skipped = rustwx.run_renderer_series(
-            renderer, series, store_root=store, out_dir=engine_out,
-            products=available, frames="all" if timeidx is None
-            else str(timeidx), width=width, height=height, heavy=heavy,
-            source_label=source_label, overlays=overlays,
-            annotate=annotate, streamlines=streamlines, theme=theme,
-            section=section, isotherms=isotherms,
-            section_across_km=section_across_km,
-            section_size=section_size,
-            section_top_km=section_top_km, fills=fills)
+        batches = (["all"] if timeidx is None else [str(timeidx)])
+        if timeidx is None and wanted_times is not None:
+            batches = _wanted_slots(series, wanted_times) or batches
+        written, failures, skipped = [], [], []
+        for frames in batches:
+            batch = rustwx.run_renderer_series(
+                renderer, series, store_root=store, out_dir=engine_out,
+                products=available, frames=frames, width=width,
+                height=height, heavy=heavy,
+                source_label=source_label, overlays=overlays,
+                annotate=annotate, streamlines=streamlines, theme=theme,
+                section=section, isotherms=isotherms,
+                section_across_km=section_across_km,
+                section_size=section_size,
+                section_top_km=section_top_km, fills=fills)
+            written.extend(batch[0])
+            failures.extend(batch[1])
+            skipped.extend(batch[2])
+            if engine_out != outdir:
+                # The engine drew into the store, so its map record is
+                # there too and goes with the store: read it after EVERY
+                # launch, since each launch may replace what the last one
+                # wrote.  Drawn into ``outdir``, the record stays put and
+                # file_pictures reads it under the lock.
+                launched = render_georef.read(
+                    engine_out / render_georef.GEOREF_FILENAME)
+                if launched is not None:
+                    engine_georef = (
+                        launched if engine_georef is None else
+                        render_georef.merge(engine_georef, launched,
+                                            root=engine_out))
         skipped = unavailable + skipped
         if wanted_times is not None:
             selected = []
@@ -1237,11 +1294,37 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
                     os.replace(render_layout.fs_path(png),
                                render_layout.fs_path(delivered))
                     selected.append(delivered)
+                    drawn_at[delivered] = png
             written = selected
-    written = [_place_engine_output(png, outdir, token, layout,
-                                    episode=episode)
-               for png in written]
+    written = render_georef.file_pictures(
+        outdir, written,
+        lambda png: _place_engine_output(png, outdir, token, layout,
+                                         episode=episode),
+        batch_dir=engine_out, engine=engine_georef, drawn_at=drawn_at,
+        prior=prior_georef)
     return written, failures, skipped
+
+
+def _wanted_slots(series, wanted_times) -> list[str] | None:
+    """``[index]`` when ONE frame of a context series is wanted, else ``None``.
+
+    A series with context frames exists so a windowed product has its
+    baselines, not so the baselines are drawn: with ``--frames all`` the
+    engine draws every baseline and the caller throws those pictures
+    away.  The engine draws one stored slot per launch (``--frames N``,
+    ordinal over the store's ascending valid times), but every launch
+    imports the whole series again, and the import is the larger cost:
+    measured at 1 km (414x402) on the 5070 Ti host, about 6 s per frame
+    to import against 3.5 s to draw one frame's 204 pictures.  One launch
+    per wanted frame therefore wins only when a single frame is wanted.
+    """
+
+    stamps = sorted({stamp for path in series
+                     for stamp in _history_series_record(path)[1]})
+    wanted = sorted(set(wanted_times) & set(stamps))
+    if len(wanted) != 1 or len(stamps) < 2:
+        return None
+    return [str(stamps.index(wanted[0]))]
 
 
 def _engine_output_time(name: str) -> datetime.datetime:
@@ -1280,7 +1363,7 @@ def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, 
 
     path = Path(path).resolve()
     try:
-        with netCDF4.Dataset(path) as dataset:
+        with _netcdf_read(path) as dataset:
             attributes = dataset.ncattrs()
             metadata = {name: np.asarray(dataset.getncattr(name)).tolist()
                         for name in attributes
@@ -1320,12 +1403,39 @@ def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, 
     return (str(path.parent), history_episode(path), digest.hexdigest()), stamps
 
 
-def group_history_series(paths) -> list[list[Path]]:
-    """Group compatible files, rejecting ambiguous overlapping time records."""
+def group_history_series(paths, *, context_paths=()) -> list[list[Path]]:
+    """Group compatible files, with explicit earlier context for a continuation.
+
+    Ordinary inputs retain their separate directory authorities. An explicit
+    context frame in another directory may join one unique target series only
+    when its grid, episode and scientific identity match and its times precede
+    that series. This lets a restart's saved history supply its first window
+    without silently joining independent target runs.
+    """
     groups = {}
+    context = {Path(path).resolve() for path in context_paths}
+    earlier = []
     for raw in paths:
         path = Path(raw)
         key, stamps = _history_series_record(path)
+        if path.resolve() in context:
+            earlier.append((path, key, stamps))
+            continue
+        groups.setdefault(key, []).append((path, stamps))
+    target_keys = tuple(groups)
+    first_target = {key: min(stamps[0] for _, stamps in groups[key]) for key in target_keys}
+    for path, key, stamps in earlier:
+        if key not in target_keys:
+            matches = [target for target in target_keys
+                       if target[1:] == key[1:] and stamps[-1] < first_target[target]]
+            if len(matches) > 1:
+                # Joining it to one of them would difference that run's
+                # rain against another run's history.
+                raise ValueError(f"History context {path} matches {len(matches)} runs "
+                                 "rendered together, so it cannot say which one it "
+                                 "continues; render one continuation at a time")
+            if matches:
+                key = matches[0]
         groups.setdefault(key, []).append((path, stamps))
     result = []
     for rows in groups.values():
@@ -1365,12 +1475,13 @@ def _available_window_request(renderer: Path, path: Path, products: str,
     "Forecast failed" and a partial picture tree.
 
     This used to drop window-axis rows by matching two of the engine's
-    English sentences.  The catalog has FIVE windowed outcomes
+    English sentences.  The catalog has had FIVE windowed outcomes
     (``rw-wrfbatch/src/main.rs``): excluded on the whole-hour axis,
-    excluded on the ordinal axis, renderable, ``blocked`` with a
-    per-slug reason, and excluded because the window compute itself was
-    unavailable -- whose sentence is composed at run time and can never
-    be in a frozen set.  Two of five matched, and only while the wording
+    excluded on the ordinal axis (renderers built before 2.8.0, which
+    refused windows on a sub-hourly history), renderable, ``blocked``
+    with a per-slug reason, and excluded because the window compute
+    itself was unavailable -- whose sentence is composed at run time and
+    can never be in a frozen set.  Two of five matched, and only while the wording
     held.  Matching on the STATUS matches all five and every status the
     catalog grows later, which is why the verdict is asked of
     :func:`gpuwm.rustwx.catalog_verdict` rather than spelled again here.
@@ -1399,8 +1510,8 @@ def _available_window_request(renderer: Path, path: Path, products: str,
 
     products, storeless = rustwx.drop_storeless_terms(
         products, section=section)
-    requested = [token.strip() for token in products.split(",")
-                 if token.strip()]
+    # Whole terms: a section's level list is one product, never several.
+    requested = rustwx.product_spec_terms(products)
     if not requested:
         # Nothing named and no group keyword: an empty or comma-only
         # request.  It comes back as an empty spec, which is the
@@ -1416,16 +1527,16 @@ def _available_window_request(renderer: Path, path: Path, products: str,
     try:
         rows, _summary = rustwx.catalog_rows(
             renderer, (path,) if paths is None else paths,
-            store_root=store, heavy=heavy)
+            store_root=store, heavy=heavy, products=products)
     except (OSError, RuntimeError) as error:
         # No trustworthy availability verdict: run the unchanged native
         # request so its import/metadata/launch failure remains visible.
         #
         # SAYING SO is the difference between that and a silent forward.
         # This arm is the one path on which a named slug the catalog
-        # would have refused still reaches the renderer, and a windowed
-        # slug that reaches it on a sub-hourly axis fails the whole
-        # invocation -- so a reader who got "exit 1" and a render
+        # would have refused still reaches the renderer, and some refused
+        # slugs fail the whole invocation there (a `var:` term the store
+        # does not hold) -- so a reader who got "exit 1" and a render
         # command had no way to learn that the availability question was
         # never answered.  It is a note, not a refusal: the request is
         # still attempted, and the engine's own failure is still what
@@ -1438,7 +1549,13 @@ def _available_window_request(renderer: Path, path: Path, products: str,
     available, excluded = rustwx.catalog_verdict(rows, requested)
     if not excluded:
         return products, storeless
-    return available, storeless + [(slug, f"{path}: {detail}")
+    # A catalog verdict is about every frame the listing imported, not
+    # about one of them, so a series names its span rather than filing
+    # the whole verdict against its last file.
+    frames = [Path(item) for item in ((path,) if paths is None else paths)]
+    subject = (str(frames[0]) if len(frames) == 1 else
+               f"{frames[0]} to {frames[-1].name} ({len(frames)} frames)")
+    return available, storeless + [(slug, f"{subject}: {detail}")
                                    for slug, detail in excluded]
 
 
@@ -1503,7 +1620,7 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     if series:
         context = {Path(path).resolve() for path in context_paths}
         written, failures, skipped = [], [], []
-        for group in group_history_series([*paths, *context_paths]):
+        for group in group_history_series([*paths, *context_paths], context_paths=context_paths):
             if all(path.resolve() in context for path in group):
                 continue
             options = dict(products=products, timeidx=timeidx, outdir=outdir,
@@ -1548,6 +1665,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
         # identically, so without this the second delivery replaces the
         # first.
         episode = history_episode(path)
+        prior_georef = render_georef.read(
+            outdir / render_georef.GEOREF_FILENAME)
         with scratch_store(outdir) as store:
             available, unavailable = _available_window_request(
                 renderer, path, products, store, heavy=heavy,
@@ -1566,9 +1685,15 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                 isotherms=isotherms, section_across_km=section_across_km,
                 section_size=section_size, section_top_km=section_top_km,
                 fills=fills)
-        file_written = [_place_engine_output(png, outdir, token, layout,
-                                             episode=episode)
-                        for png in file_written]
+        # Filed and recorded in one hold of the manifest's lock: the
+        # engine keyed this launch's pictures by the flat names they are
+        # about to leave, and the next launch drops any entry whose file
+        # has left, so the move and the re-key cannot be apart.
+        file_written = render_georef.file_pictures(
+            outdir, file_written,
+            lambda png, token=token, episode=episode: _place_engine_output(
+                png, outdir, token, layout, episode=episode),
+            prior=prior_georef)
         written.extend(file_written)
         failures.extend(file_failures)
         skipped.extend(file_skipped)
@@ -1691,7 +1816,7 @@ def _place_engine_output(png: Path, outdir: Path, domain: str,
 
 #: A render's working scratch lives BESIDE the delivered tree, in
 #: ``<delivery><SCRATCH_SUFFIX>/``, never inside it.
-SCRATCH_SUFFIX = ".render-scratch"
+SCRATCH_SUFFIX = render_layout.SCRATCH_SUFFIX
 
 
 def scratch_root_for(outdir) -> Path:
@@ -1734,6 +1859,13 @@ SCRATCH_PREFIX_ENV = "GPUWM_RENDER_SCRATCH_PREFIX"
 
 _SCRATCH_PREFIX_SHAPE = re.compile(
     rf"^{re.escape(DEFAULT_SCRATCH_PREFIX)}[0-9a-zA-Z]+-$")
+
+#: A working store a door's minted token names: the token, then the
+#: characters ``tempfile.mkdtemp`` appended.  The plain-prefix store of a
+#: render nobody spawned does not match, so no marker can be written for
+#: one and no later run can remove one.
+_SCRATCH_STORE_SHAPE = re.compile(
+    rf"^{re.escape(DEFAULT_SCRATCH_PREFIX)}[0-9a-zA-Z]+-[0-9a-zA-Z_]+$")
 
 
 def stage_scratch_prefix() -> str:
@@ -1847,23 +1979,140 @@ def sweep_abandoned_scratch(outdir, *, prefix: str) -> list[Path]:
             f"remove a concurrent render's live store, which on POSIX "
             f"loses that render's work. Mint a prefix, hand it to the "
             f"stage through GPUWM_RENDER_SCRATCH_PREFIX, and sweep on it.")
-    root = scratch_root_for(outdir)
-    try:
-        candidates = sorted(entry for entry in root.iterdir()
-                            if entry.is_dir()
-                            and entry.name.startswith(prefix))
-    except OSError:
-        return []
     removed: list[Path] = []
-    for store in candidates:
-        shutil.rmtree(store, ignore_errors=True)
-        if not store.exists():
+    for store in owned_scratch_stores(outdir, prefix=prefix):
+        # The extended-length spelling, for the reason
+        # :func:`_remove_scratch_store` gives: the engine's hour files
+        # sit past the Windows path ceiling, and a sweep that cannot
+        # reach them removes nothing.
+        shutil.rmtree(render_layout.fs_path(store, descend=True),
+                      ignore_errors=True)
+        if not _store_exists(store):
             removed.append(store)
     try:
-        root.rmdir()
+        scratch_root_for(outdir).rmdir()
     except OSError:
         pass
     return removed
+
+
+def owned_scratch_stores(outdir, *, prefix: str) -> list[Path]:
+    """The working stores beside ``outdir`` that carry ``prefix``, in path order.
+
+    What a door asks after one of its render stages has exited: anything
+    still here under the stage's token is a store that stage opened and
+    did not remove.  Refuses the plain prefix on the same terms as
+    :func:`sweep_abandoned_scratch`, because a listing on it would claim
+    every concurrent render's live store as this door's.
+    """
+
+    if not _SCRATCH_PREFIX_SHAPE.match(str(prefix)):
+        raise ValueError(
+            f"owned_scratch_stores needs the token a door minted with "
+            f"stage_scratch_prefix(), not {prefix!r}: the plain "
+            f"{DEFAULT_SCRATCH_PREFIX!r} prefix names every render's "
+            f"store, not one door's.")
+    try:
+        return sorted(entry for entry in scratch_root_for(outdir).iterdir()
+                      if entry.is_dir() and entry.name.startswith(prefix))
+    except OSError:
+        return []
+
+
+def _store_exists(store) -> bool:
+    return os.path.lexists(render_layout.fs_path(store, descend=True))
+
+
+#: The name a door gives the marker it leaves beside a working store it
+#: owned and still could not remove after all of its renders had exited:
+#: ``<store><ABANDONED_SUFFIX>``.  The marker is the ownership proof a
+#: later run needs, because a store's own name cannot say whether the
+#: door that minted its token is still running.
+ABANDONED_SUFFIX = ".abandoned"
+
+
+def mark_abandoned_scratch(stores, *, run=None) -> list[Path]:
+    """Mark stores whose owning run has ended so a later run removes them.
+
+    Called by a door only once every render it spawned has exited and
+    its own sweep still could not remove these (a handle another program
+    holds on an hour file).  A store without this marker is never
+    removed by :func:`sweep_marked_scratch`, so a concurrent render's
+    live store cannot be reached by it.  Returns the markers written.
+    """
+
+    import json
+
+    written: list[Path] = []
+    for store in stores:
+        store = Path(store)
+        if not _SCRATCH_STORE_SHAPE.match(store.name):
+            continue
+        marker = store.with_name(store.name + ABANDONED_SUFFIX)
+        try:
+            marker.write_text(json.dumps(
+                {"store": store.name,
+                 "run": None if run is None else str(run)}) + "\n",
+                encoding="utf-8")
+        except OSError:
+            continue
+        written.append(marker)
+    return written
+
+
+def sweep_marked_scratch(folder) -> list[Path]:
+    """Remove the stores earlier runs in ``folder`` marked as abandoned.
+
+    The scratch roots of runs in ``folder`` sit at most two levels down:
+    ``<folder>/<delivery>.render-scratch`` for a run written straight
+    into it, and ``<folder>/<run>/<delivery>.render-scratch`` for a
+    stamped run folder (only a folder named as one is looked inside, so
+    a folder full of other things costs one listing).  Only a store
+    carrying a marker from :func:`mark_abandoned_scratch` is touched; its
+    marker goes with it.  Returns the stores removed, in path order.
+    Never raises.
+    """
+
+    import shutil
+
+    folder = Path(folder)
+    removed: list[Path] = []
+    try:
+        roots = sorted({*folder.glob(f"*{SCRATCH_SUFFIX}"),
+                        *(root for run in folder.iterdir()
+                          if run_stamp.is_run_folder(run) and run.is_dir()
+                          for root in run.glob(f"*{SCRATCH_SUFFIX}"))})
+    except OSError:
+        return removed
+    for root in roots:
+        try:
+            markers = sorted(root.glob(f"*{ABANDONED_SUFFIX}"))
+        except OSError:
+            continue
+        cleared = False
+        for marker in markers:
+            store = marker.with_name(marker.name[:-len(ABANDONED_SUFFIX)])
+            if not _SCRATCH_STORE_SHAPE.match(store.name):
+                continue
+            if _store_exists(store):
+                shutil.rmtree(render_layout.fs_path(store, descend=True),
+                              ignore_errors=True)
+                if _store_exists(store):
+                    continue
+                removed.append(store)
+            try:
+                marker.unlink()
+                cleared = True
+            except OSError:
+                pass
+        if cleared:
+            # Only a root this sweep emptied: an empty root nobody marked
+            # may be the one a live render is about to open its store in.
+            try:
+                root.rmdir()
+            except OSError:
+                pass
+    return sorted(removed)
 
 
 @contextlib.contextmanager
@@ -1907,31 +2156,61 @@ def scratch_store(outdir, *, prefix: str | None = None):
             pass
 
 
-def _remove_scratch_store(store: Path) -> None:
-    """Delete a per-file scratch store, riding out Windows handle lag.
+def _remove_scratch_store(store: Path) -> bool:
+    """Delete a per-file scratch store; True when it is gone.
 
-    The renderer memory-maps its hour files; on Windows the mapping's
-    release can trail the process exit by a beat, making an immediate
-    rmtree fail with 'directory not empty'.  A few short retries clear
-    it; a scratch directory that STILL cannot be removed is worth a
-    warning, never a failed render.
+    WALKED IN THE EXTENDED-LENGTH SPELLING, which is what makes this
+    work on Windows at all.  The engine files each hour at
+    ``<store>/wrf/local_<init>_<64 hex>_<profile>_science_v1/f000.rws``
+    and writes it through the extended-length API.  MEASURED on the
+    engine's own stores: an hour file sits 147 characters below its
+    store, and a door's store sits 43 to 45 characters below the run
+    folder, so an hour file passes the 260-character ceiling the
+    ordinary API enforces (unless long paths are switched on for the
+    whole machine) once the run folder's own path is about 70
+    characters.  On the 2026-09-26 user sweep the run folder was 104
+    characters and the hour files 294 to 296.  ``rmtree`` of the plain
+    spelling failed on every try with WinError 145 ("the directory is
+    not empty"), and every successful Windows run kept its stores
+    (741 MB on a 24 h 3 km forecast, finding F7).
+
+    The retries were written for handle lag after the renderer exits;
+    the failure they kept meeting was this path ceiling (F7).  They stay
+    only for a file another program (a scanner or an indexer) may hold
+    for a moment after it is written, which no Windows render has
+    measured yet.  A store that STILL cannot be removed is worth a
+    warning, never a failed render; when a door minted this store's
+    token the door removes it once its render has exited, and the line
+    says so rather than calling it lost.
     """
 
     import shutil
     import time
 
+    walk = render_layout.fs_path(store, descend=True)
     for delay in (0.0, 0.25, 0.5, 1.0, 2.0, 2.0, 2.0, 2.0):
         if delay:
             time.sleep(delay)
         try:
-            shutil.rmtree(store)
+            shutil.rmtree(walk)
+        except FileNotFoundError:
+            if not _store_exists(store):
+                return True
         except OSError:
             continue
-        return
-    shutil.rmtree(store, ignore_errors=True)
-    if store.exists():
+        else:
+            return True
+    shutil.rmtree(walk, ignore_errors=True)
+    if not _store_exists(store):
+        return True
+    if _SCRATCH_STORE_SHAPE.match(Path(store).name):
+        print(f"render: warning: scratch store could not be removed yet; "
+              f"the run that started this render removes it once its "
+              f"renders have exited: {store}", file=sys.stderr)
+    else:
         print(f"render: warning: scratch store left behind: {store}",
               file=sys.stderr)
+    return False
 
 
 def renderer_refusal(renderer) -> str | None:
@@ -2285,8 +2564,51 @@ def matplotlib_workaround_notice(engine: str) -> str | None:
             f"it: {fix}")
 
 
+def _skip_reason(detail: str, sources=()) -> str:
+    """One skip's reason as the note's line gives it: without its file.
+
+    Every skip is recorded against the input it came from: ``PATH:
+    reason`` from the renderer, ``PATH[frame] carries no FIELD`` from the
+    matplotlib engine, ``FIRST to LAST (N frames): reason`` for a series
+    verdict.  On the one line ``gpuwm go`` relays, that path is a run
+    folder's absolute path repeated once per product, and it pushed the
+    part a reader acts on -- which field, which window -- off the end.
+    The path stays in the per-item rows behind ``--explain``.
+
+    ``sources`` are the invocation's inputs, so only a prefix that IS one
+    of them is taken off: a reason whose text merely contains a colon (a
+    storeless term's sentence) is given whole.  A reason no source opens
+    is given whole too, which costs length and never the reason.
+    """
+
+    text = str(detail)
+    spellings = {str(item) for item in sources}
+    spellings |= {str(Path(item)) for item in sources}
+    for source in sorted(spellings, key=len, reverse=True):
+        if not source or not text.startswith(source):
+            continue
+        rest = text[len(source):]
+        frame = re.match(r"\[\d+\]", rest)
+        if frame is not None:
+            rest = rest[frame.end():]
+            if rest.startswith(" "):
+                # ``PATH[frame] carries no FIELD``: the file is the
+                # sentence's subject, and it lacks the field in every
+                # frame (the matplotlib engine reads presence per file).
+                return " ".join(("the file" + rest).split()).rstrip(".")
+        span = re.match(r" to .+? \(\d+ frames\)", rest)
+        if span is not None:
+            rest = rest[span.end():]
+        if rest.startswith(": "):
+            reason = " ".join(rest[2:].split()).rstrip(".")
+            if reason:
+                return reason
+    return " ".join(text.split()).rstrip(".") or "no reason given"
+
+
 def skip_notice(skipped: list[tuple[str, str]],
-                wrote_any: bool = True) -> str | None:
+                wrote_any: bool = True, drawn=None,
+                sources=()) -> str | None:
     """ONE line for the products this render did not draw, or ``None``.
 
     A skip is not a failure and must not print as one -- but it must
@@ -2295,10 +2617,13 @@ def skip_notice(skipped: list[tuple[str, str]],
     missing from the directory without saying what, so the only way to
     find out is to diff a listing against the catalog.
 
-    Names in the action half, then; per-item evidence -- which file,
-    which frame, which field -- behind ``--explain``, verbatim from the
-    engine, because paraphrasing "which field was missing" would leave
-    the reader guessing which product lost which input.
+    Names and each name's first reason in the action half, then, as
+    ``refl: the file carries no REFL_10CM``: which field or window a
+    product lacked is what a reader needs to act, so it is on the line.
+    The file each reason was recorded against is not (see
+    :func:`_skip_reason`; ``sources`` are the invocation's inputs), and
+    the per-item evidence -- every skip, which file, which frame --
+    stays behind ``--explain``, verbatim from the engine.
 
     The ``note:`` prefix is essential rather than decorative.  It is
     this tree's word for "true and worth knowing, not a fault", and
@@ -2318,11 +2643,31 @@ def skip_notice(skipped: list[tuple[str, str]],
     and a note insisting nothing had failed.  That arm now says nothing
     rendered and points at ``--list-products``, which prints the
     per-product verdict and reason for THIS file.
+
+    ``drawn`` is the set of product folders this render DID fill.  With
+    it, the note tells apart a product that drew no picture at all from
+    one that was only skipped at some frames -- ``qpf_1h`` at F000, where
+    no hour has ended yet -- because naming both the same way put a
+    product with 24 pictures in the same sentence as three with none.
+
+    Each name carries the first reason recorded for it, on the one line
+    ``gpuwm go`` relays, as :func:`gpuwm.render_receipts.undrawn_note`
+    gives the run's closing note.  The line used to give one fixed cause
+    for every row, "the file(s) do not carry their declared input fields
+    or required time windows", which is wrong for a frame too large for
+    the renderer's pressure-level volume: that frame carries every field,
+    and the engine's own note says the volume passed its ceiling.
     """
 
     if not skipped:
         return None
+    from gpuwm.render_receipts import _drawn_family
+
     names = sorted({product for product, _detail in skipped})
+    first_reason: dict[str, str] = {}
+    for product, detail in skipped:
+        first_reason.setdefault(product, _skip_reason(detail, sources))
+    why = "; ".join(f"{name}: {first_reason[name]}" for name in names)
     if wrote_any:
         verdict = ("That is not a failure and does not change the "
                    "exit code")
@@ -2330,50 +2675,191 @@ def skip_notice(skipped: list[tuple[str, str]],
         verdict = ("Nothing else was drawn, so nothing rendered and the "
                    "exit code is nonzero; run --list-products to see "
                    "which products this file can support")
+    split = ""
+    if drawn is not None:
+        drawn = set(drawn)
+        never = [name for name in names if _drawn_family(name) not in drawn]
+        partial = [name for name in names if name not in never]
+        clauses = []
+        if never:
+            clauses.append(f"{', '.join(never)} drew no picture in this "
+                           "render")
+        if partial:
+            verb = "was" if len(partial) == 1 else "were"
+            clauses.append(f"{', '.join(partial)} drew pictures and "
+                           f"{verb} skipped only at the frames named below")
+        split = "; ".join(clauses) + ".  "
     return explain.layered(
         f"note: render skipped {len(skipped)} product render(s) "
-        f"({', '.join(names)}) -- the file(s) do not carry their declared "
-        f"input fields or required time windows.  {verdict}",
+        f"({', '.join(names)}) -- {why}.  {split}{verdict}",
         "\n".join(f"  skipped {product}: {detail}"
                   for product, detail in skipped))
+
+
+#: The line layers the renderer's cartopy fallback draws, relative to the
+#: cartopy Natural Earth root.  Mirrors ``rustwx-render``'s
+#: ``default_conus_feature_paths``: coastline, national borders, state
+#: lines.  A cache holding only some of them draws only those.
+_CARTOPY_LINE_LAYERS = (
+    ("physical", "ne_10m_coastline.shp"),
+    ("cultural", "ne_10m_admin_0_boundary_lines_land.shp"),
+    ("cultural", "ne_50m_admin_1_states_provinces_lines.shp"),
+)
+
+
+def _cartopy_draws_every_line_layer() -> bool:
+    from gpuwm import rustwx
+
+    root = rustwx.cartopy_natural_earth_root()
+    return root is not None and all(
+        (root / folder / name).is_file()
+        for folder, name in _CARTOPY_LINE_LAYERS)
+
+
+def basemap_gap(renderer) -> str | None:
+    """What a picture from ``renderer`` lacks, and the fix, or None.
+
+    The other way to ship a plot believing it is something it is not.
+    A renderer with no basemaps does not fail, warn, or exit non-zero:
+    it draws the weather over a blank rectangle, and 1.4.0 shipped a
+    tropical cyclone with no coastline that way (F4/B-11).  2.7.x shipped
+    every picture of every wheel install that way: the shapefiles came
+    only from ``gpuwm fetch-bridges``, which no install text ran.  They
+    ship in the ``gpuwm-data`` companion now, so this answers only on an
+    install where the companion was removed or edited -- and says so.
+
+    Checked against the renderer's own resolution ladder plus the roots
+    :func:`gpuwm.rustwx.renderer_env` hands it, and it names the one
+    command that fixes it.
+    """
+
+    from gpuwm import rustwx
+
+    if renderer is None or rustwx.resolve_basemap_dir(renderer) is not None:
+        return None
+    if _cartopy_draws_every_line_layer():
+        # The renderer's own last-resort fallback, which it consults per
+        # layer after the candidate roots.  Coastlines, borders and state
+        # lines will be drawn, so warning here would be a false alarm on
+        # every workstation that has ever run cartopy at those scales --
+        # and a notice that cries wolf is a notice nobody reads.  A cache
+        # that holds only some of the three (a coastline and no state
+        # lines, say) still warns, because the picture lacks the rest.
+        return None
+    return ("no map assets resolve for the renderer, so pictures are drawn "
+            "with no coastlines, borders or state lines; they ship in the "
+            "gpuwm-data package, so reinstall it: "
+            f"{rustwx.basemap_remedy()}")
 
 
 def missing_basemap_notice(renderer) -> str | None:
     """ONE line when the renderer resolves but its map assets do not.
 
-    The other way to ship a plot believing it is something it is not.
-    A renderer with no basemaps does not fail, warn, or exit non-zero:
-    it draws the weather over a blank rectangle, and 1.4.0 shipped a
-    tropical cyclone with no coastline that way (F4/B-11).  Nothing in
-    the transcript said so, because as far as the renderer is concerned
-    a map with no geography is a map.
-
-    Delivery is fixed -- the bundle carries the shapefiles beside the
-    binary now -- but an install that staged its binaries under 1.4.0
-    and has not re-run ``gpuwm fetch-bridges`` still has the eight
-    executables and no assets, which is exactly the silent state.  So
-    this is checked at render time against the renderer's own
-    resolution ladder, and it names the one command that fixes it.
+    The terminal form of :func:`basemap_gap`, printed by ``gpuwm
+    render``.  A run reports the same gap as a
+    :data:`BASEMAP_MISSING_CODE` event instead
+    (:func:`announce_missing_basemap`), because the render it spawns
+    prints this to a stream nobody reads.
     """
 
-    from gpuwm import bridges, rustwx
+    gap = basemap_gap(renderer)
+    return None if gap is None else f"render: WARNING: {gap}"
 
-    if renderer is None or rustwx.resolve_basemap_dir(renderer) is not None:
+
+#: The run event every in-run render path emits when the renderer it
+#: drives has no map assets (:func:`announce_missing_basemap` says how
+#: often).  A code rather than a
+#: sentence, so the desktop, the terminal and the web page can each say
+#: it in their own words.
+BASEMAP_MISSING_CODE = "render_basemap_missing"
+
+_BASEMAP_CHECKED: set[tuple[str, str]] = set()
+_BASEMAP_CHECKED_LOCK = threading.Lock()
+
+
+def _renderer_on_disk():
+    """The renderer a render subprocess would drive, without resolving it.
+
+    :func:`gpuwm.rustwx.find_renderer` can refresh a stale staged bundle
+    and can raise on a bad override; this is a reader asking where the
+    binary sits so its map assets can be looked up, so it takes the
+    first candidate on disk and leaves every judgement to the render.
+    """
+
+    from gpuwm import rustwx
+
+    for candidate in rustwx.renderer_candidates():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def renderer_basemap_gap() -> str | None:
+    """:func:`basemap_gap` for the renderer a render would drive, or None.
+
+    For a caller that keeps a RECORD of the gap rather than writing to an
+    event stream: a remote machine's picture gallery status and a local
+    DA products record.  It answers every time it is asked, where
+    :func:`announce_missing_basemap` answers once per process, because a
+    record rewritten on every pass would otherwise lose the warning on
+    the second pass.  Never raises: a check about the picture must not
+    stop the picture.
+    """
+
+    try:
+        return basemap_gap(_renderer_on_disk())
+    except Exception:  # noqa: BLE001 - telemetry never fails a render
         return None
-    if rustwx.cartopy_natural_earth_root() is not None:
-        # The renderer's own last-resort fallback, which it consults per
-        # layer after the candidate roots.  Geography will be drawn, so
-        # warning here would be a false alarm on every workstation that
-        # has ever run cartopy -- and a notice that cries wolf on
-        # developer machines is a notice nobody reads on a real one.
-        return None
-    fix = ("run `gpuwm fetch-bridges`, which stages them beside the "
-           "renderer" if bridges.prebuilt_bundle_offer() is not None
-           else "set RUSTWX_BASEMAP_DIR to a checkout's "
-                "tools/rustwx/assets/basemap")
-    return ("render: WARNING: no basemap assets resolve for this renderer, "
-            "so plots will be drawn with no coastlines, borders or state "
-            f"lines -- {fix}")
+
+
+#: The two moments a run reports the gap: when it draws its first
+#: picture while the forecast runs, and when the finalize stage draws.
+ANNOUNCE_STAGES = ("as-drawn", "finalize")
+
+
+def announce_missing_basemap(warn, render_dir, *, stage: str) -> bool:
+    """Report a renderer with no map assets to a run, once per stage.
+
+    THE DEFECT THIS CLOSES: every picture of a wheel install was drawn
+    with no coastlines, borders or state lines, and the only warning was
+    :func:`missing_basemap_notice` printed by the ``gpuwm render``
+    subprocess -- to a stderr the early render, the every-frame render
+    and the finalize stage all capture and drop.  No event carried it,
+    so the desktop, the terminal workspace and the web page showed
+    nothing.
+
+    ``warn`` takes ``(code, message, **fields)`` like every run
+    observer's.  Called by each in-run render path before it draws.  The
+    first call for one ``render_dir`` and ``stage`` checks and the rest
+    return at once, so the early render and the every-frame render share
+    one report however many frames they draw.  ``stage`` is one of
+    :data:`ANNOUNCE_STAGES`, and the finalize stage reports again because
+    the terminal workspace and a remote machine's status read only the
+    last 512 KiB of a run's events: on a long run the early report has
+    left that window by the time the pictures are finished.  Returns
+    whether it warned.  Never raises: a check about the picture must not
+    stop the picture.
+    """
+
+    try:
+        if stage not in ANNOUNCE_STAGES:
+            raise ValueError(f"unknown stage {stage!r}")
+        key = (os.path.normcase(os.path.abspath(os.fspath(render_dir))),
+               stage)
+        with _BASEMAP_CHECKED_LOCK:
+            if key in _BASEMAP_CHECKED:
+                return False
+            _BASEMAP_CHECKED.add(key)
+        gap = basemap_gap(_renderer_on_disk())
+        if gap is None:
+            return False
+        from gpuwm import rustwx
+
+        warn(BASEMAP_MISSING_CODE, gap, remedy=rustwx.basemap_remedy(),
+             render_dir=str(render_dir), render_stage=stage)
+        return True
+    except Exception:  # noqa: BLE001 - telemetry never fails a run
+        return False
 
 
 def _pair_main(args: argparse.Namespace) -> int:
@@ -2522,6 +3008,110 @@ def _publish_run_dir(args: argparse.Namespace) -> None:
           file=sys.stderr)
 
 
+#: The file ``--inputs-from`` reads: the frames to draw and the frames
+#: that only supply accumulation baselines, one path per entry.
+RENDER_INPUTS_SCHEMA = "gpuwm.render-inputs/v1"
+
+
+def write_render_inputs(path: Path, frames, context_frames=()) -> Path:
+    """Write the frame lists a render stage hands ``gpuwm render``.
+
+    A forecast's whole series used to travel as arguments, one path per
+    frame.  Windows starts no process whose command line passes 32,767
+    characters, and 48 hours of hourly parent frames plus a 15 minute
+    nest under an ordinary Documents folder came to 36,519: the forecast
+    finished and its pictures were never drawn.  A file has no such
+    ceiling, and every frame of the series still reaches the renderer,
+    which is what an accumulation window needs.
+    """
+
+    record = {"schema": RENDER_INPUTS_SCHEMA,
+              "wrfout": [str(frame) for frame in frames],
+              "context_wrfout": [str(frame) for frame in context_frames]}
+    Path(path).write_text(json.dumps(record, indent=1), encoding="utf-8")
+    return Path(path)
+
+
+def _fold_render_inputs(args: argparse.Namespace) -> str | None:
+    """Add ``--inputs-from``'s frames to the command's; the refusal, or None.
+
+    Done once: ``gpuwm.cli`` folds the file in before its provenance gate
+    and capability preflight, so their refusal lines name the frames too,
+    and ``inputs_from`` is cleared so :func:`render_main` does not add the
+    same frames a second time.
+    """
+
+    source = getattr(args, "inputs_from", None)
+    if source is None:
+        return None
+    try:
+        record = json.loads(Path(source).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        reason = getattr(error, "strerror", None) or str(error)
+        return f"the frame list {source} could not be read ({reason})"
+    if not isinstance(record, dict) or record.get("schema") != RENDER_INPUTS_SCHEMA:
+        return (f"{source} is not a frame list this version reads "
+                f"(it needs \"schema\": \"{RENDER_INPUTS_SCHEMA}\")")
+    lists = {}
+    for key in ("wrfout", "context_wrfout"):
+        value = record.get(key, [])
+        if not isinstance(value, list) or not all(
+                isinstance(item, str) and item for item in value):
+            return f"{source}: \"{key}\" must be a list of file paths"
+        lists[key] = [Path(item) for item in value]
+    args.wrfout = [*(args.wrfout or []), *lists["wrfout"]]
+    args.context_wrfout = [*(getattr(args, "context_wrfout", None) or []),
+                           *lists["context_wrfout"]]
+    args.inputs_from = None
+    _respell_invocation(lists)
+    return None
+
+
+def _respell_invocation(lists: dict) -> None:
+    """The "run ... --explain" line names the frames, when that line fits.
+
+    The render stage removes its frame file when the stage succeeds, so a
+    pointer that repeated ``--inputs-from`` would send the reader to a
+    file that is gone.  It names the frames themselves, as the stage's
+    command did before the file existed.
+
+    Unless the frames spelled out make a line past the command-line
+    budget (:data:`gpuwm.rustwx.COMMAND_LINE_BUDGET`), which is the very
+    series the file exists for.  Spelled out, 242 frames were a 48,000
+    character line: no Windows shell runs it, and as the last line of a
+    refusal it filled the diagnostic the desktop shows and pushed the
+    refusal itself out.  Such a line keeps ``--inputs-from`` and the
+    file, which a failed stage leaves in place for it
+    (:func:`gpuwm.go_cli.render_inputs_file`).
+    """
+
+    from gpuwm import explain
+    from gpuwm.rustwx import COMMAND_LINE_BUDGET
+
+    typed = explain.invocation()
+    if typed is None:
+        return
+    frames = [str(path) for path in lists["wrfout"]]
+    spelled: list[str] = []
+    skip = False
+    for token in typed:
+        if skip:
+            skip = False
+        elif token == "--inputs-from":
+            skip = True
+            spelled += frames
+        elif token.startswith("--inputs-from="):
+            spelled += frames
+        else:
+            spelled.append(token)
+    for path in lists["context_wrfout"]:
+        spelled += ["--context-wrfout", str(path)]
+    explain.set_invocation(spelled)
+    pasted = explain.reinvocation() or ""
+    if len(f"{pasted} --explain") > COMMAND_LINE_BUDGET:
+        explain.set_invocation(typed)
+
+
 def render_main(args: argparse.Namespace) -> int:
     # Which tree is drawing these plots.  Idempotent -- `gpuwm.cli.main`
     # has normally already announced -- and here as well because this
@@ -2529,6 +3119,10 @@ def render_main(args: argparse.Namespace) -> int:
     from gpuwm.provenance_gate import announce
 
     announce("gpuwm render")
+    refusal = _fold_render_inputs(args)
+    if refusal is not None:
+        print(f"render: {refusal}", file=sys.stderr)
+        return 2
     if args.pair:
         if args.wrfout:
             print("render: --pair composes already-rendered PNG "
@@ -2601,8 +3195,8 @@ def render_main(args: argparse.Namespace) -> int:
     # which reads like a damaged artifact rather than the configuration
     # choice it is.  Exempt: --list-products (it exists to answer this),
     # and --products all (a request for whatever the file supports).
-    requested = ([token.strip() for token in args.products.split(",")
-                  if token.strip()])
+    from gpuwm.rustwx import product_spec_terms
+    requested = product_spec_terms(args.products)
     history_refusal = history_selection_refusal(args.wrfout, requested)
     if history_refusal is not None:
         print(explain.render(
@@ -2742,7 +3336,12 @@ def render_main(args: argparse.Namespace) -> int:
             section_fills=section_fills if engine == "rust" else ())
         for failure in failures:
             print(f"render FAIL: {failure}", file=sys.stderr)
-        notice = skip_notice(skipped, wrote_any=bool(written))
+        from gpuwm.render_receipts import drawn_families
+        notice = skip_notice(skipped, wrote_any=bool(written),
+                             drawn=drawn_families(args.out, written,
+                                                  args.layout),
+                             sources=(*args.wrfout,
+                                      *getattr(args, "context_wrfout", ())))
         if notice is not None:
             print(explain.render(
                 notice, explain=explain.explain_enabled(args),
@@ -2802,6 +3401,17 @@ def _section_top_km(value: str) -> float:
     return float(value)
 
 
+def _section_across_km(value: str) -> float:
+    """``KM`` for ``--section-across``, refused in the engine's sentence."""
+
+    from gpuwm import rustwx
+
+    problem = rustwx.section_across_problem(value)
+    if problem is not None:
+        raise argparse.ArgumentTypeError(problem)
+    return float(value)
+
+
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "render",
@@ -2837,6 +3447,11 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--context-wrfout", action="append", type=Path, default=[], metavar="FILE",
         help=argparse.SUPPRESS)
+    # The render stage's own hand-off: a long series in a file rather than
+    # on a command line (see write_render_inputs).
+    parser.add_argument(
+        "--inputs-from", dest="inputs_from", type=Path, default=None,
+        metavar="FILE", help=argparse.SUPPRESS)
     parser.add_argument(
         "--out", type=Path, default=Path("out/render"), metavar="DIR",
         help="where the PNGs go (default out/render).  Each render "
@@ -2857,7 +3472,7 @@ def register_cli(subparsers) -> None:
              "--run-stamp off it is the v2.4.1 tree exactly)")
     run_stamp.add_argument(parser, artifacts="PNGs")
     parser.add_argument(
-        "--dpi", type=int, default=150, metavar="N",
+        "--dpi", type=positive_int, default=150, metavar="N",
         help="PNG resolution, matplotlib engine (default 150)")
     parser.add_argument(
         "--size", default="1200x900", metavar="WxH",
@@ -2938,7 +3553,7 @@ def register_cli(subparsers) -> None:
              "landscape 2:1 at the map's width, because a vertical cut "
              "handed the map's own size comes out portrait")
     parser.add_argument(
-        "--section-across", dest="section_across_km", type=float,
+        "--section-across", dest="section_across_km", type=_section_across_km,
         metavar="KM", default=None,
         help="rust engine: also draw each section product across the "
              "line, this many km long, through the fill's maximum column")
@@ -2977,6 +3592,8 @@ __all__ = ["DEFAULT_SOURCE_LABEL", "PRODUCTS", "RUST_PRODUCT_ALIASES",
            "matplotlib_workaround_notice",
            "parse_products", "parse_products_rust", "parse_size",
            "parse_timeidx", "plot_context", "register_cli", "render_main",
+           "BASEMAP_MISSING_CODE", "announce_missing_basemap",
+           "basemap_gap", "renderer_basemap_gap",
            "missing_basemap_notice", "missing_declared_inputs",
            "render_series_rust", "render_wrfouts", "render_wrfouts_rust",
            "require_renderer", "resolution_token", "skip_notice",

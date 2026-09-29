@@ -95,9 +95,9 @@ the straight transcription reserves 1.48 GiB and would have to be undone.
 128 regs is the *skeleton's* count and real physics will raise it. That is
 an occupancy question for later, not a VRAM one.
 
-### A correction to CLAUDE.md's reservation law
+### A correction to the reservation law
 
-CLAUDE.md states the law as `frame × SMs × MAX_THREADS_PER_SM`, i.e.
+The project rules state the law as `frame × SMs × MAX_THREADS_PER_SM`, i.e.
 `frame × 107,520` on this card. That is **missing the default-stack term**
 and over-prices every row by a flat 105 MiB.
 `gpuwm/core/kernel_frame_recordings.py` already states the correct form,
@@ -118,7 +118,7 @@ consistent with the subtraction — and is exactly why a sub-1,024 B frame
 reserves nothing. It also reconciles the recorded YSU reading: 9,232 B
 gives 841.6 MiB computed against 842.0 MiB recorded.
 
-So: the resident-thread figure (107,520) in CLAUDE.md is right; the
+So: the resident-thread figure (107,520) in the project rules is right; the
 `− default_stack` term is missing. **The correct law is
 `(frame − 1024) × 107,520`.**
 
@@ -1720,7 +1720,7 @@ Two bugs in §16's audit edit were caught by testing the tool rather than
 reading it. A `\b` written through an unquoted heredoc became a literal
 backspace byte, producing a regex that **silently matched nothing** — the
 same shape as the silent zero in `column_workspace_bytes`: a clean answer
-produced by never looking. CLAUDE.md already warns to use quoted heredocs
+produced by never looking. The project rules already warn to use quoted heredocs
 for anything containing backslashes; this is the second time that trap has
 been paid for on this box.
 
@@ -2727,7 +2727,7 @@ correctly.
 #### The 0x08, bisected — and the cause I wrote first was wrong
 
 This paragraph originally read: *"Never write a regex through a heredoc on
-this box. `CLAUDE.md`'s rule about quoted heredocs is not sufficient,
+this box. The project rule about quoted heredocs is not sufficient,
 because it happened inside a quoted heredoc."* That is a false cause, and
 review refused it on the grounds that their own transport delivered `\b`
 intact and that a mechanism which explains the observation is not thereby
@@ -3497,7 +3497,7 @@ connection.
 
 It is an artifact.  Those are two **independently sampled maxima** from a
 50 ms poller, and they need not occur at the same instant; their
-difference is not a decomposition of anything.  CLAUDE.md says exactly
+difference is not a decomposition of anything.  The project rules say exactly
 this — the sampler "reports one maximum, not a timeline" — and the trap
 still worked, because the number it produced was *too good*.  A formula
 and a table agreeing proves they agree; the witness has to come from
@@ -3684,7 +3684,7 @@ does not protect against extrapolating from two of its results.**
 Checked rather than assumed, after asserting it twice: `tc_hafs_myj`
 and `tc_hafs_kf` are **2-domain**, and `run_myj` and `run_kf` carry
 `d01` and `d02` frames only.  The 3-domain tree is the East Pacific
-*profiling* case in `CLAUDE.md`, which is a different thing entirely.
+*profiling* case in the project rules, which is a different thing entirely.
 
 So the probes were at Phase 5's own configuration all along and the level
 **does** transfer.  This also withdraws the caution passed to review
@@ -5022,7 +5022,7 @@ wall by **18.2 minutes — 55%**, at 1.1% of peak.
 
 This matters beyond this pair. A proposal to halve New Tiedtke's tile from
 17,920 to 8,960 columns — saving 216 MiB of the 433 MiB workspace, four
-times CLAUDE.md's 50 MiB bar — was talked down on the grounds that 2.7% of
+times the project's 50 MiB bar — was talked down on the grounds that 2.7% of
 peak cannot be a paging fix. **That reasoning assumed the pool-to-wall
 relationship is linear, and this pair falsifies it.** It is a cliff, and
 these runs sit on it.
@@ -5036,7 +5036,7 @@ Two things follow for the tile A/B when it runs:
 
 * It is worth more than it was priced at, and it now carries a second
   question — a paired pool-to-wall data point near the cliff, which is the
-  timeline probe CLAUDE.md records as needing its own instrument because
+  timeline probe the project rules record as needing its own instrument because
   the 50 ms sampler reports one maximum and not a series.
 * **Its correctness cannot rest on the existing chunking gate.** That gate
   proves byte-identity at 32, 64 and 108 columns on *fixture* columns; the
@@ -6202,7 +6202,7 @@ is itself the signature: compute-bound work does not vary like that; a run
 swapping against a full card does. §51 saw the same signal inside one run
 as a step time going 0.38 s to 15.47 s.
 
-**So `CLAUDE.md`'s "do not raise VRAM" is a throughput rule, not only a
+**So the project's "do not raise VRAM" is a throughput rule, not only a
 headroom one — and the constraint is BINARY rather than graded.** Stay
 under roughly 15.6 GiB and you are on the flat at any memory; touch 15.92
 and you pay 2-7x. The margin is not worth "a few percent of speed"; it is
@@ -6317,7 +6317,7 @@ corpus than intended.**
 ### AND THE GUARD THAT WAS WRITTEN AND NEVER RUN
 
 `tools/ntiedtke_wrf461_oracle/check_no_forecast.sh` exists precisely to
-stop a commit landing inside a live forecast — CLAUDE.md rule 4, and the
+stop a commit landing inside a live forecast — project rule 4, and the
 runner re-hashes `git_commit` at completion, so **a documentation-only
 commit kills a run at the finish line.**
 

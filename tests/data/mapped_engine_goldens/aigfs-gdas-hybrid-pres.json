@@ -2,13 +2,13 @@
   "decode": {
     "mapping": {
       "name": "rw-wps-aigfs-gdas-hybrid-grib2.mapping.json",
-      "sha256": "0427834583be3189130ff676a57aff9d000a2196b82eb0bb7c2f7215412fff4d"
+      "sha256": "b672a224abdf5d41b2675034530440577e4d2976420d90a4d89dfad0b3f50ff6"
     },
     "refusal": {
-      "message": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'surface_pressure', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
+      "message": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
       "type": "ValueError"
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "aigfs-gdas-hybrid-pres",
     "verdict": "REFUSED"
   },
@@ -183,6 +183,7 @@
           "member": null,
           "source_cycle": "2026-08-17T00:00:00",
           "unresolved_direct_fields": [
+            "air_pressure_at_mean_sea_level",
             "air_temperature_2m",
             "eastward_wind_10m",
             "land_fraction",
@@ -190,7 +191,6 @@
             "skin_temperature",
             "soil_temperature",
             "specific_humidity_2m",
-            "surface_pressure",
             "terrain_height",
             "volumetric_soil_moisture"
           ],
@@ -212,10 +212,10 @@
       ],
       "mapping": {
         "name": "rw-wps-aigfs-gdas-hybrid-grib2.mapping.json",
-        "sha256": "0427834583be3189130ff676a57aff9d000a2196b82eb0bb7c2f7215412fff4d"
+        "sha256": "b672a224abdf5d41b2675034530440577e4d2976420d90a4d89dfad0b3f50ff6"
       },
       "materialization": {
-        "error": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'surface_pressure', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
+        "error": "fields ['land_fraction', 'skin_temperature', 'soil_temperature', 'specific_humidity_2m', 'terrain_height', 'volumetric_soil_moisture'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
         "error_type": "ValueError",
         "verdict": "INCOMPLETE"
       },
@@ -224,14 +224,14 @@
       "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
       "stock_wrf_certified": false
     },
-    "schema": "gpuwm-mapped-parity-digest-v1",
+    "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "aigfs-gdas-hybrid-pres",
     "verdict": "INSPECTED"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
-  "schema": "gpuwm-mapped-parity-digest-v1",
+  "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "aigfs-gdas-hybrid-pres"
 }

@@ -26,6 +26,11 @@ import numpy as np
 
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.myjsfc_tables import build_psi_tables
+# WRF INOUT surface state and pure outputs, in kernel argument order.  The
+# tables live in the runtime-free inventory module so the VRAM estimator
+# prices the same names this launcher binds without importing cupy.
+from gpuwm.core.physics_inventory import (MYJ_SFCLAY_INOUT,
+                                          MYJ_SFCLAY_OUTPUTS)
 from gpuwm.core.state import DTYPE
 
 _TPB = 128
@@ -35,16 +40,6 @@ _COLUMN_INPUTS = ("dz", "tke")
 #: Read-only surface inputs, in kernel argument order.
 _SURFACE_INPUTS = ("u1", "v1", "t1", "th1", "qv1", "qc1", "p1", "psfc",
                    "tsk", "xland", "mavail", "z0base")
-#: WRF INOUT surface state, in kernel argument order.
-MYJ_SFCLAY_INOUT = ("ust", "znt", "thz0", "qz0", "uz0", "vz0", "qsfc",
-                    "akhs", "akms")
-#: Pure outputs, in kernel argument order.  ``rib`` is the field Noah reads
-#: as its bulk Richardson number, the same slot the MM5 surface layers fill
-#: through ``br`` (gpuwm/core/physics.py::_run_noah).
-MYJ_SFCLAY_OUTPUTS = ("rmol", "ct", "pblh", "rib", "chs", "chs2", "cqs2",
-                      "hfx", "qfx", "lh", "flhc", "flqc", "qgh", "cpm",
-                      "u10", "v10", "t2", "th2", "tshltr", "th10", "q2",
-                      "qshltr", "q10", "pshltr", "u10e", "v10e")
 
 
 @lru_cache(maxsize=1)

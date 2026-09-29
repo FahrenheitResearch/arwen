@@ -232,7 +232,8 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
         template_id for template_id, template in registry["templates"].items()
         if template["components"].get("land_surface") == "ruc-lsm")
     assert selecting == sorted([MYNN_RUC_RTE_RRTMGP_TEMPLATE_ID,
-                                MYNN_RUC_TEMPLATE_ID, RUC_TEMPLATE_ID]), (
+                                MYNN_RUC_TEMPLATE_ID, RUC_TEMPLATE_ID,
+                                *THOMPSON_MYNN_RUC_TEMPLATE_IDS]), (
         f"the RUC templates are {selecting}, which is not the ratified set.  "
         "An UNLISTED RUC row is the breakage: RUC's ingest produces nine "
         "LEVELS only for the sources whose initializers reach "
@@ -303,6 +304,15 @@ MYNN_RUC_TEMPLATE_ID = (
 #: directions.
 MYNN_RUC_RTE_RRTMGP_TEMPLATE_ID = (
     "wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1"
+)
+#: The Thompson members of the MYNN + RUC pair.  Each is its WSM6 row with
+#: the microphysics moved and nothing else, minted by
+#: tools/build_registry.py onto exactly the routes and sources that row is
+#: declared on -- which is the check this set exists to force, so they are
+#: ratified here beside the rows they copy.
+THOMPSON_MYNN_RUC_TEMPLATE_IDS = (
+    "thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
+    "thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
 )
 #: The sources whose initializers reach RUC's own soil ingest.  ``20crv3`` is
 #: the MAPPED path and is deliberately absent; see the test below.

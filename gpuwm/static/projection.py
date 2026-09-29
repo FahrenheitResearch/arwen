@@ -109,6 +109,14 @@ def _free_rust_grid_handle(handle: int) -> None:
         pass
 
 
+def _given_number(value):
+    """A caller-supplied index as the JSON number that spells it exactly."""
+    if isinstance(value, bool):
+        raise TypeError(f"a grid index cannot be a boolean, got {value!r}")
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
 def _wrap180(dlon):
     """Wrap a longitude difference into (-180, 180] (module_llxy cut-zone)."""
     d = np.asarray(dlon, dtype=np.float64)
@@ -142,6 +150,11 @@ class ProjectedGrid:
     _translation_reference = None
     _translation_offset = (0, 0)
 
+    #: How :meth:`nest` placed this grid: ``(parent, i_parent_start,
+    #: j_parent_start, parent_grid_ratio)``.  ``None`` on a grid built
+    #: directly, whose constructor arguments are its whole definition.
+    _nest_placement = None
+
     def __init__(self, ref_lat: float, ref_lon: float, truelat1: float,
                  truelat2: float, stand_lon: float, dx: float, dy: float,
                  e_we: int, e_sn: int,
@@ -172,6 +185,7 @@ class ProjectedGrid:
         # every dx-carrying projection.
         self.hemi = -1.0 if self.truelat1 < 0.0 else 1.0
         self._setup()
+        self._center_is_anchor = centered_reference
         if centered_reference:
             # Avoid a projection round-trip for d01: besides being exact,
             # this preserves the global-attribute bytes of the legacy path.
@@ -203,6 +217,75 @@ class ProjectedGrid:
         """(SINALPHA, COSALPHA) at longitudes LON (get_rotang
         transcription; subclass responsibility)."""
         raise NotImplementedError
+
+    # -- definition ------------------------------------------------------------
+
+    def definition(self) -> dict[str, object]:
+        """The exact values this grid is defined by, and nothing derived.
+
+        Every number here was supplied by a caller (a namelist or config
+        value, an integer start, ratio or offset) and none came out of
+        projection arithmetic, so two machines that build the same grid
+        agree on this record to the bit whatever their math libraries
+        round.  A grid built directly carries its constructor arguments.
+        A nest carries its parent's definition and the start/ratio that
+        place it, because its own reference point is computed through the
+        parent's transform.  A translated grid carries its reference's
+        definition and the whole-cell offset.
+        """
+        base = self._translation_reference
+        if base is not None:
+            di, dj = self._translation_offset
+            return {
+                "translated_from": base.definition(),
+                "offset_cells": [int(di), int(dj)],
+                "e_we": int(self.e_we), "e_sn": int(self.e_sn),
+            }
+        if self._nest_placement is not None:
+            parent, i_start, j_start, ratio = self._nest_placement
+            return {
+                "nest_of": parent.definition(),
+                "i_parent_start": _given_number(i_start),
+                "j_parent_start": _given_number(j_start),
+                "parent_grid_ratio": int(ratio),
+                "dx": self.dx, "dy": self.dy,
+                "e_we": int(self.e_we), "e_sn": int(self.e_sn),
+            }
+        return {
+            "map_proj": self.map_proj,
+            "ref_lat": self.ref_lat, "ref_lon": self.ref_lon,
+            "truelat1": self.truelat1, "truelat2": self.truelat2,
+            "stand_lon": self.stand_lon,
+            "dx": self.dx, "dy": self.dy,
+            "e_we": int(self.e_we), "e_sn": int(self.e_sn),
+            "known_x": self.known_x, "known_y": self.known_y,
+            "moad_cen_lat": self.moad_cen_lat,
+            "moad_cen_lon": self.moad_cen_lon,
+        }
+
+    @property
+    def anchor_is_given(self) -> bool:
+        """Whether ``ref_lat``/``ref_lon`` are caller-supplied values.
+
+        True for a grid built directly (a root).  False for a nest, whose
+        reference point comes out of its parent's transform, and for a
+        grid translated from one.
+        """
+        grid = self
+        while grid._translation_reference is not None:
+            grid = grid._translation_reference
+        return grid._nest_placement is None
+
+    @property
+    def center_is_given(self) -> bool:
+        """Whether ``cen_lat``/``cen_lon`` are the given anchor itself.
+
+        True only for a grid built directly on its centred default
+        reference, whose centre is a copy of that reference; every other
+        centre is computed through the projection.
+        """
+        return bool(getattr(self, "_center_is_anchor", False)
+                    and self.anchor_is_given)
 
     @property
     def wrf_map_proj(self) -> int:
@@ -271,6 +354,29 @@ class ProjectedGrid:
             2: (self.e_sn, self.e_we - 1),      # V
             3: (self.e_sn, self.e_we),          # corner
         }[stagger]
+
+    def _rust_sampling_handle(self, bridge) -> int:
+        """Keep the integer nest ancestry instead of rounded Python anchors.
+
+        Public coordinate arrays keep their original handle and qualification.
+        The sampler derives every nest anchor through portable Rust arithmetic.
+        """
+        if self._translation_reference is None and self._nest_placement is None:
+            return self._rust_handle(bridge)
+        handle = self.__dict__.get("_rust_sampling_grid_handle")
+        if handle is None:
+            if self._translation_reference is not None:
+                di, dj = self._translation_offset
+                handle = bridge.grid_translated(
+                    self._translation_reference._rust_sampling_handle(bridge),
+                    di, dj, self.e_we, self.e_sn)
+            else:
+                parent, i, j, ratio = self._nest_placement
+                handle = bridge.grid_nest(parent._rust_sampling_handle(bridge),
+                    i, j, ratio, self.e_we, self.e_sn, self.dx, self.dy)
+            self.__dict__["_rust_sampling_grid_handle"] = handle
+            weakref.finalize(self, _free_rust_grid_handle, handle)
+        return handle
 
     def _rust_arrays(self, stagger: int, kinds: tuple[int, ...]):
         """Tuple of derived arrays via the seam, or None on fallback.
@@ -408,12 +514,14 @@ class ProjectedGrid:
         lat11, lon11 = self.ij_to_latlon(xp, yp)
         child_dx = self.dx / r if resolved_dx is None else float(resolved_dx)
         child_dy = self.dy / r if resolved_dy is None else float(resolved_dy)
-        return type(self)(float(lat11), float(lon11), self.truelat1,
-                          self.truelat2, self.stand_lon, child_dx,
-                          child_dy, e_we, e_sn,
-                          known_x=1.0, known_y=1.0,
-                          moad_cen_lat=self.moad_cen_lat,
-                          moad_cen_lon=self.moad_cen_lon)
+        child = type(self)(float(lat11), float(lon11), self.truelat1,
+                           self.truelat2, self.stand_lon, child_dx,
+                           child_dy, e_we, e_sn,
+                           known_x=1.0, known_y=1.0,
+                           moad_cen_lat=self.moad_cen_lat,
+                           moad_cen_lon=self.moad_cen_lon)
+        child._nest_placement = (self, i_parent_start, j_parent_start, r)
+        return child
 
     def translated(self, di_cells: int, dj_cells: int, *,
                    e_we: int | None = None,
@@ -440,7 +548,7 @@ class ProjectedGrid:
 
         ``e_we``/``e_sn`` re-extent the translated grid on the SAME
         lattice (omitted keeps the reference extent).  This is what a
-        parent-extent statics corridor is built on: a larger window onto
+        statics corridor is built on: a larger window onto
         the reference grid's own cells, whose per-cell transforms stay
         the reference's exact arithmetic, so a footprint cropped out of
         a corridor build equals a direct footprint build bitwise.
@@ -486,6 +594,7 @@ class ProjectedGrid:
                                             new.e_sn / 2.0)
         new.cen_lat = float(cen_lat)
         new.cen_lon = float(cen_lon)
+        new._center_is_anchor = False
         return new
 
 
@@ -733,6 +842,49 @@ def footprint_contains_pole(projection, nx: int, ny: int, dx_m: float,
     margin = float(margin_cells)
     return bool(0.5 - margin <= px <= grid.e_we - 0.5 + margin
                 and 0.5 - margin <= py <= grid.e_sn - 0.5 + margin)
+
+
+def footprint_longitude_span(projection, nx: int, ny: int,
+                             dx_m: float) -> float:
+    """Degrees of longitude a root of ``nx`` x ``ny`` mass points at
+    ``dx_m`` metres on ``projection`` covers, counted without wrapping.
+
+    A root that runs more than once around the globe measures more than
+    360, which is the point: its grid holds the same ground twice, and
+    the two copies are integrated apart.  Nothing about Mercator stops a
+    root growing that wide, and a Lambert root reaches it before it
+    reaches the pole: measured for the wizard's own Lambert cones at
+    12 km, 2398 x 1918 at 5 N and 2178 x 1742 at 26 N already run past
+    360 degrees while still clear of the pole.
+
+    Walked along the corner-point perimeter one cell at a time and
+    unwrapped step by step.  On a footprint that does not contain the
+    projection pole (:func:`footprint_contains_pole`, asked first by
+    every caller) longitude has no extremum inside the domain, so the
+    edge carries the whole span; one cell is far below the half turn a
+    step would need to be misread.
+    """
+
+    grid = projection_class(projection["map_proj"])(
+        ref_lat=float(projection["ref_lat"]),
+        ref_lon=float(projection["ref_lon"]),
+        truelat1=float(projection["truelat1"]),
+        truelat2=float(projection["truelat2"]),
+        stand_lon=float(projection["stand_lon"]),
+        dx=float(dx_m), dy=float(dx_m),
+        e_we=int(nx) + 1, e_sn=int(ny) + 1)
+    xs = np.arange(int(nx) + 1, dtype=np.float64) + 0.5
+    ys = np.arange(int(ny) + 1, dtype=np.float64) + 0.5
+    west, east, south, north = xs[0], xs[-1], ys[0], ys[-1]
+    ring_x = np.concatenate((xs, np.full(ys.size - 1, east),
+                             xs[::-1][1:], np.full(ys.size - 1, west)))
+    ring_y = np.concatenate((np.full(xs.size, south), ys[1:],
+                             np.full(xs.size - 1, north), ys[::-1][1:]))
+    _, lon = grid.ij_to_latlon(ring_x, ring_y)
+    steps = np.diff(np.asarray(lon, dtype=np.float64))
+    steps = (steps + 180.0) % 360.0 - 180.0
+    walked = np.concatenate(([0.0], np.cumsum(steps)))
+    return float(walked.max() - walked.min())
 
 
 def _parse_wps_namelist(path) -> dict:

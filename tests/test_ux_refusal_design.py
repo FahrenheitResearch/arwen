@@ -243,8 +243,11 @@ def test_bare_prep_follows_the_fetch_with_no_author_call(
         "--dry-run"])
     captured = capsys.readouterr()
     assert rc == 0, captured.err
-    manifest = out / fetch.GFS_INPUT_MANIFEST_NAME
+    # The preparation's own binding, beside its output root: the download
+    # is shared by every preparation made from it.
+    manifest = fetch.preparation_manifest_path(tmp_path / "prepared")
     assert manifest.is_file(), "the door authored the binding itself"
+    assert not (out / fetch.GFS_INPUT_MANIFEST_NAME).exists()
     digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
     printed = captured.out.replace("\\", "/")
     assert str(manifest).replace("\\", "/") in printed, (

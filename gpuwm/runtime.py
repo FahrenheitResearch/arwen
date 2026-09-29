@@ -77,6 +77,8 @@ from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.moisture_floor_receipt import (
     MOISTURE_FLOOR_BY_DOMAIN_KEY, moisture_floor_block,
     moisture_floor_field_names)
+from gpuwm.static.sampling_contract import (current_sampling_contract,
+                                            require_relocation_sampling_contract)
 from gpuwm.static.build import (GeogSelection, build_static,
                                 monthly_interp_to_date)
 from gpuwm.static.lambert import grids_from_projection_config
@@ -103,6 +105,10 @@ REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"
 INITIAL_PERTURBATION_RECEIPT_NAME = "initial-perturbation.json"
+#: The long-step derivation of a ``gpuwm run`` whose terrain clock changed
+#: a domain (:func:`gpuwm.terrain_clock.clock_receipt`).  Absent when no
+#: domain changed, so such a run directory is the one it always was.
+TERRAIN_CLOCK_RECEIPT_NAME = "terrain-clock.json"
 FEEDBACK_EXPERIMENTAL_WARNING = (
     "WARNING: feedback = 1 is EXPERIMENTAL and is not certified against "
     "stock WRF yet; the certification reference is in progress."
@@ -143,6 +149,7 @@ class PreparedRealCase:
     store_input: object | None = None
     streamed_store: object | None = None
     initialization_receipt: dict | None = None
+    static_sampling_contract: str | None = None
     #: Checkpoints written from this case carry the preserved forcing-prefix
     #: contract, and a restart into it is admitted only when the live forcing
     #: inventory keeps every interval the checkpoint was written under and
@@ -274,13 +281,22 @@ def _frame_records(paths, *, progress_callback=None, completed_records=()
     The shared owner checks each fresh record's file revision before reuse.
     Files without a current writer proof still receive a complete stable
     hash, with progress before each file so fallback work stays observable.
+    Each beat declares the file's size, the most this record can read, so
+    the supervisor bounds a multi-GiB frame by its bytes and not by the
+    model step.
     """
     from gpuwm.output_identity import file_records
 
     total = len(paths)
     def beginning(index, path):
+        try:
+            size = os.stat(path).st_size
+        except OSError:
+            # file_record raises the real error for this path next.
+            size = None
         _finalizing_progress(
-            progress_callback, f"hash-output-frames-{index}-of-{total}")
+            progress_callback, f"hash-output-frames-{index}-of-{total}",
+            work_bytes=size)
     return file_records(paths, completed=completed_records, before_record=beginning)
 
 
@@ -298,8 +314,8 @@ _RUN_FLOORS_UNRECORDED = (
 def _run_moisture_floor_receipts(prepared_cases) -> dict[str, object]:
     """The per-domain floor blocks for a front-door run's capsule.
 
-    WHY THE RUN ROUTE NEEDS ITS OWN.  ``proof.json`` is a PREPARED
-    BUNDLE's document; `gpuwm go` and `gpuwm run` take the experiment
+    WHY THE RUN ROUTE NEEDS ITS OWN.  ``proof.json`` is a prepared
+    bundle's document; `gpuwm go` and `gpuwm run` take the experiment
     route, which writes a certification capsule and no proof at all.  The
     floors were therefore reachable only from `gpuwm prep` and the direct
     adapters -- not from the door most runs go through -- so a forecast
@@ -1091,7 +1107,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             build_initial_state_perturbation)
         perturbation_applier = build_initial_state_perturbation(
             initial_perturbation, grid, grid_id=int(cfg.grid_id),
-            require_containment=True)
+            require_containment=True, cfg=cfg)
     static = case_static_fields(
         grid, geog_root, selection=geog_selection,
         static_highres=static_highres, domain_id=static_domain_id,
@@ -1123,44 +1139,71 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     forcing = StateBoundaryFrames(
         spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone,
         relax_zone=cfg.relax_zone)
-    release_backend = CudaPreprocessBackend()
-    order = range(len(times))
+    # START LAST, on both roads.  The start time is built after every other
+    # time and is the only state kept; each other time contributes its
+    # perimeter frames against its own position and is released before
+    # the next is built (lateral_bc.start_last_forcing_order, a pure
+    # reordering).  Built start first, this route held the start time's
+    # whole state while every later one was built beside it: two full
+    # forcing states on the card, which the preparation price and the
+    # sizing both priced at one (A65, F03).  The last time's analysis is
+    # still kept for ``final_analysis``.
+    from gpuwm.ingest.lateral_bc import start_last_forcing_order
+    from gpuwm.ingest.preparation_price import (
+        SourceInventory, price_preparation)
+    from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+    order = tuple(start_last_forcing_order(len(times)))
+    prefetched = {order[0]: snapshot_for(times[order[0]])}
+    # THE FIT, BEFORE THE FIRST DEVICE ALLOCATION.  The first snapshot to
+    # be interpolated is decoded on the host; its inventory prices the
+    # transforms (and, off the host store, the state) this route puts on
+    # the card.  auto (the default) runs the transforms on the CPU when
+    # that does not fit the card's free memory, with one named line.
+    first_source = prefetched[order[0]]
+    preparation_price = (None if not hasattr(first_source, "fields") else
+                         price_preparation(
+        "experiment" if store_request is None else "experiment-host-store",
+        [cfg], SourceInventory.from_snapshot(first_source),
+        boundary_intervals=len(times) - 1))
+    requested_backend = ("auto" if store_request is None
+                         else store_request.backend)
+    release_backend = resolve_preprocess_backend(
+        requested_backend, price=preparation_price)
     if store_request is not None:
-        from gpuwm.ingest.lateral_bc import start_last_forcing_order
-        from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
-        release_backend = resolve_preprocess_backend(store_request.backend)
-        order = start_last_forcing_order(len(times))
-        print(f"  initialization: {store_request.backend} transforms, "
+        # The store's identity and receipts record the backend that RAN.
+        from dataclasses import replace as _replace
+        store_request = _replace(store_request, backend=release_backend.name)
+        print(f"  initialization: {release_backend.name} transforms, "
               "host state, row-slab GPU physics")
+    final_met = None
     met = result = None
     for position, index in enumerate(order):
         valid_time = times[index]
         if position:
             del met, result
             release_backend_memory(release_backend)
-        source = snapshot_for(valid_time)
+        source = prefetched.pop(index, None)
+        if source is None:
+            source = snapshot_for(valid_time)
         # Metgrid classifies masked-field TARGET cells by the model
         # (geogrid) landmask, not by the nearest source LSM; the source-side
         # usable-point decision stays with the source LANDSEA inside the
         # masked operators.  Passing the static LANDMASK reproduces WPS and
         # keeps soil, skin, and physics on one land/water surface.
-        horizontal_kwargs = ({} if store_request is None
-                             else {"backend": release_backend})
         met = interpolate_era5_to_lambert(
             source, grid, source_orography_catalog=forcing_catalog,
             target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
             water_temperature_statics=water_statics,
-            **horizontal_kwargs)
+            backend=release_backend)
         if store_request is not None:
             from gpuwm.ingest.case_store import admit_case_initialization
             admit_case_initialization(store_request, cfg, met, times)
         coord = vertical_coord_for(vertical, cfg.nz)
         init_kwargs = dict(
             source_orography=source_orography, p_top=vertical.p_top,
-            sfcp_to_sfcp=sfcp_to_sfcp)
+            sfcp_to_sfcp=sfcp_to_sfcp, preprocess_backend=release_backend)
         if store_request is not None:
-            init_kwargs.update(preprocess_backend=release_backend,
-                               state_backend="cpu")
+            init_kwargs.update(state_backend="cpu")
         if scratch_arena is not None:
             init_kwargs["scratch_arena"] = scratch_arena
         if dycore_state_workspace is not None:
@@ -1171,7 +1214,9 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             # the unperturbed analysis.
             init_kwargs["initial_perturbation"] = perturbation_applier
         result = initialize_real(
-            met, cfg, coord, static["HGT_M"], grid=grid, **init_kwargs)
+            met, cfg, coord, static["HGT_M"], grid=grid,
+            landmask=static["LANDMASK"],
+            boundary_only=index != 0, **init_kwargs)
         f, e = grid.coriolis_m()
         # SINALPHA/COSALPHA (geo_em conventions): WRF's coriolis applies
         # the rotation terms unconditionally (module_em.F:761-769).
@@ -1179,17 +1224,15 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         result.state.set_map_coriolis(
             grid.mapfac_m(), grid.mapfac_u(), grid.mapfac_v(), f, e,
             sina=sina, cosa=cosa)
-        if store_request is None:
-            forcing.add_state(result.state)
-        else:
-            forcing.add_state(result.state, index=index)
+        forcing.add_state(result.state, index=index)
+        if index == len(times) - 1 and store_request is None:
+            final_met = met
         if index == 0:
             initial_met = met
             initial_result = result
             initial_source = source
-    # ``met``/``result`` now name the LAST forcing time; the first are held
-    # separately above.  Nothing between them is still resident.
-    final_met = met if store_request is None else None
+    # The start time's analysis and state, and the last time's analysis,
+    # are held above.  Nothing between them is still resident.
     boundaries = forcing.build(times)
     attach_lateral_boundaries(initial_result.state, boundaries)
 
@@ -1205,7 +1248,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # liquid water derived from it must be built with the SAME category the
     # physics driver integrates, so ask for the reconciled ISLTYP here
     # rather than reading the raw geogrid SCT_DOM.  WRF gets this ordering
-    # for free: real.exe reconciles at module_initialize_real.F:3608-3650
+    # for free: real.exe reconciles at module_initialize_real.F:3108-3131
     # and LSMINIT (phys/module_sf_noahdrv.F) derives SH2O afterwards.  Ours
     # ran the other way round, because initialize_landuse below needs this
     # call's own outputs (snow, xice, TSLB) and therefore cannot precede it.
@@ -1223,6 +1266,10 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
+        # Land the source holds no land for takes the column the
+        # router builds (gpuwm/ingest/soil.py: island_soil_columns).
+        soil_no_source_land=getattr(
+            initial_met, "soil_no_source_land", None),
         # The declared artifact OR the orography the forcing carries inside
         # itself, which the horizontal stage already remapped onto this grid
         # as SOURCE_OROGRAPHY.  Resolving only the declaration silently
@@ -1280,6 +1327,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                 "aerosol_initialization",
                 *moisture_floor_field_names(initial_result))})
         return PreparedRealCase(
+        static_sampling_contract=current_sampling_contract(),
             cfg=cfg, grid=grid, static_fields=static, initial_result=metadata,
             final_analysis=None, initial_snow_water_kgm2=np.array(
                 soil.snow_water, dtype=np.float64, copy=True),
@@ -1294,6 +1342,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         constant_glw_wm2=constant_glw_wm2,
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     return PreparedRealCase(
+        static_sampling_contract=current_sampling_contract(),
         cfg=cfg, grid=grid, static_fields=static,
         initial_result=initial_result, final_analysis=final_met,
         initial_snow_water_kgm2=np.array(
@@ -1339,6 +1388,11 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
     # the CATALOG's, taken from the forcing files; the run length is the
     # experiment's, and nothing had ever compared them out loud.
     print(forcing_decode_report(exp, snapshots))
+    # And that every one of them is built before the forecast starts:
+    # the loop runs in the model's own process, on its own workspace
+    # (scratch_arena, dycore_state_workspace), so it cannot run beside it.
+    from gpuwm.ingest.boundary_stream import say_prepared_sealed
+    say_prepared_sealed("experiment_run")
 
     def snapshot_for(valid_time):
         try:
@@ -1531,6 +1585,7 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     from gpuwm.core.cam_ozone import configure_cam_ozone
     configure_cam_ozone(state, cfg, exp=exp, dc=dc, grid=initialized.grid)
     return PreparedRealCase(
+        static_sampling_contract=current_sampling_contract(),
         cfg=cfg, grid=initialized.grid, static_fields=dict(static),
         initial_result=real, final_analysis=initialized.horizontal,
         initial_snow_water_kgm2=np.array(
@@ -2070,6 +2125,9 @@ def build_real_relocation_runner(exp: ExperimentConfig,
         # rebuilds this the moment the nest is born, which is also the
         # first instant it could legally move.
         return None
+    prepared = getattr(model, "_prepared_by_grid_id", {}).get(grid_id)
+    require_relocation_sampling_contract(
+        getattr(prepared, "static_sampling_contract", None), same_process=True)
     node = model.node(grid_id)
     child_config = node.cfg
     initializer = real_relocation_initializer(
@@ -2085,12 +2143,14 @@ def build_real_relocation_runner(exp: ExperimentConfig,
             static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
             track_writer=build_track_writer(exp, outdir),
             receipts_path=Path(outdir) / receipts_name))
+    from gpuwm.core.nest_reach import reach_clamp_for
     return wire_reconstruction_runner(RelocationRunner(
         config=relocation, schedule=model.schedule,
         on_child_built=preparer, provider=provider, initializer=initializer,
         static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
         track_writer=build_track_writer(exp, outdir),
-        receipts_path=Path(outdir) / receipts_name))
+        receipts_path=Path(outdir) / receipts_name,
+        reach_clamp=reach_clamp_for(exp, grid_id)))
 
 
 def build_real_relocation_runners(exp: ExperimentConfig,
@@ -2362,9 +2422,11 @@ def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
         from gpuwm.core.storm_tracking import StormTracker
         if relocation.follow is None or relocation.moves:
             raise ValueError("a follower window requires a declared tracker")
+        from gpuwm.core.nest_reach import reach_clamp_for
         runner = RelocationRunner(
             config=relocation,
             provider=StormTracker(relocation.follow, uh_slot=follow_window_slot),
+            reach_clamp=reach_clamp_for(exp, int(relocation.grid_id)),
             **kwargs)
     containment = getattr(relocation, "containment", None)
     if containment is not None:
@@ -2743,6 +2805,7 @@ class RealSpawnChildPreparer:
         # the one this domain will integrate on.  There is no analysis
         # product to point at, and inventing one would be a lie.
         prepared = PreparedRealCase(
+            static_sampling_contract=current_sampling_contract(),
             cfg=child_dc.run, grid=initialized.grid,
             static_fields=dict(static), initial_result=initialized,
             final_analysis=None,
@@ -3880,7 +3943,8 @@ def _preparation_progress(progress_callback, phase: str) -> None:
         reporter(phase)
 
 
-def _finalizing_progress(progress_callback, phase: str) -> None:
+def _finalizing_progress(progress_callback, phase: str, *,
+                         work_bytes: int | None = None) -> None:
     """Publish one named beat from the stretch after the last model step.
 
     Same optional-hook convention as :func:`_preparation_progress`.  It
@@ -3890,10 +3954,90 @@ def _finalizing_progress(progress_callback, phase: str) -> None:
     supervisor's stale-integration threshold.  Silence there is
     indistinguishable from a hang, so a completing worker was killed and
     the finished run replayed as a restart loop.
+
+    ``work_bytes`` is what the worker will write or read before its next
+    beat.  The supervisor sizes the phase's bound from it
+    (:func:`gpuwm.supervisor.finalization_stale_threshold_seconds`), so a
+    beat that is followed by bulk I/O must declare it.
     """
     reporter = getattr(progress_callback, "finalizing", None)
-    if reporter is not None:
+    if reporter is None:
+        return
+    if work_bytes is None:
         reporter(phase)
+    else:
+        reporter(phase, work_bytes=int(work_bytes))
+
+
+def _writing_progress(progress_callback, phase: str, *,
+                      work_bytes: int | None = None):
+    """:func:`gpuwm.supervisor.writing_progress`, beside its siblings here."""
+    from gpuwm.supervisor import writing_progress
+
+    return writing_progress(progress_callback, phase, work_bytes=work_bytes)
+
+
+def _checkpoint_work_bytes(model) -> int:
+    """Bytes a checkpoint of every domain writes, for its write's bound.
+
+    A streamed domain's state is its host store; a resident domain's is the
+    arrays its state holds.  Counted from the arrays themselves, so a larger
+    domain declares a larger write.
+    """
+    total = 0
+    for node in model.walk_parent_first():
+        streamed = getattr(node.state, "_streamed_domain", None)
+        if streamed is not None:
+            arrays = dict(streamed.store).values()
+        else:
+            arrays = getattr(node.state, "__dict__", {}).values()
+        total += sum(int(getattr(value, "nbytes", 0) or 0) for value in arrays
+                     if getattr(value, "shape", None) is not None)
+    return total
+
+
+def _digest_progress(progress_callback, grid_id: int):
+    """The per-domain beat a trajectory digest publishes before it hashes."""
+    def declare(work_bytes: int) -> None:
+        _finalizing_progress(
+            progress_callback, f"trajectory-digest-d{int(grid_id):02d}",
+            work_bytes=work_bytes)
+    return declare
+
+
+def _drain_progress(progress_callback):
+    """The per-domain beat the history writers' drain publishes.
+
+    Passed as ``PerDomainWrfoutWriters.drain(before_domain=...)``.  A queued
+    frame is written and then read back once for its output identity, so
+    each beat declares every domain's remaining bytes: the domains share
+    one NetCDF lock, and the first one's drain can wait on all of them.
+    """
+    def before_domain(grid_id, work_bytes):
+        _finalizing_progress(
+            progress_callback, f"drain-history-writers-d{int(grid_id):02d}",
+            work_bytes=work_bytes)
+    return before_domain
+
+
+def _final_health_reports(model, progress_callback) -> list:
+    """Every domain's end-of-run health report, one beat per domain.
+
+    A streamed domain kept in host memory is scanned on the CPU, the whole
+    store, so its beat declares those bytes; a device scan declares none.
+    """
+    from gpuwm.core.health import health_validator_for_domain
+
+    reports = []
+    for node in model.walk_parent_first():
+        grid_id = int(node.cfg.grid_id)
+        validator = health_validator_for_domain(model, node)
+        _finalizing_progress(
+            progress_callback, f"final-health-d{grid_id:02d}",
+            work_bytes=getattr(validator, "host_scan_bytes", None))
+        reports.append(validator.require_healthy(
+            phase=f"final-state.d{grid_id:02d}"))
+    return reports
 
 
 def _resumed_start_step(*, elapsed_seconds: float, dt: float,
@@ -4448,6 +4592,8 @@ def integrate_prepared_case(
                 last_checkpoint = write_restart(
                     checkpoint_path, state, cfg, run_trackers=trackers,
                     **({'preserved_forcing_prefix': True} if preserved_forcing_prefix else {}))
+            from gpuwm.resume import retire_superseded_checkpoints
+            retire_superseded_checkpoints(output_dir)
         # The state gate completed after the final internal step.  Publish
         # progress only after any due wrfout/checkpoint is durable, so a
         # heartbeat can never advertise unguarded or unpublished work.
@@ -4468,11 +4614,14 @@ def integrate_prepared_case(
         _finalizing_progress(progress_callback, "trajectory-digest")
         from gpuwm.state_digest import canonical_state_digest
 
+        declare = _digest_progress(progress_callback, domain_id)
         trajectory_digest = {
             f"d{domain_id:02d}": (
-                stepper.canonical_digest(_SingleDomainDigestClock(), scope="trajectory")
+                stepper.canonical_digest(_SingleDomainDigestClock(), scope="trajectory",
+                                         before_hash=declare)
                 if streamed else canonical_state_digest(
-                    state, _SingleDomainDigestClock(), scope="trajectory")),
+                    state, _SingleDomainDigestClock(), scope="trajectory",
+                    before_hash=declare)),
             "boundary_clock_provenance": _SingleDomainDigestClock.provenance,
         }
 
@@ -4730,6 +4879,131 @@ def write_ingest(exp: ExperimentConfig, data: CaseDataConfig,
     return _write_npz(output, fields)
 
 
+def _terrain_acoustics_for_case(exp, data, *, detail: bool = False):
+    """The experiment with each domain's acoustic substeps derived from its ground.
+
+    The root is read off :func:`case_static_fields`, the memoized build the
+    root preparation makes a few steps later, overlay included; each nest
+    off its own terrain at its own resolution (:func:`build_terrain`, or the
+    full build where a ``[static.highres]`` overlay replaces the terrain),
+    because a nest carries steeper ground than its parent.  A following nest
+    is also read over its statics corridor, the ground it can be moved onto
+    mid-run: the same frame and reach window the corridor is built on, and
+    the same terrain the vertical-coordinate survey reads for it
+    (:func:`gpuwm.vertical_adaptation.run_terrain_fields`).
+    """
+
+    from gpuwm.acoustic_adaptation import (adapt_experiment_to_terrain,
+                                           fold_corridor_reading,
+                                           readings_from_static)
+    from gpuwm.static.build import build_terrain
+    from gpuwm.static.corridor import (corridor_grid, moving_grid_ids,
+                                       planned_corridor)
+
+    if exp.projection is None or getattr(data, "geog_root", None) is None:
+        # No projected grid or no WPS_GEOG root, so no static terrain to
+        # read: the preparation below refuses such a real case by name
+        # (experiment_grid, the static build), and nothing here should
+        # speak before it does.
+        return (exp, (), {}, (), {}) if detail else exp
+    grids = tuple(grids_from_projection_config(exp))
+    highres = getattr(data, "static_highres", None)
+    highres_on = bool(highres is not None
+                      and getattr(highres, "enabled", False))
+    statics = {}
+    for index, (dc, grid) in enumerate(zip(exp.domains, grids)):
+        gid = int(dc.grid_id)
+        selection = GeogSelection.from_case_data(data, domain_id=gid)
+        if index == 0 or highres_on:
+            statics[gid] = case_static_fields(
+                grid, data.geog_root, selection=selection,
+                static_highres=highres, domain_id=gid,
+                case_date=exp.start_time.date())
+        else:
+            statics[gid] = {"HGT_M": build_terrain(
+                grid, selection.root, selection=selection)}
+    grid_by_id = {int(dc.grid_id): grid
+                  for dc, grid in zip(exp.domains, grids)}
+    readings = readings_from_static(exp, statics,
+                                    grids_by_grid_id=grid_by_id)
+    by_id = {int(dc.grid_id): dc for dc in exp.domains}
+    reach = {}
+    for gid in sorted(moving_grid_ids(exp)):
+        dc = by_id.get(gid)
+        if dc is None or int(dc.parent_id) == 0:
+            continue
+        corridor = corridor_grid(grid_by_id[gid],
+                                 planned_corridor(exp, dc).geometry)
+        selection = GeogSelection.from_case_data(data, domain_id=gid)
+        if highres_on:
+            terrain = case_static_fields(
+                corridor, data.geog_root, selection=selection,
+                static_highres=highres, domain_id=gid,
+                case_date=exp.start_time.date())["HGT_M"]
+        else:
+            terrain = build_terrain(corridor, selection.root,
+                                    selection=selection)
+        fold_corridor_reading(readings, gid, dc.run, terrain)
+        reach[gid] = terrain
+    adapted, acoustic = adapt_experiment_to_terrain(exp, readings)
+    if detail:
+        terrain = {gid: static["HGT_M"] for gid, static in statics.items()}
+        return adapted, acoustic, terrain, grids, reach
+    return adapted
+
+
+def _terrain_clock_for_case(exp, data, acoustic, terrain, grids, reach):
+    """The experiment with each domain's long step fitted to its ground and
+    the strongest crest-level wind its forcing carries over the window.
+
+    Read off the decoded forcing itself, on its own grid over each
+    domain's footprint, before anything is prepared: the prepared state
+    builds its physics calendar from the step, so the step is settled
+    first.  The decode is the keyed one the preparation reuses.  Returns
+    ``(experiment, adaptations)``.
+    """
+
+    from gpuwm.ingest.preflight import build_input_catalog
+    from gpuwm.terrain_clock import (SnapshotWinds, clock_for_domains,
+                                     forcing_window)
+
+    if not acoustic or not getattr(data, "forcing", None):
+        return exp, ()
+    catalog = build_input_catalog(data)
+    window = forcing_window(forcing_snapshots(data, catalog),
+                            exp.start_time, exp.run_seconds)
+    starts = {}
+    for dc, grid in zip(exp.domains, grids):
+        lat, lon = grid.latlon_mass()
+        starts[int(dc.grid_id)] = SnapshotWinds(
+            f"d{int(dc.grid_id):02d}", window, np.asarray(lat),
+            np.asarray(lon), exp.start_time)
+    return clock_for_domains(
+        exp, acoustic, statics={gid: {"HGT_M": field}
+                                for gid, field in terrain.items()},
+        starts=starts, corridors=reach)
+
+
+def _write_terrain_clock_receipt(outdir, adaptations) -> Path | None:
+    """Publish the long-step derivation when it changed a domain."""
+
+    if not any(adaptation.adapted for adaptation in adaptations):
+        return None
+    from gpuwm.terrain_clock import clock_receipt
+
+    encoded = (json.dumps(clock_receipt(adaptations), indent=2,
+                          sort_keys=True, allow_nan=False)
+               + "\n").encode("utf-8")
+    path = Path(outdir) / TERRAIN_CLOCK_RECEIPT_NAME
+    temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
+    with temporary.open("wb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    return path
+
+
 def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                    restart=None, progress_callback=None,
                    health_debug: bool = False
@@ -4818,6 +5092,19 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         print(FEEDBACK_EXPERIMENTAL_WARNING)
     _preparation_progress(progress_callback, "quarantine-wrfout")
     quarantine_orphan_wrfouts(outdir)
+    # Its own phase: reading the terrain for the acoustic substeps and the
+    # long step takes seconds on a nested case, and under the phase before
+    # it a run page said it was still checking the output folder.
+    _preparation_progress(progress_callback, "resolve-terrain-clock")
+    # THE ACOUSTIC SUBSTEPS EACH DOMAIN'S OWN GROUND NEEDS, before either
+    # arm prices a tile halo or an adaptive reach from the count, and the
+    # long step its ground and crest-level wind allow, before anything
+    # builds a clock or a physics calendar from the step.
+    exp, acoustic, terrain, grids, reach = _terrain_acoustics_for_case(
+        exp, data, detail=True)
+    exp, clock = _terrain_clock_for_case(exp, data, acoustic, terrain,
+                                         grids, reach)
+    _write_terrain_clock_receipt(outdir, clock)
     if len(exp.domains) == 1:
         # Frozen cardinal path: retain Task-2's exact preparation, loop,
         # output order, and single-file v3/v2 restart shims.
@@ -5206,7 +5493,13 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
         def restart_handler(tree, ticks):
             valid = exp.start_time + timedelta(
                 seconds=ticks / tree.schedule.clock.tick_den)
-            tree._last_checkpoint = write_tree_restart(outdir, tree, valid)
+            # Between two model steps: its own record, sized from the
+            # state it writes (see _writing_progress).
+            with _writing_progress(
+                    progress_callback, "checkpoint",
+                    work_bytes=_checkpoint_work_bytes(tree)):
+                tree._last_checkpoint = write_tree_restart(
+                    outdir, tree, valid)
 
         # [tiles], on the SAME terms as the prepared domain-tree route
         # (gpuwm/prepared_domain_tree_forecast.py) and for the same reason.
@@ -5290,7 +5583,7 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
                 health_debug=health_debug,
                 steppers=steppers)
         _finalizing_progress(progress_callback, "drain-history-writers")
-        writers.drain()
+        writers.drain(before_domain=_drain_progress(progress_callback))
         paths = writers.paths
     _finalizing_progress(progress_callback, "synchronize-device")
     import cupy as cp
@@ -5300,11 +5593,7 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
     # A completed summary reports an observed final state, including a resume
     # already at its stop tick, which executes no new model steps. The health
     # validator follows each domain's canonical resident or streamed storage.
-    from gpuwm.core.health import health_validator_for_domain
-
-    final_health = [health_validator_for_domain(model, node).require_healthy(
-        phase=f"final-state.d{node.cfg.grid_id:02d}")
-        for node in model.walk_parent_first()]
+    final_health = _final_health_reports(model, progress_callback)
     nan_free = bool(final_health) and all(report.ok for report in final_health)
     trajectory_digest = None
     if trajectory_digest_enabled():
@@ -5319,11 +5608,14 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
         trajectory_digest = {}
         for grid_id, node in sorted(model.nodes_by_grid_id.items()):
             stepper = steppers.get(int(grid_id))
+            declare = _digest_progress(progress_callback, grid_id)
             if _streaming.is_streaming(stepper):
-                digest = stepper.canonical_digest(node.clock, scope="trajectory")
+                digest = stepper.canonical_digest(node.clock, scope="trajectory",
+                                                  before_hash=declare)
             else:
                 digest = canonical_state_digest(
-                    node.state, node.clock, scope="trajectory")
+                    node.state, node.clock, scope="trajectory",
+                    before_hash=declare)
             trajectory_digest[f"d{grid_id:02d}"] = digest
     _finalizing_progress(progress_callback, "provenance-receipts")
     transition_path, transition_sha, transitions = \
@@ -5349,7 +5641,8 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
         trajectory_digest=trajectory_digest, io_mode="history",
         frame_records=frame_records,
         prepared_cases=getattr(model, "_prepared_by_grid_id", None),
-        receipts=seam_capsule_receipts(model))
+        receipts={**seam_capsule_receipts(model),
+                  "pool_trim": model._pool_trim_policy})
     return ExperimentRunSummary(
         wrfout_paths=paths,
         completed_seconds=model.root.clock.elapsed_seconds,

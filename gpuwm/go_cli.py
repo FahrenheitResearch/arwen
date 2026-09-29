@@ -39,11 +39,14 @@ stages, and each retains its own input and physics validation.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -171,6 +174,123 @@ def checked_config_fetch_cycle(fetch_table: dict, *, start_time=None):
     return cycle
 
 
+def fetch_request(fetch_table, *, p_top=None) -> dict:
+    """The download a ``[fetch]`` table makes for a run whose top is ``p_top``.
+
+    The table as written, plus ``p_top_pa`` when the source's certified
+    ladder stops below the run's own model top and its fetch can reach
+    it (:func:`gpuwm.source_adapters.fetch_model_top_pa`, read from the
+    registry row).  Without it a GFS run with a 50 hPa top fetched the
+    100 hPa ladder and was refused at preparation for the two levels the
+    download never asked for.  The key is ``gpuwm fetch``'s own flag
+    name, so every consumer that spells a request as fetch flags --
+    the fetch stage, the managed download folder's identity and the
+    download price -- carries it without a second spelling.  A table
+    that already states a top or asks for every level is left as it is.
+    """
+
+    from gpuwm.source_adapters import fetch_model_top_pa
+
+    request = dict(fetch_table or {})
+    if request.get("p_top_pa") is not None or request.get("all_levels"):
+        return request
+    top = fetch_model_top_pa(request.get("source"), p_top)
+    if top is not None:
+        request["p_top_pa"] = top
+    return request
+
+
+#: Which statement named the host a run's fetch stage pins, as its plan
+#: records it.
+TRANSPORT_FROM_FLAG = "--transport"
+TRANSPORT_FROM_TABLE = "[fetch] transport"
+
+
+def pinned_transport(fetch_table, flag: str | None = None
+                     ) -> tuple[str | None, str | None]:
+    """The host a run's fetch stage pins, and which statement named it.
+
+    ``gpuwm go --transport`` wins over the config's ``[fetch] transport``:
+    the flag is the later and more specific statement.  A flag the
+    config's source cannot pin is refused here, in the fetch's own words,
+    because the fetch stage would refuse it only after the chain started.
+    ``(None, None)`` when there is no flag and the table names no host, so
+    the fetch walks the source's ladder.
+
+    ``auto`` names no host (:func:`gpuwm.fetch.pinned_host`): it is the
+    ladder written out, so it pins nothing, and a flag saying it over a
+    table that pins a host unpins the run.  Read as a host, a config that
+    spelled out the default was announced as pinning host "auto" and its
+    download was keyed apart from the identical unpinned request, so the
+    cycle was fetched again into a second folder.  Callers therefore drop
+    a request's own ``transport`` whenever this returns no pin.
+
+    A flag of ``auto`` still decided the host: it returns
+    ``(None, "--transport")``, so :func:`transport_note` can say that the
+    flag, not the table, is why the fetch walks the ladder.
+    """
+
+    from gpuwm.fetch import pinned_host, transport_refusal
+
+    table = fetch_table if isinstance(fetch_table, dict) else {}
+    if flag is None:
+        value = table.get("transport")
+        host = None if value is None else pinned_host(str(value))
+        return (None, None) if host is None else (host, TRANSPORT_FROM_TABLE)
+    refusal = transport_refusal(str(table.get("source", "")), flag)
+    if refusal is not None:
+        raise GoRefusal(f"--transport {flag}: {refusal}")
+    return pinned_host(flag), TRANSPORT_FROM_FLAG
+
+
+def pin_request(request: dict, pinned: str | None) -> dict:
+    """``request`` asking the host ``pinned``, or no host when it is None.
+
+    The request's own ``transport`` (the table's copy) is replaced either
+    way: a flag of ``auto`` over a pinned table walks the ladder, and a
+    table spelling ``auto`` keys the same download as one saying nothing.
+    """
+
+    pinned_request = {key: value for key, value in request.items()
+                      if key != "transport"}
+    if pinned is not None:
+        pinned_request["transport"] = pinned
+    return pinned_request
+
+
+def transport_note(transport: str | None, basis: str | None,
+                   table_value=None) -> str | None:
+    """The one line a plan prints about its download host, or None.
+
+    A pinned host is always named.  An unpinned fetch is named only when
+    ``--transport auto`` overrode a table that pins a host: that run asks
+    other hosts than its config says, and a silent plan left the reader
+    believing the table's host was asked.
+    """
+
+    from gpuwm.fetch import pinned_host
+
+    if transport is None:
+        if (basis != TRANSPORT_FROM_FLAG or table_value is None
+                or pinned_host(str(table_value)) is None):
+            return None
+        return ("go: the fetch walks the host ladder, from --transport auto, "
+                f"over [fetch] transport = {str(table_value)!r}")
+    note = f"go: the fetch pins host {transport}, from {basis}"
+    if basis == TRANSPORT_FROM_FLAG and table_value is not None:
+        note += f" (over [fetch] transport = {str(table_value)!r})"
+    return note
+
+
+def config_fetch_request(payload) -> dict:
+    """:func:`fetch_request` for a whole configuration's tables."""
+
+    shared = payload.get("shared") if isinstance(payload, dict) else None
+    return fetch_request(
+        (payload or {}).get("fetch"),
+        p_top=shared.get("p_top") if isinstance(shared, dict) else None)
+
+
 def _managed_download_request(fetch_table: dict):
     """The existing normalized acquisition identity, independent of output path."""
     import hashlib
@@ -179,6 +299,10 @@ def _managed_download_request(fetch_table: dict):
     from gpuwm import fetch, source_adapters
 
     request = {key: value for key, value in fetch_table.items() if key != "out"}
+    # ``auto`` is the unpinned request written out, so it keys the folder
+    # the unpinned request fills rather than a second copy of the cycle.
+    if "transport" in request and fetch.pinned_host(request["transport"]) is None:
+        del request["transport"]
     try:
         source = source_adapters.get_source_adapter(str(request["source"])).source_id
         cycle = checked_config_fetch_cycle(request | {"source": source})
@@ -312,9 +436,17 @@ def _stage_env() -> dict:
     Set here rather than as a ``-P`` on each command line because the
     commands are composed in six places and an env var cannot be
     forgotten by the seventh.
+
+    :data:`gpuwm.progress.PREP_EVENT_PARENT_ENV` tells a stage that hosts
+    a preparer program (``gpuwm.source_cli`` on the GFS chain) that this
+    process reads step records off its output (:func:`_read_stage_output`),
+    so it passes each one on instead of keeping it to its own log.
     """
 
-    return _with_git_handle({**os.environ, "PYTHONSAFEPATH": "1"})
+    from gpuwm.progress import PREP_EVENT_PARENT_ENV
+
+    return _with_git_handle({**os.environ, "PYTHONSAFEPATH": "1",
+                             PREP_EVENT_PARENT_ENV: "1"})
 
 
 def _with_git_handle(environment: dict) -> dict:
@@ -355,9 +487,19 @@ def printable(command: list[str]) -> str:
 def plan_from_config(config: Path, *, outdir: Path | None = None,
                      data_dir: Path | None = None,
                      render_products: str | None = None,
+                     render_section: str | None = None,
                      run_stamp: bool = run_stamp_module.DEFAULT_RUN_STAMP,
-                     claim: bool = False) -> dict:
+                     claim: bool = False,
+                     transport: str | None = None) -> dict:
     """Everything the five stages need, or a refusal saying why not.
+
+    ``transport`` is ``gpuwm go --transport``: it wins over the config's
+    ``[fetch] transport``, and the plan records which one it took.
+
+    ``render_section`` is the line every ``xsec:`` product of this run
+    is cut along (``gpuwm render --section``), carried to all three of
+    its renders: the one the forecast draws as each frame lands, its
+    early first frame, and the end-of-run batch.
 
     ``run_stamp`` puts this run's whole tree -- authority, prepared,
     run, png -- in its own timestamped folder under the output
@@ -395,12 +537,19 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     payload = tomllib.loads(config.read_text(encoding="utf-8"))
 
     if "case_data" in payload:
+        # The remedy is spelled by the shared shell rule, and `gpuwm run`
+        # starts only when `gpuwm check` passed: a literal `&&` here was a
+        # Windows PowerShell 5.1 parser error.  The path is quoted for
+        # that same shell, because a config under a folder with a space
+        # split into two arguments in either shell.
+        from gpuwm.bridges import run_if_first_succeeds, shell_line
         raise GoRefusal(
             f"{config} declares a [case_data] table, which is the ERA5 "
             "config-driven route -- `gpuwm run` executes that one "
             "directly and needs no chain.\n"
-            "  remedy: gpuwm check " + str(config) + " && gpuwm run "
-            + str(config))
+            "  remedy: " + run_if_first_succeeds(
+                shell_line("gpuwm", "check", config),
+                shell_line("gpuwm", "run", config)))
 
     domains = payload.get("domain")
     domain_count = len(domains) if isinstance(domains, list) else 1
@@ -460,6 +609,14 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     if unmet:
         raise GoRefusal("\n".join(
             f"{label}: {sentence}" for label, sentence in unmet))
+    # A root the source's grid does not reach is refused here too, from
+    # the source row's declared coverage, rather than at the prepare
+    # stage after the whole cycle is downloaded.
+    from gpuwm.source_coverage import config_source_coverage_refusal
+
+    uncovered = config_source_coverage_refusal(experiment, source)
+    if uncovered is not None:
+        raise GoRefusal(uncovered)
     # ``profile`` may be None: the runner executes the config's own
     # suite as written (owner ruling 2026-07-31), so a config matching
     # no shipped profile is not a refusal any more -- the chain just
@@ -542,6 +699,15 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                 f"{config}'s [fetch] table has no {key!r}; re-emit the "
                 "config with `gpuwm domain`")
     checked_config_fetch_cycle(fetch_table, start_time=experiment.start_time)
+    # What the fetch stage asks for is the [fetch] table PLUS the model
+    # top this config's own ladder needs.  The table records the cycle,
+    # hours and area the domain was sized against; the top is recorded
+    # once, in [shared].p_top, and read from there rather than asked
+    # for a second time.
+    pinned, pinned_from = pinned_transport(fetch_table, transport)
+    # The download cache is keyed on the host the fetch will ask.
+    request = pin_request(
+        fetch_request(fetch_table, p_top=experiment.vertical.p_top), pinned)
 
     base = config.parent
     # The CASE root: the directory the reader named (or the one derived
@@ -575,7 +741,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # of one config, which is the opposite of the complaint the stamping
     # answers.
     data = (Path(data_dir) if data_dir is not None
-            else managed_download_dir(case_root, fetch_table))
+            else managed_download_dir(case_root, request))
     # E-07.  The default puts the download INSIDE the run root, so the
     # two are related by construction and only an explicit --data-dir can
     # make them equal.  When it does, the run claims the directory the
@@ -600,9 +766,17 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                 "download use an automatically managed request cache.")
     # AFTER every refusal above: a plan that is going to be refused must
     # not leave a directory behind on the way out.
+    #
+    # ONE launch instant, taken here and carried in the plan, so the
+    # folder this plan names and the folder claim_run_root makes are the
+    # same name.  The claim used to read the clock again after the
+    # memory and geography gates, which take over a second, so every
+    # real run announced a run-...Z folder that was never created and
+    # then a second one a few seconds later.
+    launch = run_stamp_module.utcnow()
     root = run_stamp_module.resolve(
-        case_root, init=fetch_table["cycle"], enabled=run_stamp,
-        create=claim)
+        case_root, init=fetch_table["cycle"], launch=launch,
+        enabled=run_stamp, create=claim)
     return {
         "config": config,
         "wps_namelist": base / f"{config.stem}.namelist.wps",
@@ -630,6 +804,17 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "era5_product": fetch_table.get("era5_product"),
         "member": fetch_table.get("member"),
         "retrieve": fetch_table.get("retrieve", False),
+        # Essential too: the model top the download must reach, from
+        # this config's own [shared].p_top.  None when the source's
+        # certified ladder already reaches it, which leaves the request
+        # byte for byte what it always was.
+        "p_top_pa": request.get("p_top_pa"),
+        "all_levels": bool(request.get("all_levels")),
+        # The one host the fetch pins, None to walk the source's ladder,
+        # and which statement named it: --transport wins over the table.
+        "transport": pinned,
+        "transport_from": pinned_from,
+        "transport_table": fetch_table.get("transport"),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -640,12 +825,17 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # ``run-...`` child per run.
         "case_root": Path(case_root),
         "root": Path(root),
+        # The instant the stamp above was named from; the claim reuses it.
+        "launch": launch,
         "authority": Path(root) / "authority",
         "prepared": Path(root) / "prepared",
         "run": Path(root) / "run",
         # Set by a caller that wants a subset; `gpuwm go` itself never
         # sets it, so its render stage is unchanged.
         "render_products": render_products,
+        # The line the section products are cut along; None draws no
+        # section, and every render command stays what it was.
+        "render_section": render_section,
         # None for the resident run every config without a [tiles] table
         # is -- the same emptiness contract the receipts keep -- and the
         # recorded routing decision otherwise.  Nothing is forwarded on a
@@ -698,8 +888,15 @@ def claim_run_root(plan: dict) -> dict:
         # the name instead would never allocate anything.
         root.mkdir(parents=True, exist_ok=True)
         return plan
+    # The plan's own launch instant, not the clock now: the stamp names
+    # when this run was launched, and the gates between naming and
+    # claiming must not move it.  Only a folder of that exact name made
+    # in the meantime (another chain launched in the same second) bumps
+    # the ordinal, which is the one case the caller's correction line is
+    # for.
     claimed = run_stamp_module.allocate(plan["case_root"],
-                                        init=plan.get("cycle"))
+                                        init=plan.get("cycle"),
+                                        launch=plan.get("launch"))
     plan["root"] = claimed
     plan["authority"] = claimed / "authority"
     plan["prepared"] = claimed / "prepared"
@@ -804,7 +1001,29 @@ def fetch_command(plan: dict) -> list[str]:
             command.extend(("--" + key.replace("_", "-"), str(plan[key])))
     if plan.get("retrieve"):
         command.append("--retrieve")
+    if plan.get("p_top_pa") is not None:
+        command.extend(("--p-top-pa", f"{float(plan['p_top_pa']):g}"))
+    if plan.get("all_levels"):
+        command.append("--all-levels")
+    if plan.get("transport") is not None:
+        command.extend(("--transport", str(plan["transport"])))
     return command
+
+
+def front_door_manifest(plan: dict) -> Path:
+    """This run's own GFS front-door manifest, beside its preparation.
+
+    Not ``<data>/gfs-input-manifest.json``: the download is shared by
+    every run of the case (and by any run given the same --data-dir),
+    while the manifest binds this run's own namelist and experiment, so
+    one shared file let a second run replace a first run's binding while
+    the first was still preparing.  Read after :func:`claim_run_root`,
+    which may move the run into a neighbouring folder.
+    """
+
+    from gpuwm.fetch import preparation_manifest_path
+
+    return preparation_manifest_path(Path(plan["prepared"]))
 
 
 def manifest_command(plan: dict, bridge: Path) -> list[str]:
@@ -812,7 +1031,8 @@ def manifest_command(plan: dict, bridge: Path) -> list[str]:
             "--source", plan["source"], "--author-front-door-manifest",
             "--out", str(plan["data"]), "--bridge", str(bridge),
             "--wps-namelist", str(plan["authority"] / "namelist.wps"),
-            "--experiment-config", str(plan["authority"] / "experiment.toml")]
+            "--experiment-config", str(plan["authority"] / "experiment.toml"),
+            "--manifest-out", str(front_door_manifest(plan))]
 
 
 def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
@@ -832,10 +1052,15 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
     if plan["source"] == "gfs":
         import tomllib
         from gpuwm.config_authority import read_config_authority
-        from gpuwm.preprocess_policy import resolve_preprocess_backend
+        from gpuwm.preprocess_policy import preprocess_backend_choice
         tables = tomllib.loads(read_config_authority(plan["config"]).payload.decode("utf-8-sig"))
-        if resolve_preprocess_backend(source="gfs", tables=tables) == "cpu":
-            preprocessing = ["--preprocess-backend", "cpu"]
+        backend, reason = preprocess_backend_choice(source="gfs", tables=tables)
+        if backend == "cpu":
+            # The reason rides with the choice so the preparation receipt
+            # names the declaration that moved preparation off the card.
+            preprocessing = ["--preprocess-backend", "cpu",
+                             *(("--preprocess-backend-reason", reason)
+                               if reason is not None else ())]
 
     return [sys.executable, "-m", "gpuwm.source_cli",
             "--source", plan["source"],
@@ -860,6 +1085,20 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
             *(["--statics-corridor"] if plan.get("statics_corridor")
               else []),
             "--output-root", str(plan["prepared"])]
+
+
+def announce_policy_backend(command: list[str]) -> None:
+    """One line when the configuration, not the reader, moved preparation to the CPU.
+
+    ``auto`` announces its own fallbacks inside the preparation; a policy
+    choice arrives there as an explicit ``cpu`` and would otherwise run
+    without a word in the go log.
+    """
+
+    if "--preprocess-backend-reason" in command:
+        reason = command[command.index("--preprocess-backend-reason") + 1]
+        print(f"go: preparation runs on the CPU backend: {reason}",
+              flush=True)
 
 
 #: How `go` asks the forecast stage for its per-step progress.
@@ -925,14 +1164,42 @@ def _early_render_products(plan: dict) -> str | None:
             else str(products))
 
 
+def _early_render_flags(plan: dict, early_render: str | None) -> list[str]:
+    """The runner's render flags: products, directory and section line.
+
+    Both runners arm their renders off these, the every-frame render and
+    its early first frame, so the line a section is cut along reaches
+    them here or not at all.  Joined with ``=``: a line in the southern
+    or western hemisphere starts with a minus sign, and a separate token
+    that does is read as an option by the runner's parser.
+    """
+
+    if early_render is None:
+        return []
+    flags = ["--render-products", str(early_render),
+             "--render-dir", str(plan["render"])]
+    section = plan.get("render_section")
+    if section:
+        flags.append(f"--render-section={section}")
+    return flags
+
+
 def forecast_command(plan: dict, digests: dict, *,
                      early_render: str | None = None) -> list[str]:
+    # A chained preparation binds its HEAD (the forecast starts before the
+    # later boundary intervals exist); a sealed one binds proof and cache.
+    binding = (["--prepared-head-sha256", digests["prepared_head"]]
+               if "prepared_head" in digests else
+               ["--proof-sha256", digests["proof"],
+                "--source-manifest-sha256", digests["source_manifest"],
+                "--prepared-content-sha256", digests["prepared_content"]])
+    if "prepared_head" in digests:
+        binding[2:2] = ["--source-manifest-sha256",
+                        digests["source_manifest"]]
     return [sys.executable, "-m", str(plan["runner"]),
             "--source", plan["source"],
             "--prepared-root", str(plan["prepared"]),
-            "--proof-sha256", digests["proof"],
-            "--source-manifest-sha256", digests["source_manifest"],
-            "--prepared-content-sha256", digests["prepared_content"],
+            *binding,
             "--experiment-config",
             str(plan["authority"] / "experiment.toml"),
             "--wps-namelist", str(plan["authority"] / "namelist.wps"),
@@ -941,14 +1208,13 @@ def forecast_command(plan: dict, digests: dict, *,
             # Same output directory the finalize stage renders into, so
             # the early picture and the late one land in one tree under
             # one layout rather than two.
-            *([] if early_render is None else
-              ["--render-products", str(early_render),
-               "--render-dir", str(plan["render"])]),
+            *_early_render_flags(plan, early_render),
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
 def tree_forecast_command(plan: dict, *,
-                          digests: dict | None = None) -> list[str]:
+                          digests: dict | None = None,
+                          early_render: str | None = None) -> list[str]:
     """The fifth stage for a DOMAIN TREE.
 
     The tree runner binds ONE digest where the single-domain runner
@@ -995,6 +1261,13 @@ def tree_forecast_command(plan: dict, *,
             "--experiment-config-sha256", config_digest,
             *_profile_flags(plan),
             *_PROGRESS_FLAGS,
+            # The tree draws as it goes too, every grid of it, into the
+            # directory the finalize stage renders into: the runner arms
+            # its own renders off these two flags, exactly as the
+            # single-domain runner does (``forecast_command``).  Without
+            # them a nested `gpuwm go` drew nothing until the forecast
+            # ended.
+            *_early_render_flags(plan, early_render),
             "--io-mode", "history", "--outdir", str(plan["run"])]
 
 
@@ -1044,6 +1317,33 @@ def _hierarchy_document(prepared_root: Path) -> Path:
         "the tree forecast has no preparation receipt to bind")
 
 
+@contextlib.contextmanager
+def _checkpoint_retention(keep: int | None):
+    """Hand the forecast ``keep`` as its checkpoint retention, then put back what was there.
+
+    The forecast's checkpoint writer reads the number of sets to keep from
+    :data:`gpuwm.resume.KEEP_CHECKPOINTS_ENV` (0 keeps every set), in this
+    process when it is hosted here and in the stage subprocess, which
+    inherits this environment, when it is not.  ``None`` leaves whatever
+    the caller set, which is how a hosting ``gpuwm run-plan`` keeps its own
+    policy.
+    """
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV
+
+    if keep is None:
+        yield
+        return
+    previous = os.environ.get(KEEP_CHECKPOINTS_ENV)
+    os.environ[KEEP_CHECKPOINTS_ENV] = str(int(keep))
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(KEEP_CHECKPOINTS_ENV, None)
+        else:
+            os.environ[KEEP_CHECKPOINTS_ENV] = previous
+
+
 def _run_forecast(plan: dict, digests: dict, *, explain: bool,
                   observer=None) -> None:
     """The forecast stage: subprocess by default, in-process for an observer.
@@ -1061,7 +1361,7 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     per-domain writer raises ``output_committed`` on the thread that
     published the file, and every step reaches the observer.
 
-    The subprocess arm stays the default and stays untouched, because
+    The subprocess arm stays the default and carries a watchdog, because
     process isolation is what keeps a CUDA failure inside one stage.
     A caller that asks for the observer is asking to host the forecast,
     and run-plan does exactly that -- it IS the supervising process.
@@ -1076,9 +1376,12 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     # (which is run-plan, and which does host) is unchanged.
     hosted = observer is not None and getattr(observer, "hosts_forecast", True)
     early = None if hosted else _early_render_products(plan)
-    command = (tree_forecast_command(plan) if plan.get("domains", 1) > 1
+    command = (tree_forecast_command(plan, early_render=early)
+               if plan.get("domains", 1) > 1
                else forecast_command(plan, digests, early_render=early))
     progress = plan["run"] / "progress.json"
+    if plan.get("domains", 1) > 1:
+        progress = plan["run"] / "evidence" / "progress.json"
     if not hosted:
         if early is None:
             _run_stage("forecast", command, explain=explain, progress=progress,
@@ -1100,9 +1403,13 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
                        observer=observer,
                        env={SCRATCH_PREFIX_ENV: stage_prefix})
         except GoStageFailed:
-            _warn_swept_render_scratch(plan, prefix=stage_prefix,
-                                       stage="forecast")
+            _close_stage_scratch(plan, prefix=stage_prefix, stage="forecast",
+                                 observer=observer, failed=True)
             raise
+        # A passing forecast stage has exited too, so what its early
+        # render could not remove goes now rather than never.
+        _close_stage_scratch(plan, prefix=stage_prefix, stage="forecast",
+                             observer=observer)
         return
 
     # `python -m MODULE ...` -> the module, and the argv it would have
@@ -1165,6 +1472,25 @@ def proof_digests(prepared_root: Path) -> dict:
             "prepared_content": content}
 
 
+def head_digests(prepared_root: Path, head_sha256: str) -> dict:
+    """The two digests a forecast bound to a prepared head carries.
+
+    Read from ``boundary-stream/head.json``, which carries its own digest
+    and is checked against it on the read: the same relay rule as
+    :func:`proof_digests`, for a preparation whose proof does not exist
+    yet.
+    """
+
+    from gpuwm.ingest.boundary_stream import BoundaryStreamError, bind_head
+
+    try:
+        head = bind_head(prepared_root, head_sha256, require_manifest=True)
+    except BoundaryStreamError as error:
+        raise GoRefusal(str(error)) from None
+    return {"prepared_head": str(head["head_sha256"]),
+            "source_manifest": head["basis"]["input_manifest_sha256"]}
+
+
 def wrfout_frames(plan: dict) -> list[Path]:
     """Every history file the forecast stage published, in time order."""
 
@@ -1177,7 +1503,8 @@ def wrfout_frames(plan: dict) -> list[Path]:
 
 
 def render_command(plan: dict, frames: list[Path] | None = None, *,
-                   context_frames: list[Path] | None = None) -> list[str]:
+                   context_frames: list[Path] | None = None,
+                   inputs_file: Path | None = None) -> list[str]:
     """The sixth stage: turn the forecast into pictures.
 
     ``go`` used to stop after the forecast and print this line for the
@@ -1222,13 +1549,30 @@ def render_command(plan: dict, frames: list[Path] | None = None, *,
     itself would put those two halves of one run's pictures in two
     wall-clock folders, and the finalize stage could no longer prove the
     early frame had already been drawn.
+
+    ``inputs_file`` is for a command this process RUNS whose frames do
+    not fit on a command line (:func:`run_render_pass` decides): the
+    frames and their context are written into that file and the command
+    names the file (``--inputs-from``).  One path per frame on the
+    command line is how a 48 h nested forecast asked Windows for a 36,519
+    character command, 32,767 being the most it starts, and never drew a
+    picture.  A printed line keeps the frames spelled out, because the
+    reader pasting it has no such file.
     """
 
     if frames is None:
         frames = wrfout_frames(plan) or None
-    targets = ([str(frame) for frame in frames] if frames is not None
-               else [str(Path(plan.get("wrfout_dir",
-                                       plan["run"] / "wrfout")) / WRFOUT_GLOB)])
+    listed = frames is not None and inputs_file is not None
+    if listed:
+        from gpuwm.render import write_render_inputs
+
+        write_render_inputs(inputs_file, frames, context_frames or ())
+        targets = ["--inputs-from", str(inputs_file)]
+    else:
+        targets = ([str(frame) for frame in frames] if frames is not None
+                   else [str(Path(plan.get("wrfout_dir",
+                                           plan["run"] / "wrfout"))
+                             / WRFOUT_GLOB)])
     command = [sys.executable, "-m", "gpuwm.cli", "render", *targets, "--series",
                "--out", str(plan["render"]),
                *run_stamp_module.stage_flags()]
@@ -1241,9 +1585,156 @@ def render_command(plan: dict, frames: list[Path] | None = None, *,
     products = plan.get("render_products")
     if products:
         command += ["--products", str(products)]
-    for frame in context_frames or ():
-        command += ["--context-wrfout", str(frame)]
+    # The line every `xsec:` product is cut along, `gpuwm render
+    # --section`'s own value.  Without it the render front door drops each
+    # section product before the renderer starts, so a run that asked for
+    # one drew none.  Joined with `=` because a southern or western line
+    # starts with a minus sign.
+    section = plan.get("render_section")
+    if section:
+        command.append(f"--section={section}")
+    if not listed:
+        for frame in context_frames or ():
+            command += ["--context-wrfout", str(frame)]
     return command
+
+
+#: The names of the render stage's frame files (:func:`render_inputs_file`)
+#: in the system temporary folder: ``<prefix><random><suffix>``.
+RENDER_INPUTS_PREFIX = "gpuwm-render-inputs-"
+RENDER_INPUTS_SUFFIX = ".json"
+
+#: How long a failed stage's frame file is kept for the "run ... --explain"
+#: line its refusal printed: a week, so a person who comes back to a
+#: failed forecast after a weekend can still paste it.  The next long
+#: render stage removes the older ones, so the temporary folder holds the
+#: files of the last week's failed long stages and no more (one file each
+#: used to build up for good).
+RENDER_INPUTS_KEEP_SECONDS = 7 * 24 * 3600
+
+
+def sweep_kept_render_inputs(folder=None, *, now: float | None = None) -> list[Path]:
+    """Remove frame files failed stages kept longer than a week; the removed.
+
+    Only a file named as :func:`render_inputs_file` names one and last
+    written more than :data:`RENDER_INPUTS_KEEP_SECONDS` ago: a running
+    stage's file was written when that stage started, and the renderer
+    reads it as it starts.  Never raises: a file another account owns, or
+    one that is gone by the time it is reached, is left to its owner.
+    """
+
+    folder = Path(tempfile.gettempdir() if folder is None else folder)
+    cutoff = (time.time() if now is None else now) - RENDER_INPUTS_KEEP_SECONDS
+    removed: list[Path] = []
+    try:
+        candidates = sorted(folder.glob(
+            f"{RENDER_INPUTS_PREFIX}*{RENDER_INPUTS_SUFFIX}"))
+    except OSError:
+        return removed
+    for path in candidates:
+        try:
+            if not path.is_file() or path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+@contextlib.contextmanager
+def render_inputs_file():
+    """A private file for one render stage's frame lists, removed after.
+
+    In the system temporary folder rather than the run folder: the run
+    folder is what a person opens, and a stage that dies leaves nothing
+    there that is not the forecast's own.
+
+    Kept when the stage ran and failed.  Its refusal's "run ... --explain"
+    line names this file rather than spelling out a series too long for
+    any shell (:func:`gpuwm.render._respell_invocation`), and that line
+    must run as printed.  A stage that passed, was stopped, or never
+    started printed no such line, and the file goes.  A kept file goes a
+    week later, when a later long stage opens its own
+    (:func:`sweep_kept_render_inputs`).
+    """
+
+    sweep_kept_render_inputs()
+    try:
+        handle, name = tempfile.mkstemp(prefix=RENDER_INPUTS_PREFIX,
+                                        suffix=RENDER_INPUTS_SUFFIX)
+        os.close(handle)
+    except OSError:
+        # No writable temporary folder: the frames go on the command
+        # line as they always did, which a short series fits, and a
+        # series too long for it fails as a stage that could not start.
+        yield None
+        return
+    path = Path(name)
+    kept = False
+    try:
+        yield path
+    except GoStageFailed as failure:
+        kept = failure.code != _STAGE_START_FAILED
+        raise
+    finally:
+        if not kept:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def run_render_pass(plan: dict, frames: list[Path], *,
+                    context_frames: list[Path] | None = None,
+                    **stage) -> None:
+    """Run one render stage over ``frames``.
+
+    A command that fits the command-line budget runs exactly as it always
+    did, every frame on it.  One that does not (a long nested forecast
+    under an ordinary Documents folder) hands its frames to the process
+    in a private file (:func:`render_inputs_file`); everything that
+    records or shows that command gets the frames spelled out
+    (``shown``), since the file is gone once the stage ends.  The budget
+    is the renderer launch's own (:data:`gpuwm.rustwx.COMMAND_LINE_BUDGET`),
+    the same on every platform so the long-series route is the code the
+    tests run wherever they run.  ``stage`` is passed through to
+    :func:`_run_stage`.
+    """
+
+    from gpuwm.rustwx import COMMAND_LINE_BUDGET
+
+    spelled = render_command(plan, frames, context_frames=context_frames)
+    length = len(subprocess.list2cmdline([str(part) for part in spelled]))
+    if length <= COMMAND_LINE_BUDGET:
+        _run_stage("render", spelled, **stage)
+        return
+    with render_inputs_file() as inputs:
+        if inputs is None:
+            # No temporary folder to write the list into: the spelled
+            # command is tried, and a system that will not start it is a
+            # failed stage that says how long the command was.
+            _run_stage("render", spelled, **stage)
+            return
+        _run_stage("render",
+                   render_command(plan, frames, context_frames=context_frames,
+                                  inputs_file=inputs),
+                   shown=spelled, **stage)
+
+
+def _start_failure_words(label: str, command: list[str],
+                         error: OSError) -> str:
+    """Why a stage's process never started, as one sentence."""
+
+    too_long = (getattr(error, "winerror", None) == 206
+                or error.errno == errno.E2BIG)
+    if too_long:
+        length = len(subprocess.list2cmdline([str(part) for part in command]))
+        return (f"the {label} stage could not start: its command line is "
+                f"{length:,} characters, more than this system will start "
+                "a program with")
+    reason = error.strerror or type(error).__name__
+    return f"the {label} stage could not start: {reason}"
 
 
 def render_extra_missing() -> str | None:
@@ -1288,12 +1779,20 @@ def unknown_render_products(spec) -> list[str]:
     ``xsec:`` grammar the renderer resolves per file rather than from a
     fixed list.  Group keywords and the four shared short names
     (:data:`gpuwm.render.RUST_PRODUCT_ALIASES`) are known names too.
+
+    The spec is read with the engine's own tokenizer
+    (:func:`gpuwm.rustwx.product_spec_terms`), so a section's level list,
+    and the term that closes it (``0.1/wa`` in
+    ``xsec:QCLOUD=0.01,0.1/wa``), stay inside that section and are never
+    asked about as products.
     """
+
+    from gpuwm.rustwx import product_spec_terms
 
     text = str(spec or "").strip()
     if not text or text.casefold() == "none":
         return []
-    tokens = _render_spec_tokens(text)
+    tokens = product_spec_terms(text)
     if any(token.casefold() == "all" for token in tokens):
         return []
     from gpuwm.runplan import render_catalog
@@ -1319,54 +1818,96 @@ def unknown_render_products(spec) -> list[str]:
             and token.casefold() not in groups]
 
 
-_SECTION_PREFIX = "xsec:"
+def render_section_value(section, *, base: Path | None = None) -> str | None:
+    """A ``--section`` value as the plan records it and every render reads it.
 
-
-def _render_spec_tokens(text: str) -> list[str]:
-    """Split a ``--products`` spec the way the renderer itself does.
-
-    A level list inside a cross-section term is comma-separated too
-    (``xsec:wa=1,2,5,10@5``), so a purely numeric token that follows an
-    ``xsec:`` token whose last term opened a level list is that list's
-    continuation, not a product; this is rw-wrfbatch's own rule
-    (section.rs, ``split_product_spec``), carried here so the admission
-    check cannot refuse a spelling the renderer accepts.
+    A ``lat,lon,lat,lon`` line is kept as written.  A file is made
+    absolute against ``base`` (the caller's directory when omitted): the
+    plan is recorded, printed as a command to paste and read by renders
+    that run in other processes, and a relative name means something
+    else from any of them.
     """
 
-    def level_list_open(token: str) -> bool:
-        last_term = token.rsplit("/", 1)[-1]
-        return "=" in last_term and "@" not in last_term.rsplit("=", 1)[-1]
+    if section is None:
+        return None
+    from gpuwm.rustwx import is_section_line
 
-    def numeric(value: str) -> bool:
-        value = value.strip()
-        if not value:
-            return False
-        try:
-            float(value)
-        except ValueError:
-            return False
-        return True
+    text = str(section).strip()
+    if not text or is_section_line(text):
+        return text
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() if base is None else Path(base)) / path
+    return str(path.resolve())
 
-    def is_level_token(token: str) -> bool:
-        level, sep, highlight = token.partition("@")
-        return numeric(level) and (not sep or numeric(highlight))
 
-    tokens: list[str] = []
-    for token in (part.strip() for part in text.split(",")):
-        if not token:
-            continue
-        prior = tokens[-1] if tokens else None
-        if (prior is not None and prior.startswith(_SECTION_PREFIX)
-                and level_list_open(prior) and is_level_token(token)):
-            tokens[-1] = prior + "," + token
-        else:
-            tokens.append(token)
-    return tokens
+def admit_render_products(spec, *, section=None) -> None:
+    """Refuse, by name, a ``--products`` spec the renderer cannot draw.
+
+    Asked at plan review, dry run included, before anything is fetched
+    or created.  WHAT BREAKAGE THIS PREVENTS (gate law): an unknown slug
+    reaches the renderer only after the whole forecast has integrated,
+    and the renderer refuses it for the WHOLE invocation, so the run
+    ends in a failed render stage with no picture of any product it
+    asked for.  :func:`unknown_render_products` decides; a box with no
+    renderer to ask says nothing here and meets its own refusal.
+
+    ``section`` is the line the ``xsec:`` products are cut along
+    (``--section``).  An ``xsec:`` term with none is refused here by
+    name, because the render stage can only drop it: the forecast ran in
+    full and the term drew nothing, and a request of only section terms
+    ran the whole forecast to end on "nothing left to draw".  A line the
+    renderer cannot read is refused here too
+    (:func:`gpuwm.rustwx.section_line_problem`), because the renderer
+    refuses it for the whole invocation, every product of it, and only
+    after the forecast.
+    """
+
+    unknown = unknown_render_products(spec)
+    if unknown:
+        raise GoRefusal(
+            "--products names " + ", ".join(repr(slug) for slug in unknown)
+            + ", which the renderer's catalog does not carry. Next: "
+            "gpuwm render --list-products names every product this "
+            "install can draw; repeat this command with names from it, "
+            "or 'all'.")
+    from gpuwm.rustwx import section_line_problem, split_section_spec
+
+    text = str(spec or "").strip()
+    sections = ([] if not text or text.casefold() == "none"
+                else split_section_spec(text)[1])
+    lined = section is not None and str(section).strip() != ""
+    if sections and not lined:
+        raise GoRefusal(
+            "--products names " + ", ".join(repr(term) for term in sections)
+            + ", a vertical section, and this command names no line to cut "
+            "it along, so it would draw nothing after the whole forecast. "
+            "Next: repeat this command with --section=lat,lon,lat,lon (or "
+            "--section FILE.json holding {start, end} or a {points, "
+            "extend_km} polyline), or drop the term from --products.")
+    problem = section_line_problem(section)
+    if problem is not None:
+        raise GoRefusal(
+            f"{problem}. The renderer refuses the whole render for it, "
+            "after the whole forecast. Next: repeat this command with "
+            "--section=lat,lon,lat,lon (ends at least 1 km apart) or "
+            "--section FILE.json holding {start, end} or a {points, "
+            "extend_km} polyline.")
+    if lined and not sections and text.casefold() != "none":
+        print("go: note: --section names a line, but --products names no "
+              "xsec: product, so no section is drawn; add "
+              "xsec:<field>[/<overlay>...] to --products to draw one.",
+              file=sys.stderr)
 
 
 def _render_stage(plan: dict, *, explain: bool,
-                  observer=None, door: str = "go") -> bool:
+                  observer=None, door: str = "go",
+                  windows: bool = True) -> bool:
     """Run the render stage; return whether anything was rendered.
+
+    ``windows=False`` runs no windowed pass: the caller has asked the
+    engine and its frames hold nothing a window folds, so a pass would
+    draw nothing and exit 1 (:meth:`gpuwm.cycle.pictures.BoundaryPictures.finish`).
 
     ``plan["render_products"] == "none"`` skips the stage outright.
     That spelling is deliberate: it lives in the same field as a product
@@ -1412,8 +1953,29 @@ def _render_stage(plan: dict, *, explain: bool,
               f"wrfout frame under {plan.get('wrfout_dir', plan['run'] / 'wrfout')}.")
         return False
     from gpuwm.first_products import published_frames
+    from gpuwm import live_products
+    from gpuwm.render import announce_missing_basemap
 
+    # The render subprocess prints its own map-asset warning into output
+    # this stage captures, so the run is told here, beside the finished
+    # pictures, where a status that reads only its last events finds it.
+    announce_missing_basemap(_stage_warn(observer), plan["render"],
+                             stage="finalize")
+
+    # A run that reaches this stage through another door (run-plan's
+    # config route, downscale, a WRF-input run) has no start-of-run
+    # sweep of its own, so what an earlier run in the same folder marked
+    # goes as this one starts drawing.  Only marked stores are touched.
+    _sweep_earlier_render_scratch(_scratch_folder(plan), observer=observer)
     already: list[Path] = []
+    live = getattr(observer, "live_products", None)
+    if live is not None:
+        # Stop taking frames and finish the queue before anything is
+        # decided, so this stage is never a second writer into the same
+        # folder: a render the bounded wait could not finish is told to
+        # publish nothing, and every frame the wait did not reach is
+        # drawn below.
+        live.stop()
     trigger = getattr(observer, "first_products", None)
     if trigger is not None:
         # Collected first.  The early render writes into this stage's
@@ -1438,42 +2000,134 @@ def _render_stage(plan: dict, *, explain: bool,
     # exactly as safe as reading it off a trigger this process happens to
     # own -- and it is what keeps the early picture, and its instant, in
     # the tree.
+    every_frame = list(frames)
+    from gpuwm.restart_render import history_before_restart
+    current_paths = {Path(frame).resolve() for frame in every_frame}
+    prior_frames = [frame for frame in history_before_restart(plan.get("restart"))
+                    if frame.resolve() not in current_paths]
     frames, already, note = published_frames(frames, plan)
     if note is not None:
         print(f"  -- render: {note}")
-    if not frames:
+    # Every frame drawn while the forecast ran, on every grid, off disk
+    # for the same reason: the record licenses nothing until each picture
+    # is re-checked against its digest.
+    frames, drawn_live, live_note = live_products.published_frames(frames, plan)
+    already += drawn_live
+    if live_note is not None:
+        print(f"  -- render: {live_note}")
+    # A request made only of windows has nothing to draw on a frame no
+    # window ends on (a grid's first, or one between its whole hours),
+    # and a render that draws nothing exits 1: handed those frames, the
+    # end-of-run batch stopped the stage before the windowed pass drew
+    # the frames that do close windows.  They are left out of the batch
+    # and stay its baselines.
+    idle: list[Path] = []
+    if frames and windows and live_products.windows_only(
+            plan.get("render_products"), live_products.catalog_windowed_slugs):
+        idle = [frame for frame in frames
+                if not live_products.closes_a_window(
+                    frame, [*prior_frames, *every_frame])]
+        frames = [frame for frame in frames if frame not in idle]
+    from gpuwm.render_receipts import SUMMARY_FILENAME
+    from gpuwm.render import SCRATCH_PREFIX_ENV, stage_scratch_prefix
+
+    # THIS STAGE'S OWN working stores, named before it opens any: the
+    # token goes down to the render subprocess, every store that
+    # subprocess opens carries it, and nothing another door spawned can.
+    # A sweep below therefore cannot reach a concurrent render's live
+    # store, whenever that store was created -- which a "what appeared
+    # while this stage ran" test cannot promise, because the second
+    # render into one delivery usually opens its store a beat AFTER this
+    # one started, and on POSIX removing it takes the live render's work
+    # with it.
+    stage_prefix = stage_scratch_prefix()
+
+    listed: list = []
+
+    def windowed_slugs(frame):
+        # The catalog listing imports a frame into a store of its own, in
+        # THIS process.  It takes the stage's token and the stage's
+        # scratch root, so the sweep that closes the stage reaches it too:
+        # parked beside the frame under the plain prefix, as it was, it
+        # sat in `run/wrfout.render-scratch/` where no door could ever
+        # claim it, and a successful 24 h run kept it (30 MB, finding F7).
+        # Any frame lists every windowed slug of this build, so it is
+        # asked once however many questions this stage has.
+        if not listed:
+            listed.append(live_products.engine_windowed_slugs(
+                frame, beside=plan["render"], prefix=stage_prefix))
+        return listed[0]
+
+    # The live pass closes each whole hour's own windows (qpf_1h, the
+    # 1 h maxima) as the frame lands, over every frame of that hour.
+    # What only the whole series holds (qpf_6h, run maxima) is drawn here
+    # over every frame of each grid; a frame the live pass did not finish
+    # is drawn in the batch below beside its grid's whole series.
+    # ``windows=False`` is a caller that already asked the engine and
+    # learned no window can be drawn from these frames, so there is no
+    # windowed pass at all.
+    windowed = (live_products.windowed_passes(
+        every_frame, drawn_live, plan.get("render_products"),
+        windowed_slugs=windowed_slugs,
+        recorded=live_products.recorded_products(plan["render"]),
+        live_held=live_products.live_held(plan["render"]),
+        prior_frames=prior_frames)
+        if windows else [])
+    if not frames and not windowed:
+        _close_stage_scratch(plan, prefix=stage_prefix, observer=observer)
         # Every frame was published early.  Distinguished from the empty
         # case above because "nothing to do because it is done" and
         # "nothing to do because nothing was produced" are opposite
         # outcomes and used to print the same sentence.
         print(f"  -- render complete: {len(already)} frame(s) were "
-              "published by the early render and verified by digest; "
+              "published while the forecast ran and verified by digest; "
               "nothing was left to draw.")
-        from gpuwm.render_receipts import read_summary
-        summary = read_summary(plan["render"])
+        summary = _print_closing_notes(plan, explain=explain)
         if summary is not None:
             _notify(observer, "stage_end", label="render", exit_code=0, ok=True,
                     elapsed_seconds=0., progress=summary)
         return True
     # A digest-verified early frame remains an accumulation baseline even
     # though its already published pictures must not be rewritten.
-    from gpuwm.render_receipts import SUMMARY_FILENAME
-    from gpuwm.render import SCRATCH_PREFIX_ENV, stage_scratch_prefix
-
-    # THIS STAGE'S OWN working stores, named before it starts: the token
-    # goes down to the render subprocess, every store that subprocess
-    # opens carries it, and nothing another door spawned can.  A sweep
-    # below therefore cannot reach a concurrent render's live store,
-    # whenever that store was created -- which a "what appeared while
-    # this stage ran" test cannot promise, because the second render
-    # into one delivery usually opens its store a beat AFTER this one
-    # started, and on POSIX removing it takes the live render's work
-    # with it.
-    stage_prefix = stage_scratch_prefix()
     try:
-        _run_stage("render", render_command(plan, frames, context_frames=already), explain=explain,
-                   progress=Path(plan["render"]) / SUMMARY_FILENAME, observer=observer,
-                   door=door, env={SCRATCH_PREFIX_ENV: stage_prefix})
+        if frames:
+            # Baselines only where they draw something: every drawn frame
+            # of a grid with a frame left to draw on a whole hour, so its
+            # windows fold the grid's whole series, and none at all for a
+            # request that holds no window.  Anything else is imported for
+            # nothing (about 6 s a frame at 1 km).
+            baselines = (live_products.baseline_frames(
+                frames, [*prior_frames, *already, *idle])
+                if windows and live_products.requests_windows(
+                    plan.get("render_products"),
+                    live_products.catalog_windowed_slugs) else [])
+            run_render_pass(
+                plan, frames,
+                context_frames=baselines,
+                explain=explain,
+                progress=Path(plan["render"]) / SUMMARY_FILENAME,
+                observer=observer, door=door,
+                env={SCRATCH_PREFIX_ENV: stage_prefix})
+        for wanted, context, products in windowed:
+            print(f"  -- render: the windowed pictures of {len(wanted)} frame(s), "
+                  "over every frame of their grid")
+            try:
+                run_render_pass(
+                    {**plan, "render_products": products}, wanted,
+                    context_frames=context,
+                    explain=explain,
+                    progress=Path(plan["render"]) / SUMMARY_FILENAME,
+                    observer=observer, door=door,
+                    env={SCRATCH_PREFIX_ENV: stage_prefix})
+            except GoStageFailed as error:
+                # Every other picture of these frames is drawn and
+                # verified; a failed window pass is said, not a failed run.
+                _close_stage_scratch(plan, prefix=stage_prefix,
+                                     observer=observer, failed=True)
+                print(f"render: warning: the windowed pictures of "
+                      f"{len(wanted)} frame(s) were not drawn ({error}); "
+                      "every other picture of those frames is in place",
+                      file=sys.stderr)
     except GoStageFailed:
         # A render that died mid-store leaves its working tree in the
         # sibling `<case>.render-scratch/` -- tens of GiB of tiled hour
@@ -1482,34 +2136,208 @@ def _render_stage(plan: dict, *, explain: bool,
         # evidence and is kept (see the GoStageFailed arm in go_main);
         # working scratch is not, so it goes, and the line that says the
         # stage failed says what went with it.
-        _warn_swept_render_scratch(plan, prefix=stage_prefix)
+        _close_stage_scratch(plan, prefix=stage_prefix, observer=observer,
+                             failed=True)
         raise
+    # AND WHEN IT SUCCEEDED.  Every render this stage spawned has exited
+    # by here, so any store still carrying its token is one a render
+    # could not remove itself, and nothing will ever read it.  This used
+    # to run only on a failure, so a successful run kept whatever its
+    # renders left: 741 MB on one 24 h 3 km forecast (finding F7).
+    _close_stage_scratch(plan, prefix=stage_prefix, observer=observer)
+    _print_closing_notes(plan, explain=explain)
     return True
 
 
-def _warn_swept_render_scratch(plan: dict, *, prefix: str,
-                               stage: str = "render") -> None:
-    """Clear a dead stage's own working stores and name what was cleared.
+def _print_closing_notes(plan: dict, *, explain: bool):
+    """The run's closing notes, once, after the last render pass; returns the published summary.
 
-    ``stage`` names the stage that died, because two of them draw: the
-    render stage, and the forecast stage when it carries the early
-    render.  Both open their stores under a token this door minted, so
-    both are swept the same way and the line says which one it was.
+    First the products that drew no picture on any grid, with the first
+    reason each was skipped (:func:`_print_undrawn_note`), then the
+    products one grid has and another has none of
+    (:func:`_print_unpictured`), which never names a product no grid
+    drew.
     """
-    from gpuwm.render import sweep_abandoned_scratch, scratch_root_for
+
+    from gpuwm.render_receipts import read_summary
+    try:
+        summary = read_summary(plan["render"])
+    except (OSError, ValueError):
+        summary = None
+    _print_undrawn_note(summary, explain=explain)
+    _print_unpictured(plan)
+    return summary
+
+
+def _print_unpictured(plan: dict) -> None:
+    """Name every product one grid has and another grid has no picture of.
+
+    The line each render prints covers its own invocation only, so a
+    nest with no ``qpf_1h`` at all used to finish under a note that read
+    as one frame's skip.  A listing that cannot be read says nothing
+    rather than fail a finished render.
+    """
+
+    from gpuwm import live_products
 
     try:
+        note = live_products.unpictured_note(plan["render"],
+                                             plan.get("render_products"))
+    except Exception:  # noqa: BLE001 - a closing note never fails the stage
+        return
+    if note is not None:
+        print(f"    {note}")
+
+
+def _print_undrawn_note(summary, *, explain: bool) -> None:
+    """The run's closing note: every product that drew NO picture.
+
+    Printed once, after the last render pass, from the published summary
+    -- which counts the early frame, every frame drawn while the forecast
+    ran and every end-of-run pass together.  Each pass's own note speaks
+    only for that pass: the end-of-run pass of a run whose frames were all
+    drawn live named ``qpf_1h`` (24 pictures, skipped at F000) and never
+    the three products the live renders had skipped on every frame.
+    """
+
+    from gpuwm.render_receipts import undrawn_note
+
+    note = undrawn_note(summary)
+    if note is None:
+        return
+    headline, detail = note
+    print(render(layered(headline, detail), explain=explain,
+                 command="gpuwm render"))
+
+
+def _stage_warn(observer):
+    """``(code, message, **fields)`` onto the run's events, or stderr.
+
+    An observer with a ``warn`` hook owns an event stream and a reader
+    who sees it (the desktop, the terminal workspace, the web page);
+    without one this stage belongs to a terminal command, and stderr is
+    what that reader sees.
+    """
+
+    hook = getattr(observer, "warn", None)
+
+    def warn(code: str, message: str, **fields) -> None:
+        if callable(hook):
+            hook(code, message, **fields)
+        else:
+            print(f"render: warning: {message}", file=sys.stderr, flush=True)
+
+    return warn
+
+
+def _close_stage_scratch(plan: dict, *, prefix: str, stage: str = "render",
+                         observer=None, failed: bool = False) -> None:
+    """Remove the working stores one ended stage left, and say so.
+
+    Called once every process the stage spawned has exited, whether the
+    stage passed or failed; ``failed`` only chooses the words.  ``stage``
+    names it, because two stages draw: the render stage, and the
+    forecast stage when it carries the early render.  Both open their
+    stores under a token this door minted, and only that token's stores
+    are touched -- anything else beside the delivery belongs to another
+    render.
+
+    The stores a render left are a warning in the run's events as well
+    as on the terminal (code ``render_scratch_left``): the render's own
+    "left behind" line goes to a stderr this door captures and, on a
+    passing stage, discards.  A store that STILL cannot be removed is
+    marked, so the next run in the same folder removes it
+    (:func:`gpuwm.render.sweep_marked_scratch`).  Never raises: a cleanup
+    never replaces the stage's own outcome.
+    """
+    from gpuwm.render import (mark_abandoned_scratch, owned_scratch_stores,
+                              scratch_root_for, sweep_abandoned_scratch)
+    from gpuwm.render_layout import fs_path
+
+    try:
+        root = scratch_root_for(plan["render"])
+        found = owned_scratch_stores(plan["render"], prefix=prefix)
+        if not found:
+            return
+        sizes = {store: _tree_bytes(fs_path(store, descend=True))
+                 for store in found}
         removed = sweep_abandoned_scratch(plan["render"], prefix=prefix)
-    except Exception:            # a cleanup never replaces the real failure
+        left = [store for store in found if store not in removed]
+        if left:
+            mark_abandoned_scratch(left, run=plan.get("root"))
+    except Exception:            # noqa: BLE001 - see the docstring
+        return
+    held = sum(sizes.values())
+    kept = sum(sizes[store] for store in left)
+    if failed:
+        what = f"the failed {stage} left"
+    else:
+        what = f"the {stage} stage passed but its renders left"
+    message = (f"{what} {len(found)} working store(s) "
+               f"({_human_bytes(held)}) in {root}; they held no product "
+               "and nothing later reads them, so ")
+    if not left:
+        message += "they were removed once every render had exited."
+    elif len(left) == len(found):
+        message += (f"they were to be removed, but none could be yet. They "
+                    f"are marked, and the next run in {_scratch_folder(plan)} "
+                    "removes them.")
+    else:
+        message += (f"they were removed once every render had exited, "
+                    f"except {len(left)} ({_human_bytes(kept)}) that could "
+                    f"not be removed yet. Those are marked, and the next "
+                    f"run in {_scratch_folder(plan)} removes them.")
+    if failed:
+        message += (" Only this stage's own stores were touched; anything "
+                    "else beside the delivery belongs to another render "
+                    "and was left alone.")
+    print(f"{stage}: warning: {message}", file=sys.stderr)
+    _notify(observer, "stage_warning", label=stage,
+            code="render_scratch_left", message=message,
+            scratch_root=str(root), stores=len(found), bytes=held,
+            removed=len(found) - len(left), kept=len(left),
+            kept_bytes=kept, stage_failed=bool(failed))
+
+
+def _scratch_folder(plan: dict) -> Path:
+    """The folder whose next run removes what this run's renders left.
+
+    The case folder a run folder sits in, or the folder the run was
+    written straight into; :func:`gpuwm.render.sweep_marked_scratch`
+    looks two levels down from it, which is where every door's
+    ``<delivery>.render-scratch`` root lands.
+    """
+    from gpuwm.render import scratch_root_for
+
+    run = run_stamp_module.owning_run(plan["render"])
+    if run is not None:
+        return run.parent
+    return scratch_root_for(plan["render"]).parent
+
+
+def _sweep_earlier_render_scratch(folder, *, observer=None) -> None:
+    """Remove the working stores earlier runs in ``folder`` marked, and say so.
+
+    The second half of :func:`_close_stage_scratch`: a store another
+    program still held when its own run ended was marked, and a run
+    starting in the same folder removes it.  Only marked stores are
+    touched, so a run still going in the same folder keeps its own.
+    Never raises.
+    """
+    from gpuwm.render import sweep_marked_scratch
+
+    try:
+        removed = sweep_marked_scratch(folder)
+    except Exception:            # noqa: BLE001 - housekeeping only
         return
     if not removed:
         return
-    print(f"{stage}: warning: the failed {stage} left {len(removed)} working "
-          f"store(s) in {scratch_root_for(plan['render'])}; they held no "
-          "product and nothing later reads them, so they were removed. "
-          "Only this stage's own stores went; anything else beside the "
-          "delivery belongs to another render and was left alone.",
-          file=sys.stderr)
+    message = (f"removed {len(removed)} render working store(s) an "
+               f"earlier run in {folder} could not remove when it ended")
+    print(f"go: {message}", file=sys.stderr)
+    _notify(observer, "stage_warning", label="render",
+            code="render_scratch_swept", message=message,
+            folder=str(folder), stores=len(removed))
 
 
 def resolve_bridge() -> Path:
@@ -1590,6 +2418,26 @@ def _progress_note(progress: Path | None) -> str:
     return (", " + ", ".join(parts)) if parts else ""
 
 
+def _heartbeat_note(status: str) -> str | None:
+    """The forecast heartbeat's phase for the stage beat line, or ``None``.
+
+    Only the named phases: a preparation, a beat after the last step, and
+    a write between two steps.  A write is worded as the forecast
+    progress line words it (:func:`gpuwm.progress.write_phase_words`), so
+    the read-back of a checkpoint reads "checking checkpoint" and not
+    "writing verify checkpoint".  ``None`` for any other status, whose
+    beat line keeps the stage's own progress note.
+    """
+
+    if status.startswith("writing:"):
+        from gpuwm.progress import write_phase_words
+
+        return ", " + write_phase_words(status.removeprefix("writing:"))
+    if status.startswith(("preparing:", "finalizing:")):
+        return ", " + status.replace(":", " ").replace("-", " ")
+    return None
+
+
 def _notify(observer, event: str, **fields) -> None:
     """Tell an optional stage observer something, never failing the run.
 
@@ -1608,11 +2456,130 @@ def _notify(observer, event: str, **fields) -> None:
         pass
 
 
+#: Every stage subprocess :func:`_run_stage` is waiting on, so a door
+#: that owns its own stop can end the one in flight
+#: (:func:`end_stage_processes`).  Recording one changes nothing about
+#: how it runs; ``gpuwm go`` never ends one (see :class:`GoInterrupted`).
+_STAGE_PROCESSES: dict[int, subprocess.Popen] = {}
+_STAGE_PROCESSES_LOCK = threading.Lock()
+
+#: How long :func:`end_stage_processes` lets a stage answer its SIGINT
+#: before killing it.  The desktop kills a stopped run 5 s after asking.
+END_STAGE_GRACE_SECONDS = 2.0
+
+
+def end_stage_processes(*, grace: float = END_STAGE_GRACE_SECONDS) -> bool:
+    """End every stage subprocess this process is waiting on.
+
+    For a door that records its own stop (``gpuwm downscale``).  THE
+    BREAKAGE: a child stopped with ``kill -TERM <pid>`` while its
+    finalize render ran left that render drawing into the run's folder
+    after the child had exited, because the signal reached the child
+    alone and the render was never told.  Each stage is sent SIGINT
+    (``gpuwm render`` answers it by ending the renderer it runs and
+    exiting 130) and killed if it has not exited within ``grace``; off
+    POSIX it is terminated.  The stage is signalled by pid, never by
+    group: it shares the caller's group.
+
+    Returns whether no stage is left running.  Never raises.
+    """
+
+    with _STAGE_PROCESSES_LOCK:
+        processes = list(_STAGE_PROCESSES.values())
+    running = [process for process in processes if process.poll() is None]
+    for process in running:
+        try:
+            if os.name == "posix":
+                import signal
+
+                process.send_signal(signal.SIGINT)
+            else:
+                process.terminate()
+        except OSError:
+            pass
+    deadline = time.monotonic() + grace
+    for process in running:
+        try:
+            process.wait(max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                process.wait(grace)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    return all(process.poll() is not None for process in running)
+
+
+#: The ``warning:`` and ``note:`` lines one ``gpuwm go`` has shown, or
+#: None outside one.  Every stage is its own process and loads the
+#: configuration again, so a configuration warning is printed by each of
+#: them; the terminal shows it once, and a launch that keeps a log keeps
+#: every copy there.
+_SHOWN_ADVISORIES: set[str] | None = None
+_SHOWN_ADVISORIES_LOCK = threading.Lock()
+
+
+def _first_showing(line: str) -> bool:
+    """Whether this advisory line is new to the terminal of this launch."""
+
+    said = " ".join(str(line).split())
+    with _SHOWN_ADVISORIES_LOCK:
+        if _SHOWN_ADVISORIES is None:
+            return True
+        if said in _SHOWN_ADVISORIES:
+            return False
+        _SHOWN_ADVISORIES.add(said)
+        return True
+
+
+def _stage_relay_line(line: str) -> bool:
+    """Whether a passing stage's advisory line is printed.
+
+    Printed whole when this process's output passes through a relay that
+    logs every line and shows each advisory once (a registered launch's
+    ``LaunchOutput``); otherwise this is the terminal, and a line it
+    already showed is left out.
+    """
+
+    if getattr(sys.stdout, "relays_advisories_once", False):
+        return True
+    return _first_showing(line)
+
+
+@contextlib.contextmanager
+def _each_advisory_once():
+    """Show each advisory line once for the launch inside this block.
+
+    A warning this process prints itself counts as shown, so a stage that
+    says the same sentence again is not relayed a second time.
+    """
+
+    global _SHOWN_ADVISORIES
+    from gpuwm.explain import add_warning_observer, remove_warning_observer
+
+    def observe(record) -> None:
+        said = " ".join(f"warning: {record['action']}".split())
+        with _SHOWN_ADVISORIES_LOCK:
+            if _SHOWN_ADVISORIES is not None:
+                _SHOWN_ADVISORIES.add(said)
+
+    with _SHOWN_ADVISORIES_LOCK:
+        previous, _SHOWN_ADVISORIES = _SHOWN_ADVISORIES, set()
+    add_warning_observer(observe)
+    try:
+        yield
+    finally:
+        remove_warning_observer(observe)
+        with _SHOWN_ADVISORIES_LOCK:
+            _SHOWN_ADVISORIES = previous
+
+
 def _run_stage(label: str, command: list[str], *, explain: bool,
                progress: Path | None = None,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
                observer=None, door: str = "go",
-               env: dict | None = None) -> None:
+               env: dict | None = None,
+               shown: list[str] | None = None) -> None:
     """Run one stage; replay everything it said and stop if it failed.
 
     Output is captured so the default is one line per stage, and
@@ -1633,36 +2600,66 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     ``door`` names the command the reader typed, for the one sentence
     below that addresses them directly.
 
+    The output is read as the stage writes it (:func:`_read_stage_output`),
+    and each preparation step record in it goes to the observer's ``warn``
+    as a ``preparation_progress`` record while the stage runs, which is
+    how a run page hears a preparer program's steps.
+
     ``env`` adds to the environment every stage gets (:func:`_stage_env`)
     the few names THIS stage needs -- the render stage's own scratch
     token, today.  Added here rather than spelled onto the command line
     because these lines are also printed for a reader to paste, and a
     pasted line carrying one run's private token would be wrong the
     moment it is reused.
+
+    ``shown`` is the command as a reader would type it, when that is not
+    the one run: the render stage hands its frames over in a private file
+    it removes when the stage ends (:func:`render_inputs_file`).  The
+    ``stage_begin`` event carries ``shown``, frames spelled out, because
+    a recorded command naming that file names nothing once the stage is
+    over.
     """
 
     print(f"  .. {label}", flush=True)
-    _notify(observer, "stage_begin", label=label, command=list(command))
+    _notify(observer, "stage_begin", label=label,
+            command=list(command if shown is None else shown))
     started = time.monotonic()
-    # The subprocess still runs through ``subprocess.run`` -- one call,
-    # one place, the same capture semantics -- and the waiting moves to
-    # a worker thread so this one stays free to say that it is waiting.
-    # Doing it the other way round (Popen plus a poll loop) would have
-    # split the "how a stage is run" answer across two code paths.
+    watchdog = None
+    if label == "forecast" and "--outdir" in command and command[1:2] == ["-m"]:
+        from gpuwm.forecast_supervisor import ForecastWatchdog
+
+        watchdog = ForecastWatchdog(command)
+        command = watchdog.command
+        env = {**(env or {}), **watchdog.env}
+    # The waiting runs on a worker thread so this one stays free to say
+    # that it is waiting.
     box: dict[str, object] = {}
+
+    def _step(record: dict) -> None:
+        # A preparer program's step, onto the run's stream through the
+        # observer, while the stage is still running.
+        from gpuwm.progress import prep_record_event
+
+        _notify(observer, "warn", **prep_record_event(record))
 
     def _wait() -> None:
         try:
-            # Popen + communicate is exactly what subprocess.run does;
-            # spelling it out is what publishes the child's pid, which
-            # the interrupt path has to be able to NAME (it does not
-            # signal it -- see GoInterrupted).
+            # Popen spelled out publishes the child's pid, which the
+            # interrupt path has to be able to NAME (it does not signal
+            # it -- see GoInterrupted).
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, errors="replace", cwd=str(_stage_cwd()),
                 env={**_stage_env(), **(env or {})})
             box["pid"] = proc.pid
-            out, err = proc.communicate()
+            box["process"] = proc
+            with _STAGE_PROCESSES_LOCK:
+                _STAGE_PROCESSES[id(box)] = proc
+            try:
+                out, err = _read_stage_output(proc, label=label, on_step=_step)
+            finally:
+                with _STAGE_PROCESSES_LOCK:
+                    _STAGE_PROCESSES.pop(id(box), None)
             box["completed"] = subprocess.CompletedProcess(
                 command, proc.returncode, out, err)
         except BaseException as error:  # re-raised on this thread below
@@ -1676,9 +2673,19 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
         while worker.is_alive():
             worker.join(timeout=0.2)
             now = time.monotonic()
+            if watchdog is not None and worker.is_alive() and "process" in box:
+                reason = watchdog.check(box["pid"])
+                if reason is not None:
+                    box["watchdog_failure"] = reason
+                    watchdog.terminate(box["process"])
+                    watchdog.failed()
+                    break
             if worker.is_alive() and now >= next_beat:
+                note = _progress_note(progress)
+                if watchdog is not None and watchdog.last is not None:
+                    note = _heartbeat_note(watchdog.last.status) or note
                 print(f"     .. {label}, {_elapsed_words(now - started)}"
-                      f"{_progress_note(progress)}", flush=True)
+                      f"{note}", flush=True)
                 # The same beat the terminal gets, as fields.  The
                 # payload is the stage's own published progress file --
                 # the artifact, never the prose, which is this module's
@@ -1699,14 +2706,40 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
         # something that was never its to stop.
         raise GoInterrupted(label, box.get("pid")) from None
     if "error" in box:
-        raise box["error"]
+        error = box["error"]
+        if not isinstance(error, OSError) or "pid" in box:
+            raise error
+        # The process never started (a missing interpreter, a command
+        # line longer than the system takes).  This escaped as the
+        # operating system's own exception, and the observer heard a
+        # stage begin and never end: the desktop showed it running.  It
+        # is a failed stage, said the way every other one is.
+        reason = _start_failure_words(label, command, error)
+        print(f"  FAILED  {label} (did not start)")
+        print(f"    {reason}")
+        print(f"{door}: stopped at {label}; every later stage consumes "
+              "this one's output, so nothing after it ran.")
+        _notify(observer, "stage_failed", label=label,
+                exit_code=_STAGE_START_FAILED, diagnostic=reason)
+        _notify(observer, "stage_end", label=label,
+                exit_code=_STAGE_START_FAILED, ok=False,
+                elapsed_seconds=time.monotonic() - started,
+                progress=_progress_payload(progress))
+        raise GoStageFailed(_STAGE_START_FAILED, reason)
     completed = box["completed"]
+    if "watchdog_failure" in box:
+        completed = subprocess.CompletedProcess(
+            command, 124, completed.stdout,
+            (completed.stderr or "").rstrip() + "\n" + box["watchdog_failure"])
     output = (completed.stdout or "") + (completed.stderr or "")
     if completed.returncode != 0:
         print(f"  FAILED  {label} (exit {completed.returncode})")
         # The stage's own refusal is usually its last few lines; replay
         # a readable tail by default and everything under --explain.
-        lines = output.splitlines()
+        # A step record is left out of the tail: the steps were said on
+        # the run's stream as they ran, and a preparer's raw step lines
+        # filled the tail and pushed its refusal out of it.
+        lines = output.splitlines() if explain else _said_lines(output)
         tail = lines if explain else lines[-_FAILURE_TAIL_LINES:]
         if len(tail) < len(lines):
             print(f"    ... ({len(lines) - len(tail)} earlier line(s); "
@@ -1722,12 +2755,13 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
               "this one's output, so nothing after it ran.")
         # Carry the same diagnostic into machine-facing failures. Desktop and
         # remote clients cannot rely on a separate terminal's preceding lines.
-        diagnostic = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+        diagnostic = ("\n".join(_said_lines(completed.stderr)).strip()
+                      or "\n".join(_said_lines(completed.stdout)).strip())
         # One tail, three readers: the event stream, the exception a
         # calling door turns into its own refusal, and the terminal
         # above.  Composed once so they cannot disagree about which
         # lines the stage's failure was.
-        tail_text = "\n".join(diagnostic.splitlines()[-8:])[-8192:]
+        tail_text = _diagnostic_tail(diagnostic)
         _notify(observer, "stage_failed", label=label,
                 exit_code=completed.returncode, diagnostic=tail_text)
         _notify(observer, "stage_end", label=label,
@@ -1755,8 +2789,101 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
         # `ok render` would have re-created the silence one level up.
         for line in output.splitlines():
             head = line.lstrip().lower()
-            if head.startswith("warning:") or head.startswith("note:"):
+            if ((head.startswith("warning:") or head.startswith("note:"))
+                    and _stage_relay_line(line)):
                 print(f"    {line.strip()}")
+
+
+def _read_stage_output(process, *, label: str, on_step) -> tuple[str, str]:
+    """A stage's stdout and stderr, read as it writes them.
+
+    Returns the two texts whole, as ``communicate()`` did, so the failure
+    tail and the replay are unchanged.  While the stage runs, each step
+    record a preparer program writes (a ``GPUWM_PREP_EVENT`` line) goes to
+    ``on_step`` the moment it is read.  The breakage this prevents: with
+    ``communicate()`` a stage's output reached this process only when the
+    stage ended, so a run page on the prepared HRRR and GFS routes showed
+    no preparation step until the preparation was over.  Both pipes are
+    read at once, so a child that fills one while this waits on the other
+    cannot stall.
+    """
+
+    from gpuwm.prep_progress import step_record
+
+    texts: dict[str, str] = {}
+    failures: list[BaseException] = []
+
+    def drain(name: str, pipe) -> None:
+        kept: list[str] = []
+        try:
+            for line in iter(pipe.readline, ""):
+                kept.append(line)
+                record = step_record(line.rstrip("\r\n"))
+                if record is not None:
+                    on_step(record)
+        except BaseException as error:  # noqa: BLE001 - raised after the join
+            failures.append(error)
+        finally:
+            texts[name] = "".join(kept)
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    readers = [threading.Thread(target=drain, args=(name, pipe),
+                                name=f"go-read-{label}-{name}", daemon=True)
+               for name, pipe in (("stdout", process.stdout),
+                                  ("stderr", process.stderr))]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join()
+    process.wait()
+    if failures:
+        raise failures[0]
+    return texts["stdout"], texts["stderr"]
+
+
+def _said_lines(text: str | None) -> list[str]:
+    """A stage's output lines less the step records its preparer wrote.
+
+    For a failed stage's tail: each step was said on the run's stream as
+    it happened, and a tail of raw ``GPUWM_PREP_EVENT`` JSON lines hid the
+    refusal the tail is shown for.  The whole text stays in the log.
+    """
+
+    from gpuwm.prep_progress import step_record
+
+    return [line for line in (text or "").splitlines()
+            if step_record(line.strip()) is None]
+
+
+#: The exit code a stage whose process never started is reported with:
+#: the shells' own "command could not be run".
+_STAGE_START_FAILED = 127
+
+#: A failed stage's diagnostic: its last lines, each at most this long.
+_DIAGNOSTIC_LINES = 8
+_DIAGNOSTIC_LINE_CHARS = 1_000
+
+
+def _diagnostic_tail(text: str) -> str:
+    """The ``stage_failed`` diagnostic: a failed stage's last lines.
+
+    Each line is cut to :data:`_DIAGNOSTIC_LINE_CHARS`, keeping its start
+    and its end, so no single line can crowd out the rest.  The tail used
+    to be the last 8,192 characters of the last eight lines, and one line
+    spelling out a long series' frames filled all of it: the desktop was
+    shown the middle of a frame path and never the refusal above it.
+    """
+
+    lines = []
+    for line in text.splitlines()[-_DIAGNOSTIC_LINES:]:
+        if len(line) > _DIAGNOSTIC_LINE_CHARS:
+            keep = (_DIAGNOSTIC_LINE_CHARS - len(" ... ")) // 2
+            line = f"{line[:keep]} ... {line[-keep:]}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 #: Failure-replay tail length: enough to carry any refusal message this
@@ -1947,14 +3074,24 @@ def memory_refusal_text(gate: dict) -> str:
                        "\n  remedy, streamed: a smaller [tiles] tile_nx/tile_ny "
                        "shrinks the buffer terms above; nbuffers = 1 halves "
                        "them; the fixed floors do not move with the tile")
+    # HOST RAM ALONE REFUSED: a CPU preparation larger than this machine's
+    # RAM, on a card that holds the forecast.  Freeing VRAM, a lighter
+    # suite or a larger card leaves that number where it is.
+    remedy = ("  remedy: re-size against this machine -- gpuwm domain ... "
+              "(bare, it measures this card) -- or pick a lighter "
+              "--physics-profile (the wizard's refusal ranks them by priced "
+              "envelope), or free VRAM and re-run, or use a larger card\n")
+    if (gate.get("preparation_refusal") is not None
+            and not gate.get("card_refuse", True)):
+        remedy = ("  remedy: re-size against this machine -- gpuwm domain "
+                  "... (bare, it weighs this machine's RAM as well as its "
+                  "card) -- or prepare on a machine with more RAM; freeing "
+                  "VRAM or a larger card does not move host RAM\n")
     return (
         f"this configuration will not fit: {gate['verdict']}{free_words}."
         "  Refusing here, BEFORE the fetch stage downloads the forcing "
         f"data, rather than in preprocessing after it.{terms}{streamed_remedy}\n"
-        "  remedy: re-size against this machine -- gpuwm domain ... "
-        "(bare, it measures this card) -- or pick a lighter "
-        "--physics-profile (the wizard's refusal ranks them by priced "
-        "envelope), or free VRAM and re-run, or use a larger card\n"
+        f"{remedy}"
         "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
 
 
@@ -2075,8 +3212,53 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         forcing_interval_seconds=(forcing_interval if forcing_interval is not None
                                   else DEFAULT_FORCING_INTERVAL_SECONDS),
         ingest_forcing_interval_seconds=forcing_interval)
+    # A PREPARATION THE CARD CANNOT HOLD PREPARES ON THE CPU.  The door
+    # this chain runs (gpuwm prep, backend auto) prices its preparation
+    # before its first device allocation and moves it to the CPU when the
+    # card's free memory cannot hold it (A65), so refusing the whole run
+    # here for the preparation's card price refused a run that completes.
+    # The gate prices the road the door will take: the CPU preparation's
+    # host term is then what binds that phase.  An explicit cuda keeps
+    # the card price, and the refusal.  The note says "may": this gate
+    # reads the ingest estimate, while the door decides from the decoded
+    # preparation's own price when it starts, and a price under the card's
+    # free memory keeps that preparation on the card (the safe direction).
+    preparation_on_cpu_note = None
+    if (probe is not None and phases.ingest_priced
+            and getattr(phases, "preprocess_backend", "cuda") == "auto"
+            and phases.ingest_envelope_bytes > int(probe["free_bytes"])):
+        preparation_on_cpu_note = (
+            f"the preparation's CUDA price "
+            f"{phases.ingest_envelope_bytes / 2**30:.2f} GiB exceeds the "
+            f"card's {int(probe['free_bytes']) / 2**30:.2f} GiB free, so "
+            "it may prepare on the CPU (--preprocess-backend auto decides "
+            "from the preparation's own price when it starts)")
+        phases = estimate_phases(
+            exp, source=source, vram_gib=vram_gib, profile=profile,
+            machine=machine, forcing_intervals=forcing_intervals,
+            forcing_interval_seconds=(
+                forcing_interval if forcing_interval is not None
+                else DEFAULT_FORCING_INTERVAL_SECONDS),
+            ingest_forcing_interval_seconds=forcing_interval,
+            preprocess_backend="cpu")
     tree_road = getattr(phases, "tree_road", None)
     planner_refuse, planner_note = planner_gate(tree_road, card_seen=probe is not None)
+    # THE PREPARATION'S HOST TERM, the one the wizard sizes against.  A CPU
+    # preparation holds its whole working set in host RAM, which no device
+    # comparison here sees; one larger than the machine's RAM is killed
+    # after the download.  Host RAM does not depend on the card, so it is
+    # read even when no card could be.
+    preparation_refusal = preparation_warning = None
+    weigh_preparation = getattr(phases, "host_preparation_refusal", None)
+    if weigh_preparation is not None:
+        preparation_host = getattr(phases, "host_ram_bytes", None)
+        if preparation_host is None:
+            from gpuwm.core.streaming import _host_total_bytes
+            preparation_host = _host_total_bytes()
+        preparation_refusal = weigh_preparation(preparation_host)
+        preparation_warning = getattr(
+            phases, "host_preparation_warning", lambda _host: None)(
+                preparation_host)
 
     if probe is None:
         # No numbers: price the phases and print the verdict, but never
@@ -2091,10 +3273,16 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         verdict = f"{phases.verdict(None)} ({probe_reason})" if probe_reason else phases.verdict(None)
         if planner_note and planner_note not in verdict:
             verdict += "; " + planner_note
+        if preparation_refusal is not None:
+            verdict += "; " + preparation_refusal
         return {"verdict": verdict,
-                "refuse": planner_refuse, "warn": False, "free_bytes": None,
+                "refuse": planner_refuse or preparation_refusal is not None,
+                "warn": False, "free_bytes": None,
                 "probe_reason": probe_reason, "phases": phases, "device_probe": probe,
-                "planner_report_error": getattr(tree_road, "report_error", None)}
+                "planner_report_error": getattr(tree_road, "report_error", None),
+                "preparation_refusal": preparation_refusal,
+                "preparation_warning": preparation_warning,
+                "card_refuse": planner_refuse}
     free = int(probe["free_bytes"])
     # The budget the ENVELOPE is compared against, from the wizard's own
     # seam so the two doors cannot disagree about one card.  It is free
@@ -2115,23 +3303,33 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # native tree planner explicitly refused the configured execution road.
     # A planning REPORT that died is not such a refusal (planner_gate).
     refuse = peak > free or planner_refuse
+    card_refuse = refuse
+    if preparation_on_cpu_note is not None:
+        verdict += "; " + preparation_on_cpu_note
     if planner_note and planner_note not in verdict:
         verdict += "; " + planner_note
+    if preparation_refusal is not None:
+        refuse = True
+        verdict += "; and " + preparation_refusal
     # THE PINNED STORE IS A REFUSAL TOO, and only for a streamed run: the
     # domain lives in host RAM there, so a config whose store cannot be
     # page-locked dies at attach -- after the download, which is exactly
     # what this gate exists on this side of.  Priced only when the host
     # total could be read; unknown host RAM never refuses.
-    if phases.streamed_forecast:
-        env = phases.streamed
-        if (env.host_budget_bytes is not None
-                and env.host_bytes > env.host_budget_bytes):
-            refuse = True
-            verdict += (
-                f"; and the pinned host store is "
-                f"{env.host_bytes / (1024 ** 3):.2f} GiB against a "
-                f"{env.host_budget_bytes / (1024 ** 3):.2f} GiB page-locking "
-                "budget, which is where a streamed domain actually lives")
+    #
+    # The domain's lateral forcing series is part of that claim
+    # (``boundary_table_bytes``): it stays in host RAM for the whole run
+    # beside the store, and an estimate that left host tables out is how a
+    # 0.93 GiB figure admitted a run that committed 125 GB on a 96 GB box.
+    #
+    # The comparison is the estimate's own (``streamed_host_refusal``), the
+    # one ``gpuwm domain`` sizes against and ``gpuwm check`` fails on, so
+    # those doors cannot emit or pass a configuration this gate refuses.
+    streamed_host_refusal = (phases.streamed_host_refusal()
+                             if phases.streamed_forecast else None)
+    if streamed_host_refusal is not None:
+        refuse = True
+        verdict += "; and " + streamed_host_refusal
     return {
         "verdict": verdict,
         "refuse": refuse,
@@ -2145,6 +3343,14 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         "phases": phases,
         "device_probe": probe,
         "planner_report_error": getattr(tree_road, "report_error", None),
+        # The host-RAM refusal of a CPU preparation, and whether anything
+        # about the CARD refused beside it: the remedy differs, because
+        # no VRAM lever moves host RAM.  The warning is the admitted case
+        # whose estimated peak, but not its floor, is over the RAM.
+        "preparation_refusal": preparation_refusal,
+        "preparation_warning": preparation_warning,
+        "card_refuse": card_refuse,
+        "preparation_on_cpu": preparation_on_cpu_note,
     }
 
 
@@ -2236,6 +3442,27 @@ def _require_forecast_device() -> None:
             checked.detail + ("\n" + checked.remedy if checked.remedy else "")))
 
 
+def failed_line(fields: dict, *, explain: bool) -> str:
+    """What ``gpuwm go`` prints for a plan run's ``failed`` event, before a stage's log tail.
+
+    The refusal's own text, then ``Next:`` and the event's ``remedy``
+    when the text does not already state that remedy.  A refusal that
+    ends its action half with ``remedy: <command>`` gives its event the
+    same line (:func:`gpuwm.runplan.stated_remedy`), so appending it
+    printed it twice: a chain with no built ``gfs_grib2_bridge`` read
+    ``remedy: gpuwm setup`` and then ``Next: gpuwm setup``.
+    """
+
+    from gpuwm.runplan import stated_remedy
+
+    text = str(fields.get("message", "launch failed"))
+    line = render(text, explain=explain)
+    remedy = fields.get("remedy")
+    if remedy and " ".join(str(remedy).split()) != " ".join((stated_remedy(text) or "").split()):
+        line += f" Next: {remedy}"
+    return line
+
+
 def _registered_launch(args, *, config: Path, payload: dict) -> int:
     """Adapt the human command to the existing executable run-plan contract."""
     import contextlib
@@ -2260,6 +3487,22 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     if acquires:
         checked_config_fetch_cycle(
             fetch, start_time=payload.get("experiment", {}).get("start_time"))
+    from gpuwm.fetch import pinned_host
+
+    flag_transport = getattr(args, "transport", None)
+    # Breakage it prevents: a host pin on a route with no fetch stage
+    # would be accepted and then asked of nothing, so the run would not
+    # use the host its command names.  ``auto`` pins no host, so it asks
+    # nothing of a fetch stage and passes; refusing it turned away the
+    # default spelled out on every [case_data] and --prepared-root run.
+    if pinned_host(flag_transport) is not None and not acquires:
+        raise GoRefusal(
+            f"--transport {flag_transport} pins the host of a download "
+            "route's fetch stage, and this run takes its inputs from "
+            "[case_data] or an existing prepared bundle, which have no host "
+            "to pin. Next: omit --transport.")
+    pinned, pinned_from = (pinned_transport(fetch, flag_transport) if acquires
+                           else (None, None))
     # A source with no acquisition route downloads nothing, so there is
     # no managed download cache to compute for it.  Computing one anyway
     # made `[fetch].source_root` -- the key `gpuwm domain --data-dir`
@@ -2276,13 +3519,16 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     elif local_input:
         data_dir = None
     elif acquires:
-        data_dir = managed_download_dir(case_root, fetch)
+        data_dir = managed_download_dir(
+            case_root, pin_request(config_fetch_request(payload), pinned))
     else:
         data_dir = case_root / "data"
     if (not declared_inputs and prepared_root is None and data_dir is not None
             and case_root.resolve() == data_dir.resolve()):
         raise GoRefusal("--outdir and --data-dir must differ. "
                         "Next: omit --data-dir to use the shared download cache.")
+    section = render_section_value(getattr(args, "render_section", None))
+    admit_render_products(args.render_products, section=section)
     stamp = run_stamp_module.run_stamp_enabled(args)
     cycle = (payload.get("experiment", {}).get("start_time") if declared_inputs or prepared_root is not None
              else fetch.get("cycle"))
@@ -2292,6 +3538,17 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                              else str(Path(args.geog_root).resolve())),
                "render_products": (args.render_products if args.render_products is not None
                                    else DEFAULT_RENDER_PRODUCTS)}
+    if section is not None:
+        options["render_section"] = section
+    keep = getattr(args, "keep_checkpoints", None)
+    if keep is not None:
+        options["keep_checkpoints"] = keep
+    if flag_transport is not None and acquires:
+        # Only a route with a fetch stage carries it: there ``auto`` must
+        # reach run-plan to unpin a table's host.  A route without one
+        # is only here with ``auto``, which asks for what no flag asks
+        # for, and the experiment route has no transport option at all.
+        options["transport"] = flag_transport
     if not declared_inputs and prepared_root is None and data_dir is not None:
         options["data_dir"] = str(data_dir.resolve())
     elif prepared_root is not None and args.data_dir is not None:
@@ -2330,6 +3587,10 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     if str(options["render_products"]).strip().lower() != "none":
         stages.append("render")
     print(f"go: {source}, {len(exp.domains)} domain(s); " + " -> ".join(stages))
+    pinned_line = (transport_note(pinned, pinned_from, fetch.get("transport"))
+                   if bundle is None else None)
+    if pinned_line is not None:
+        print(pinned_line)
     if args.dry_run:
         if bundle is not None:
             for warning in resolution["warnings"]:
@@ -2339,12 +3600,15 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
               *([] if args.outdir is None else ["--outdir", str(args.outdir)]),
               *([] if args.data_dir is None else ["--data-dir", str(args.data_dir)]),
               *([] if args.geog_root is None else ["--geog-root", str(args.geog_root)]),
+              *([] if flag_transport is None else ["--transport", flag_transport]),
               *(token for binding in options.get("supplement", ())
                 for token in ("--supplement", binding)),
               *(token for key in ("restart", "prepared_root", "wps_namelist")
                 if getattr(args, key, None) is not None
                 for token in ("--" + key.replace("_", "-"), str(getattr(args, key)))),
               *([] if args.render_products is None else ["--products", args.render_products]),
+              *([] if section is None else [f"--section={section}"]),
+              *([] if keep is None else ["--keep-checkpoints", str(keep)]),
               *(["--run-stamp", "off"] if not stamp else []),
               *(["--no-memory-gate"] if args.no_memory_gate else [])]))
         return 0
@@ -2360,6 +3624,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
             print("warning: memory admission has limited headroom or an "
                   f"unmeasured phase; see gpuwm check {_quote(config)} --explain.",
                   file=sys.stderr)
+        if gate.get("preparation_warning"):
+            print(f"warning: {gate['preparation_warning']}.", file=sys.stderr)
     from gpuwm.geog_assets import default_geog_root
     geog_root = (data.geog_root if data is not None
                  else Path(args.geog_root) if args.geog_root is not None
@@ -2390,7 +3656,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     explain = explain_enabled(args)
     current = {"stage": "preflight", "started": time.monotonic()}
     stage_tail = {"stdout": "", "stderr": ""}
-    from gpuwm.prep_progress import PrepProgress
+    from gpuwm.prep_progress import PrepProgress, step_record
+    from gpuwm.progress import prep_record_event
     from gpuwm.command_output import text_chunks
     prep_progress = PrepProgress()
 
@@ -2405,21 +3672,28 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
             elif event == "first_products_ready":
                 print(f"go: first pictures ready in {output}", file=terminal, flush=True)
             elif event == "failed":
-                from gpuwm.explain import render
-                message = render(str(fields.get("message", "launch failed")),
-                                 explain=explain)
-                if fields.get("remedy"):
-                    message += f" Next: {fields['remedy']}"
+                message = failed_line(fields, explain=explain)
                 if fields.get("error_class") == "StageExitError" and not explain:
-                    diagnostic = stage_tail["stderr"] or stage_tail["stdout"]
-                    lines = diagnostic.rstrip().splitlines()[-8:]
+                    # Less the preparer's raw step lines, which were said as
+                    # steps while it ran and filled this tail; the log keeps them.
+                    lines = (_said_lines(stage_tail["stderr"].rstrip())
+                             or _said_lines(stage_tail["stdout"].rstrip()))[-8:]
                     if lines:
                         message += "\n" + "\n".join(lines)
                 print(f"go: {message}\nDetails: {log_path}", file=errors, flush=True)
+            elif event == "warning" and fields.get("code") == "preparation_progress":
+                # A preparation step heard in this process, said as a
+                # preparer program's step line is: it is not a warning, and
+                # printed as one it read "warning: Start state and boundaries".
+                with output_lock:
+                    said = prep_progress.event(fields.get("preparation"))
+                if said is not None:
+                    print(f"go: {said}", file=terminal, flush=True)
             elif event == "warning":
                 from gpuwm.explain import split
-                print(f"warning: {split(str(fields.get('message', '')))[0]}",
-                      file=errors, flush=True)
+                said = f"warning: {split(str(fields.get('message', '')))[0]}"
+                if _first_showing(said):
+                    print(said, file=errors, flush=True)
             elif event == "completed":
                 print(f"go: complete. Output: {output}", file=terminal, flush=True)
             return record
@@ -2427,28 +3701,46 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     output_lock = threading.RLock()
 
     class LaunchOutput(io.TextIOBase):
+        # Every line goes to the log and each advisory reaches the
+        # terminal once, so a stage relay writing here prints them all.
+        relays_advisories_once = True
+
         def __init__(self, destination, log, channel):
             self.destination, self.log, self.channel = destination, log, channel
             self.pending = ""
 
         def write(self, text):
+            steps = []
             with output_lock:
                 for chunk in text_chunks(text):
                     self.log.write(chunk)
                     stage_tail[self.channel] = (stage_tail[self.channel] + chunk)[-32768:]
                     if explain:
                         self.destination.write(chunk)
-                    else:
-                        self.pending += chunk
-                        while "\n" in self.pending:
-                            line, self.pending = self.pending.split("\n", 1)
-                            message = prep_progress.line(line)
-                            if message is not None:
-                                print(f"go: {message}", file=terminal, flush=True)
-                            elif line.lstrip().lower().startswith(("warning:", "note:")):
-                                print(line.strip(), file=errors, flush=True)
-                        self.pending = self.pending[-32768:]
-                return len(text)
+                    self.pending += chunk
+                    while "\n" in self.pending:
+                        line, self.pending = self.pending.split("\n", 1)
+                        record = step_record(line)
+                        if record is not None:
+                            steps.append(record)
+                        elif (not explain
+                              and line.lstrip().lower().startswith(("warning:", "note:"))
+                              and _first_showing(line)):
+                            print(line.strip(), file=errors, flush=True)
+                    self.pending = self.pending[-32768:]
+            # A preparer program's step (the staged route's `gpuwm prep`
+            # adapter) goes on the run's stream, where the page reads it;
+            # HumanEvents says it in the terminal as it is written.  It was
+            # printed here and never reached the stream.  Outside the lock,
+            # which HumanEvents takes to say it.  A record the stream cannot
+            # take is dropped: a step's telemetry never fails the preparation
+            # whose output this is.
+            for record in steps:
+                try:
+                    events.emit("warning", **prep_record_event(record))
+                except Exception:  # noqa: BLE001 - see above
+                    pass
+            return len(text)
 
         def flush(self):
             with output_lock:
@@ -2488,16 +3780,93 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         return 74
 
 
+def chain_io_root(requested: Path, *, downloads: bool = True, depth: int | None = None) -> Path:
+    """The spelling a chain should use for ``requested``.
+
+    On Windows, a folder so deep that the files a chain writes below it
+    would pass the 260-character path limit is handed over in its
+    extended spelling, which every Python and native call below it opens
+    at any length.  Any other folder comes back unchanged, so the paths
+    a run prints stay the ones the reader typed.  ``downloads`` says
+    whether the chain keeps its request cache below ``requested``, which
+    is where it writes deepest; ``depth``, when given, is that request's
+    own measured depth (:func:`download_depth`).
+    """
+    from gpuwm.filesystem_paths import (CHAIN_DEPTH_BUDGET, RUN_TREE_DEPTH_BUDGET,
+                                        deep_io_path)
+
+    budget = CHAIN_DEPTH_BUDGET if downloads else RUN_TREE_DEPTH_BUDGET
+    return deep_io_path(requested, budget if depth is None else max(budget, depth))
+
+
+#: ``downloads/`` plus a request key's ``-<n>`` retry suffix, the slash
+#: before the object, and a ``.part`` staging suffix: what the managed
+#: download cache adds around an object's own name.
+_CACHE_FRAME = len("downloads/") + len("-99") + 1 + len(".part")
+
+
+def download_depth(fetch_table: dict) -> int | None:
+    """Characters this request's download writes below the output folder.
+
+    A table route knows every object it will move before a byte moves, and
+    their names differ by source: GDPS and ICON name an object in more than
+    80 characters where GFS uses 37.  The deepest is
+    ``downloads/<64-hex key>/<object>.part``, so a folder is spelled in the
+    extended form exactly when that request's own files would pass the
+    limit.  None when the request is not a table route or cannot be
+    planned here, which leaves the measured chain budget in charge.
+    """
+    from gpuwm import fetch_routes
+
+    try:
+        _request, source, cycle, _area, key = _managed_download_request(fetch_table)
+        if source not in fetch_routes.route_ids():
+            return None
+        plan = fetch_routes.resolve_request(
+            source, cycle=cycle, hours=int(fetch_table.get("hours", 0)),
+            start_hour=int(fetch_table.get("forecast_start_hour", 0) or 0),
+            member=fetch_table.get("member"))
+    except (GoRefusal, KeyError, TypeError, ValueError, RuntimeError):
+        return None
+    if not plan.objects:
+        return None
+    return _CACHE_FRAME + len(key) + max(len(obj.relpath) for obj in plan.objects)
+
+
+def _extend_outdir(args, config: Path, payload: dict) -> None:
+    """Hand a deep output folder to the chain in its extended spelling."""
+    requested = (Path(args.outdir) if getattr(args, "outdir", None) is not None
+                 else config.parent / f"{config.stem}-go")
+    downloads = (isinstance(payload.get("fetch"), dict) and "case_data" not in payload
+                 and getattr(args, "prepared_root", None) is None
+                 and getattr(args, "data_dir", None) is None)
+    depth = download_depth(payload["fetch"]) if downloads else None
+    spelled = chain_io_root(requested, downloads=downloads, depth=depth)
+    if spelled != Path(requested):
+        args.outdir = spelled
+
+
 def go_main(args, *, observer=None) -> int:
     """Launch through the source's existing native preparation chain."""
+    with _each_advisory_once():
+        return _go_launch(args, observer=observer)
+
+
+def _go_launch(args, *, observer=None) -> int:
+    """:func:`go_main`'s body, run with each advisory shown once."""
     import tomllib
 
     from gpuwm.runplan import prepared_chain_for_source
 
     config = Path(args.config)
     if not config.is_file():
-        raise GoRefusal(f"{config} does not exist. Next: gpuwm domain --help")
+        # A folder is not "missing": saying so sent the reader looking for
+        # a path that is right there.
+        what = ("is a folder, not a configuration file" if config.is_dir()
+                else "does not exist")
+        raise GoRefusal(f"{config} {what}. Next: gpuwm domain --help")
     payload = tomllib.loads(config.read_text(encoding="utf-8"))
+    _extend_outdir(args, config, payload)
     if ("case_data" in payload or getattr(args, "prepared_root", None) is not None
             or getattr(args, "restart", None) is not None
             or getattr(args, "wps_namelist", None) is not None):
@@ -2515,6 +3884,60 @@ def go_main(args, *, observer=None) -> int:
         from gpuwm.launch_supplements import validate_route
         validate_route(args.supplement, chain=chain)
     return _go_prepared_main(args, observer=observer)
+
+
+def _disk_admission(plan: dict, args) -> None:
+    """Refuse, before the run folder is claimed or a byte is fetched, a run its disks cannot hold.
+
+    The admission ``gpuwm run-plan`` gives every run it starts
+    (:func:`gpuwm.runplan.disk_admission_refusal`), asked here because
+    this chain, typed as ``gpuwm go``, enters no run plan.  The run is
+    described to it as the plan it is: this config on the prepared route,
+    writing into this run's folder, drawing the products this chain draws
+    and keeping the checkpoint sets this chain keeps, with the download
+    priced from the very arguments the fetch stage is about to be handed,
+    and any frame stream its preparation stages measured beside the
+    folder that preparation writes.  A stream that may not fit is said
+    here, before the download, and the chain goes on.
+    """
+
+    import hashlib
+    import tomllib
+
+    from gpuwm import runplan
+    from gpuwm.experiment import load_experiment
+    from gpuwm.resume import DEFAULT_KEEP_CHECKPOINTS
+
+    config = Path(plan["config"]).resolve()
+    keep = getattr(args, "keep_checkpoints", None)
+    options = {"keep_checkpoints": DEFAULT_KEEP_CHECKPOINTS if keep is None else keep,
+               "render_products": plan.get("render_products") or None,
+               # The line its sections are cut along: a plan naming an
+               # xsec: product and no line is refused when it is built.
+               "render_section": plan.get("render_section") or None}
+    raw = {"schema": runplan.PLAN_SCHEMA, "name": config.stem, "route": "prepared",
+           "config": {"path": str(config)}, "output_root": str(Path(plan["root"]).absolute()),
+           "run_options": options}
+    described = runplan.build_plan(
+        raw, source=f"gpuwm go {config}", base_dir=config.parent,
+        sha256=hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest())
+    refusal = runplan.disk_admission_refusal(
+        described, load_experiment(config),
+        raw=tomllib.loads(config.read_text(encoding="utf-8")), data=None,
+        fetch_arguments=fetch_command(plan)[4:], run_dir=Path(plan["root"]),
+        # The download folder is the request's own managed cache unless
+        # --data-dir named one: everything in a managed cache is this
+        # request's download, a half-finished one included.
+        download_keyed=getattr(args, "data_dir", None) is None,
+        prep_root=Path(plan["prepared"]), warn=_scratch_caution)
+    if refusal is not None:
+        raise GoRefusal(refusal)
+
+
+def _scratch_caution(message: str, detail: str, folder: str | None) -> None:
+    """Say, before the download, that the preparation's frame stream may not fit its disk."""
+
+    print(f"go: WARNING -- {message}" + (f"  {detail}" if detail else ""))
 
 
 def _go_prepared_main(args, *, observer=None) -> int:
@@ -2581,17 +4004,24 @@ def _go_prepared_main(args, *, observer=None) -> int:
             print(requirement.remedy, file=sys.stderr)
     else:
         capabilities.require_for_command("go")
+    section = render_section_value(getattr(args, "render_section", None))
+    admit_render_products(getattr(args, "render_products", None),
+                          section=section)
     plan = plan_from_config(args.config,
                             outdir=getattr(args, "outdir", None),
                             data_dir=getattr(args, "data_dir", None),
                             render_products=getattr(
                                 args, "render_products", None),
-                            run_stamp=run_stamp_module.run_stamp_enabled(args))
+                            render_section=section,
+                            run_stamp=run_stamp_module.run_stamp_enabled(args),
+                            transport=getattr(args, "transport", None))
     bridge = resolve_bridge()
     geog_root = (Path(args.geog_root) if getattr(args, "geog_root", None)
                  else default_geog_root())
 
-    manifest = plan["data"] / "gfs-input-manifest.json"
+    # The dry run names the predicted folder; the real run reads the
+    # path again after the claim below.
+    manifest = front_door_manifest(plan)
     cycle_stamp = _cycle_stamp(plan["cycle"])
 
     if getattr(args, "dry_run", False):
@@ -2599,6 +4029,10 @@ def _go_prepared_main(args, *, observer=None) -> int:
               f"{plan['cycle']}, {plan['hours']} h, "
               f"{_physics_words(plan)}{_lead_note(plan)}")
         print(_run_folder_note(plan))
+        pinned = transport_note(plan.get("transport"), plan.get("transport_from"),
+                                plan.get("transport_table"))
+        if pinned is not None:
+            print(pinned)
         if plan.get("tiles"):
             print(f"go: {plan['tiles']['sentence']}")
         print("")
@@ -2675,14 +4109,20 @@ def _go_prepared_main(args, *, observer=None) -> int:
     print(f"go: {plan['config']} -- source {plan['source']}, cycle "
           f"{plan['cycle']}, {plan['hours']} h, {_physics_words(plan)}"
           f"{_lead_note(plan)}")
+    pinned = transport_note(plan.get("transport"), plan.get("transport_from"),
+                            plan.get("transport_table"))
+    if pinned is not None:
+        print(pinned)
     # The run-folder line, BEFORE the gates -- the same line, from the
     # same function, that --dry-run prints second.  It used to print
     # only after the memory and geography gates, so both of the
     # 2.4.1-upgrader walk's real attempts refused without ever naming
     # the 2.5.0 layout, and no cheap door revealed the new folder
     # naming (UX finding N18).  Announced here it still spends nothing:
-    # the folder is only CLAIMED after the gates, below, and if the
-    # claim lands on a different stamp the line prints again corrected.
+    # the folder is only CLAIMED after the gates, below, under this
+    # exact name (the plan carries its launch instant).  Only another
+    # chain taking that name first moves the claim, and then the line
+    # prints again corrected.
     predicted_root = plan["root"]
     print(_run_folder_note(plan))
     # The routing a [tiles] table chose, said before any stage runs.  The
@@ -2709,12 +4149,19 @@ def _go_prepared_main(args, *, observer=None) -> int:
                       "though it fits the free VRAM measured just now.  "
                       "Proceeding; a driver/other-process spike could still "
                       "OOM this run.")
+            if gate.get("preparation_warning"):
+                print(f"go: WARNING -- {gate['preparation_warning']}.")
 
         _require_forecast_device()
         # Same rule as the memory gate, same side of the download.
         geography = geography_refusal(geog_root)
         if geography is not None:
             raise GoRefusal(geography)
+        # And the disk, on the same side of the download and of the claim
+        # below.  A hosting `gpuwm run-plan` (a caller that brought its
+        # own observer) asked this before it started the chain.
+        if chain is not None:
+            _disk_admission(plan, args)
 
         # THE STAGE TIMINGS START LANDING ON DISK HERE, by default, for
         # a caller that passed no flags and asked for no observer.
@@ -2736,6 +4183,10 @@ def _go_prepared_main(args, *, observer=None) -> int:
         if chain is not None:
             chain.open(plan["root"] / chain_events.CHAIN_EVENTS_FILENAME,
                        plan=plan)
+        # What an earlier run in this case folder could not remove when it
+        # ended (a working store another program still held), now that
+        # nothing of that run is running.
+        _sweep_earlier_render_scratch(plan["case_root"], observer=observer)
 
         _run_stage("authority", authority_command(plan), explain=explain,
                    observer=observer)
@@ -2744,35 +4195,78 @@ def _go_prepared_main(args, *, observer=None) -> int:
         _run_stage("manifest", manifest_command(plan, bridge),
                    observer=observer,
                    explain=explain)
+        manifest = front_door_manifest(plan)
         if not manifest.is_file():
             raise GoRefusal(
                 f"the manifest stage wrote no {manifest}, so the "
                 "preparation stage has nothing to bind against")
-        _run_stage("prepare", prepare_command(
+        prepare_stage_command = prepare_command(
             plan, bridge, manifest=manifest,
             manifest_sha256=sha256_file(manifest),
-            cycle_stamp=cycle_stamp, geog_root=geog_root), explain=explain,
-            # Not `prepared/progress.json`: the stage builds its whole
-            # product in a staging directory and publishes it with one
-            # rename, so nothing can live inside `prepared/` until
-            # there is nothing left to report.  The path is asked of
-            # the publisher rather than spelled here, so the writer and
-            # this poller cannot disagree.
-            progress=prepare_progress_path(plan["prepared"]),
-            observer=observer)
-        # A hierarchy proof carries no single prepared-cache identity,
-        # and proof_digests says so by refusing.  The tree arm reads its
-        # own one digest instead, so it is not asked for here.
-        digests = ({} if plan.get("domains", 1) > 1
-                   else proof_digests(plan["prepared"]))
-        # The first frame the forecast commits is the analysis, and an
-        # observer that wants it rendered as it lands is told so before
-        # the forecast starts -- with THIS plan, the one the render
-        # stage below runs on.  `_notify` because an observer without
-        # the hook (there is no such thing in tree, but `go` takes any
-        # duck) must not be a reason a chain stops.
-        _notify(observer, "arm_first_products", render_plan=plan)
-        _run_forecast(plan, digests, explain=explain, observer=observer)
+            cycle_stamp=cycle_stamp, geog_root=geog_root)
+        announce_policy_backend(prepare_stage_command)
+
+        def prepare():
+            _run_stage("prepare", prepare_stage_command, explain=explain,
+                       # Not `prepared/progress.json`: the stage builds its
+                       # product in a staging directory and publishes it
+                       # with one rename (at its head, when chained), so
+                       # the progress file lives beside it.  The path is
+                       # asked of the publisher rather than spelled here,
+                       # so the writer and this poller cannot disagree.
+                       progress=prepare_progress_path(plan["prepared"]),
+                       observer=observer)
+
+        # `--keep-checkpoints`, or its default of one set when this chain
+        # was typed rather than hosted.  Every other `go` route hands the
+        # choice to the run plan that sets it; this chain enters no run
+        # plan, so the choice and the default were parsed and dropped and
+        # every hourly set stayed on disk.  A hosting run-plan has set its
+        # own policy already, and with no flag here that one stands.
+        keep = getattr(args, "keep_checkpoints", None)
+        if keep is None and chain is not None:
+            from gpuwm.resume import DEFAULT_KEEP_CHECKPOINTS
+            keep = DEFAULT_KEEP_CHECKPOINTS
+
+        def forecast(head_sha256):
+            # A hierarchy proof carries no single prepared-cache identity,
+            # and proof_digests says so by refusing.  The tree arm reads its
+            # own one digest instead, so it is not asked for here.  A
+            # chained head binds by its head digest (head_digests).
+            digests = ({} if plan.get("domains", 1) > 1
+                       else proof_digests(plan["prepared"])
+                       if head_sha256 is None
+                       else head_digests(plan["prepared"], head_sha256))
+            # The first frame the forecast commits is the analysis, and an
+            # observer that wants it rendered as it lands is told so before
+            # the forecast starts -- with THIS plan, the one the render
+            # stage below runs on.  `_notify` because an observer without
+            # the hook (there is no such thing in tree, but `go` takes any
+            # duck) must not be a reason a chain stops.
+            _notify(observer, "arm_first_products", render_plan=plan)
+            with _checkpoint_retention(keep):
+                _run_forecast(plan, digests, explain=explain,
+                              observer=observer)
+
+        def head_ready(head_sha256):
+            print("go: preparation head published; the forecast starts "
+                  "while the remaining boundary intervals are prepared",
+                  flush=True)
+            _notify(observer, "prepare_head_ready", head_sha256=head_sha256)
+
+        from gpuwm.ingest.boundary_stream import (
+            run_chained, say_prepared_sealed,
+        )
+
+        if plan.get("domains", 1) > 1:
+            # A domain tree is prepared sealed (its hierarchy needs every
+            # root interval before its children), so it runs in order.
+            say_prepared_sealed("domain_tree")
+            prepare()
+            forecast(None)
+        else:
+            run_chained(prepared_root=plan["prepared"], prepare=prepare,
+                        forecast=forecast, on_head=head_ready)
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)
     except GoRefusal:
@@ -2912,6 +4406,19 @@ def _cycle_stamp(cycle: str) -> str:
     return f"{parse_cycle(cycle, 'gfs'):%Y-%m-%d_%H:%M:%S}"
 
 
+def _checkpoint_sets(text: str) -> int:
+    """``--keep-checkpoints``: a whole number of sets, 0 keeping every one."""
+    import argparse
+    try:
+        value = int(text)
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a whole number of checkpoint sets; 0 keeps every set")
+    return value
+
+
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "go",
@@ -2943,6 +4450,12 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--geog-root", type=Path, default=None, metavar="DIR",
                         help="override the geography tree (default: [case_data].geog_root "
                              "for declared inputs, otherwise the staged WPS_GEOG tree)")
+    from gpuwm.fetch import FETCH_TRANSPORTS
+    parser.add_argument("--transport", default=None, choices=FETCH_TRANSPORTS,
+                        help="download routes only: pin the fetch stage to one host "
+                             "of the source's endpoint ladder, the value `gpuwm "
+                             "fetch --transport` takes; wins over the config's "
+                             "[fetch] transport, and the plan says which it used")
     parser.add_argument("--supplement", action="append", metavar="ROLE=PATH",
                         help="explicit preparation donor; repeat for multiple files. "
                              "HRRR accepts PMSL=GRIB inside --data-dir and binds its "
@@ -2962,6 +4475,28 @@ def register_cli(subparsers) -> None:
                              "catalog), or 'none' to stop after the "
                              "forecast.  The same spelling `gpuwm render "
                              "--products` takes")
+    # `gpuwm render --section`, carried to every render this chain runs:
+    # the frames drawn as they land, the early first frame and the
+    # end-of-run batch.  Without it an `xsec:` term in --products passed
+    # review and was dropped at render with advice to add a flag this
+    # command did not have.
+    parser.add_argument("--section", default=None, dest="render_section",
+                        metavar="lat,lon,lat,lon|FILE.json",
+                        help="the line the vertical-section products "
+                             "(xsec:<fill>[/<overlay>...] in --products) are "
+                             "cut along, the same value `gpuwm render "
+                             "--section` takes; a JSON file gives {start, "
+                             "end} or a {points, extend_km} polyline.  "
+                             "Spell a line that starts with a minus sign "
+                             "as --section=-33.9,151.2,-34.1,151.3.  An "
+                             "xsec: product with no line is refused before "
+                             "anything is fetched")
+    parser.add_argument("--keep-checkpoints", type=_checkpoint_sets, default=None,
+                        dest="keep_checkpoints", metavar="N",
+                        help="how many complete checkpoint sets the run keeps in "
+                             "its folder (default 1, enough to resume); 0 keeps "
+                             "every hourly set, which a later branch or downscale "
+                             "from an earlier checkpoint needs")
     parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                         help="validate the route and show how to launch it; fetch "
                              "and run nothing")
@@ -2978,12 +4513,16 @@ __all__ = [
     "DEFAULT_RENDER_PRODUCTS",
     "GoRefusal", "GoStageFailed", "HEARTBEAT_SECONDS", "MANUAL_CHAIN",
     "ORCHESTRATED_SOURCES", "RUNNER_MODULE", "RUNNER_RELATIVE",
-    "WRFOUT_GLOB", "unknown_render_products",
+    "WRFOUT_GLOB", "admit_render_products", "unknown_render_products",
     "TREE_RUNNER_MODULE", "tree_forecast_command",
-    "authority_command", "fetch_command", "forecast_command", "go_main",
+    "END_STAGE_GRACE_SECONDS", "end_stage_processes",
+    "authority_command", "config_fetch_request", "failed_line", "fetch_command",
+    "fetch_request", "forecast_command", "go_main",
     "manifest_command", "memory_gate", "plan_from_config",
     "prepare_command", "printable",
     "proof_digests", "register_cli", "render_command",
-    "render_extra_missing", "resolve_bridge", "run_stage",
+    "render_extra_missing", "render_inputs_file", "render_section_value",
+    "resolve_bridge",
+    "run_render_pass", "run_stage", "sweep_kept_render_inputs",
     "wrfout_frames",
 ]

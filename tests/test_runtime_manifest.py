@@ -231,7 +231,7 @@ def test_this_installs_own_identity_resolves_one_of_the_three_ways(
     monkeypatch.delenv(MANIFEST_ENV, raising=False)
     root = Path(__file__).resolve().parent.parent
     assert provenance(root)["identity_source"] in (
-        "git", "installed-wheel-record",
+        "git", "installed-wheel-record", "installed-source-content",
         "gpuwm-native-distribution-manifest")
 
 
@@ -302,7 +302,8 @@ def test_the_hrrr_route_binds_an_identity_from_a_non_git_directory(
                  __import__("pathlib").Path(__file__).resolve().parent.parent)})
     assert probe.returncode == 0, probe.stderr
     assert json.loads(probe.stdout.strip()) in (
-        "git", "installed-wheel-record", "installed-editable-source")
+        "git", "installed-wheel-record", "installed-editable-source",
+        "installed-source-content")
 
 
 # ---------------------------------------------------------------------------

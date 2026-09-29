@@ -118,7 +118,7 @@ mod tests {
                 };
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal
-                    .draw(|f| p.draw(f, f.area(), &c, "General · 25"))
+                    .draw(|f| p.draw(f, f.area(), &c, "General · 22"))
                     .unwrap();
                 let buffer = terminal.backend().buffer();
                 let rendered: String = (0..height)
@@ -292,7 +292,7 @@ mod tests {
     fn render(panel: &mut Panel, c: &Controller, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| panel.draw(frame, Rect::new(0, 3, width, height - 3), c, "General · 25"))
+            .draw(|frame| panel.draw(frame, Rect::new(0, 3, width, height - 3), c, "General · 22"))
             .unwrap();
         let buffer = terminal.backend().buffer();
         (0..height)
@@ -435,6 +435,15 @@ mod tests {
         assert!(job_progress_text(c.view.status.as_ref().unwrap(),true).starts_with("COMPLETED · Finished"));
     }
     #[test]
+    fn a_sections_only_run_says_it_has_no_map_frames(){
+        let note="This run asked only for cross-section pictures, which need a line this viewer cannot take, so it has no map products to show here.";
+        let status=serde_json::json!({"state":"running","stage":"forecast",
+            "background_maps":{"state":"no_map_products","note":note,"committed":3,"ready":0,"done":false}});
+        let shown=job_progress_text(&status,false);
+        assert!(shown.contains(&format!("Map frames: {note}")),"{shown}");
+        assert!(!shown.contains("0 / 3 ready"),"{shown}");
+    }
+    #[test]
     fn connected_workspace_restores_saved_job_without_opening_the_job_screen(){
         let mut c=controller();c.view.runtime=Some(serde_json::json!({"capabilities":{}}));
         c.view.last_refresh=Some(std::time::Instant::now());
@@ -454,10 +463,10 @@ mod tests {
         assert!(!panel.should_refresh_connected(&c,true),"A failed reconnect must retain the retry backoff");
     }
     #[test]
-    fn all_twelve_node_fields_are_reachable_in_both_keyboard_directions() {
+    fn all_node_fields_are_reachable_in_both_keyboard_directions() {
         let c = controller();
         let node = c.store.nodes[0].clone();
-        assert_eq!(node.fields().len(), 12);
+        assert_eq!(node.fields().len(), 13);
         for (width, height) in [(65, 20), (80, 24), (120, 36)] {
             let mut p = Panel::default();
             p.screen = Screen::Edit {
@@ -473,6 +482,9 @@ mod tests {
                 let screen = render(&mut p, &c, width, height);
                 if expected == 11 {
                     assert!(screen.contains("WPS namelist on node"), "{screen}");
+                }
+                if expected == 12 {
+                    assert!(screen.contains("Cross-section line"), "{screen}");
                 }
                 press(&mut p, KeyCode::Tab, &c);
             }
@@ -555,12 +567,15 @@ pub(crate) fn job_progress_text(status:&Value,compact:bool)->String {
     let mut lines=vec![progress_stage(status)];
     for(key,label)in [("background_maps","Map frames"),("native_plots","Native plot frames")]{
         let background=&status[key];
+        // A run that asked only for sections has no maps here, and says so.
+        if let Some(note)=background["note"].as_str(){lines.push(format!("{label}: {}",text(note)));continue;}
         if let(Some(ready),Some(total))=(background["ready"].as_u64(),background["committed"].as_u64().filter(|n|*n>0)){
             lines.push(format!("{label}: {ready} / {total} ready{}",if background["done"]==true{""}else{" · working in background"}));
             if let Some(failed)=background["failed"].as_u64().filter(|n|*n>0){lines.push(format!("{label}: {failed} need attention"));}
         }
     }
     if let Some(error)=status["error"].as_str(){lines.push(format!("Needs attention: {}",text(error)));}
+    if let Some(warning)=status["render_warning"].as_str(){lines.push(format!("Pictures: {}",text(warning)));}
     let p=&status["progress"];
     let pipeline=&status["pipeline_progress"];
     let stage=pipeline["stage"].as_str().or_else(||status["stage"].as_str()).unwrap_or("");

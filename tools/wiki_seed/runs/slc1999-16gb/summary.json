@@ -1,0 +1,50 @@
+{
+ "run": "slc1999-16gb",
+ "exit": 1,
+ "stages_s": {
+  "fetch": 128.332598,
+  "prepare": 33.986843,
+  "initialize": 0.140707,
+  "forecast": 1538.904245
+ },
+ "failed": {
+  "stage": "forecast",
+  "error_class": "OSError",
+  "message": "[Errno 28] No space left on device"
+ },
+ "domains": {
+  "d01": {
+   "files": 10,
+   "last_time": "1999-08-11_21:00:00",
+   "max_w_ms": 2.67,
+   "max_wind10_ms": 14.27,
+   "max_rain_mm": 21.85,
+   "min_psfc_hpa": 659.46,
+   "nan": false,
+   "nx": 120,
+   "ny": 118
+  },
+  "d02": {
+   "files": 37,
+   "last_time": "1999-08-11_21:00:00",
+   "max_w_ms": 22.69,
+   "max_wind10_ms": 20.88,
+   "max_rain_mm": 39.72,
+   "min_psfc_hpa": 630.49,
+   "nan": false,
+   "nx": 336,
+   "ny": 336
+  },
+  "d03": {
+   "files": 37,
+   "last_time": "1999-08-11_21:00:00",
+   "max_w_ms": 32.64,
+   "max_wind10_ms": 23.07,
+   "max_rain_mm": 51.68,
+   "min_psfc_hpa": 642.11,
+   "nan": false,
+   "nx": 408,
+   "ny": 402
+  }
+ }
+}

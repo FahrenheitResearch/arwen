@@ -48,6 +48,30 @@
 //! reuse the lane's planning blockers verbatim, with the anchor hour = the
 //! run's max stored hour.
 //!
+//! Exact-time stores.  A history written more often than hourly puts the
+//! run on the exact-time axis: slots are ordinals and each frame carries
+//! its own lead in seconds ([`rw_store::RwsExactTime`]).  Windows are still
+//! the whole-hour windows above, served from those leads:
+//!
+//! * a window (t-W, t] ends only on a frame whose lead is a whole hour,
+//!   and needs the stored frames at BOTH of its bounding whole-hour
+//!   leads; a frame between hours closes no window and says so;
+//! * accumulations and snapshot windows read the frames at their whole-
+//!   hour leads, exactly as on the whole-hour axis (the run totals are
+//!   cumulative, so the frames between add nothing);
+//! * the maxima (UH, 10 m wind) fold EVERY stored frame inside the
+//!   window.  WRF's UP_HELI_MAX is reset at each history write
+//!   (`gpuwm/core/uh_diag.py`), so on a 15-minute history the whole-hour
+//!   frame alone holds only the last quarter hour; a plane read from an
+//!   instant (the wrfout 10 m wind, from U10 and V10) is one of the
+//!   window's instants and stays a labelled lower bound.  Either way the
+//!   frames inside a window must be evenly spaced from its start and the
+//!   frame at its start must be stored (unless the window starts with
+//!   the run), since a frame that was never stored cannot be folded and
+//!   the fold without it reads low ([`WindowGaps`]).  An instant fold
+//!   also needs a stored frame at every whole hour of the window, as the
+//!   whole-hour axis does.
+//!
 //! Memory: accumulations stream hour by hour — each hour file is opened
 //! once, each needed source plane is read once (`read_full_2d`, ~3.6 ms)
 //! and folded into every per-product accumulator that wants it; no
@@ -114,10 +138,10 @@ pub fn stored_run_hours(
 }
 
 /// Can this run's stored axis serve the fixed-hour windowed lane at all?
-/// True exactly when more than one hour is stored AND the axis is the
-/// whole-hour v1 kind: windowed accumulations are defined in whole
-/// forecast hours, which an exact-time ordinal axis cannot prove.  Model
-/// identity is deliberately NOT part of this answer -- per-plane
+/// True exactly when more than one frame is stored: a window needs a frame
+/// at each of its two bounds.  Both axes qualify -- an exact-time run's
+/// windows are served from its frames' leads ([`stored_window_frames`]).
+/// Model identity is deliberately NOT part of this answer -- per-plane
 /// availability is checked against the store when the windows compute,
 /// so a WRF (or any) run with the needed stored planes participates.
 pub fn windowed_axis_ready(
@@ -126,20 +150,146 @@ pub fn windowed_axis_ready(
     run_slug: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let (_, manifest) = load_run_manifest(store_root, model_slug, run_slug)?;
-    Ok(manifest.hours.len() > 1 && !manifest.is_exact_time_axis())
+    Ok(manifest.hours.len() > 1)
 }
 
-fn reject_exact_time_axis(
-    manifest: &RwsRunManifest,
+const SECONDS_PER_HOUR: u64 = 3_600;
+
+/// One stored frame as the windowed lane sees it: its storage slot and its
+/// lead from the run's start.  On the whole-hour axis the slot IS the
+/// forecast hour; on the exact-time axis it is an ordinal and the lead
+/// comes from the frame's own [`rw_store::RwsExactTime`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowFrame {
+    pub slot: u16,
+    pub lead_seconds: u64,
+}
+
+impl WindowFrame {
+    /// Whether a window can end on this frame: its lead is a whole hour.
+    pub fn closes_windows(&self) -> bool {
+        self.lead_seconds % SECONDS_PER_HOUR == 0
+    }
+
+    /// The whole forecast hours this frame's lead covers.
+    pub fn whole_hours(&self) -> u64 {
+        self.lead_seconds / SECONDS_PER_HOUR
+    }
+
+    /// `F001` on a whole-hour lead, `+000:15` between hours.
+    pub fn label(&self) -> String {
+        if self.closes_windows() {
+            format!("F{:03}", self.whole_hours())
+        } else {
+            lead_label(self.lead_seconds)
+        }
+    }
+}
+
+/// `+HHH:MM`, with `:SS` only when the seconds are not zero.
+fn lead_label(lead_seconds: u64) -> String {
+    let hours = lead_seconds / SECONDS_PER_HOUR;
+    let minutes = (lead_seconds % SECONDS_PER_HOUR) / 60;
+    let seconds = lead_seconds % 60;
+    if seconds == 0 {
+        format!("+{hours:03}:{minutes:02}")
+    } else {
+        format!("+{hours:03}:{minutes:02}:{seconds:02}")
+    }
+}
+
+/// Every stored frame of the run with its lead, in slot order (which is
+/// lead order on both axes).
+pub fn stored_window_frames(
+    store_root: &Path,
     model_slug: &str,
     run_slug: &str,
-) -> Result<(), RwStoreError> {
-    if manifest.is_exact_time_axis() {
-        return Err(RwStoreError::Meta(format!(
-            "run {model_slug}/{run_slug} uses an exact-time ordinal axis; production batch/windowed rendering is disabled until render requests carry exact lead and valid times"
-        )));
+) -> Result<Vec<WindowFrame>, Box<dyn std::error::Error>> {
+    let (_, manifest) = load_run_manifest(store_root, model_slug, run_slug)?;
+    manifest_window_frames(&manifest).map_err(Into::into)
+}
+
+fn manifest_window_frames(manifest: &RwsRunManifest) -> Result<Vec<WindowFrame>, String> {
+    manifest
+        .hours
+        .iter()
+        .map(|(&slot, entry)| {
+            let lead_seconds = if manifest.is_exact_time_axis() {
+                entry
+                    .exact_time()
+                    .ok_or_else(|| {
+                        format!("exact-time slot {slot} carries no lead in the run manifest")
+                    })?
+                    .lead_seconds
+            } else {
+                u64::from(slot) * SECONDS_PER_HOUR
+            };
+            Ok(WindowFrame { slot, lead_seconds })
+        })
+        .collect()
+}
+
+/// The forecast hour the run's stored frames reach: the last stored hour on
+/// the whole-hour axis, the whole hours of the last lead on the exact-time
+/// axis.  What [`window_fits_run`] is asked against; `None` for an empty run.
+pub fn last_window_hour(frames: &[WindowFrame]) -> Option<u16> {
+    frames
+        .iter()
+        .map(|frame| u16::try_from(frame.whole_hours()).unwrap_or(u16::MAX))
+        .max()
+}
+
+/// Can ANY frame of a run whose stored frames end at `last_hour` close
+/// `product`'s window?
+///
+/// Asked of [`plan_product`] itself, the planner every windowed render of
+/// a store goes through, so the answer cannot drift from what a render
+/// would do.  The planner's refusals depend only on the anchor hour, never
+/// on which APCP plane the store carries, so the plane is not consulted.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): an 18 h run asked for `all`
+/// requested 41 windowed families whose windows end at F024 or F048,
+/// every one of them skipped on every one of its 19 frames -- 805 skip
+/// lines for pictures the run could never contain.  A catalog keyword
+/// expands to what the run can draw; a window longer than the run is not
+/// in that set.
+pub fn window_fits_run(product: HrrrWindowedProduct, last_hour: u16) -> bool {
+    plan_product(product, last_hour, QpfSource::NativeHourly).is_ok()
+}
+
+/// The first forecast hour at which `product`'s window closes, or `None`
+/// when no hour up to [`WINDOW_SEARCH_LIMIT_HOURS`] does.  What a plan
+/// review compares a run's length against before a single frame exists.
+pub fn minimum_window_hour(product: HrrrWindowedProduct) -> Option<u16> {
+    (0..=WINDOW_SEARCH_LIMIT_HOURS).find(|&hour| window_fits_run(product, hour))
+}
+
+/// How far [`minimum_window_hour`] looks.  The longest window in the
+/// catalog closes at F048; this is headroom, not a policy.
+pub const WINDOW_SEARCH_LIMIT_HOURS: u16 = 240;
+
+/// A blocker reason that also says when the RUN, not just this frame, is
+/// too short for the window.
+///
+/// The planner's own sentence ("0-24 h 10 m wind max requires forecast
+/// hour >= 24") is true of the frame it was asked about.  On a run whose
+/// last stored frame is F018 it is true of every frame, and a reader
+/// needs to be told that no frame of this run will draw the product --
+/// which is a fact about the run's length and is said in those words.
+fn beyond_run_reason(
+    product: HrrrWindowedProduct,
+    reason: String,
+    last_hour: Option<u16>,
+) -> String {
+    let Some(last) = last_hour else {
+        return reason;
+    };
+    if window_fits_run(product, last) {
+        return reason;
     }
-    Ok(())
+    format!(
+        "{reason}; this run's stored frames end at F{last:03}, so none of them closes this window"
+    )
 }
 
 fn load_run_manifest(
@@ -194,11 +344,14 @@ fn canonical_contained_path(
 }
 
 /// Compute the requested windowed products from the stored hour files of
-/// `<store_root>/<model_slug>/<run_slug>/`, anchored at the max hour in
+/// `<store_root>/<model_slug>/<run_slug>/`, anchored at the max slot in
 /// `available_hours`. Unknown slugs are an error (the caller validates
 /// requests against `HrrrWindowedProduct::supported_products()`); windows
-/// that do not fit the available hours come back as blockers, never as
-/// silently shortened windows.
+/// that do not fit the available frames come back as blockers, never as
+/// silently shortened windows.  On an exact-time store the slots are
+/// ordinals and the windows are served from each frame's lead (see the
+/// module notes); the outcome's `anchor_hour` is then the anchor's whole
+/// lead hour, not its slot.
 pub fn compute_windowed_products(
     store_root: &Path,
     model_slug: &str,
@@ -207,9 +360,8 @@ pub fn compute_windowed_products(
     requested: &[String],
 ) -> Result<WindowedStoreOutcome, Box<dyn std::error::Error>> {
     let (run_dir, manifest) = load_run_manifest(store_root, model_slug, run_slug)?;
-    reject_exact_time_axis(&manifest, model_slug, run_slug)?;
     let available: BTreeSet<u16> = available_hours.iter().copied().collect();
-    let Some(&anchor_hour) = available.iter().next_back() else {
+    let Some(&anchor_slot) = available.iter().next_back() else {
         return Err("windowed compute needs at least one stored hour".into());
     };
     if let Some(hour) = available
@@ -225,6 +377,37 @@ pub fn compute_windowed_products(
     let grid =
         GridFile::open(&grid_path).map_err(|err| format!("open {}: {err}", grid_path.display()))?;
     manifest.validate_grid(&grid.hash, grid.nx, grid.ny)?;
+
+    let exact_axis = manifest.is_exact_time_axis();
+    let run_frames = manifest_window_frames(&manifest)?;
+    let last_hour = last_window_hour(&run_frames);
+    // The frames this pass may read, in slot (= lead) order; the anchor is
+    // the last of them.
+    let frames: Vec<WindowFrame> = run_frames
+        .into_iter()
+        .filter(|frame| available.contains(&frame.slot))
+        .collect();
+    let anchor = frames
+        .last()
+        .copied()
+        .ok_or("windowed compute needs at least one stored hour")?;
+    let anchor_hour = u16::try_from(anchor.whole_hours()).map_err(|_| {
+        format!(
+            "lead {} s of the window anchor exceeds the forecast-hour range",
+            anchor.lead_seconds
+        )
+    })?;
+    let name_of = |slot: u16| -> FrameName {
+        let frame = frames
+            .iter()
+            .find(|frame| frame.slot == slot)
+            .copied()
+            .unwrap_or(WindowFrame {
+                slot,
+                lead_seconds: u64::from(slot) * SECONDS_PER_HOUR,
+            });
+        FrameName::of(frame, exact_axis)
+    };
 
     // Plan: dedupe slugs (mirroring the GRIB lane), block products whose
     // window minimum exceeds the anchor or whose window has store gaps.
@@ -243,72 +426,71 @@ pub fn compute_windowed_products(
         }
         let product = HrrrWindowedProduct::from_slug(slug)
             .ok_or_else(|| format!("'{slug}' is not a windowed product slug"))?;
+        if !anchor.closes_windows() {
+            // Only an exact-time frame can sit between hours.  Every window
+            // of the catalog is a whole number of hours ending on a whole
+            // hour, so this frame ends none of them.
+            blockers.push((
+                slug.clone(),
+                format!(
+                    "windows close at whole forecast hours, and this frame is at {} \
+                     (between F{:03} and F{:03})",
+                    anchor.label(),
+                    anchor_hour,
+                    u32::from(anchor_hour) + 1
+                ),
+            ));
+            continue;
+        }
         let source = if reduces_hourly_apcp(product) {
-            *qpf_source.get_or_insert_with(|| probe_qpf_source(&run_dir, &manifest, anchor_hour))
+            *qpf_source.get_or_insert_with(|| probe_qpf_source(&run_dir, &manifest, anchor_slot))
         } else {
             // Not consulted by plans that read no hourly APCP.
             QpfSource::NativeHourly
         };
-        let spec = match plan_product(product, anchor_hour, source) {
+        let mut spec = match plan_product(product, anchor_hour, source) {
             Ok(spec) => spec,
             Err(reason) => {
-                blockers.push((slug.clone(), reason));
+                blockers.push((slug.clone(), beyond_run_reason(product, reason, last_hour)));
                 continue;
             }
         };
-        let missing: Vec<u16> = spec
-            .hours
-            .iter()
-            .copied()
-            .filter(|hour| !available.contains(hour))
-            .collect();
-        if missing.is_empty() {
-            accums.push(Accum::new(spec));
+        let slots = if exact_axis {
+            exact_window_slots(&spec, &frames)
         } else {
-            let first = spec.hours.first().copied().unwrap_or(anchor_hour);
-            let last = spec.hours.last().copied().unwrap_or(anchor_hour);
-            let requirement = match spec.reduce {
-                // A run-total difference requires exactly its two
-                // endpoints and nothing between them; claiming it needs
-                // every hour of the span would misreport which stored
-                // hours the product actually depends on.
-                Reduce::Difference => format!(
-                    "window F{first:03}-F{last:03} is differenced from the stored run \
-                     totals at F{first:03} and F{last:03}, both required"
-                ),
-                _ => format!("window F{first:03}-F{last:03} needs every hour"),
-            };
-            blockers.push((
-                slug.clone(),
-                format!(
-                    "missing stored hour(s) {} ({requirement}; gaps are never skipped)",
-                    missing
-                        .iter()
-                        .map(|hour| format!("F{hour:03}"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ),
-            ));
+            whole_hour_window_slots(&spec, &available).map(|slots| (slots, WindowGaps::default()))
+        };
+        match slots {
+            Ok((slots, gaps)) => {
+                // A 1 h interval maximum reads one plane on the whole-hour
+                // axis and every frame of its hour on the exact-time axis.
+                if slots.len() > 1 && spec.reduce == Reduce::Direct {
+                    spec.reduce = Reduce::Max;
+                }
+                accums.push(Accum::new(spec, slots).with_gaps(gaps));
+            }
+            Err(reason) => blockers.push((slug.clone(), reason)),
         }
     }
 
-    // Which source planes each hour must serve, across live products.
-    let mut hours_needed: BTreeMap<u16, BTreeSet<SourceKind>> = BTreeMap::new();
+    // Which source planes each frame must serve, across live products.
+    let mut slots_needed: BTreeMap<u16, BTreeSet<SourceKind>> = BTreeMap::new();
     for accum in &accums {
-        for &hour in &accum.spec.hours {
-            hours_needed
-                .entry(hour)
+        for &slot in &accum.slots {
+            slots_needed
+                .entry(slot)
                 .or_default()
                 .insert(accum.spec.source);
         }
     }
 
-    // Stream: one HourReader per hour, one read per (hour, source plane),
-    // folded into every accumulator that wants it. Ascending hour order is
-    // the BTreeMap iteration order, mirroring the GRIB lane's hour order.
-    for (&hour, kinds) in &hours_needed {
+    // Stream: one HourReader per frame, one read per (frame, source plane),
+    // folded into every accumulator that wants it. Ascending slot order is
+    // the BTreeMap iteration order, which is lead order on both axes and
+    // mirrors the GRIB lane's hour order.
+    for (&slot, kinds) in &slots_needed {
         let needs = |accum: &Accum, kind: SourceKind| {
-            accum.failed.is_none() && accum.spec.source == kind && accum.spec.hours.contains(&hour)
+            accum.failed.is_none() && accum.spec.source == kind && accum.slots.contains(&slot)
         };
         if !accums
             .iter()
@@ -316,89 +498,98 @@ pub fn compute_windowed_products(
         {
             continue;
         }
-        let entry = match manifest.hours.get(&hour) {
+        let name = name_of(slot);
+        let fail_all = |accums: &mut Vec<Accum>, reason: String| {
+            for accum in accums.iter_mut() {
+                if accum.failed.is_none() && accum.slots.contains(&slot) {
+                    accum.failed = Some(reason.clone());
+                }
+            }
+        };
+        let entry = match manifest.hours.get(&slot) {
             Some(entry) => entry,
             None => {
-                let reason = format!(
-                    "hour F{hour:03} is not registered in {model_slug}/{run_slug}/run.json"
+                fail_all(
+                    &mut accums,
+                    format!(
+                        "{} is not registered in {model_slug}/{run_slug}/run.json",
+                        name.noun
+                    ),
                 );
-                for accum in accums.iter_mut() {
-                    if accum.failed.is_none() && accum.spec.hours.contains(&hour) {
-                        accum.failed = Some(reason.clone());
-                    }
-                }
                 continue;
             }
         };
         let hour_path = match canonical_contained_path(
             &run_dir,
             &run_dir.join(&entry.file),
-            &format!("hour F{hour:03} file"),
+            &format!("{} file", name.noun),
         ) {
             Ok(path) => path,
             Err(err) => {
-                let reason = err.to_string();
-                for accum in accums.iter_mut() {
-                    if accum.failed.is_none() && accum.spec.hours.contains(&hour) {
-                        accum.failed = Some(reason.clone());
-                    }
-                }
+                fail_all(&mut accums, err.to_string());
                 continue;
             }
         };
         let reader = match HourReader::open(&hour_path) {
             Ok(reader) => reader,
             Err(err) => {
-                let reason = format!("open {}: {err}", hour_path.display());
-                for accum in accums.iter_mut() {
-                    if accum.failed.is_none() && accum.spec.hours.contains(&hour) {
-                        accum.failed = Some(reason.clone());
-                    }
-                }
+                fail_all(&mut accums, format!("open {}: {err}", hour_path.display()));
                 continue;
             }
         };
         let meta = reader.meta();
-        let metadata_result = manifest
-            .validate_identity(&meta.model, &meta.run)
-            .and_then(|()| manifest.validate_grid(&meta.grid_hash, meta.nx, meta.ny))
-            .and_then(|()| {
-                if meta.forecast_hour == hour {
-                    Ok(())
-                } else {
-                    Err(RwStoreError::Meta(format!(
-                        "manifest hour F{hour:03} resolves to {}, whose metadata says F{:03}",
-                        hour_path.display(),
-                        meta.forecast_hour
-                    )))
-                }
-            });
+        let metadata_result = if exact_axis {
+            // Slot, identity, grid AND the frame's exact lead and valid
+            // time, which is what every window on this axis is built on.
+            manifest.validate_hour_meta(slot, meta).map(|_| ())
+        } else {
+            manifest
+                .validate_identity(&meta.model, &meta.run)
+                .and_then(|()| manifest.validate_grid(&meta.grid_hash, meta.nx, meta.ny))
+                .and_then(|()| {
+                    if meta.forecast_hour == slot {
+                        Ok(())
+                    } else {
+                        Err(RwStoreError::Meta(format!(
+                            "manifest hour F{slot:03} resolves to {}, whose metadata says F{:03}",
+                            hour_path.display(),
+                            meta.forecast_hour
+                        )))
+                    }
+                })
+        };
         if let Err(err) = metadata_result {
-            let reason = err.to_string();
-            for accum in accums.iter_mut() {
-                if accum.failed.is_none() && accum.spec.hours.contains(&hour) {
-                    accum.failed = Some(reason.clone());
-                }
-            }
+            fail_all(&mut accums, err.to_string());
             continue;
         }
+        let between_hours = !name.frame.closes_windows();
         for &kind in kinds {
             if !accums.iter().any(|accum| needs(accum, kind)) {
                 continue;
             }
-            match read_source_plane(&reader, &grid, kind, hour) {
+            match read_source_plane(&reader, &grid, kind, &name) {
                 Ok(plane) => {
                     for accum in accums.iter_mut() {
-                        if needs(accum, kind) {
-                            accum.fold(&plane.values);
-                            match plane.fidelity {
-                                PlaneFidelity::Exact => {}
-                                PlaneFidelity::InstantaneousLowerBound => {
-                                    accum.fallback_hours.push(hour);
-                                }
-                                PlaneFidelity::HistoryIntervalMax => {
-                                    accum.interval_max_hours.push(hour);
-                                }
+                        if !needs(accum, kind) {
+                            continue;
+                        }
+                        if between_hours && plane.fidelity == PlaneFidelity::Exact {
+                            // A native trailing 1 h max plane covers the hour
+                            // ENDING at its own frame; stored between hours it
+                            // reaches back past the window's start.  Its
+                            // window is read at the whole-hour frames alone.
+                            continue;
+                        }
+                        accum.fold(&plane.values);
+                        match plane.fidelity {
+                            PlaneFidelity::Exact => {
+                                accum.exact_planes += 1;
+                            }
+                            PlaneFidelity::InstantaneousLowerBound => {
+                                accum.fallback_frames.push(name.at.clone());
+                            }
+                            PlaneFidelity::HistoryIntervalMax => {
+                                accum.interval_max_frames.push(name.at.clone());
                             }
                         }
                     }
@@ -417,7 +608,7 @@ pub fn compute_windowed_products(
     let mut grids = Vec::with_capacity(accums.len());
     for accum in accums {
         let slug = accum.spec.product.slug().to_string();
-        match accum.finish() {
+        match accum.finish(exact_axis) {
             Ok(grid) => grids.push(grid),
             Err(reason) => blockers.push((slug, reason)),
         }
@@ -427,6 +618,223 @@ pub fn compute_windowed_products(
         blockers,
         anchor_hour,
     })
+}
+
+/// How a message names one stored frame: `hour F001` on the whole-hour
+/// axis (the wording every reason used before exact-time windows), and
+/// `frame +000:15 (slot 1)` on the exact-time axis.  `at` is the short
+/// form a strategy note lists.
+struct FrameName {
+    frame: WindowFrame,
+    noun: String,
+    at: String,
+}
+
+impl FrameName {
+    fn of(frame: WindowFrame, exact_axis: bool) -> Self {
+        if exact_axis {
+            let at = lead_label(frame.lead_seconds);
+            Self {
+                frame,
+                noun: format!("frame {at} (slot {})", frame.slot),
+                at,
+            }
+        } else {
+            Self {
+                frame,
+                noun: format!("hour F{:03}", frame.slot),
+                at: format!("F{:03}", frame.slot),
+            }
+        }
+    }
+}
+
+/// The maxima folded from every stored frame inside a window on the
+/// exact-time axis: a wrfout UP_HELI_MAX plane holds the max over the
+/// interval since the history write before it, and a 10 m wind read from
+/// U10 and V10 is one instant of the window.
+fn folds_interval_maxima(source: SourceKind) -> bool {
+    matches!(source, SourceKind::Uh2to5km | SourceKind::WindSpeed10m)
+}
+
+/// A whole-hour store's frames for one window: its hours, every one of
+/// them stored.
+fn whole_hour_window_slots(
+    spec: &ProductSpec,
+    available: &BTreeSet<u16>,
+) -> Result<Vec<u16>, String> {
+    let missing: Vec<u16> = spec
+        .hours
+        .iter()
+        .copied()
+        .filter(|hour| !available.contains(hour))
+        .collect();
+    if missing.is_empty() {
+        Ok(spec.hours.clone())
+    } else {
+        Err(missing_frames_reason(spec, &missing, "hour(s)"))
+    }
+}
+
+/// What a fold over an exact-time window's frames would lack, found when
+/// the window is planned and applied by [`Accum::finish`] once it knows
+/// what the folded planes measure ([`PlaneFidelity`]).
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a window folded from part of
+/// its frames reads low, and a picture drawn so is kept.  The live pass
+/// of a sub-hourly grid draws each whole hour beside that hour's frames
+/// only; the 10 m wind run maximum at F002 of a 15-minute grid was then
+/// folded from +1:00 to +2:00 alone, and a named request that drew it
+/// there never drew it again (1,439 of 5,624 cells low, by up to
+/// 2.72 kt, against a render of the same run's whole series).  Being
+/// labelled a lower bound does not license a fold of fewer frames than
+/// the run stored.  Only a native trailing 1 h max plane, read at the
+/// whole hours alone, asks nothing of the frames between them.
+#[derive(Debug, Clone, Default)]
+struct WindowGaps {
+    /// The frame at the window's start is not stored (a window starting
+    /// with the run needs none), or the frames inside it are unevenly
+    /// spaced: a frame inside the window is missing.  Refused for every
+    /// plane folded from the frames between the hours, per-history-
+    /// interval maxima and instants alike.
+    intervals: Option<String>,
+    /// One of the window's whole hours has no stored frame.  Refused for
+    /// a native trailing 1 h max plane, read at each whole hour, and for
+    /// an instant, which the whole-hour axis refuses the same gap for;
+    /// per-history-interval maxima evenly spaced from the window's start
+    /// cover it without a frame on each hour.
+    hours: Option<String>,
+}
+
+/// An exact-time store's frames for one window (t-W, t], by lead, and
+/// what a fold over them would lack.
+///
+/// Accumulations and snapshots read the frames at the window's whole
+/// hours, as on the whole-hour axis, and every one of them is required.
+/// The interval maxima read EVERY stored frame inside the window, which
+/// must end on a stored frame.  Whether the window also needs the frame
+/// at its start, and frames evenly spaced from it, depends on what the
+/// stored planes measure, so those gaps are returned rather than refused
+/// here ([`WindowGaps`]).  A window starting with the run needs no frame
+/// at its start: no interval begins before the run does.
+fn exact_window_slots(
+    spec: &ProductSpec,
+    frames: &[WindowFrame],
+) -> Result<(Vec<u16>, WindowGaps), String> {
+    let slot_at = |hour: u16| {
+        frames
+            .iter()
+            .find(|frame| frame.lead_seconds == u64::from(hour) * SECONDS_PER_HOUR)
+            .map(|frame| frame.slot)
+    };
+    let (Some(&first), Some(&last)) = (spec.hours.first(), spec.hours.last()) else {
+        return Err("the window names no forecast hour".to_string());
+    };
+    let missing_hours: Vec<u16> = spec
+        .hours
+        .iter()
+        .copied()
+        .filter(|&hour| slot_at(hour).is_none())
+        .collect();
+    if !folds_interval_maxima(spec.source) {
+        return if missing_hours.is_empty() {
+            Ok((
+                spec.hours.iter().filter_map(|&hour| slot_at(hour)).collect(),
+                WindowGaps::default(),
+            ))
+        } else {
+            Err(missing_frames_reason(spec, &missing_hours, "frame(s) at"))
+        };
+    }
+
+    // Planning never hands an interval window a first hour of zero: every
+    // one of them starts at F001 or later.
+    let start_hour = first.saturating_sub(1);
+    if slot_at(last).is_none() {
+        return Err(format!(
+            "missing stored frame(s) at F{last:03} (window F{start_hour:03}-F{last:03} ends on \
+             it; gaps are never skipped)"
+        ));
+    }
+    let mut gaps = WindowGaps::default();
+    if !missing_hours.is_empty() {
+        gaps.hours = Some(missing_frames_reason(spec, &missing_hours, "frame(s) at"));
+    }
+    if start_hour > 0 && slot_at(start_hour).is_none() {
+        gaps.intervals = Some(format!(
+            "missing stored frame(s) at F{start_hour:03} (window F{start_hour:03}-F{last:03} \
+             folds every stored frame inside it and needs the frame at its start to place its \
+             first interval and show that no frame after it is missing; gaps are never skipped)"
+        ));
+    }
+    let start = u64::from(start_hour) * SECONDS_PER_HOUR;
+    let end = u64::from(last) * SECONDS_PER_HOUR;
+    let inside: Vec<WindowFrame> = frames
+        .iter()
+        .copied()
+        .filter(|frame| frame.lead_seconds > start && frame.lead_seconds <= end)
+        .collect();
+    let mut previous = start;
+    let mut cadence: Option<(u64, u64, u64)> = None;
+    for frame in &inside {
+        let step = frame.lead_seconds - previous;
+        match cadence {
+            None => cadence = Some((step, previous, frame.lead_seconds)),
+            Some((expected, from, to)) if step != expected => {
+                if gaps.intervals.is_none() {
+                    gaps.intervals = Some(format!(
+                        "stored frames inside window F{start_hour:03}-F{last:03} are unevenly \
+                         spaced: {} to {} is {} where {} to {} is {}; a frame that was never \
+                         stored cannot be folded, and a fold without it would read low",
+                        lead_label(previous),
+                        lead_label(frame.lead_seconds),
+                        duration_label(step),
+                        lead_label(from),
+                        lead_label(to),
+                        duration_label(expected)
+                    ));
+                }
+                break;
+            }
+            Some(_) => {}
+        }
+        previous = frame.lead_seconds;
+    }
+    Ok((inside.iter().map(|frame| frame.slot).collect(), gaps))
+}
+
+fn duration_label(seconds: u64) -> String {
+    if seconds % 60 == 0 {
+        format!("{} min", seconds / 60)
+    } else {
+        format!("{seconds} s")
+    }
+}
+
+/// The blocker for a window whose frames are not all stored, naming each
+/// missing whole hour and what the window needs of it.
+fn missing_frames_reason(spec: &ProductSpec, missing: &[u16], noun: &str) -> String {
+    let first = spec.hours.first().copied().unwrap_or_default();
+    let last = spec.hours.last().copied().unwrap_or_default();
+    let requirement = match spec.reduce {
+        // A run-total difference requires exactly its two endpoints and
+        // nothing between them; claiming it needs every hour of the span
+        // would misreport which stored hours the product actually
+        // depends on.
+        Reduce::Difference => format!(
+            "window F{first:03}-F{last:03} is differenced from the stored run \
+             totals at F{first:03} and F{last:03}, both required"
+        ),
+        _ => format!("window F{first:03}-F{last:03} needs every hour"),
+    };
+    format!(
+        "missing stored {noun} {} ({requirement}; gaps are never skipped)",
+        missing
+            .iter()
+            .map(|hour| format!("F{hour:03}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
 }
 
 /// The stored source plane a windowed product reduces.
@@ -559,7 +967,7 @@ fn plan_product(
     if let Some(plan) = snapshot_plan(product) {
         if end < plan.window_end {
             return Err(format!(
-                "{} requires forecast hour >= {}; use a HRRR extended cycle for 24-48 h products",
+                "{} requires forecast hour >= {}",
                 plan.blocker_label, plan.window_end
             ));
         }
@@ -597,11 +1005,12 @@ fn plan_product(
     // Callers guarantee `window <= end`; the window minimum is checked
     // before this runs, so F000 never gets a predecessor invented for it.
     //
-    // What makes the "{window} h" label accurate is `reject_exact_time_axis`:
-    // a store whose frames are not whole forecast hours cannot reach this
-    // lane at all, so the gap between two hour indices IS that many hours
-    // of accumulation. No sub-hourly frame can slip a shorter span in
-    // under an hourly name.
+    // What makes the "{window} h" label accurate is that `end` and `start`
+    // are forecast HOURS on both axes: on the whole-hour axis they are the
+    // slots themselves, and on the exact-time axis `exact_window_slots`
+    // maps each to the frame whose lead is exactly that many hours, so the
+    // gap between them IS that many hours of accumulation. No sub-hourly
+    // frame can slip a shorter span in under an hourly name.
     let qpf_difference = |window: u16| {
         let start = end - window;
         spec(
@@ -639,7 +1048,7 @@ fn plan_product(
         Qpf1h => {
             if end < 1 {
                 return Err(
-                    "1-h QPF requires forecast hour >= 1 because HRRR APCP windows start at 0-1 h"
+                    "1-h QPF requires forecast hour >= 1 because the first 1 h accumulation window ends at F001"
                         .to_string(),
                 );
             }
@@ -914,14 +1323,15 @@ enum PlaneFidelity {
     Exact,
     /// WRF UP_HELI_MAX pulled verbatim from the wrfout import lane:
     /// the exact running max over the source run's history interval
-    /// ending at this frame (reset at every history write).  On the
-    /// whole-hour axis this lane folds (hourly history cadence), that
-    /// is the exact trailing 1 h max — NOT an instantaneous snapshot
-    /// and NOT a lower bound.  Only a source run whose history
-    /// interval was shorter than an hour, with the intermediate frames
-    /// never imported, could make it one; the store cannot represent
-    /// that state (sub-hourly frames force the exact-time axis, which
-    /// refuses fixed-hour windows).
+    /// ending at this frame (reset at every history write).  NOT an
+    /// instantaneous snapshot and NOT a lower bound, as long as every
+    /// history frame of the window is folded.  A sub-hourly history
+    /// puts the store on the exact-time axis, where every stored frame
+    /// inside the window is folded (`exact_window_slots`).  On the
+    /// whole-hour axis each plane is the exact trailing 1 h max only if
+    /// the source wrote history hourly; a run with sub-hourly history
+    /// imported at its whole hours alone holds just the last interval,
+    /// and the strategy note says so rather than claiming the hour.
     HistoryIntervalMax,
     /// Top-of-hour instantaneous plane (no stored max field at all):
     /// a genuine lower bound on the native sub-hourly max.
@@ -972,8 +1382,9 @@ fn read_source_plane(
     reader: &HourReader,
     grid: &GridFile,
     kind: SourceKind,
-    hour: u16,
+    frame: &FrameName,
 ) -> Result<SourcePlane, String> {
+    let (at, noun) = (frame.at.as_str(), frame.noun.as_str());
     let read_any_units = |name: &str,
                           expected_units: &[&str]|
      -> Result<Vec<f32>, ReadFailure> {
@@ -981,7 +1392,7 @@ fn read_source_plane(
             Ok(stored) => {
                 if !expected_units.contains(&stored.units.as_str()) {
                     return Err(ReadFailure::Failed(format!(
-                        "stored '{name}' at F{hour:03} has units '{}', expected '{}'",
+                        "stored '{name}' at {at} has units '{}', expected '{}'",
                         stored.units,
                         expected_units.join("' or '")
                     )));
@@ -989,10 +1400,10 @@ fn read_source_plane(
                 Ok(stored.values)
             }
             Err(RwStoreError::UnknownVariable(_)) => Err(ReadFailure::MissingVariable(format!(
-                "stored hour F{hour:03} has no '{name}' variable"
+                "stored {noun} has no '{name}' variable"
             ))),
             Err(err) => Err(ReadFailure::Failed(format!(
-                "read '{name}' from stored hour F{hour:03}: {err}"
+                "read '{name}' from stored {noun}: {err}"
             ))),
         }
     };
@@ -1035,10 +1446,12 @@ fn read_source_plane(
                 // lane's `uh_2to5km` is a top-of-hour instantaneous
                 // snapshot (a lower bound on the sub-hourly max); the
                 // wrfout import's `updraft_helicity_2to5km` is WRF
-                // UP_HELI_MAX pulled verbatim -- the exact
-                // per-history-interval max, reset each history frame,
-                // i.e. the exact trailing 1 h max at the hourly
-                // cadence this whole-hour lane folds.
+                // UP_HELI_MAX pulled verbatim -- the exact max over the
+                // history interval ending at its frame, reset at each
+                // history write.  That is the trailing 1 h max only on
+                // an hourly history; a sub-hourly history puts the store
+                // on the exact-time axis, where every frame of the
+                // window is folded ([`PlaneFidelity::HistoryIntervalMax`]).
                 match read("uh_2to5km", "m^2/s^2") {
                     Ok(values) => Ok(SourcePlane {
                         values: to_f64(values),
@@ -1135,19 +1548,27 @@ fn to_f64(values: Vec<f32>) -> Vec<f64> {
     values.into_iter().map(f64::from).collect()
 }
 
-/// Per-product streaming accumulator: per-hour planes fold in ascending
-/// hour order; `failed` records the first per-hour read failure (the
-/// product's blocker reason — once failed, later hours stop folding).
-/// `fallback_hours` collects the hours whose plane was a genuine
-/// top-of-hour instantaneous snapshot (lower-bound note);
-/// `interval_max_hours` the hours served by the wrfout lane's
-/// UP_HELI_MAX per-history-interval max (exact-semantics note).
+/// Per-product streaming accumulator: per-frame planes fold in ascending
+/// slot order; `failed` records the first per-frame read failure (the
+/// product's blocker reason: once failed, later frames stop folding).
+/// `slots` are the stored frames the window reads: its hours on the
+/// whole-hour axis, and on the exact-time axis the frames at its whole-
+/// hour leads, or every frame inside it for an interval maximum.
+/// `fallback_frames` collects the frames whose plane was a genuine
+/// instantaneous snapshot (lower-bound note); `interval_max_frames` the
+/// frames served by the wrfout lane's UP_HELI_MAX per-history-interval
+/// max (exact-semantics note); `exact_planes` counts the native max
+/// planes.  `gaps` is what the window's stored frames lack, refused in
+/// `finish` for the planes it would make read low.
 struct Accum {
     spec: ProductSpec,
+    slots: Vec<u16>,
     state: Option<AccumState>,
     failed: Option<String>,
-    fallback_hours: Vec<u16>,
-    interval_max_hours: Vec<u16>,
+    fallback_frames: Vec<String>,
+    interval_max_frames: Vec<String>,
+    exact_planes: usize,
+    gaps: WindowGaps,
 }
 
 enum AccumState {
@@ -1170,14 +1591,22 @@ enum AccumState {
 }
 
 impl Accum {
-    fn new(spec: ProductSpec) -> Self {
+    fn new(spec: ProductSpec, slots: Vec<u16>) -> Self {
         Self {
             spec,
+            slots,
             state: None,
             failed: None,
-            fallback_hours: Vec::new(),
-            interval_max_hours: Vec::new(),
+            fallback_frames: Vec::new(),
+            interval_max_frames: Vec::new(),
+            exact_planes: 0,
+            gaps: WindowGaps::default(),
         }
+    }
+
+    fn with_gaps(mut self, gaps: WindowGaps) -> Self {
+        self.gaps = gaps;
+        self
     }
 
     fn fold(&mut self, values: &[f64]) {
@@ -1221,7 +1650,7 @@ impl Accum {
             }
             Some(AccumState::DifferencePending(start)) => {
                 // Hour order is not an assumption here, it is enforced
-                // upstream: `hours_needed` is a BTreeMap streamed in
+                // upstream: `slots_needed` is a BTreeMap streamed in
                 // ascending hour order, so the fold already held is the
                 // window's EARLIER endpoint and `values` is the later
                 // one.  Anything else would be a planning bug, not a
@@ -1245,9 +1674,27 @@ impl Accum {
         }
     }
 
-    fn finish(self) -> Result<WindowedGrid, String> {
+    /// The product grid, or the reason it cannot be one.  `exact_axis`
+    /// picks how the strategy note names frames and what it can claim.
+    fn finish(self, exact_axis: bool) -> Result<WindowedGrid, String> {
         if let Some(reason) = self.failed {
             return Err(reason);
+        }
+        // A gap makes every fold read low, a labelled lower bound
+        // included: the picture is kept, and a render of the whole series
+        // would have drawn it higher ([`WindowGaps`]).  Only a native 1 h
+        // max plane reads no frame between the hours, and only evenly
+        // spaced interval maxima cover a whole hour without its frame.
+        let instants = !self.fallback_frames.is_empty();
+        if instants || !self.interval_max_frames.is_empty() {
+            if let Some(reason) = self.gaps.intervals {
+                return Err(reason);
+            }
+        }
+        if instants || self.exact_planes > 0 {
+            if let Some(reason) = self.gaps.hours {
+                return Err(reason);
+            }
         }
         let mut values = match self.state {
             None => {
@@ -1294,33 +1741,48 @@ impl Accum {
             }
         }
         let mut strategy = self.spec.strategy;
-        if !self.fallback_hours.is_empty() {
-            strategy.push_str(&format!(
-                " (top-of-hour instantaneous fallback at {}: no stored sub-hourly max \
-                 field — a lower bound on the native sub-hourly max)",
-                self.fallback_hours
-                    .iter()
-                    .map(|hour| format!("F{hour:03}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        if !self.fallback_frames.is_empty() {
+            let frames = self.fallback_frames.join(", ");
+            if exact_axis {
+                strategy.push_str(&format!(
+                    " (instantaneous fallback at {frames}: no stored max field, so this is \
+                     the max of the stored instants, a lower bound on the true max)"
+                ));
+            } else {
+                strategy.push_str(&format!(
+                    " (top-of-hour instantaneous fallback at {frames}: no stored sub-hourly max \
+                     field, a lower bound on the native sub-hourly max)"
+                ));
+            }
         }
-        if !self.interval_max_hours.is_empty() {
+        if !self.interval_max_frames.is_empty() {
             // The wrfout lane's UP_HELI_MAX is reset at every history
             // write, so each folded plane is the exact max over the
-            // trailing history interval — at this lane's hourly
-            // whole-hour cadence, the exact trailing 1 h max, not a
-            // lower bound (that wording is reserved for genuinely
-            // instantaneous planes above).
-            strategy.push_str(&format!(
-                " (WRF UP_HELI_MAX per-history-interval max at {}: reset each history \
-                 frame — the exact trailing 1 h max at this hourly cadence)",
-                self.interval_max_hours
-                    .iter()
-                    .map(|hour| format!("F{hour:03}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            // history interval ending at its frame, not a lower bound
+            // (that wording is reserved for genuinely instantaneous
+            // planes above).  On the exact-time axis every stored frame
+            // of the window was folded, so the fold is the window's max
+            // when every history frame was stored; a series thinned to
+            // every other file is evenly spaced too, and the store cannot
+            // tell it from a whole one.  On the whole-hour axis each plane
+            // is the whole hour only if the run wrote history hourly,
+            // which the store cannot prove either.
+            let frames = self.interval_max_frames.join(", ");
+            if exact_axis {
+                strategy.push_str(&format!(
+                    " (WRF UP_HELI_MAX per-history-interval max at {frames}: reset at each \
+                     history write and folded over every stored frame inside the window, so \
+                     this is the exact max over the window when every history frame of the \
+                     run was rendered; a series thinned to fewer frames reads low)"
+                ));
+            } else {
+                strategy.push_str(&format!(
+                    " (WRF UP_HELI_MAX per-history-interval max at {frames}: reset at each \
+                     history write, so this is the exact trailing 1 h max when history is \
+                     written hourly; a run with sub-hourly history is exact only when \
+                     rendered with its frames between the hours)"
+                ));
+            }
         }
         Ok(WindowedGrid {
             slug: self.spec.product.slug().to_string(),
@@ -2351,9 +2813,10 @@ mod tests {
         assert_eq!(spec.reduce, Reduce::Difference);
         assert_eq!(spec.hours, vec![1, 2]);
 
-        let mut accum = Accum::new(spec);
+        let slots = spec.hours.clone();
+        let mut accum = Accum::new(spec, slots);
         accum.fold(&[7.0, 8.0, 9.0, 10.0]);
-        let reason = accum.finish().unwrap_err();
+        let reason = accum.finish(false).unwrap_err();
         assert!(
             reason.contains("F001") && reason.contains("F002") && reason.contains("undefined"),
             "the half-folded blocker must name both endpoints: {reason}"
@@ -2472,43 +2935,438 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn exact_time_runs_list_slots_but_reject_windowed_compute() {
-        // Per-frame (direct/derived) rendering of exact-time ordinal axes is
-        // supported: stored_run_hours reports the ordinal slots so callers
-        // can walk every stored frame, and each frame's physical timing is
-        // carried by RwsExactTime through hour_presentation.  Fixed-hour
-        // WINDOWED accumulations remain refused: their windows are defined
-        // in whole forecast hours, which an ordinal axis cannot prove.
-        let dir = test_dir("exact-time-guard");
-        let run = "minute_loop";
+    /// Run origin of the exact-time fixtures, on a whole hour.
+    const EXACT_ORIGIN_UNIX: i64 = 1_779_998_400;
+
+    /// WRF UP_HELI_MAX as a 15-minute history writes it: each frame holds
+    /// the max over the interval since the previous history write, and the
+    /// analysis frame carries a large value in cell 0 that lies OUTSIDE
+    /// every window ending after it.  Indexed by lead in minutes.
+    fn interval_uh_plane(lead_minutes: u64) -> Vec<f32> {
+        match lead_minutes {
+            0 => vec![99.0, 0.0, 0.0, 0.0],
+            15 => vec![10.0, 1.0, 7.0, 0.0],
+            30 => vec![3.0, 40.0, 2.0, 0.0],
+            45 => vec![5.0, 2.0, 30.0, 0.0],
+            60 => vec![4.0, 6.0, 1.0, 0.5],
+            75 => vec![2.0, 3.0, 0.0, 9.0],
+            90 => vec![1.0, 8.0, 4.0, 0.0],
+            105 => vec![6.0, 0.0, 2.0, 1.0],
+            120 => vec![0.0, 5.0, 3.0, 7.0],
+            180 => vec![2.0, 1.0, 6.0, 4.0],
+            other => panic!("no interval plane at +{other} min"),
+        }
+    }
+
+    /// RAINNC + RAINC since the run's start as the wrfout import stores it
+    /// (`apcp`, kg/m^2): 0.5 * (cell + 1) mm every 15 minutes on top of
+    /// 1 mm at the start, so every value and every difference is exact.
+    fn quarter_hour_run_total(lead_minutes: u64) -> Vec<f32> {
+        (0..CELLS)
+            .map(|cell| 1.0 + 0.5 * (cell + 1) as f32 * (lead_minutes / 15) as f32)
+            .collect()
+    }
+
+    /// U10 as the wrfout import stores it, an instant (V10 is zero, so the
+    /// speed is U10).  Strongest at +0:30, so a fold that misses the first
+    /// hour reads low, and uneven inside every hour, so a fold that misses
+    /// one frame of an hour does too.
+    fn quarter_hour_u10(lead_minutes: u64) -> Vec<f32> {
+        let gust = match lead_minutes {
+            0 => 1.0,
+            15 => 4.0,
+            30 => 9.0,
+            45 => 2.0,
+            60 => 3.0,
+            75 => 5.0,
+            90 => 1.0,
+            105 => 6.0,
+            120 => 2.0,
+            180 => 7.0,
+            other => panic!("no 10 m wind at +{other} min"),
+        };
+        (0..CELLS).map(|cell| cell as f32 + gust).collect()
+    }
+
+    /// One wrfout-lane frame on the exact-time axis: a sub-hourly history
+    /// forces it, and each ordinal slot carries its own lead.
+    fn write_exact_frame(store_root: &Path, run: &str, slot: u16, lead_minutes: u64) {
         let temp = field(
             FieldSelector::height_agl(CanonicalField::Temperature, 2),
             "K",
             temp_k_plane(0),
         );
+        let apcp = field(
+            FieldSelector::surface(CanonicalField::TotalPrecipitation),
+            "kg/m^2",
+            quarter_hour_run_total(lead_minutes),
+        );
+        let uh = field(
+            FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000),
+            "m2/s2",
+            interval_uh_plane(lead_minutes),
+        );
+        let u10 = field(
+            FieldSelector::height_agl(CanonicalField::UWind, 10),
+            "m/s",
+            quarter_hour_u10(lead_minutes),
+        );
+        let v10 = field(
+            FieldSelector::height_agl(CanonicalField::VWind, 10),
+            "m/s",
+            vec![0.0; CELLS],
+        );
+        let lead = lead_minutes * 60;
         write_hour_from_fields_with_derived_exact(
-            &dir,
+            store_root,
             "hrrr",
             run,
-            0,
-            RwsExactTime::new(31_680, 134_000_000),
-            &[("temperature_2m", &temp)],
+            slot,
+            RwsExactTime::new(lead, EXACT_ORIGIN_UNIX + lead as i64),
+            &[
+                ("temperature_2m", &temp),
+                ("apcp", &apcp),
+                ("updraft_helicity_2to5km", &uh),
+                ("u_10m", &u10),
+                ("v_10m", &v10),
+            ],
             &[],
             &[],
             "windowed-store-test",
-            1_780_000_000,
+            1_780_000_000 + u64::from(slot),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn exact_time_runs_serve_windows_from_exact_leads() {
+        // A 15-minute history puts the store on the exact-time axis: slot 4
+        // is the frame at +1 h, not forecast hour 4.  The 1 h window ending
+        // there is served from the frames that bound and fill it.
+        let dir = test_dir("exact-time-windows");
+        let run = "quarter_hour";
+        let leads = [0u64, 15, 30, 45, 60];
+        for (slot, &lead) in leads.iter().enumerate() {
+            write_exact_frame(&dir, run, slot as u16, lead);
+        }
 
         let slots = stored_run_hours(&dir, "hrrr", run).unwrap();
-        assert_eq!(slots, vec![0], "ordinal slots must be listable");
+        assert_eq!(slots, vec![0, 1, 2, 3, 4], "ordinal slots must be listable");
 
-        let compute_error =
-            compute_windowed_products(&dir, "hrrr", run, &[0], &["qpf_1h".to_string()])
-                .unwrap_err()
-                .to_string();
-        assert!(compute_error.contains("exact-time ordinal axis"));
+        let outcome = compute(
+            &dir,
+            run,
+            &slots,
+            &["qpf_1h", "uh_2to5km_1h_max", "qpf_total", "qpf_6h"],
+        );
+        assert_eq!(outcome.anchor_hour, 1, "the anchor is +1 h, not slot 4");
+        assert!(windowed_axis_ready(&dir, "hrrr", run).unwrap());
+
+        // Accumulation: the run totals at the two bounding whole-hour
+        // frames, differenced.  2, 4, 6 and 8 mm.
+        let qpf_1h = grid_named(&outcome, "qpf_1h");
+        let expected: Vec<f64> = (0..CELLS)
+            .map(|cell| {
+                (f64::from(quarter_hour_run_total(60)[cell])
+                    - f64::from(quarter_hour_run_total(0)[cell]))
+                    / MM_PER_INCH
+            })
+            .collect();
+        assert_values(qpf_1h, &expected);
+        assert_eq!(qpf_1h.hours_used, vec![0, 1]);
+        assert_eq!(qpf_1h.window_hours, Some(1));
+
+        // Per-history-interval maxima: every frame whose interval lies
+        // inside (0, 1 h] is folded.  Not the 60-minute plane alone (the
+        // last quarter hour), and not the analysis frame, whose plane lies
+        // before the window.
+        let uh = grid_named(&outcome, "uh_2to5km_1h_max");
+        let expected: Vec<f64> = (0..CELLS)
+            .map(|cell| {
+                [15u64, 30, 45, 60]
+                    .iter()
+                    .map(|&lead| f64::from(interval_uh_plane(lead)[cell]))
+                    .fold(f64::NEG_INFINITY, f64::max)
+            })
+            .collect();
+        assert_eq!(expected, vec![10.0, 40.0, 30.0, 0.5]);
+        assert_values(uh, &expected);
+        let last_quarter: Vec<f64> = interval_uh_plane(60)
+            .iter()
+            .map(|&v| f64::from(v))
+            .collect();
+        assert_ne!(uh.values, last_quarter, "the last interval alone reads low");
+        assert!(
+            uh.strategy.contains("+000:15, +000:30, +000:45, +001:00"),
+            "every folded frame is named: {}",
+            uh.strategy
+        );
+        assert!(
+            !uh.strategy.contains("lower bound"),
+            "a fold of every interval max is exact: {}",
+            uh.strategy
+        );
+
+        // The run total at the anchor still reads whole.
+        let total = grid_named(&outcome, "qpf_total");
+        let expected: Vec<f64> = quarter_hour_run_total(60)
+            .iter()
+            .map(|&mm| f64::from(mm) / MM_PER_INCH)
+            .collect();
+        assert_values(total, &expected);
+        assert!(blocker_reason(&outcome, "qpf_6h").contains(">= 6"));
+
+        // A frame between whole hours closes no window, and says so.
+        let between = compute(&dir, run, &[0, 1, 2], &["qpf_1h", "uh_2to5km_1h_max"]);
+        for slug in ["qpf_1h", "uh_2to5km_1h_max"] {
+            let reason = blocker_reason(&between, slug);
+            assert!(
+                reason.contains("whole forecast hours") && reason.contains("+000:30"),
+                "{slug}: {reason}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The largest of `planes` cell by cell, as the fold takes it.
+    fn cellwise_max(planes: &[Vec<f64>]) -> Vec<f64> {
+        (0..CELLS)
+            .map(|cell| {
+                planes
+                    .iter()
+                    .map(|plane| plane[cell])
+                    .fold(f64::NEG_INFINITY, f64::max)
+            })
+            .collect()
+    }
+
+    fn uh_at(leads: &[u64]) -> Vec<f64> {
+        cellwise_max(
+            &leads
+                .iter()
+                .map(|&lead| interval_uh_plane(lead).iter().map(|&v| f64::from(v)).collect())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn wind_kt_at(leads: &[u64]) -> Vec<f64> {
+        cellwise_max(
+            &leads
+                .iter()
+                .map(|&lead| {
+                    quarter_hour_u10(lead)
+                        .iter()
+                        .map(|&u| f64::from(u).hypot(0.0))
+                        .collect()
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .map(|speed| speed * MS_TO_KT)
+        .collect()
+    }
+
+    #[test]
+    fn exact_time_interval_maxima_block_on_a_missing_frame() {
+        // The 30-minute frame was never stored: its interval max and its
+        // 10 m wind instant are gone, so a fold of the rest would read low,
+        // and the picture drawn from it is kept.  The wind is labelled a
+        // lower bound, but a lower bound of fewer frames than the run
+        // stored is still lower than the run's own.  The accumulation only
+        // needs the two bounding frames and still draws.
+        let dir = test_dir("exact-time-gap");
+        let run = "quarter_hour_gap";
+        for (slot, lead) in [(0u16, 0u64), (1, 15), (2, 45), (3, 60)] {
+            write_exact_frame(&dir, run, slot, lead);
+        }
+        let outcome = compute(
+            &dir,
+            run,
+            &[0, 1, 2, 3],
+            &["qpf_1h", "uh_2to5km_1h_max", "10m_wind_1h_max"],
+        );
+        for slug in ["uh_2to5km_1h_max", "10m_wind_1h_max"] {
+            let reason = blocker_reason(&outcome, slug);
+            assert!(
+                reason.contains("+000:15")
+                    && reason.contains("+000:45")
+                    && reason.contains("read low"),
+                "{slug}: {reason}"
+            );
+        }
+        assert!(outcome.grids.iter().any(|grid| grid.slug == "qpf_1h"));
+
+        // A window that starts with the run needs no frame at its start:
+        // no interval begins before the run, so the first stored frame's
+        // maximum is already inside it, and no instant of the run comes
+        // before it.  The rainfall difference still needs the run total
+        // at F000.
+        let dir2 = test_dir("exact-time-no-start");
+        for (slot, lead) in [(0u16, 15u64), (1, 30), (2, 45), (3, 60)] {
+            write_exact_frame(&dir2, run, slot, lead);
+        }
+        let outcome = compute(
+            &dir2,
+            run,
+            &[0, 1, 2, 3],
+            &["qpf_1h", "uh_2to5km_1h_max", "10m_wind_1h_max", "10m_wind_run_max"],
+        );
+        assert!(blocker_reason(&outcome, "qpf_1h").contains("F000"));
+        let uh = grid_named(&outcome, "uh_2to5km_1h_max");
+        assert_values(uh, &uh_at(&[15, 30, 45, 60]));
+        assert_eq!(uh.values, vec![10.0, 40.0, 30.0, 0.5]);
+        for slug in ["10m_wind_1h_max", "10m_wind_run_max"] {
+            let wind = grid_named(&outcome, slug);
+            assert_values(wind, &wind_kt_at(&[15, 30, 45, 60]));
+            assert!(wind.strategy.contains("lower bound"), "{slug}: {}", wind.strategy);
+        }
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn exact_time_maxima_drawn_beside_one_hour_close_only_that_hour() {
+        // What the live pass hands the engine at +2 h on a 15-minute grid:
+        // the frame on the hour and the hour it closes, +1:00 to +2:00.
+        // The 1 h maxima hold all of their window.  The run maxima would
+        // fold that hour alone and read low (the 10 m wind as much as the
+        // UH, labelled a lower bound or not), so both are refused by name
+        // and the whole series draws them.
+        let dir = test_dir("exact-time-one-hour");
+        let run = "quarter_hour_one_hour";
+        let leads = [0u64, 15, 30, 45, 60, 75, 90, 105, 120];
+        for (slot, &lead) in leads.iter().enumerate() {
+            write_exact_frame(&dir, run, slot as u16, lead);
+        }
+        let slugs = [
+            "uh_2to5km_1h_max",
+            "uh_2to5km_run_max",
+            "10m_wind_1h_max",
+            "10m_wind_run_max",
+            "qpf_1h",
+        ];
+        let outcome = compute(&dir, run, &[4, 5, 6, 7, 8], &slugs);
+        assert_eq!(outcome.anchor_hour, 2);
+        assert_values(grid_named(&outcome, "uh_2to5km_1h_max"), &uh_at(&[75, 90, 105, 120]));
+        assert_values(grid_named(&outcome, "10m_wind_1h_max"), &wind_kt_at(&[75, 90, 105, 120]));
+        assert!(outcome.grids.iter().any(|grid| grid.slug == "qpf_1h"));
+        for slug in ["uh_2to5km_run_max", "10m_wind_run_max"] {
+            let reason = blocker_reason(&outcome, slug);
+            assert!(
+                reason.contains("unevenly") && reason.contains("read low"),
+                "{slug}: {reason}"
+            );
+        }
+
+        // The whole series draws them, over every frame of the run.
+        let outcome = compute(&dir, run, &(0..leads.len() as u16).collect::<Vec<_>>(), &slugs);
+        assert_values(grid_named(&outcome, "uh_2to5km_run_max"), &uh_at(&leads[1..]));
+        let wind = grid_named(&outcome, "10m_wind_run_max");
+        assert_values(wind, &wind_kt_at(&leads[1..]));
+        assert_ne!(
+            wind.values,
+            wind_kt_at(&[60, 75, 90, 105, 120]),
+            "the fixture tells the whole run from its last hour"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exact_time_instant_fold_needs_every_whole_hour() {
+        // A 90-minute history: evenly spaced, but no frame at +1 h or +2 h.
+        // Each UP_HELI_MAX plane covers its whole 90 minutes, so the UH run
+        // maximum is whole without them.  The 10 m wind holds two instants
+        // of three hours, where the whole-hour axis refuses a run missing
+        // an hour ("gaps are never skipped"), and is refused the same way.
+        let dir = test_dir("exact-time-ninety");
+        let run = "ninety_minute";
+        for (slot, lead) in [(0u16, 0u64), (1, 90), (2, 180)] {
+            write_exact_frame(&dir, run, slot, lead);
+        }
+        let outcome = compute(&dir, run, &[0, 1, 2], &["uh_2to5km_run_max", "10m_wind_run_max"]);
+        assert_eq!(outcome.anchor_hour, 3);
+        let uh = grid_named(&outcome, "uh_2to5km_run_max");
+        assert_values(uh, &uh_at(&[90, 180]));
+        let reason = blocker_reason(&outcome, "10m_wind_run_max");
+        assert!(
+            reason.contains("F001, F002") && reason.contains("gaps are never skipped"),
+            "{reason}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exact_time_interval_maxima_after_the_first_hour_need_the_frame_at_their_start() {
+        // The +1 h frame was never stored.  The frames inside the hour to
+        // +2 h are still evenly spaced from its start, so only the missing
+        // start frame shows that the interval ending at +1:15 is not the
+        // hour's first: it is the one that began at +1 h, but nothing
+        // proves it.  The 10 m wind asks the same of its instants: with
+        // the start frame missing, a store holding only the last frames
+        // of the hour looks whole.
+        let dir = test_dir("exact-time-no-hour-start");
+        let run = "quarter_hour_no_hour_start";
+        let leads = [0u64, 15, 30, 45, 75, 90, 105, 120];
+        for (slot, &lead) in leads.iter().enumerate() {
+            write_exact_frame(&dir, run, slot as u16, lead);
+        }
+        let slots: Vec<u16> = (0..leads.len() as u16).collect();
+        let outcome = compute(
+            &dir,
+            run,
+            &slots,
+            &[
+                "uh_2to5km_1h_max",
+                "uh_2to5km_run_max",
+                "10m_wind_1h_max",
+                "10m_wind_run_max",
+                "qpf_total",
+            ],
+        );
+        for slug in ["uh_2to5km_1h_max", "10m_wind_1h_max"] {
+            let reason = blocker_reason(&outcome, slug);
+            assert!(
+                reason.contains("F001") && reason.contains("start"),
+                "{slug}: the missing start frame is named: {reason}"
+            );
+        }
+        for slug in ["uh_2to5km_run_max", "10m_wind_run_max"] {
+            let reason = blocker_reason(&outcome, slug);
+            assert!(reason.contains("unevenly"), "{slug}: {reason}");
+        }
+        assert!(outcome.grids.iter().any(|grid| grid.slug == "qpf_total"));
+
+        // The same hour's last frame alone: one frame inside the window,
+        // which no spacing check can see past.
+        let outcome = compute(&dir, run, &[7], &["10m_wind_1h_max", "uh_2to5km_1h_max"]);
+        for slug in ["10m_wind_1h_max", "uh_2to5km_1h_max"] {
+            let reason = blocker_reason(&outcome, slug);
+            assert!(reason.contains("F001") && reason.contains("start"), "{slug}: {reason}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_thinned_exact_time_series_says_its_maximum_is_exact_only_when_whole() {
+        // Every other file of a 15-minute history: the spacing is even, so
+        // nothing in the store shows that the 15- and 45-minute intervals
+        // are missing.  The fold reads low, and its note says when it is
+        // exact rather than claiming the window.
+        let dir = test_dir("exact-time-thinned");
+        let run = "quarter_hour_thinned";
+        for (slot, lead) in [(0u16, 0u64), (1, 30), (2, 60)] {
+            write_exact_frame(&dir, run, slot, lead);
+        }
+        let outcome = compute(&dir, run, &[0, 1, 2], &["uh_2to5km_1h_max"]);
+        let uh = grid_named(&outcome, "uh_2to5km_1h_max");
+        assert_values(uh, &uh_at(&[30, 60]));
+        assert_ne!(uh.values, uh_at(&[15, 30, 45, 60]), "the thinned fold reads low");
+        assert!(
+            uh.strategy.contains("when every history frame of the run was rendered")
+                && uh.strategy.contains("thinned"),
+            "{}",
+            uh.strategy
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

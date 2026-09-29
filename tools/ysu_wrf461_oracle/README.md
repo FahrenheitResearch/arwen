@@ -90,7 +90,7 @@ ULP -- i.e. it is not the problem, but it is not free either.
 
 `kpbl == kte` with cloud at `kpbl-1`. WRF would read `thlix(i,k+2)` with
 `k+2 == kte+1` (`bl_ysu.F90:846`), one past the end of an array declared
-`kts:kte`. `ysu.cu:252` guards it with `kpbl < nz` and skips the block, which
+`kts:kte`. `ysu.cu:390` guards it with `kpbl < nz` and skips the block, which
 is the defined behaviour; a fixture row there would carry whatever WRF's stack
 held, so there is none. The divergence is recorded in the registry warning
 instead.

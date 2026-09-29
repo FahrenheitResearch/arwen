@@ -63,7 +63,7 @@ def _plot_terrain(path: Path, before, after, label: str) -> None:
     panels = (
         (before, "30-arc-second baseline terrain (m)", "terrain",
          dict(vmin=vmin, vmax=vmax)),
-        (after, "3DEP 1/3 arc-second terrain (m)", "terrain",
+        (after, "high-resolution terrain (m)", "terrain",
          dict(vmin=vmin, vmax=vmax)),
         (delta, "highres - baseline (m)", "coolwarm",
          dict(vmin=-span, vmax=span)),
@@ -92,7 +92,7 @@ def _plot_landuse(path: Path, before, after, label: str) -> None:
                              constrained_layout=True)
     panels = (
         (before, "30s MODIS-21 land use (LU_INDEX)"),
-        (after, "Annual NLCD -> MODIS-21 land use"),
+        (after, "high-resolution land use (LU_INDEX)"),
     )
     for axis, (values, title) in zip(axes, panels):
         image = axis.imshow(values, origin="lower", cmap=cmap, norm=norm)
@@ -183,9 +183,11 @@ def main() -> None:
             "soil_top": _category_changes(baseline["SCT_DOM"],
                                           candidate["SCT_DOM"]),
             "cells_replaced": receipt["cells_replaced"],
-            "three_dep_tiles": len(receipt["fetch"]["three_dep_tiles"]),
+            "terrain_source": receipt["terrain_source"]["source_id"],
+            "terrain_tiles": len(receipt["fetch"]["terrain_tiles"]),
             "bytes_fetched": receipt["fetch"]["bytes_fetched"],
-            "nlcd_year": receipt["fetch"]["nlcd_year"],
+            "landcover": receipt["landcover"]["source_id"],
+            "landcover_year": receipt["fetch"]["landcover_year"],
             "timing_seconds": {"baseline_30s": baseline_seconds,
                                "highres": highres_seconds},
             "receipt": str(receipt_copy),

@@ -1,0 +1,913 @@
+{
+ "schema": "gpuwm.wiki.v1",
+ "origin": "recipes",
+ "built": "2026-09-25",
+ "sources": {
+  "rule-recipe-best-tornado": {
+   "kind": "rule",
+   "title": "Best simulation of a tornado's parent storm for each card size",
+   "method": "Start at the 00, 06, 12 or 18 UTC analysis at least 6 hours before the tornado, so storms form in the model from the morning environment, and run until 3 hours after it ends, at least 12 hours. Put a 1 km grid over the tornado path and 120 km back along it, where the parent storm forms, with a margin of 250, 200, 150, 110, 80 or 60 km, inside a 3 km grid that reaches 400 to 180 km beyond it. From HRRR, itself a 3 km analysis, the 3 km grid is the outer one. From ERA5 (about 31 km), a 12 km grid reaching 500 km beyond the 3 km one carries the large-scale flow, so the 3 km grid is not driven straight from 31 km boundaries; every row checks at least 400 km on the fitted grids. When no 1 km grid fits, the 3 km grid runs alone (inside the 12 km one for ERA5), 1100, 800 or 650 km wide, then a single 4 km grid. Each card takes the first rung the engine fits on it with at least 5% of its memory to spare and whose download, preparation, history, kept checkpoint and pictures fit the card's disk budget (40, 50, 60, 80 and 100 GiB for 8 to 32 GB) with the nests writing every 15, 20 or 30 minutes.",
+   "code": "tools/wiki_seed/design_recipes.py: tornado_plan",
+   "retrieved": "2026-09-25"
+  },
+  "computed-fit-tornado-1972-114-8gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 8 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 8 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-1972-114"
+   ],
+   "result": "12 km 132 by 132 points (1572 by 1572 km); 3 km 192 by 192 points (573 by 573 km); 1 km 204 by 204 points (203 by 203 km); 49 levels; priced at 5.5 GiB of a 6.75 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "computed-fit-tornado-1972-114-12gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 12 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 12 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-1972-114"
+   ],
+   "result": "12 km 154 by 154 points (1836 by 1836 km); 3 km 280 by 280 points (837 by 837 km); 1 km 330 by 324 points (329 by 323 km); 49 levels; priced at 8.97 GiB of a 10.75 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "computed-fit-tornado-1972-114-16gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 16 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 16 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-1972-114"
+   ],
+   "result": "12 km 170 by 170 points (2028 by 2028 km); 3 km 336 by 336 points (1005 by 1005 km); 1 km 414 by 408 points (413 by 407 km); 49 levels; priced at 12.02 GiB of a 14.54 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "computed-fit-tornado-1972-114-24gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 24 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 24 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-1972-114"
+   ],
+   "result": "12 km 186 by 184 points (2220 by 2196 km); 3 km 400 by 400 points (1197 by 1197 km); 1 km 498 by 486 points (497 by 485 km); 49 levels; priced at 15.69 GiB of a 22.06 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "computed-fit-tornado-1972-114-32gb": {
+   "kind": "computed",
+   "title": "Engine fit of the 32 GB recipe",
+   "method": "gpuwm run-plan --resolve on a plan whose config.intent is this recipe's intent with the box as its polygon, sized for a declared 32 GB card, no GPU used",
+   "code": "gpuwm/runplan.py: resolve",
+   "inputs": [
+    "rule-recipe-best-tornado",
+    "spc-1972-114"
+   ],
+   "result": "12 km 206 by 204 points (2460 by 2436 km); 3 km 480 by 472 points (1437 by 1413 km); 1 km 624 by 612 points (623 by 611 km); 49 levels; priced at 22.33 GiB of a 29.58 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+  },
+  "rule-recipe-time-estimate": {
+   "kind": "rule",
+   "id": "rule-recipe-time-estimate",
+   "title": "Run time of a recipe that has not been run",
+   "method": "A forecast's time grows with its grid points and its time steps: each grid's points (east by north by levels) divided by its spacing in km, summed over the grids, times the hours. The measured runs give the seconds per unit of that for each kind of storm, on the card they ran on; a recipe that has not run gets that rate times its own grids and hours. The time to all pictures adds the download and preparation and the pictures. The download is this layout's own, as the engine prices it, over the throughput measured on real downloads of the same source; the preparation is at the rate measured on real preparations of the same kind, per byte downloaded for HRRR, whose preparation decodes every file it downloads, and per grid cell and forcing time for ERA5; the pictures are the measured seconds per picture frame per grid point times this layout's frames (each grid's history files) and points.",
+   "code": "tools/wiki_seed/estimate_times.py",
+   "inputs": [
+    "computed-run-tc-2019063s18038-16gb",
+    "computed-run-tornado-1999-466-16gb",
+    "computed-run-tornado-2023-2303241857-01-16gb"
+   ],
+   "retrieved": "2026-09-25"
+  }
+ },
+ "recipes": [
+  {
+   "event": "tornado-1972-114",
+   "title": "F3 tornado, Lincoln County, Washington, 5 April 1972",
+   "type": "tornado",
+   "key_hours": {
+    "start": "1972-04-06T01:30Z",
+    "end": "1972-04-06T01:30Z",
+    "text": "The tornado's own hours in the SPC table."
+   },
+   "ideal": {
+    "rung": "nest-12-3-1-600x600",
+    "finest_km": 1.0,
+    "text": "A 600 by 600 km grid at 1 km holds the tornado's point and the ground around it where the parent storm forms, so the supercell and its mesocyclone are resolved at 1972-04-06 01:30 UTC; the 3 km grid around it reaches 400 km further out for the inflow and the boundaries the storm feeds on. A 12 km grid reaching 500 km beyond the 3 km grid carries the large-scale flow from the 31 km reanalysis."
+   },
+   "disk_budget_gib": {
+    "8": 40,
+    "12": 50,
+    "16": 60,
+    "24": 80,
+    "32": 100
+   },
+   "start": "1972-04-05T18:00Z",
+   "length_h": 12,
+   "source": "era5",
+   "cards": [
+    {
+     "card_gb": 8,
+     "rung": "nest-12-3-1-200x200",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 132,
+       "ny": 132,
+       "nz": 49,
+       "width_km": 1572.0,
+       "height_km": 1572.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 192,
+       "ny": 192,
+       "nz": 49,
+       "width_km": 573.0,
+       "height_km": 573.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 204,
+       "ny": 204,
+       "nz": 49,
+       "width_km": 203.0,
+       "height_km": 203.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      }
+     ],
+     "start": "1972-04-05T18:00Z",
+     "length_h": 12,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice."
+     },
+     "fitted_grid": "12 km 132 by 132 points (1572 by 1572 km); 3 km 192 by 192 points (573 by 573 km); 1 km 204 by 204 points (203 by 203 km); 49 levels",
+     "memory": {
+      "need_gib": 5.5,
+      "budget_gib": 6.75
+     },
+     "disk_gib": 26.1,
+     "disk_budget_gib": 40,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 900,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.1 GiB of ERA5 files for 3 forcing times; the preparation, 0.0 GiB; the history files, 17.4 GiB, written every hour on the outer grid and every 15 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 1.7 GiB; the rendered pictures, 6.9 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
+     "download": {
+      "bytes": 65981250,
+      "transfer_bytes": 1653000000,
+      "objects": 3,
+      "leads": 3,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 17857325,
+      "chain": "experiment"
+     },
+     "est_minutes": 10,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.1 GB of ERA5 files, about 2 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 0 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 5 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 200 by 200 km grid at 1 km holds the tornado's point and the ground around it where the parent storm forms, so the supercell and its mesocyclone are resolved at 1972-04-06 01:30 UTC; the 3 km grid around it reaches 180 km further out for the inflow and the boundaries the storm feeds on. A 12 km grid reaching 500 km beyond the 3 km grid carries the large-scale flow from the 31 km reanalysis.",
+     "what_is_given_up": "The 1 km grid is 200 by 200 km instead of 600 by 600 km and the 3 km grid reaches 180 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid.",
+     "finest_km": 1.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 495
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 184
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "680,180,0",
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "era5_provider": "arco",
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 900,
+      "card": "8gb"
+     },
+     "box": {
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 200,
+      "height_km": 200
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "card": "8gb",
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 200,
+      "height_km": 200,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "680,180,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tornado-1972-114-8gb",
+      "rule-recipe-best-tornado",
+      "spc-1972-114",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-12-3-1-600x600",
+       "need_gib": 22.33,
+       "reason": "needs 22.33 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-480x480",
+       "need_gib": 15.69,
+       "reason": "needs 15.69 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-400x400",
+       "need_gib": 12.02,
+       "reason": "needs 12.02 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-320x320",
+       "need_gib": 8.97,
+       "reason": "needs 8.97 GiB; this card's budget is 6.75 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-240x240",
+       "need_gib": 6.61,
+       "reason": "priced at 6.61 GiB of a 6.75 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 15
+    },
+    {
+     "card_gb": 12,
+     "rung": "nest-12-3-1-320x320",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 154,
+       "ny": 154,
+       "nz": 49,
+       "width_km": 1836.0,
+       "height_km": 1836.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 280,
+       "ny": 280,
+       "nz": 49,
+       "width_km": 837.0,
+       "height_km": 837.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 330,
+       "ny": 324,
+       "nz": 49,
+       "width_km": 329.0,
+       "height_km": 323.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      }
+     ],
+     "start": "1972-04-05T18:00Z",
+     "length_h": 12,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice."
+     },
+     "fitted_grid": "12 km 154 by 154 points (1836 by 1836 km); 3 km 280 by 280 points (837 by 837 km); 1 km 330 by 324 points (329 by 323 km); 49 levels",
+     "memory": {
+      "need_gib": 8.97,
+      "budget_gib": 10.75
+     },
+     "disk_gib": 39.8,
+     "disk_budget_gib": 50,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.1 GiB of ERA5 files for 3 forcing times; the preparation, 0.0 GiB; the history files, 30.6 GiB, written every hour on the outer grid and every 20 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 3.7 GiB; the rendered pictures, 5.4 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
+     "download": {
+      "bytes": 87783750,
+      "transfer_bytes": 1653000000,
+      "objects": 3,
+      "leads": 3,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 38922503,
+      "chain": "experiment"
+     },
+     "est_minutes": 25,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.1 GB of ERA5 files, about 2 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 1 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 8 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 320 by 320 km grid at 1 km holds the tornado's point and the ground around it where the parent storm forms, so the supercell and its mesocyclone are resolved at 1972-04-06 01:30 UTC; the 3 km grid around it reaches 250 km further out for the inflow and the boundaries the storm feeds on. A 12 km grid reaching 500 km beyond the 3 km grid carries the large-scale flow from the 31 km reanalysis.",
+     "what_is_given_up": "The 1 km grid is 320 by 320 km instead of 600 by 600 km and the 3 km grid reaches 250 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 20 minutes instead of every 15 minutes, to keep the run within this card's 50 GiB disk budget.",
+     "finest_km": 1.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 495
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 253
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "750,250,0",
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "era5_provider": "arco",
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1200,
+      "card": "12gb"
+     },
+     "box": {
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 320,
+      "height_km": 320
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "card": "12gb",
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 320,
+      "height_km": 320,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "750,250,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tornado-1972-114-12gb",
+      "rule-recipe-best-tornado",
+      "spc-1972-114",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-12-3-1-600x600",
+       "need_gib": 22.33,
+       "reason": "needs 22.33 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-480x480",
+       "need_gib": 15.69,
+       "reason": "needs 15.69 GiB; this card's budget is 10.75 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-400x400",
+       "need_gib": 12.02,
+       "reason": "needs 12.02 GiB; this card's budget is 10.75 GiB"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 35
+    },
+    {
+     "card_gb": 16,
+     "rung": "nest-12-3-1-400x400",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 170,
+       "ny": 170,
+       "nz": 49,
+       "width_km": 2028.0,
+       "height_km": 2028.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 336,
+       "ny": 336,
+       "nz": 49,
+       "width_km": 1005.0,
+       "height_km": 1005.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 414,
+       "ny": 408,
+       "nz": 49,
+       "width_km": 413.0,
+       "height_km": 407.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      }
+     ],
+     "start": "1972-04-05T18:00Z",
+     "length_h": 12,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice."
+     },
+     "fitted_grid": "12 km 170 by 170 points (2028 by 2028 km); 3 km 336 by 336 points (1005 by 1005 km); 1 km 414 by 408 points (413 by 407 km); 49 levels",
+     "memory": {
+      "need_gib": 12.02,
+      "budget_gib": 14.54
+     },
+     "disk_gib": 41.3,
+     "disk_budget_gib": 60,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1800,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.1 GiB of ERA5 files for 3 forcing times; the preparation, 0.1 GiB; the history files, 31.7 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 5.5 GiB; the rendered pictures, 4.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "download": {
+      "bytes": 106006050,
+      "transfer_bytes": 1653000000,
+      "objects": 3,
+      "leads": 3,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 57853830,
+      "chain": "experiment"
+     },
+     "est_minutes": 35,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.1 GB of ERA5 files, about 2 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 1 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 9 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 400 by 400 km grid at 1 km holds the tornado's point and the ground around it where the parent storm forms, so the supercell and its mesocyclone are resolved at 1972-04-06 01:30 UTC; the 3 km grid around it reaches 300 km further out for the inflow and the boundaries the storm feeds on. A 12 km grid reaching 510 km beyond the 3 km grid carries the large-scale flow from the 31 km reanalysis.",
+     "what_is_given_up": "The 1 km grid is 400 by 400 km instead of 600 by 600 km and the 3 km grid reaches 300 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 30 minutes instead of every 15 minutes, to keep the run within this card's 60 GiB disk budget.",
+     "finest_km": 1.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 507
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 295
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "800,300,0",
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "era5_provider": "arco",
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1800,
+      "card": "16gb"
+     },
+     "box": {
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 400,
+      "height_km": 400
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "card": "16gb",
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 400,
+      "height_km": 400,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "800,300,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tornado-1972-114-16gb",
+      "rule-recipe-best-tornado",
+      "spc-1972-114",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-12-3-1-600x600",
+       "need_gib": 22.33,
+       "reason": "needs 22.33 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "nest-12-3-1-480x480",
+       "need_gib": 15.69,
+       "reason": "needs 15.69 GiB; this card's budget is 14.54 GiB"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 45
+    },
+    {
+     "card_gb": 24,
+     "rung": "nest-12-3-1-480x480",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 186,
+       "ny": 184,
+       "nz": 49,
+       "width_km": 2220.0,
+       "height_km": 2196.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 400,
+       "ny": 400,
+       "nz": 49,
+       "width_km": 1197.0,
+       "height_km": 1197.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 498,
+       "ny": 486,
+       "nz": 49,
+       "width_km": 497.0,
+       "height_km": 485.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      }
+     ],
+     "start": "1972-04-05T18:00Z",
+     "length_h": 12,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice."
+     },
+     "fitted_grid": "12 km 186 by 184 points (2220 by 2196 km); 3 km 400 by 400 points (1197 by 1197 km); 1 km 498 by 486 points (497 by 485 km); 49 levels",
+     "memory": {
+      "need_gib": 15.69,
+      "budget_gib": 22.06
+     },
+     "disk_gib": 56.7,
+     "disk_budget_gib": 80,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1800,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.1 GiB of ERA5 files for 3 forcing times; the preparation, 0.1 GiB; the history files, 44.8 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 7.7 GiB; the rendered pictures, 4.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "download": {
+      "bytes": 124695000,
+      "transfer_bytes": 1653000000,
+      "objects": 3,
+      "leads": 3,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 81230122,
+      "chain": "experiment"
+     },
+     "est_minutes": 50,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.1 GB of ERA5 files, about 2 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 2 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 12 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 480 by 480 km grid at 1 km holds the tornado's point and the ground around it where the parent storm forms, so the supercell and its mesocyclone are resolved at 1972-04-06 01:30 UTC; the 3 km grid around it reaches 350 km further out for the inflow and the boundaries the storm feeds on. A 12 km grid reaching 500 km beyond the 3 km grid carries the large-scale flow from the 31 km reanalysis.",
+     "what_is_given_up": "The 1 km grid is 480 by 480 km instead of 600 by 600 km and the 3 km grid reaches 350 km beyond it instead of 400 km, so a simulated storm that forms further from the real one can leave the 1 km grid; the nests write every 30 minutes instead of every 15 minutes, to keep the run within this card's 80 GiB disk budget.",
+     "finest_km": 1.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 495
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 349
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "850,350,0",
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "era5_provider": "arco",
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1800,
+      "card": "24gb"
+     },
+     "box": {
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 480,
+      "height_km": 480
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "card": "24gb",
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 480,
+      "height_km": 480,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "850,350,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tornado-1972-114-24gb",
+      "rule-recipe-best-tornado",
+      "spc-1972-114",
+      "rule-recipe-time-estimate"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "nest-12-3-1-600x600",
+       "need_gib": 22.33,
+       "reason": "needs 22.33 GiB; this card's budget is 22.06 GiB"
+      }
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 65
+    },
+    {
+     "card_gb": 32,
+     "rung": "nest-12-3-1-600x600",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 206,
+       "ny": 204,
+       "nz": 49,
+       "width_km": 2460.0,
+       "height_km": 2436.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 480,
+       "ny": 472,
+       "nz": 49,
+       "width_km": 1437.0,
+       "height_km": 1413.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "dx_km": 1.0,
+       "nx": 624,
+       "ny": 612,
+       "nz": 49,
+       "width_km": 623.0,
+       "height_km": 611.0,
+       "parent_grid_ratio": 3,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 47.76,
+        "lon": -118.5
+       }
+      }
+     ],
+     "start": "1972-04-05T18:00Z",
+     "length_h": 12,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice."
+     },
+     "fitted_grid": "12 km 206 by 204 points (2460 by 2436 km); 3 km 480 by 472 points (1437 by 1413 km); 1 km 624 by 612 points (623 by 611 km); 49 levels",
+     "memory": {
+      "need_gib": 22.33,
+      "budget_gib": 29.58
+     },
+     "disk_gib": 82.9,
+     "disk_budget_gib": 100,
+     "output": {
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1800,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.1 GiB of ERA5 files for 3 forcing times; the preparation, 0.1 GiB; the history files, 67.2 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 11.5 GiB; the rendered pictures, 4.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
+     "download": {
+      "bytes": 152594550,
+      "transfer_bytes": 1653000000,
+      "objects": 3,
+      "leads": 3,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 121117886,
+      "chain": "experiment"
+     },
+     "est_minutes": 75,
+     "est_basis": "estimated from the speed of 2 measured runs of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.2 GB of ERA5 files, about 2 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 3 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 18 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "why": "A 600 by 600 km grid at 1 km holds the tornado's point and the ground around it where the parent storm forms, so the supercell and its mesocyclone are resolved at 1972-04-06 01:30 UTC; the 3 km grid around it reaches 400 km further out for the inflow and the boundaries the storm feeds on. A 12 km grid reaching 510 km beyond the 3 km grid carries the large-scale flow from the 31 km reanalysis.",
+     "what_is_given_up": "The nests write every 30 minutes instead of every 15 minutes, to keep the run within this card's 100 GiB disk budget; the layout itself is the ideal one.",
+     "finest_km": 1.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 507
+      },
+      {
+       "grid_id": 3,
+       "parent_id": 2,
+       "km": 400
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4,3",
+      "buffer_km": "900,400,0",
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "era5_provider": "arco",
+      "history_interval_s": 3600,
+      "nest_history_interval_s": 1800,
+      "card": "32gb"
+     },
+     "box": {
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 600,
+      "height_km": 600
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "1972-04-05T18",
+      "hours": 12,
+      "card": "32gb",
+      "lat": 47.76,
+      "lon": -118.5,
+      "width_km": 600,
+      "height_km": 600,
+      "dx_km": 12.0,
+      "chain": "4,3",
+      "buffer_km": "900,400,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tornado-1972-114-32gb",
+      "rule-recipe-best-tornado",
+      "spc-1972-114",
+      "rule-recipe-time-estimate"
+     ],
+     "est_kind": "estimated",
+     "est_total_minutes": 100
+    }
+   ],
+   "cite": [
+    "rule-recipe-best-tornado",
+    "spc-1972-114"
+   ]
+  }
+ ]
+}

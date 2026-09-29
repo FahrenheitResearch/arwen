@@ -142,10 +142,14 @@ the model and the card agree to about 3%.
 Separate from concurrency, and a serial win: the per-step pool trim
 costs 0.87 s of a 5.0 s leg (4.99 -> 4.12 s) and is documented
 byte-inert -- `free_all_blocks` releases only unused cached blocks. It
-stays **on** by default, because it was added for a measured reason on a
-different shape (4-domain real74, where pool churn drove WDDM page
-demotion and cost 32% wall time). This single-domain route does not have
-that problem, but the default is not this route's to change.
+is **on by default on Windows**: the 2026-07-17 five-simulated-minute
+four-domain A/B found that pool churn drove WDDM page demotion and that
+trimming cut wall time by 32%. It held the pool at 21.5-23.4 GiB.
+On Linux and other platforms the executor retains the pool by default,
+because another process can claim released blocks before the next step.
+The run receipt records the resolved platform rule and its reason.
+Explicit allocator diagnostic overrides remain available through the
+executor's existing `pool_trim_per_period` argument.
 
 ## Adoption by the nowcast front door
 

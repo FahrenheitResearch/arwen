@@ -183,7 +183,7 @@ it.
 
 ## The daemon rides it, and HRRR is the default
 
-**Drew ruling, 2026-08-06: HRRR is the WaH background, default and
+**Project ruling, 2026-08-06: HRRR is the WaH background, default and
 permanent. GFS is retained only for archival reproduction of pre-HRRR
 runs.** `tools/da_nowcast.py run` and the `tools/da_nowcast_auto.py`
 daemon both default `--source hrrr` and say so in their own `--help`.

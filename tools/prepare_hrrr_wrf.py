@@ -17,6 +17,7 @@ import sys
 import time
 
 from gpuwm import explain
+from gpuwm.progress import prep_stage
 from gpuwm.physics_compat import (
     route_physics_profiles,
     KESSLER_PROFILE_ID,
@@ -103,13 +104,17 @@ def _write_json_create(path: Path, value) -> None:
 
 
 def _link_file_create(source: Path, destination: Path) -> None:
+    """Place ``source`` at a new ``destination``: a hard link, else a verified copy.
+
+    On a drive with no hard links (exFAT), or across two drives, the file
+    is copied and proven byte-identical instead, after a check that the
+    copy fits; the copy costs its size in disk and the run says so once.
+    This used to refuse, citing only that cost.
+    """
+    from gpuwm.filesystem_paths import link_or_copy_verified
+
     destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(source, destination)
-    except OSError as exc:
-        raise RuntimeError(
-            "sealed HRRR extension requires same-filesystem hard-link reuse; "
-            "refusing a quadratic copy") from exc
+    link_or_copy_verified(source, destination)
 
 
 def _manifest_entries(path: Path) -> dict[str, str]:
@@ -326,7 +331,9 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
         ],
     }
 
-from gpuwm.ingest.microphysics_cold_start import cold_start_contract
+from gpuwm.ingest.microphysics_cold_start import (
+    cold_start_contract, cold_start_seeded_numbers,
+)
 from gpuwm.physics_compat import single_domain_runtime_switches
 
 #: The cold-start contract for every profile the NATIVE route offers.
@@ -787,8 +794,35 @@ def _validated_worker_receipts(
                 != requested_preprocess_workers):
             raise RuntimeError(
                 "HRRR CPU preprocessing budget differs from the request")
-    elif preprocess_worker_budget.get("peak_active_native_workers") != 0:
-        raise RuntimeError("CUDA preprocessing reported native CPU workers")
+    else:
+        # The CUDA backend runs the masked surface fields on the host, in
+        # the Rust library, on --preprocess-workers threads (every CPU the
+        # process may use when none was given): the receipt names that
+        # request and the budget the count they ran on.
+        masked_chain = preprocess_receipt.get("masked_surface_chain")
+        masked_workers = (masked_chain.get("workers")
+                          if isinstance(masked_chain, dict) else None)
+        host_workers = preprocess_worker_budget.get(
+            "host_step_native_workers")
+        if (isinstance(host_workers, bool)
+                or not isinstance(host_workers, int)
+                or host_workers < 1
+                or preprocess_worker_budget.get(
+                    "peak_active_native_workers") != host_workers):
+            raise RuntimeError(
+                "HRRR CUDA preprocessing host-step worker budget is malformed")
+        expected_masked_workers = (
+            "auto" if requested_preprocess_workers is None
+            else requested_preprocess_workers)
+        if (masked_workers != expected_masked_workers
+                or preprocess_worker_budget.get(
+                    "requested_total_native_workers")
+                != requested_preprocess_workers
+                or (requested_preprocess_workers is not None
+                    and host_workers != requested_preprocess_workers)):
+            raise RuntimeError(
+                "HRRR CUDA preparation host-step worker receipt differs "
+                "from the request")
     selected_pipeline_workers = (
         pipeline_worker_receipt.get("selected")
         if isinstance(pipeline_worker_receipt, dict) else None)
@@ -1010,9 +1044,45 @@ def _validated_physics_receipt(
         raise RuntimeError(
             "HRRR preparation omitted deterministic cold-start evidence")
     _validated_retention_evidence(initialization)
+    # The Thompson numbers carry real.exe's seed rule, not exact
+    # everywhere (A99, A110): the producer proves the allocation value
+    # where the paired mass is zero and a finite seeded number above zero,
+    # counted against the closure's seed receipt, where it is not.
+    seeded_numbers = cold_start_seeded_numbers(selection)
     for name, (expected_float32, expected_uint32_bits) \
             in expected_state_fields.items():
         observed = initialization["state_source_absent_fields"][name]
+        if name in seeded_numbers:
+            mass_name, seed_key = seeded_numbers[name]
+            seeded_cells = (observed.get("seeded_cells")
+                            if isinstance(observed, dict) else None)
+            if (not isinstance(observed, dict)
+                    or set(observed) != {
+                        "expected_float32", "expected_uint32_bits",
+                        "all_exact_expected_where_mass_is_zero",
+                        "paired_mass_field", "seed_receipt",
+                        "seeded_cells", "seeded_all_finite_above_zero"}
+                    or isinstance(observed.get("expected_float32"), bool)
+                    or not isinstance(
+                        observed.get("expected_float32"), (int, float))
+                    or float(observed["expected_float32"])
+                    != expected_float32
+                    or isinstance(observed.get("expected_uint32_bits"), bool)
+                    or observed.get("expected_uint32_bits")
+                    != expected_uint32_bits
+                    or observed.get(
+                        "all_exact_expected_where_mass_is_zero") is not True
+                    or observed.get("seeded_all_finite_above_zero")
+                    is not True
+                    or observed.get("paired_mass_field") != mass_name
+                    or observed.get("seed_receipt") != seed_key
+                    or isinstance(seeded_cells, bool)
+                    or not isinstance(seeded_cells, int)
+                    or seeded_cells < 0):
+                raise RuntimeError(
+                    "HRRR preparation omitted deterministic cold-start "
+                    "evidence")
+            continue
         if (not isinstance(observed, dict)
                 or set(observed) != {
                     "expected_float32", "expected_uint32_bits",
@@ -1030,13 +1100,41 @@ def _validated_physics_receipt(
     return physics
 
 
+#: _sealed_extension's marker for "no resolved block was handed in".
+_UNRESOLVED = object()
+
+
+def _resolved_static_highres(experiment_tables, companion_source):
+    """The ``[static.highres]`` block this preparation binds.
+
+    Read from the root configuration :func:`resolve_root_experiment`
+    resolved, with the same call the benchmark makes on the same tables,
+    so the static build, a sealed extension and the benchmark's
+    ``require_prepared_highres`` all see one block.  A namelist-only
+    preparation has no configuration file to hand the static builder, and
+    a 1 km root that took the grid-spacing default used to be built on the
+    baseline and then refused by the benchmark.
+    """
+    from gpuwm.static.highres_production import resolve_static_highres
+    return resolve_static_highres(
+        experiment_tables, source=str(companion_source),
+        base_dir=Path(companion_source).parent)
+
+
 def _sealed_extension(args, *, valid_time: datetime,
                       source_forecast_hours, output: Path,
                       env: dict[str, str], decoder: Path,
                       started: float,
                       configured=None,
-                      namelist_invariant: dict[str, str]) -> int:
-    """Prepare only the shared terminal/new-hour slab and append it."""
+                      namelist_invariant: dict[str, str],
+                      static_highres=_UNRESOLVED) -> int:
+    """Prepare only the shared terminal/new-hour slab and append it.
+
+    ``static_highres`` is the block :func:`_resolved_static_highres`
+    returns for the root configuration, so a namelist-only extension
+    compares the grid-spacing default its preparation binds.  Left out, it
+    is read from ``--experiment-config`` alone.
+    """
     from gpuwm.ingest.prepared_cache import (
         PreparedCacheReader, extend_prepared_cache,
     )
@@ -1111,19 +1209,21 @@ def _sealed_extension(args, *, valid_time: datetime,
         raise ValueError("predecessor prepared cache is not prefix sealed")
     PreparedCacheReader(
         required_prior["cache"], expected_identity=prior_identity).verify_all()
-    if args.experiment_config is not None:
-        from gpuwm.static.highres_production import load_static_highres, static_highres_identity
-        requested_highres = load_static_highres(args.experiment_config)
-        previous_highres = prior_identity.get("source_identity", {}).get("static_highres")
-        requested_identity = static_highres_identity(requested_highres)
-        # A sealed extension appends forcing and keeps every existing static
-        # byte. It cannot change an active overlay under a new declaration.
-        previous_active = isinstance(previous_highres, dict) and previous_highres.get("enabled")
-        if (previous_active or (requested_highres is not None and requested_highres.enabled)) \
-                and previous_highres != requested_identity:
-            raise ValueError("sealed extension changes high-resolution statics while retaining "
-                             "the predecessor's static bytes; rebuild preparation for the "
-                             "changed geography settings")
+    from gpuwm.static.highres_production import (
+        load_static_highres, prepared_highres_settings_match)
+    requested_highres = (
+        load_static_highres(getattr(args, "experiment_config", None))
+        if static_highres is _UNRESOLVED else static_highres)
+    previous_highres = prior_identity.get("source_identity", {}).get("static_highres")
+    # A sealed extension appends forcing and keeps every existing static
+    # byte. It cannot change an active overlay under a new declaration,
+    # nor start one its predecessor was sealed without.
+    previous_active = isinstance(previous_highres, dict) and previous_highres.get("enabled")
+    if (previous_active or (requested_highres is not None and requested_highres.enabled)) \
+            and not prepared_highres_settings_match(previous_highres, requested_highres):
+        raise ValueError("sealed extension changes high-resolution statics while retaining "
+                         "the predecessor's static bytes; rebuild preparation for the "
+                         "changed geography settings")
     prior_namelist_invariant = prior_identity.get(
         "namelist_extension_invariant")
     if prior_namelist_invariant is None:
@@ -1450,7 +1550,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--prepare-workers", type=int)
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
-        default="cuda")
+        default="auto")
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     export = parser.add_mutually_exclusive_group()
@@ -1572,6 +1672,7 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     companion_source = args.experiment_config or args.namelist_input
     declared_case = optional_case_data_from_tables(
         experiment_tables, source=str(companion_source), base_dir=Path(companion_source).parent)
+    highres = _resolved_static_highres(experiment_tables, companion_source)
     require_native_pressure_field(native_pressure_policy(args.namelist_input, declared_case),
                                   bindings=supplement_bindings(args.supplement))
     _require_microphysics_tables(configured.root.run)
@@ -1579,9 +1680,6 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         raise ValueError("prepare-workers must be between 1 and 32")
     if args.preprocess_workers is not None and args.preprocess_workers < 1:
         raise ValueError("preprocess-workers must be positive")
-    if args.preprocess_backend == "cuda" and args.preprocess_workers is not None:
-        raise ValueError(
-            "preprocess-workers requires preprocess-backend cpu or auto")
     if (args.preprocess_backend != "cpu"
             and args.cpu_preprocess_bridge is not None):
         raise ValueError(
@@ -1637,80 +1735,95 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             args, valid_time=valid_time,
             source_forecast_hours=source_forecast_hours,
             output=output, env=env, decoder=decoder, started=started,
-            configured=configured, namelist_invariant=namelist_invariant)
+            configured=configured, namelist_invariant=namelist_invariant,
+            static_highres=highres)
     output.mkdir(parents=True)
 
-    from gpuwm.static.highres_production import load_static_highres
-    highres = load_static_highres(args.experiment_config)
-    static_arguments = ([] if args.experiment_config is None else [
-        "--experiment-config", str(args.experiment_config.resolve()),
-        "--case-date", model_start_time.date().isoformat()])
+    if args.experiment_config is not None:
+        static_arguments = [
+            "--experiment-config", str(args.experiment_config.resolve()),
+            "--case-date", model_start_time.date().isoformat()]
+    elif highres is not None:
+        # No configuration file to name: hand the builder the block the
+        # root configuration resolved, the one the benchmark checks the
+        # static receipt against.
+        static_arguments = [
+            "--static-highres",
+            json.dumps(experiment_tables["static"], sort_keys=True),
+            "--case-date", model_start_time.date().isoformat()]
+    else:
+        static_arguments = []
     static_domain_arguments = ([] if args.domain_spec is None else [
         "--domain-spec", str(args.domain_spec.resolve())])
     geometry_receipt = output / "native-geometry-receipt.json"
-    if args.geog_root is not None:
-        static_cache = output / "native-static.npz"
-        static_receipt = output / "native-static-receipt.json"
-        _run([
-            sys.executable, str(REPO / "tools" / "hrrr_build_native_static.py"),
-            "--geog-root", str(args.geog_root.resolve()),
-            *static_domain_arguments,
-            "--output", str(static_cache), "--receipt", str(static_receipt),
-            *static_arguments,
-        ], env)
-    else:
-        static_cache = args.static_cache.resolve()
-        static_receipt = args.static_receipt.resolve()
-        for path in (static_cache, static_receipt):
-            if not path.is_file():
-                raise FileNotFoundError(path)
-        # A prefix-sealed root is a self-contained predecessor authority.
-        # Extension cannot depend on the operator retaining two external
-        # paths which were not part of that root, and copying them once per
-        # hourly generation would defeat the hard-link-only storage contract.
-        # Publish the exact verified files under the same canonical names the
-        # geog-built route uses.  The same-filesystem refusal is intentional:
-        # every future generation links these bytes again.
-        #
-        # A PORTABLE bundle needs the same thing for a different reason:
-        # the forecast front door resolves the static cache relative to
-        # --prepared-root, and a root whose static geography lives on
-        # some other path the operator happened to pass is not a bundle
-        # anyone else can bind.  Same link, same canonical names, same
-        # bytes -- and a reused external static stays reused.
-        #
-        # Unconditional, because the portable bundle is published on
-        # every run now.  It used to be gated on the two flags that
-        # implied a portable product, which left the default --static-cache
-        # run publishing nothing: the bundle writer refuses a static cache
-        # outside the root ("is outside the bundle root"), so the one
-        # decision that made the authority publishable was taken only when
-        # someone had already asked for it by name.
-        sealed_static = output / "native-static.npz"
-        sealed_receipt = output / "native-static-receipt.json"
-        if highres is not None and highres.enabled:
+    # Each step is said as a step record (gpuwm.progress.prep_stage) on
+    # stderr, where `gpuwm go` reads this program's output and puts it on
+    # the run's stream.  Without them a single-domain HRRR run page showed
+    # only the stage for the whole preparation.
+    with prep_stage("root_static", label="Prepare root static fields"):
+        if args.geog_root is not None:
+            static_cache = output / "native-static.npz"
+            static_receipt = output / "native-static-receipt.json"
             _run([
                 sys.executable, str(REPO / "tools" / "hrrr_build_native_static.py"),
-                "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
+                "--geog-root", str(args.geog_root.resolve()),
                 *static_domain_arguments,
-                "--output", str(sealed_static), "--receipt", str(sealed_receipt),
+                "--output", str(static_cache), "--receipt", str(static_receipt),
                 *static_arguments,
             ], env)
         else:
-            _link_file_create(static_cache, sealed_static)
-            _link_file_create(static_receipt, sealed_receipt)
-        static_cache = sealed_static
-        static_receipt = sealed_receipt
-    geometry_command = [
-        sys.executable,
-        str(REPO / "tools" / "write_hrrr_native_geometry_receipt.py"),
-        "--static-cache", str(static_cache),
-        "--hrrr-static-receipt", str(static_receipt),
-        "--output", str(geometry_receipt),
-    ]
-    if args.domain_spec is not None:
-        geometry_command.extend(("--domain-spec", str(args.domain_spec.resolve())))
-    _run(geometry_command, env)
+            static_cache = args.static_cache.resolve()
+            static_receipt = args.static_receipt.resolve()
+            for path in (static_cache, static_receipt):
+                if not path.is_file():
+                    raise FileNotFoundError(path)
+            # A prefix-sealed root is a self-contained predecessor authority.
+            # Extension cannot depend on the operator retaining two external
+            # paths which were not part of that root, and copying them once per
+            # hourly generation would defeat the hard-link-only storage contract.
+            # Publish the exact verified files under the same canonical names the
+            # geog-built route uses.  The same-filesystem refusal is intentional:
+            # every future generation links these bytes again.
+            #
+            # A PORTABLE bundle needs the same thing for a different reason:
+            # the forecast front door resolves the static cache relative to
+            # --prepared-root, and a root whose static geography lives on
+            # some other path the operator happened to pass is not a bundle
+            # anyone else can bind.  Same link, same canonical names, same
+            # bytes -- and a reused external static stays reused.
+            #
+            # Unconditional, because the portable bundle is published on
+            # every run now.  It used to be gated on the two flags that
+            # implied a portable product, which left the default --static-cache
+            # run publishing nothing: the bundle writer refuses a static cache
+            # outside the root ("is outside the bundle root"), so the one
+            # decision that made the authority publishable was taken only when
+            # someone had already asked for it by name.
+            sealed_static = output / "native-static.npz"
+            sealed_receipt = output / "native-static-receipt.json"
+            if highres is not None and highres.enabled:
+                _run([
+                    sys.executable, str(REPO / "tools" / "hrrr_build_native_static.py"),
+                    "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
+                    *static_domain_arguments,
+                    "--output", str(sealed_static), "--receipt", str(sealed_receipt),
+                    *static_arguments,
+                ], env)
+            else:
+                _link_file_create(static_cache, sealed_static)
+                _link_file_create(static_receipt, sealed_receipt)
+            static_cache = sealed_static
+            static_receipt = sealed_receipt
+        geometry_command = [
+            sys.executable,
+            str(REPO / "tools" / "write_hrrr_native_geometry_receipt.py"),
+            "--static-cache", str(static_cache),
+            "--hrrr-static-receipt", str(static_receipt),
+            "--output", str(geometry_receipt),
+        ]
+        if args.domain_spec is not None:
+            geometry_command.extend(("--domain-spec", str(args.domain_spec.resolve())))
+        _run(geometry_command, env)
     static_seconds = time.perf_counter() - started
 
     native = output / "native"
@@ -1781,7 +1894,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     if args.domain_spec is not None:
         benchmark.extend(("--domain-spec", str(args.domain_spec.resolve())))
     prepare_started = time.perf_counter()
-    _run(benchmark, env)
+    with prep_stage("root_prepare",
+                    label="Build the start state and boundaries"):
+        _run(benchmark, env)
     prepare_seconds = time.perf_counter() - prepare_started
     preparation_report_path = native / "preparation-report" / "report.json"
     preparation_report = json.loads(
@@ -1830,11 +1945,15 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
                           if args.physics_profile is not None else ("--experiment-config-suite",))
     for acknowledgement in args.ack:
         export_command.extend(("--ack", acknowledgement))
-    stock_wrf_export = _stock_wrf_export(
-        export_command, env,
-        skip=args.skip_stock_wrf_export,
-        required=args.require_stock_wrf_export,
-        output=output / "wrf-native-input")
+    with prep_stage("wrf_export", label="Companion WRF files") as export_stage:
+        stock_wrf_export = _stock_wrf_export(
+            export_command, env,
+            skip=args.skip_stock_wrf_export,
+            required=args.require_stock_wrf_export,
+            output=output / "wrf-native-input")
+        export_stage["outcome"] = ("not_requested"
+                                   if stock_wrf_export["status"] == "SKIPPED"
+                                   else "produced")
     export_seconds = time.perf_counter() - export_started
 
     # ---- the portable half, published on every run ---------------------

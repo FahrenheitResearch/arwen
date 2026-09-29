@@ -18,6 +18,8 @@ import struct
 import time
 from pathlib import Path
 
+import pytest
+
 from gpuwm.kernel_compile_notice import (
     ARCHITECTURE_MISSING,
     COLD_CACHE,
@@ -31,14 +33,21 @@ from gpuwm.kernel_compile_notice import (
 )
 
 
-def _cubin(architecture: int) -> bytes:
+def _cubin(architecture: int, *, abi: int = 8) -> bytes:
     """One cache entry shaped exactly the way CuPy writes them.
 
     CuPy prefixes the compiled blob with the 40-character SHA1 of the
-    blob (``cupy/cuda/compiler.py``), so the ELF starts at byte 40; the
-    architecture lives in the second byte of the CUDA ELF's ``e_flags``
-    (verified against a real 7,445-entry cache on the reference box:
-    7,164 entries decoded sm_120 and 281 sm_86).
+    blob (``cupy/cuda/compiler.py``), so the ELF starts at byte 40.
+    Where the architecture sits in the CUDA ELF's ``e_flags`` depends on
+    the layout the header names, and both layouts are in real caches
+    (:data:`_REAL_HEADS` carries one of each, byte for byte):
+
+    * ``abi=8`` -- ``EI_OSABI`` 0x41, ``EI_ABIVERSION`` 8, the SM in the
+      second byte, the rest of ``e_flags`` as a real sm_120 entry has it
+      (0x06007802).
+    * ``abi=7`` -- ``EI_OSABI`` 0x33, ``EI_ABIVERSION`` 7, the SM in the
+      low byte and repeated in the third, as a real sm_86 entry has it
+      (0x00560556).
     """
 
     header = bytearray(64)
@@ -46,10 +55,48 @@ def _cubin(architecture: int) -> bytes:
     header[4] = 2               # ELFCLASS64
     header[5] = 1               # ELFDATA2LSB
     header[6] = 1               # EV_CURRENT
+    if abi == 8:
+        header[7], header[8] = 0x41, 8
+        flags = 0x06000002 | (architecture << 8)
+    else:
+        header[7], header[8] = 0x33, 7
+        flags = 0x00000500 | architecture | (architecture << 16)
     struct.pack_into("<H", header, 16, 2)        # e_type
     struct.pack_into("<H", header, 18, 190)      # EM_CUDA
-    struct.pack_into("<I", header, 48, (architecture << 8) | 2)
+    struct.pack_into("<I", header, 48, flags)
     return b"0" * 40 + bytes(header)
+
+
+#: The first 104 bytes of three real CuPy kernel cache entries: the SHA1
+#: prefix CuPy writes, then the 64-byte CUDA ELF header, copied from the
+#: files and never rebuilt, so a decoder that only agrees with
+#: :func:`_cubin` cannot pass.
+_REAL_HEADS = {
+    # sm_86, EI_OSABI 0x33 / EI_ABIVERSION 7, e_flags 0x00560556: the
+    # value all 159 entries carried in the cache behind the false
+    # "none of them for this card ... the cache carries sm_5" notice.
+    "sm_86 abi 7": (
+        b"4085d0f6d4cdba3619edb8c00d1e96dd497da0e8",
+        "7f454c460201013307000000000000000200be00810000000000000000000000"
+        "4010000000000000800c0000000000005605560040003800040040000f000100"),
+    # sm_86, EI_OSABI 0x41 / EI_ABIVERSION 8, e_flags 0x06005604: the
+    # same card's kernels in the other layout, from the same cache.
+    "sm_86 abi 8": (
+        b"0374584e83e0b071171d43acb59cc19f450dada9",
+        "7f454c460201014108000000000000000200be00010000000000000000000000"
+        "c04b000000000000804500000000000004560006400038000400400019000100"),
+    # sm_120, EI_OSABI 0x41 / EI_ABIVERSION 8, e_flags 0x06007802: one of
+    # the 1,468 entries in the RTX 5070 Ti node's cache.
+    "sm_120 abi 8": (
+        b"eccdad6ea4150549b05835fdbd227e9b0ff2d142",
+        "7f454c460201014108000000000000000200be00010000000000000000000000"
+        "f820000000000000f8190000000000000278000640003800060040001c000100"),
+}
+
+
+def _real_head(name: str) -> bytes:
+    prefix, header = _REAL_HEADS[name]
+    return prefix + bytes.fromhex(header)
 
 
 def test_missing_cache_directory_is_cold_and_speaks(tmp_path):
@@ -258,12 +305,17 @@ def test_a_stalled_first_step_announces_itself_and_a_fast_one_does_not(
         def announce_kernel_compile(self, **fields):
             self.announced = fields
 
+    # The card and the cache are named, not borrowed from the host: left
+    # to ask, the watch read the host's real card and real kernel cache,
+    # so this passed on an sm_86 card and failed on the sm_120 node, where
+    # 200 sm_120 entries are that card's own and rightly read as warm.
     def _watch(log, census):
         return _FirstStepStallWatch(
             progress_path=tmp_path / "progress.json",
             inputs=types.SimpleNamespace(source="gfs"),
             exp=types.SimpleNamespace(run_seconds=21600.0),
-            step_log=log, census=census, delay=0.05)
+            step_log=log, census=census, capability="86",
+            cache_census_now=lambda: census, delay=0.05)
 
     # A stall: it says so, names what the cache looked like at launch,
     # and publishes the status `gpuwm go`'s heartbeat relays verbatim.
@@ -473,3 +525,138 @@ def test_the_state_names_the_capability_it_judged_against(tmp_path):
     # fact a later reader can check without knowing which card asked.
     assert state.compute_capability == "86"
     assert state.architectures == {"120": 1}
+
+
+# ---------------------------------------------------------------------------
+# The layout decides the byte: a warm cache read from the wrong one
+# ---------------------------------------------------------------------------
+
+
+def _cache_of(directory: Path, head: bytes, count: int) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    for index in range(count):
+        (directory / f"{index:040x}.cubin").write_bytes(head)
+    return directory
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("sm_86 abi 7", "86"),
+    ("sm_86 abi 8", "86"),
+    ("sm_120 abi 8", "120"),
+])
+def test_each_real_cubin_head_decodes_to_the_card_that_compiled_it(
+        tmp_path, name, expected):
+    """Three real headers, both layouts, two cards.
+
+    The ABI 7 head is what the false notice was made of: read from the
+    second byte of ``e_flags`` it decoded as sm_5."""
+
+    cache = _cache_of(tmp_path / "kernel_cache", _real_head(name), 1)
+    assert scan_kernel_cache(cache) == (1, 0, {expected: 1})
+
+
+def test_a_warm_abi7_cache_for_this_card_says_nothing(tmp_path):
+    """THE SWEEP'S CASE.  158 sm_86 entries in the ABI 7 layout, and the
+    sm_86 card that compiled them.
+
+    Every warm run printed "the kernel cache holds 158 entry(s), none of
+    them for this card -- compiling GPU kernels for sm_86 (the cache
+    carries sm_5 ...)" while it was already stepping.  Every one of
+    those entries was this card's, and nothing was compiling."""
+
+    cache = _cache_of(tmp_path / "kernel_cache",
+                      _real_head("sm_86 abi 7"), 158)
+    state = kernel_cache_state(cache, compute_capability="86")
+    assert state.reason is None
+    assert state.architectures == {"86": 158}
+    assert state.entries_for_capability == 158
+    assert state.notice is None
+    assert kernel_compile_notice(cache, compute_capability="86") is None
+
+
+@pytest.mark.parametrize("abi", [7, 8])
+def test_another_cards_cache_still_announces_in_either_layout(tmp_path, abi):
+    """Reading the right byte must not turn a real card swap silent."""
+
+    cache = tmp_path / "kernel_cache"
+    cache.mkdir()
+    for index in range(4):
+        (cache / f"{index:040x}.cubin").write_bytes(_cubin(86, abi=abi))
+
+    state = kernel_cache_state(cache, compute_capability="120")
+    assert state.reason == ARCHITECTURE_MISSING
+    assert state.architectures == {"86": 4}
+    assert "sm_120" in state.notice
+    assert "the cache carries sm_86" in state.notice
+
+
+def test_the_real_5070ti_entries_are_another_cards_to_an_sm_86_card(tmp_path):
+    cache = _cache_of(tmp_path / "kernel_cache",
+                      _real_head("sm_120 abi 8"), 3)
+    state = kernel_cache_state(cache, compute_capability="86")
+    assert state.reason == ARCHITECTURE_MISSING
+    assert state.architectures == {"120": 3}
+
+
+def test_a_layout_that_was_never_measured_is_unknown_never_a_mismatch(
+        tmp_path):
+    """A header naming a layout outside the measured table is not read.
+
+    Guessing which byte of ``e_flags`` holds the SM is exactly how an
+    sm_86 cache was announced as sm_5, so an unlisted
+    ``EI_OSABI``/``EI_ABIVERSION`` pair, or an ELF that is not for
+    ``EM_CUDA`` at all, counts as unknown -- and unknown is "possibly
+    this card's", which keeps the notice quiet."""
+
+    cache = tmp_path / "kernel_cache"
+    cache.mkdir()
+    later = bytearray(_real_head("sm_86 abi 7"))
+    later[40 + 8] = 9                    # an EI_ABIVERSION nobody wrote yet
+    (cache / ("a" * 40 + ".cubin")).write_bytes(bytes(later))
+    unnamed = bytearray(_cubin(86))
+    unnamed[40 + 7] = unnamed[40 + 8] = 0     # no CUDA layout named
+    (cache / ("b" * 40 + ".cubin")).write_bytes(bytes(unnamed))
+    host = bytearray(_cubin(86))
+    struct.pack_into("<H", host, 40 + 18, 62)  # EM_X86_64, not a cubin
+    (cache / ("c" * 40 + ".cubin")).write_bytes(bytes(host))
+    (cache / ("d" * 40 + ".cubin")).write_bytes(_cubin(120))
+
+    state = kernel_cache_state(cache, compute_capability="86")
+    assert state.undecodable == 3
+    assert state.architectures == {"120": 1}
+    assert state.reason is None
+    assert state.notice is None
+
+
+def test_a_warm_abi7_census_publishes_no_compiling_status(
+        tmp_path, capsys, monkeypatch):
+    """The status half of the sweep's case.
+
+    The runner's upfront announcement is where the false line printed
+    and where the published status flipped to compiling while the run
+    stepped.  On this card's own cache it now does neither; on another
+    card's cache it still does both."""
+
+    import types
+
+    from gpuwm import prepared_single_domain_forecast as runner
+
+    census = scan_kernel_cache(_cache_of(
+        tmp_path / "kernel_cache", _real_head("sm_86 abi 7"), 158))
+    inputs = types.SimpleNamespace(source="gfs")
+    exp = types.SimpleNamespace(run_seconds=21600.0)
+
+    monkeypatch.setattr(runner, "current_compute_capability", lambda: "86")
+    warm = tmp_path / "warm-progress.json"
+    runner._announce_kernel_compile(warm, inputs, exp, census=census)
+    assert "compiling GPU kernels" not in capsys.readouterr().out
+    assert not warm.exists()
+
+    monkeypatch.setattr(runner, "current_compute_capability", lambda: "120")
+    swapped = tmp_path / "swapped-progress.json"
+    runner._announce_kernel_compile(swapped, inputs, exp, census=census)
+    printed = capsys.readouterr().out
+    assert "compiling GPU kernels for sm_120" in printed
+    assert "the cache carries sm_86" in printed
+    published = json.loads(swapped.read_text(encoding="utf-8"))
+    assert published["status"] == COMPILING_STATUS

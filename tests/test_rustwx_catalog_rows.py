@@ -56,6 +56,20 @@ def test_a_catalog_row_carries_a_machine_code(tmp_path, monkeypatch):
     assert summary.startswith("total=4")
 
 
+def test_catalog_availability_carries_the_requested_products(tmp_path, monkeypatch):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, _LISTING, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    rustwx.catalog_rows(Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"],
+                        store_root=tmp_path, products="qpf_1h,qpf_total")
+    command = commands[0]
+    assert command[command.index("--products") + 1] == "qpf_1h,qpf_total"
+
+
 def test_the_window_skip_survives_a_reworded_reason(tmp_path, monkeypatch):
     """The prose is what a reader sees; the STATUS is what a door decides on.
 
@@ -134,6 +148,21 @@ def test_a_group_keyword_or_undecidable_family_is_never_eaten(tmp_path, monkeypa
         Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
     spec, excluded = rustwx.catalog_verdict(rows, "all,xsec:QICE,mesh:cell_area")
     assert spec == "all,xsec:QICE,mesh:cell_area" and excluded == []
+
+
+def test_a_string_request_keeps_every_section_level_list_whole(tmp_path, monkeypatch):
+    """Two sections with a level in common keep both lists.
+
+    Read with the engine's tokenizer, ``2`` is a level of each section and
+    never a product, so the second list is not trimmed as a duplicate of
+    the first, and a closing ``0.1/wa`` stays inside its section."""
+
+    _stub_listing(monkeypatch)
+    rows, _summary = rustwx.catalog_rows(
+        Path("rw_wrfbatch"), [tmp_path / "wrfout_d01"], store_root=tmp_path)
+    request = "2m_temperature,xsec:wa=1,2,xsec:tk=1,2,xsec:QCLOUD=0.01,0.1/wa"
+    spec, excluded = rustwx.catalog_verdict(rows, request)
+    assert spec == request and excluded == []
 
 
 def test_an_absent_var_family_term_IS_eaten(tmp_path, monkeypatch):

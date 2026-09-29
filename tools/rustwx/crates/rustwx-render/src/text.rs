@@ -204,13 +204,120 @@ pub(crate) fn bold_line_height_with_factor(scale: u32, size_factor: f32) -> u32 
     line_height(scale, size_factor, FontKind::Bold)
 }
 
+/// One value's label: whole numbers bare, anything else to one decimal.
+///
+/// A colour bar labels its ticks as a SET through [`format_tick_labels`],
+/// which starts from these labels and adds places only where they stop
+/// reading as their ticks. This alone is right for a lone number (a
+/// contour label, an extreme marker) whose neighbours are not printed
+/// beside it.
 pub fn format_tick(value: f64) -> String {
     if value == value.floor() {
         format!("{}", value as i64)
     } else {
-        let s = format!("{:.1}", value);
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        fixed_places_label(value, 1)
     }
+}
+
+/// `value` to `places` decimals, trailing zeros and a bare point dropped,
+/// and a value that rounds to zero written `0`, never `-0`.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a colour bar crossing zero
+/// on a fractional step prints `-0` at its zero tick. The ticks are
+/// stepped by repeated addition, so the one meant to be zero arrives as
+/// about -3e-17, and the old trim of `-0.0` left `-0`.
+fn fixed_places_label(value: f64, places: usize) -> String {
+    let fixed = format!("{value:.places$}");
+    let trimmed = if fixed.contains('.') {
+        fixed.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        fixed.as_str()
+    };
+    if trimmed == "-0" {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// The places past which a tick label stops being a readable number. A
+/// set whose spacing needs more than this falls back to each value's
+/// shortest exact spelling.
+const MAX_TICK_PLACES: usize = 12;
+
+/// The labels for one colour bar's ticks, formatted together so every
+/// label reads as its own tick.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): a colour bar whose distinct
+/// ticks print the same number. [`format_tick`] carries one decimal, so
+/// a narrow range around a large value -- 200 hPa height drawn from
+/// 12.200 to 12.228 against `1e3 gpm` -- printed `12.2` at all fourteen
+/// ticks, and mean sea level pressure, the freezing level and the
+/// 250 to 850 hPa heights did the same on ordinary forecasts. A bar on
+/// quarter steps printed 0.25 as `0.2` and 0.75 as `0.8`: different
+/// labels, but not the ticks' values.
+///
+/// The rule is about what a label says, not about the field: every label
+/// must parse back to its tick to within a hundredth of the spacing
+/// between neighbouring ticks. A bar whose usual labels already do that
+/// keeps them unchanged, so an ordinary bar draws exactly as before; a
+/// bar whose labels do not gets the fewest extra places that make every
+/// one of them true.
+pub fn format_tick_labels(ticks: &[f64]) -> Vec<String> {
+    let usual: Vec<String> = ticks.iter().map(|value| format_tick(*value)).collect();
+    let Some(spacing) = smallest_tick_spacing(ticks) else {
+        return usual;
+    };
+    let tolerance = spacing * 0.01;
+    let reads_as_ticks = |labels: &[String]| {
+        labels.iter().zip(ticks).all(|(label, value)| {
+            !value.is_finite()
+                || label
+                    .parse::<f64>()
+                    .is_ok_and(|shown| (shown - value).abs() <= tolerance)
+        })
+    };
+    if reads_as_ticks(&usual) {
+        return usual;
+    }
+    for places in 2..=MAX_TICK_PLACES {
+        let labels: Vec<String> = ticks
+            .iter()
+            .map(|value| {
+                if value.is_finite() {
+                    fixed_places_label(*value, places)
+                } else {
+                    format_tick(*value)
+                }
+            })
+            .collect();
+        if reads_as_ticks(&labels) {
+            return labels;
+        }
+    }
+    ticks
+        .iter()
+        .map(|value| {
+            if value.is_finite() {
+                let exact = value.to_string();
+                if exact == "-0" { "0".to_string() } else { exact }
+            } else {
+                format_tick(*value)
+            }
+        })
+        .collect()
+}
+
+/// The smallest gap between two different finite ticks, or `None` when
+/// the set holds fewer than two different values (nothing to tell apart).
+fn smallest_tick_spacing(ticks: &[f64]) -> Option<f64> {
+    let mut finite: Vec<f64> = ticks.iter().copied().filter(|value| value.is_finite()).collect();
+    finite.sort_by(f64::total_cmp);
+    finite
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .filter(|gap| *gap > 0.0)
+        .min_by(f64::total_cmp)
 }
 
 fn draw_text_inner(

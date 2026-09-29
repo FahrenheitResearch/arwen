@@ -890,6 +890,14 @@ class NestFootprint:
     #: and no second source of truth exists.  ``None`` on a hand-built
     #: footprint, which then takes the unbounded centroid.
     parent_dx_m: float | None = None
+    #: The grid these parent-cell indices are counted on.  Indices are
+    #: not geography: cell (35, 35) of d01 and cell (35, 35) of d02 are
+    #: different places, so a footprint handed to a consumer watching a
+    #: different grid would mask the wrong ground.  Taken in
+    #: :meth:`coerce` from the child's own ``parent_id``; ``None`` on a
+    #: hand-built footprint, which then belongs to whatever single grid
+    #: its caller is looking at.
+    parent_id: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.parent_grid_ratio) < 1:
@@ -914,6 +922,7 @@ class NestFootprint:
         run = getattr(value, "run", None)
         ratio = int(value.parent_grid_ratio)
         child_dx = None if run is None else getattr(run, "dx", None)
+        parent_id = getattr(value, "parent_id", None)
         return cls(
             grid_id=int(value.grid_id),
             i_parent_start=int(value.i_parent_start),
@@ -922,7 +931,8 @@ class NestFootprint:
             child_ny=int(run.ny if run is not None else value.child_ny),
             parent_grid_ratio=ratio,
             parent_dx_m=(None if child_dx is None
-                         else float(child_dx) * ratio))
+                         else float(child_dx) * ratio),
+            parent_id=None if parent_id is None else int(parent_id))
 
     @property
     def span_parent_i(self) -> float:

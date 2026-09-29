@@ -18,6 +18,14 @@ The forecast is not an approximation of the resident one — it is bit-exact
 against it, carrier by carrier, at every physics rung, on a real Lambert
 projection with real terrain and specified lateral boundaries.
 
+That holds when both start from the same preparation. Preparation on the
+CPU and on the card give slightly different start states (about 5e-4 K in
+temperature), and a forecast grows that difference like any other. With
+`--preprocess-backend auto` the choice depends on the card and its load,
+and a GFS or met_em domain with `[tiles]` and a host store always prepares
+on the CPU. To compare a streamed run with a resident one, prepare both
+with the same `--preprocess-backend`.
+
 ## Turning it on
 
 ```toml
@@ -34,13 +42,24 @@ Three modes:
 | `mode`  | what happens |
 |---------|--------------|
 | `"off"` | the default.  The run is exactly the run it was before this feature existed — same call, same function, same bytes, same fingerprint. |
-| `"auto"` | the planner (`tilestream.autoplan`) sizes the resident domain against the card.  It fits → **nothing streams**; it does not → the domain streams with the tiling the planner chose. |
+| `"auto"` | the planner (`tilestream.autoplan`) sizes the resident domain against the card.  It fits → **nothing streams**; it does not → the domain streams with the tiling the planner chose, as long as that tiling does no more than `max_redundancy` (4.0×) the necessary work.  When no tiling within that limit fits, a domain whose resident envelope still fits the card's measured free memory runs resident inside the 0.5 GiB kept back for other programs, and says so; otherwise the run is refused before the download, with the numbers and what works. |
 | `"on"`  | stream regardless.  For benchmarks and for the bit-exactness proof; a forecast wants `"auto"`. |
 
 `auto` does not stream a domain that fits, because streaming is not free.
 Measured tiling tax against the identical resident run (dry, RTX 4090,
 1024² × 49, 150 steps): tile 128 → 1.359×, tile 256 → **1.217×**, tile 512 →
 1.346×.
+
+Nor does `auto` stream a domain in tiles too small to pay for themselves.
+Every tile repeats its halo cells and launches its own kernel sequence, so
+a tiling past the limit costs far more than its columns.  Measured on a
+206×204×49 3 km domain that missed its resident budget by 0.3 GB: streamed
+in 1,190 tiles of 6×6 at 49.95× the necessary work, each 15 s step took
+237 to 547 s, against 0.6 to 1.9 s resident on the same card.  Every streamed
+plan names its tile size, tile count and redundancy in the review
+(`gpuwm run-plan --estimate`), in `gpuwm go`'s log and on the forecast's
+run log line, and the pace the review quotes counts the redundancy and the
+cost of each tile.
 
 The optional keys are for benchmarks and controls, not for forecasts:
 
@@ -181,10 +200,14 @@ tree-wide table.
 
 `max_redundancy` is the planner's halo-work limit: the multiple of the
 necessary work a tiling may do on halo cells before the planner refuses
-it (4.0 when the key is absent).  A number replaces the limit; `false`
-lifts it, which is the way out the planner names when a domain is too
-small to tile efficiently at its halo and would otherwise be refused at
-any budget.  It may sit on the tree-wide table or on one domain's.
+it (4.0 when the key is absent).  `auto` honours it and never lifts it on
+its own: where no tiling within the limit fits, it runs the domain
+resident inside the margin or refuses, as the table above says.  A number
+replaces the limit; `false` lifts it, and is the only way to get a tiling
+past it, at the pace the review quotes for that tiling.  That is also the
+way out the planner names when a domain is too small to tile efficiently
+at its halo and would otherwise be refused at any budget.  It may sit on
+the tree-wide table or on one domain's.
 
 A per-domain road contributes nothing to the restart identity, on the same
 law as the tree-wide one: a domain that streamed must be able to resume
@@ -202,13 +225,21 @@ that moving child resident until that operation is implemented.
 budget.  It is a **joint** decision, not a first-come one: before a streamed
 domain chooses its tile, the walk reserves what every domain still undecided
 below it needs — a resident price where the domain fits the card, one buffer
-of the smallest legal compute window where it does not, plus each child's
-coupling corridor.  Without that reservation the parent's tile search took
+of the smallest compute window within the redundancy limit where it does
+not, plus each child's coupling corridor at that window.  Without that reservation the parent's tile search took
 the largest window that fit (measured: 3.98 of 4.00 GiB, 99.5%) and the child
 then met "no tile fits in 0.02 GiB".  The reservation constrains the **tile**
 and never the stream-or-resident **verdict**, so an all-resident tree decides
 all-resident exactly as before. Both-streamed decisions retain the same
 per-domain and coupling-corridor reservations.
+
+Where no road within the redundancy limit fits the tree and the limit is
+the first thing that binds, the tree runs resident inside the 0.5 GiB
+margin when the card's measured free memory holds the whole tree's
+envelope, and says so, as a single domain does.  Every other refusal of a
+tree stands in its own words: a shared floor above the budget, a domain
+whose host store no tiling can hold, the pinned host copy a moving nest
+stages through, and a card no tiling fits even with the limit lifted.
 
 The run receipt's `tiles` block records every grid's decision, its road, its
 claim, and — where a reservation was taken — `reserved_bytes` and

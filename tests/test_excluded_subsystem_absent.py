@@ -413,7 +413,7 @@ def _diff_offenders(diff: str) -> list[str]:
     from the snapshot since the manifest was written, and which no lane
     may edit.  The gate failed AT THE CLEAN BASE and at every 2.7.6 lane
     tip, on text nobody in the release line wrote or can reword, with no
-    fix available that does not either edit Drew's rulings or delete the
+    fix available that does not either edit the project's rulings or delete the
     gate.  That is the cry-wolf failure this module's own design note says
     ends in somebody removing the check.
 

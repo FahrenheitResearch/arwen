@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import json
+import re
+import shlex
 
 import pytest
 
@@ -122,6 +124,30 @@ def test_icon_eu_runs_eight_cycles_a_day():
     plan = fetch_routes.resolve_request(
         "icon-eu", cycle=datetime(2026, 8, 17, 3), hours=2)
     assert plan.leads == (0, 1, 2)
+
+
+@pytest.mark.parametrize("cycle_hour", [0, 3, 6, 9, 12, 15, 18, 21])
+def test_icon_d2_runs_every_three_hours_each_to_f48_hourly(cycle_hour):
+    """Measured on DWD's listing 2026-09-27: every cycle, 03Z included,
+    publishes f000..f048 at one hour."""
+
+    route = fetch_routes.route_for("icon-d2")
+    ladder = fetch_routes.ladder_for(
+        route, datetime(2026, 9, 27, cycle_hour))
+    assert ladder == tuple(range(49))
+    with pytest.raises(ValueError):
+        fetch_routes.resolve_request(
+            "icon-d2", cycle=datetime(2026, 9, 27, cycle_hour), hours=49)
+
+
+def test_icon_d2_refuses_an_hour_it_does_not_run_and_a_coarser_cadence():
+    with pytest.raises(ValueError) as error:
+        fetch_routes.resolve_request(
+            "icon-d2", cycle=datetime(2026, 9, 27, 1), hours=3)
+    assert "01Z" in str(error.value)
+    with pytest.raises(ValueError):
+        fetch_routes.resolve_request(
+            "icon-d2", cycle=datetime(2026, 9, 27, 0), hours=6, cadence=3)
 
 
 # --------------------------------------------------------------------------
@@ -292,8 +318,11 @@ def test_aigfs_plans_its_declared_same_cycle_gdas_donor():
 
 
 def test_ecmwf_open_data_stamps_the_full_cycle_and_an_unpadded_lead():
+    # Asked while the cycle is still on the publisher's door (it keeps
+    # 72 h); a cycle older than that is planned from the mirror.
     plan = fetch_routes.resolve_request(
-        "ecmwf-open-data", cycle=datetime(2026, 8, 16, 0), hours=3)
+        "ecmwf-open-data", cycle=datetime(2026, 8, 16, 0), hours=3,
+        now=datetime(2026, 8, 16, 12))
     assert [obj.url for obj in plan.objects] == [
         "https://data.ecmwf.int/forecasts/20260816/00z/ifs/0p25/oper/"
         "20260816000000-0h-oper-fc.grib2",
@@ -333,6 +362,41 @@ def test_icon_eu_expands_125_field_objects_a_lead_plus_two_invariants():
         "icon-eu_europe_regular-lat-lon_time-invariant_2026081700_"
         "HSURF.grib2.bz2"]
     assert plan.supplement_role == "icon_eu_invariant_surface"
+
+
+def test_icon_d2_expands_model_levels_and_all_height_interfaces():
+    plan = fetch_routes.resolve_request(
+        "icon-d2", cycle=datetime(2026, 9, 27, 12), hours=3)
+    # 10 fields x 65 model levels + 8 single-level + 9 T_SO + 8 W_SO
+    # per lead, then 66 height interfaces and five other invariants.
+    assert plan.leads == (0, 1, 2, 3)
+    assert len(plan.objects) == 675 * 4 + 71
+    urls = {obj.url for obj in plan.objects}
+    base = "https://opendata.dwd.de/weather/nwp/icon-d2/grib/12"
+    # The names DWD publishes, lower-case, with "2d" for single-level
+    # objects and "000_0" for the time-invariant ones.
+    assert (f"{base}/t/icon-d2_germany_icosahedral_model-level_"
+            "2026092712_000_1_t.grib2.bz2") in urls
+    assert (f"{base}/t_2m/icon-d2_germany_icosahedral_single-level_"
+            "2026092712_003_2d_t_2m.grib2.bz2") in urls
+    assert (f"{base}/t_so/icon-d2_germany_icosahedral_soil-level_"
+            "2026092712_002_5_t_so.grib2.bz2") in urls
+    assert (f"{base}/w_so/icon-d2_germany_icosahedral_soil-level_"
+            "2026092712_001_729_w_so.grib2.bz2") in urls
+    for field in ("hsurf", "fr_land", "fr_ice", "clat", "clon"):
+        assert (f"{base}/{field}/icon-d2_germany_icosahedral_time-invariant_"
+                f"2026092712_000_0_{field}.grib2.bz2") in urls
+    assert not any("regular-lat-lon" in url for url in urls)
+    assert not any("_150_" in url or "_100_" in url for url in urls)
+    assert [path.name for path in plan.supplement_files] == [
+        "icon-d2_germany_icosahedral_time-invariant_2026092712_000_0_"
+        "hsurf.grib2.bz2"]
+    assert plan.supplement_role == "icon_d2_invariant_surface"
+
+
+def test_icon_d2_aliases_resolve_to_its_route():
+    for alias in ("icon-d2", "icon-2km", "dwd-icon-d2"):
+        assert fetch_routes.route_for(alias).source_id == "icon-d2"
 
 
 def test_gem_gdps_expands_174_a_lead_with_analysis_only_invariants():
@@ -382,10 +446,9 @@ def test_idx_subset_refuses_with_the_row_s_own_reason():
     assert "disjoint" in message
 
 
-def test_auto_mode_refuses_because_there_is_nothing_to_probe():
-    with pytest.raises(ValueError) as error:
-        fetch_routes.resolve_mode("rap", "auto")
-    assert "auto" in str(error.value)
+def test_auto_mode_takes_the_default_full_file_route():
+    for source_id in fetch_routes.route_ids():
+        assert fetch_routes.resolve_mode(source_id, "auto") == "full-file"
 
 
 def test_an_area_crop_refuses_naming_where_the_crop_actually_happens():
@@ -402,18 +465,20 @@ def test_an_area_crop_refuses_naming_where_the_crop_actually_happens():
 # Named refusals for sources with no public bytes
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("source_id,fragment", [
-    ("20crv3", "every-member"),
-    ("20crv3-cf", "no cycle"),
-    ("mapped", "generic declarative adapter"),
+@pytest.mark.parametrize("source_id,fragment,door", [
+    ("20crv3", "every-member", "--source-root DIR --author-only"),
+    ("20crv3-cf", "no cycle", "--source-root DIR --experiment-config"),
+    # The generic adapter has no folder layout to bind: its door is the
+    # mapping and composition the caller brings with the files.
+    ("mapped", "generic declarative adapter", "--mapping MAPPING.json"),
 ])
-def test_a_source_without_fetchable_bytes_points_at_source_root(
-        source_id, fragment):
+def test_a_source_without_fetchable_bytes_points_at_its_door(
+        source_id, fragment, door):
     with pytest.raises(ValueError) as error:
         fetch_routes.route_for(source_id)
     message = str(error.value)
     assert fragment in message
-    assert "--source-root" in message
+    assert door in message
 
 
 def test_the_20crv3_refusal_reaches_through_the_alias():
@@ -502,7 +567,11 @@ def test_a_different_request_into_the_same_directory_refuses(tmp_path):
     assert "--force-refetch" in str(error.value)
 
 
-def test_a_truncated_object_refuses_by_name(tmp_path):
+def test_a_truncated_object_refuses_by_name(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    waits: list[float] = []
+    monkeypatch.setattr(fetch_routes, "time",
+                        SimpleNamespace(sleep=waits.append), raising=False)
     plan = fetch_routes.resolve_request(
         "rap", cycle=datetime(2026, 8, 16, 0), hours=1)
 
@@ -516,7 +585,13 @@ def test_a_truncated_object_refuses_by_name(tmp_path):
         fetch_routes.run_plan(plan, out=tmp_path, downloader=truncating,
                               progress=lambda *_: None)
     assert "end marker" in str(error.value)
-    assert "rap.t00z.awip32f00.grib2" in str(error.value)
+    # Both hours are truncated, and the first to fail ends the request
+    # (the other is stopped, not waited out), so the refusal names
+    # whichever one that was.
+    assert re.search(r"rap\.t00z\.awip32f0[01]\.grib2", str(error.value))
+    # A payload that does not verify is asked for again on the shared
+    # schedule before the refusal.
+    assert waits and set(waits) <= {2, 4, 8, 16}
 
 
 def test_gefs_concatenates_its_pair_in_the_declared_order(tmp_path):
@@ -620,6 +695,57 @@ def test_the_handoff_names_member_prep_for_an_ensemble_route(tmp_path):
     assert "physical_analysis_surface_data" in text
 
 
+@pytest.mark.parametrize("hours", [6, 12, 24])
+@pytest.mark.parametrize("member", [None, "mem001"])
+def test_member_prep_handoff_steps_match_requested_leads(tmp_path, hours, member):
+    from gpuwm.member_prep import build_parser
+
+    plan = fetch_routes.resolve_request(
+        "aigefs", cycle=datetime(2026, 8, 17, 0), hours=hours, member=member)
+    _, command = fetch_routes.write_handoff(plan, tmp_path)
+    lines = command.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.startswith("#   gpuwm-member-prep"))
+    parts = []
+    for line in lines[start:]:
+        parts.append(line.lstrip("#").strip().rstrip("\\").strip())
+        if not line.rstrip().endswith("\\"):
+            break
+    argv = shlex.split(" ".join(parts), posix=False)
+    arguments = build_parser().parse_args(argv[1:])
+    document = json.loads(
+        (tmp_path / fetch_routes.PREP_ARGUMENTS_NAME).read_text())
+    assert arguments.steps == plan.leads
+    assert list(arguments.steps) == document["member_prep"]["steps"]
+
+
+def test_member_prep_handoff_preserves_paths_with_spaces(tmp_path):
+    from gpuwm.filesystem_paths import io_path
+    from gpuwm.member_prep import build_parser
+
+    out = io_path(tmp_path / "member fetch")
+    plan = fetch_routes.resolve_request(
+        "aigefs", cycle=datetime(2026, 8, 17, 0), hours=6)
+    fetch_routes.run_plan(plan, out=out,
+                          downloader=_fake_downloader([]),
+                          progress=lambda *_: None)
+    _, command = fetch_routes.write_handoff(plan, out)
+    lines = command.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines)
+                 if line.startswith("#   gpuwm-member-prep"))
+    parts = []
+    for line in lines[start:]:
+        parts.append(line.lstrip("#").strip().rstrip("\\").strip())
+        if not line.rstrip().endswith("\\"):
+            break
+    argv = shlex.split(" ".join(parts), posix=True)
+    arguments = build_parser().parse_args(argv[1:])
+    assert arguments.member_set == plan.member_set
+    assert arguments.member == plan.member
+    assert arguments.inputs == out.resolve() / "upstream"
+    assert arguments.output == out.resolve() / "members"
+
+
 def test_the_handoff_binds_a_donor_that_was_fetched(tmp_path):
     plan = fetch_routes.resolve_request(
         "aigfs", cycle=datetime(2026, 8, 17, 0), hours=6)
@@ -635,3 +761,38 @@ def test_the_handoff_binds_a_donor_that_was_fetched(tmp_path):
     assert "--supplement" in text
     assert "physical_analysis_surface_data=" in text
     assert "not fetched" not in text
+
+
+@pytest.mark.parametrize("source", fetch_routes.route_ids())
+def test_every_route_prints_the_whole_prep_line_it_published(source,
+                                                             tmp_path):
+    """The printed ``next:`` line is the published argv, token for token.
+
+    It used to print ``--source`` and ``--input-list`` and point at
+    ``prep-command.txt`` for the rest, so the line completed with the
+    four flags it named was refused at the door for the supplement
+    binding and the manifest flag it left out.  The argv in
+    ``prep-arguments.json`` is what the chained doors compose from, so
+    the printed line is held to exactly that, and the flags it leaves to
+    the reader are exactly the document's ``caller_supplies`` plus any
+    supplement role the fetch did not bind.
+    """
+
+    route = fetch_routes.route_for(source)
+    plan = fetch_routes.resolve_request(
+        source, cycle=datetime(2026, 8, 17, route.cycle_hours[0]),
+        hours=route.default_cadence)
+    fetch_routes.write_handoff(plan, tmp_path)
+    document = json.loads(
+        (tmp_path / fetch_routes.PREP_ARGUMENTS_NAME).read_text())
+    lines = fetch_routes.handoff_lines(plan, tmp_path)
+    commands = [line.strip() for line in lines
+                if line.strip().startswith("gpuwm prep ")]
+    assert len(commands) == 1, lines
+    assert shlex.split(commands[0]) == ["gpuwm", "prep", *document["argv"]]
+    comments = " ".join(line for line in lines
+                        if line.strip().startswith("#"))
+    for flag in document["caller_supplies"]:
+        assert flag in comments, flag
+    for role in document["unbound_supplement_roles"]:
+        assert f"--supplement {role}=" in comments, role

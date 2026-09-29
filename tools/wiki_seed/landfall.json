@@ -1,0 +1,398 @@
+{
+ "tc-2004086s29318": {
+  "sid": "2004086S29318",
+  "peak": "2004-03-28T06:00Z",
+  "landfall": {
+   "time": "2004-03-28T06:00Z",
+   "lat": -29.0,
+   "lon": -49.6,
+   "row": "DIST2LAND 0 km",
+   "cite": "ibtracs-2004086S29318-2004-03-28T06",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2004086S29318, 2004-03-28 06:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2004086S29318",
+     "SEASON": "2004",
+     "BASIN": "SA",
+     "NAME": "UNNAMED",
+     "ISO_TIME": "2004-03-28 06:00:00",
+     "NATURE": "TS",
+     "LAT": "-29.0",
+     "LON": "-49.6",
+     "DIST2LAND": "0",
+     "USA_RECORD": " ",
+     "USA_AGENCY": "atcf",
+     "USA_WIND": "75",
+     "USA_PRES": "981",
+     "USA_SSHS": "1"
+    }
+   }
+  }
+ },
+ "tc-2005236n23285": {
+  "sid": "2005236N23285",
+  "peak": "2005-08-28T18:00Z",
+  "landfall": {
+   "time": "2005-08-29T11:10Z",
+   "lat": 29.3,
+   "lon": -89.6,
+   "row": "DIST2LAND 0 km, USA_RECORD L",
+   "cite": "ibtracs-2005236N23285-2005-08-29T11",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2005236N23285, 2005-08-29 11:10 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2005236N23285",
+     "SEASON": "2005",
+     "BASIN": "NA",
+     "NAME": "KATRINA",
+     "ISO_TIME": "2005-08-29 11:10:00",
+     "NATURE": "TS",
+     "LAT": "29.3",
+     "LON": "-89.6",
+     "DIST2LAND": "0",
+     "USA_RECORD": "L",
+     "USA_AGENCY": "hurdat_atl",
+     "USA_WIND": "110",
+     "USA_PRES": "920",
+     "USA_SSHS": "3"
+    }
+   }
+  }
+ },
+ "tc-2007151n14072": {
+  "sid": "2007151N14072",
+  "peak": "2007-06-04T12:00Z",
+  "landfall": {
+   "time": "2007-06-06T00:00Z",
+   "lat": 22.6,
+   "lon": 59.8,
+   "row": "DIST2LAND 22 km",
+   "cite": "ibtracs-2007151N14072-2007-06-06T00",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2007151N14072, 2007-06-06 00:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2007151N14072",
+     "SEASON": "2007",
+     "BASIN": "NI",
+     "NAME": "GONU",
+     "ISO_TIME": "2007-06-06 00:00:00",
+     "NATURE": "TS",
+     "LAT": "22.6",
+     "LON": "59.8",
+     "DIST2LAND": "22",
+     "USA_RECORD": " ",
+     "USA_AGENCY": "jtwc_io",
+     "USA_WIND": "90",
+     "USA_PRES": "956",
+     "USA_SSHS": "2"
+    }
+   }
+  }
+ },
+ "tc-2008117n11090": {
+  "sid": "2008117N11090",
+  "peak": "2008-05-02T12:00Z",
+  "landfall": {
+   "time": "2008-05-02T09:00Z",
+   "lat": 16.0,
+   "lon": 94.1,
+   "row": "DIST2LAND 10 km",
+   "cite": "ibtracs-2008117N11090-2008-05-02T09",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2008117N11090, 2008-05-02 09:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2008117N11090",
+     "SEASON": "2008",
+     "BASIN": "NI",
+     "NAME": "NARGIS",
+     "ISO_TIME": "2008-05-02 09:00:00",
+     "NATURE": "TS",
+     "LAT": "16.0",
+     "LON": "94.1",
+     "DIST2LAND": "10",
+     "USA_RECORD": " ",
+     "USA_AGENCY": " ",
+     "USA_WIND": "115",
+     "USA_PRES": "937",
+     "USA_SSHS": "4"
+    }
+   }
+  }
+ },
+ "tc-2013306n07162": {
+  "sid": "2013306N07162",
+  "peak": "2013-11-07T18:00Z",
+  "landfall": {
+   "time": "2013-11-07T21:00Z",
+   "lat": 10.8,
+   "lon": 125.9,
+   "row": "DIST2LAND 24 km",
+   "cite": "ibtracs-2013306N07162-2013-11-07T21",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2013306N07162, 2013-11-07 21:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2013306N07162",
+     "SEASON": "2013",
+     "BASIN": "WP",
+     "NAME": "HAIYAN",
+     "ISO_TIME": "2013-11-07 21:00:00",
+     "NATURE": "TS",
+     "LAT": "10.8",
+     "LON": "125.9",
+     "DIST2LAND": "24",
+     "USA_RECORD": " ",
+     "USA_AGENCY": " ",
+     "USA_WIND": "168",
+     "USA_PRES": "897",
+     "USA_SSHS": "5"
+    }
+   }
+  }
+ },
+ "tc-2015293n13266": {
+  "sid": "2015293N13266",
+  "peak": "2015-10-23T12:00Z",
+  "landfall": {
+   "time": "2015-10-23T23:00Z",
+   "lat": 19.4,
+   "lon": -105.0,
+   "row": "DIST2LAND 0 km, USA_RECORD L",
+   "cite": "ibtracs-2015293N13266-2015-10-23T23",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2015293N13266, 2015-10-23 23:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2015293N13266",
+     "SEASON": "2015",
+     "BASIN": "EP",
+     "NAME": "PATRICIA",
+     "ISO_TIME": "2015-10-23 23:00:00",
+     "NATURE": "TS",
+     "LAT": "19.4",
+     "LON": "-105.0",
+     "DIST2LAND": "0",
+     "USA_RECORD": "L",
+     "USA_AGENCY": "hurdat_epa",
+     "USA_WIND": "130",
+     "USA_PRES": "932",
+     "USA_SSHS": "4"
+    }
+   }
+  }
+ },
+ "tc-2016041s14170": {
+  "sid": "2016041S14170",
+  "peak": "2016-02-20T06:00Z",
+  "landfall": {
+   "time": "2016-02-20T06:00Z",
+   "lat": -17.4,
+   "lon": 178.7,
+   "row": "DIST2LAND 24 km",
+   "cite": "ibtracs-2016041S14170-2016-02-20T06",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2016041S14170, 2016-02-20 06:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2016041S14170",
+     "SEASON": "2016",
+     "BASIN": "SP",
+     "NAME": "WINSTON",
+     "ISO_TIME": "2016-02-20 06:00:00",
+     "NATURE": "TS",
+     "LAT": "-17.4",
+     "LON": "178.7",
+     "DIST2LAND": "24",
+     "USA_RECORD": " ",
+     "USA_AGENCY": "jtwc_sh",
+     "USA_WIND": "155",
+     "USA_PRES": "907",
+     "USA_SSHS": "5"
+    }
+   }
+  }
+ },
+ "tc-2017280n32321": {
+  "sid": "2017280N32321",
+  "peak": "2017-10-14T18:00Z",
+  "landfall": {
+   "time": "2017-10-16T11:00Z",
+   "lat": 51.9,
+   "lon": -10.4,
+   "row": "DIST2LAND 6 km, USA_RECORD L",
+   "cite": "ibtracs-2017280N32321-2017-10-16T11",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2017280N32321, 2017-10-16 11:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2017280N32321",
+     "SEASON": "2017",
+     "BASIN": "NA",
+     "NAME": "OPHELIA",
+     "ISO_TIME": "2017-10-16 11:00:00",
+     "NATURE": "ET",
+     "LAT": "51.9",
+     "LON": "-10.4",
+     "DIST2LAND": "6",
+     "USA_RECORD": "L",
+     "USA_AGENCY": "hurdat_atl",
+     "USA_WIND": "65",
+     "USA_PRES": "957",
+     "USA_SSHS": "-4"
+    }
+   }
+  }
+ },
+ "tc-2019063s18038": {
+  "sid": "2019063S18038",
+  "peak": "2019-03-13T18:00Z",
+  "landfall": {
+   "time": "2019-03-14T21:00Z",
+   "lat": -19.8,
+   "lon": 35.2,
+   "row": "DIST2LAND 15 km",
+   "cite": "ibtracs-2019063S18038-2019-03-14T21",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2019063S18038, 2019-03-14 21:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2019063S18038",
+     "SEASON": "2019",
+     "BASIN": "SI",
+     "NAME": "IDAI",
+     "ISO_TIME": "2019-03-14 21:00:00",
+     "NATURE": "TS",
+     "LAT": "-19.8",
+     "LON": "35.2",
+     "DIST2LAND": "15",
+     "USA_RECORD": " ",
+     "USA_AGENCY": "jtwc_sh",
+     "USA_WIND": "100",
+     "USA_PRES": "964",
+     "USA_SSHS": "3"
+    }
+   }
+  }
+ },
+ "tc-2023036s12117": {
+  "sid": "2023036S12117",
+  "peak": "2023-02-19T18:00Z",
+  "landfall": {
+   "time": "2023-02-21T18:00Z",
+   "lat": -21.1,
+   "lon": 48.1,
+   "row": "DIST2LAND 0 km",
+   "cite": "ibtracs-2023036S12117-2023-02-21T18",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2023036S12117, 2023-02-21 18:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2023036S12117",
+     "SEASON": "2023",
+     "BASIN": "SI",
+     "NAME": "FREDDY",
+     "ISO_TIME": "2023-02-21 18:00:00",
+     "NATURE": "TS",
+     "LAT": "-21.1",
+     "LON": "48.1",
+     "DIST2LAND": "0",
+     "USA_RECORD": " ",
+     "USA_AGENCY": "jtwc_sh",
+     "USA_WIND": "75",
+     "USA_PRES": "980",
+     "USA_SSHS": "1"
+    }
+   }
+  }
+ },
+ "tc-2023294n09264": {
+  "sid": "2023294N09264",
+  "peak": "2023-10-25T06:00Z",
+  "landfall": {
+   "time": "2023-10-25T06:00Z",
+   "lat": 16.7,
+   "lon": -99.8,
+   "row": "DIST2LAND 10 km",
+   "cite": "ibtracs-2023294N09264-2023-10-25T06",
+   "source": {
+    "kind": "record",
+    "dataset": "dataset-ibtracs",
+    "title": "IBTrACS row: storm 2023294N09264, 2023-10-25 06:00 UTC (key landfall)",
+    "publisher": "NOAA National Centers for Environmental Information",
+    "licence": "US Government work, no copyright in the US. NCEI asks users to cite the paper and the dataset.",
+    "retrieved": "2026-09-25",
+    "url": "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r01/access/csv/ibtracs.since1980.list.v04r01.csv",
+    "row": {
+     "SID": "2023294N09264",
+     "SEASON": "2023",
+     "BASIN": "EP",
+     "NAME": "OTIS",
+     "ISO_TIME": "2023-10-25 06:00:00",
+     "NATURE": "TS",
+     "LAT": "16.7",
+     "LON": "-99.8",
+     "DIST2LAND": "10",
+     "USA_RECORD": " ",
+     "USA_AGENCY": "hurdat_epa",
+     "USA_WIND": "145",
+     "USA_PRES": "924",
+     "USA_SSHS": "5"
+    }
+   }
+  }
+ }
+}

@@ -23,6 +23,8 @@ import pytest
 
 from tools.release_exclusions import matches, read_exclusions
 
+from _release_export import SNAPSHOT_BUILDER, export_skip_reason
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPOSITORY_ROOT / "tools" / "battery" / "stage1_files.txt"
 
@@ -359,3 +361,72 @@ def test_every_release_machinery_gate_is_listed(entry: str) -> None:
         f"{entry} is not in tools/battery/stage1_files.txt.  It gates the "
         "machinery a release cut itself runs, and a defect there surfaces "
         "between the tag and PyPI, where there is no cheap way back")
+
+
+# The per-case half of the exclusion rule above.  A listed file survives the
+# export, but a case inside it can still read a file the export drops: dry
+# cut 4 of 2.8.0 ran Stage 1 at the exported commit and seven cases failed
+# that way (the nesting ledger under docs/superpowers/**, a run report under
+# evidence/**, the rescued forks under tilestream/rescued-tools/**) while all
+# seven passed in the development tree.  tests/_release_export.py is how such
+# a case skips there, and these pin exactly when it may.
+
+
+def _tree(root: Path, *, builder: bool, rules: str, files: tuple[str, ...] = ()) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "RELEASE-EXCLUDE.txt").write_text(rules, encoding="utf-8")
+    for name in files + ((SNAPSHOT_BUILDER,) if builder else ()):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x\n", encoding="utf-8")
+    return root
+
+
+RULES = "# comment\nwork/**\ndocs/private/**\nevidence/**\n"
+
+
+def test_an_export_skips_a_case_whose_input_it_drops_and_names_the_rule(tmp_path: Path) -> None:
+    export = _tree(tmp_path / "export", builder=False, rules=RULES)
+    reason = export_skip_reason("docs/private/ledger.md", "evidence/run.json", root=export)
+    assert reason is not None
+    assert "docs/private/ledger.md (RELEASE-EXCLUDE.txt: docs/private/**)" in reason
+    assert "evidence/run.json (RELEASE-EXCLUDE.txt: evidence/**)" in reason
+
+
+def test_the_development_tree_never_skips_a_missing_private_input(tmp_path: Path) -> None:
+    """A private input missing where the builder exists is a real defect, so the case runs and fails."""
+    development = _tree(tmp_path / "dev", builder=True, rules=RULES)
+    assert export_skip_reason("docs/private/ledger.md", root=development) is None
+
+
+def test_an_export_does_not_skip_an_absent_input_it_ships(tmp_path: Path) -> None:
+    """Only the export working may explain an absence; a shipped path that is missing fails."""
+    export = _tree(tmp_path / "export", builder=False, rules=RULES,
+                   files=("docs/private/ledger.md",))
+    assert export_skip_reason("docs/public/page.md", root=export) is None
+    assert export_skip_reason("docs/private/ledger.md", "docs/public/page.md",
+                              root=export) is None
+
+
+def test_an_input_that_is_present_runs_in_either_tree(tmp_path: Path) -> None:
+    export = _tree(tmp_path / "export", builder=False, rules=RULES,
+                   files=("docs/private/ledger.md",))
+    assert export_skip_reason("docs/private/ledger.md", root=export) is None
+    assert export_skip_reason("docs/private", root=export) is None
+
+
+def test_nothing_skips_once_the_builder_stops_marking_the_export(tmp_path: Path) -> None:
+    """Rules that ship work/** leave no way to tell the trees apart, so nothing may skip."""
+    tree = _tree(tmp_path / "tree", builder=False, rules="docs/private/**\n")
+    assert export_skip_reason("docs/private/ledger.md", root=tree) is None
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert export_skip_reason("docs/private/ledger.md", root=bare) is None
+
+
+def test_this_tree_is_classified_the_way_its_builder_says() -> None:
+    """The development tree runs every case; an export skips the ones that read what it drops."""
+    reason = export_skip_reason("tilestream/rescued-tools")
+    if (REPOSITORY_ROOT / SNAPSHOT_BUILDER).is_file():
+        assert reason is None
+    else:
+        assert reason is not None and "tilestream/rescued-tools/**" in reason

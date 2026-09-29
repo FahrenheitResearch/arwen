@@ -49,6 +49,16 @@ serde.workspace = true
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2.workspace = true
 
+# Free space on the output directory's disk (`src/space.rs`), asked before
+# the first byte of a frame stream that can run to tens of GB, and the
+# full-disk and quota codes a failed write is classified by.  Both crates
+# were already in the lock through other members.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [[bin]]
 name = "gpuwm_mapped_engine"
 path = "src/main.rs"

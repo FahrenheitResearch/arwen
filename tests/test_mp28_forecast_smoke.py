@@ -22,6 +22,9 @@ On a specified-lateral-boundary domain, over a real multi-step integration:
 * no NaN anywhere, on any step;
 * the aerosol, droplet-number and effective-radius bounds WRF's terminal
   clamp establishes hold on every step, in the region microphysics updates;
+* a column WRF leaves at its no-microphysics exit (``:2020``) leaves the
+  call with its aerosol above the surface exactly as it entered and its
+  droplet number at zero, because that exit comes before the terminal apply;
 * the specified-zone ring is BIT-restored by every microphysics call.
 
 THE REGISTERED LBC DEVIATION, MEASURED
@@ -43,9 +46,12 @@ stock WRF forces them from the same monthly dataset through
 ``constants_name``.
 
 The consequence is aerosol-free air advecting in at every inflow face.  It
-cannot NaN and cannot go negative -- WRF's own terminal floors
-(``module_mp_thompson.F:3979-3982``: ``nwfa >= 11.1E6``, ``nifa >= 5.0E3``)
-catch it -- so no automated gate anywhere in the tree would ever notice.  It
+cannot NaN and cannot go negative.  Where the scheme runs, WRF's terminal
+floors (``module_mp_thompson.F:3979-3982``: ``nwfa >= 11.1E6``,
+``nifa >= 5.0E3``) hold the air at the floor; in a column with no
+condensate and no ice supersaturation WRF returns at ``:2020``, before
+the terminal apply, so the clear inflow air keeps its zero aerosol there.
+Either way no automated gate anywhere in the tree would ever notice.  It
 is a slow, silent, physically wrong trend, and the only defence is to
 MEASURE it and publish the number.  That is
 :func:`test_lbc_aerosol_depletion_rate_is_measured_on_a_cloud_free_forecast`,
@@ -79,7 +85,22 @@ from conftest import requires_gpu
 # a bound on the state microphysics leaves behind, not on the state transport
 # leaves behind.  The distinction is the whole reason the checks below are
 # restricted to the microphysics-updated interior; see _INTERIOR_ONLY_NOTE.
+#
+# "Updated" is a COLUMN property as well as a region.  mp_thompson returns
+# at :2020 from a column whose entry cloud, ice, rain, snow and graupel are
+# all at or below R1 and which is nowhere supersaturated over ice
+# (:1646, :1827-1990), before the terminal apply at :3972-4021, so none of
+# these bounds is established there: the column keeps the aerosol transport
+# gave it (mp_gt_driver adds the surface emission at k = 0 afterwards,
+# :1316-1321), and its droplet number is the zero the entry rewrite wrote
+# (:1844-1845).  The adapter records WRF's per-column decision in the
+# ``mp_thompson_micro_columns`` scratch slot (1 = updated, 0 = returned at
+# :2020), and the checks below read it for every call.
 # ---------------------------------------------------------------------------
+
+#: The scratch slot the mp=28 adapter writes WRF's per-column :2020 decision
+#: into, taken on the entry state of each call.
+MICRO_COLUMNS_SLOT = "mp_thompson_micro_columns"
 
 #: :1805 / :3979-3980.  nwfa is clamped to [11.1E6, 9999.E6] -- a per-kilogram
 #: quantity clamped against per-cubic-metre constants, WRF's own unit
@@ -110,7 +131,10 @@ microphysics tiles never touch the ring (solve_em.F:3631-3639), ArWen
 reproduces that by bit-restoring it (microphysics.spec_zone_ring_slices),
 and therefore the ring carries whatever TRANSPORT left there -- which on an
 inflow face is exactly zero, below WRF's floor.  Asserting the floor on the
-ring would assert that ArWen violates WRF's tile clipping.
+ring would assert that ArWen violates WRF's tile clipping.  Inside the
+interior the aerosol floors are asserted on the columns the call updated;
+a column WRF returned from at :2020 is held instead to leaving the call
+with its aerosol above the surface untouched and its droplet number zero.
 """.strip()
 
 #: Repository-relative path of the evidence document this file's measurements
@@ -273,8 +297,10 @@ def _run_forecast(cp, cfg, *, bubble: bool, steps: int, wind: float,
 
     ``initialise=False`` is the COUNTERFACTUAL: the same domain with the
     production init path skipped entirely, so ``nwfa``/``nifa`` reach the
-    scheme as allocated zeros and the terminal apply clamps both to WRF's
-    floors (``module_mp_thompson.F:3979-3982``).  It exists so
+    scheme as allocated zeros, the terminal apply clamps both to WRF's
+    floors (``module_mp_thompson.F:3979-3982``) in every column it
+    updates, and the columns WRF returns from at ``:2020`` keep their
+    zeros.  It exists so
     :func:`test_the_aerosol_profile_changes_the_forecast_measurably` can
     measure what the profile is WORTH.
 
@@ -316,6 +342,13 @@ def _run_forecast(cp, cfg, *, bubble: bool, steps: int, wind: float,
         "interior": interior,
         "initialised": bool(initialise),
         "driver": driver,
+        # Per call: WRF's :2020 decision for every column (True = updated),
+        # the interior counts either way, and every way a column WRF
+        # returned from came out of the call touched.
+        "micro_columns": None,
+        "updated_columns": [],
+        "skipped_columns": [],
+        "skipped_column_violations": [],
     }
 
     real_apply = dycore.apply_microphysics
@@ -324,6 +357,8 @@ def _run_forecast(cp, cfg, *, bubble: bool, steps: int, wind: float,
     def instrumented(target, run_cfg, dt, **kwargs):
         before = {name: [getattr(target, name)[slc].copy() for slc in ring]
                   for name in _RING_FIELDS}
+        entry_aerosol = {name: getattr(target, name).copy()
+                         for name in ("nwfa", "nifa")}
         result = real_apply(target, run_cfg, dt, **kwargs)
         rainnc = getattr(result, "rainnc", None)
         if rainnc is not None:
@@ -334,6 +369,8 @@ def _run_forecast(cp, cfg, *, bubble: bool, steps: int, wind: float,
             for slc, saved in zip(ring, before[name]):
                 if not bool(cp.array_equal(now[slc], saved)):
                     record["ring_violations"].append((step_index["n"], name))
+        _check_column_exit(cp, target, entry_aerosol, record,
+                           step_index["n"], interior)
         return result
 
     dycore.apply_microphysics = instrumented
@@ -350,6 +387,51 @@ def _run_forecast(cp, cfg, *, bubble: bool, steps: int, wind: float,
     return record
 
 
+def _bits(cp, array):
+    return cp.ascontiguousarray(array).view(cp.uint32)
+
+
+def _check_column_exit(cp, state, entry_aerosol, record, n, interior):
+    """WRF's ``:2020`` exit, held around every call from the adapter's flag.
+
+    The flag is read back off the scratch slot the adapter wrote it to, so
+    what is checked is the decision this call actually made, on the columns
+    of the microphysics interior.  A column WRF returned from must leave the
+    call with ``nwfa`` and ``nifa`` above ``k = 0`` BITWISE as they entered
+    -- the surface emission (``mp_gt_driver:1320-1321``) is the only aerosol
+    write after the return and it lands on ``k = 0`` -- and with ``nc`` zero
+    at every level, the zero the entry rewrite (``:1844-1845``) wrote and
+    nothing after the return overwrites.
+    """
+    flag = state.existing_scratch(MICRO_COLUMNS_SLOT)
+    if flag is None:
+        record["micro_columns"] = None
+        record["skipped_column_violations"].append(
+            (n, f"the call wrote no {MICRO_COLUMNS_SLOT} flag"))
+        return
+    updated = flag[interior] != 0
+    skipped = ~updated
+    record["micro_columns"] = updated
+    record["updated_columns"].append(int(cp.count_nonzero(updated)))
+    record["skipped_columns"].append(int(cp.count_nonzero(skipped)))
+    if not bool(cp.any(skipped)):
+        return
+    for name in ("nwfa", "nifa"):
+        now = _bits(cp, getattr(state, name)[interior][1:])
+        was = _bits(cp, entry_aerosol[name][interior][1:])
+        changed = int(cp.count_nonzero((now != was) & skipped[None]))
+        if changed:
+            record["skipped_column_violations"].append(
+                (n, f"{name} above k=0 changed in {changed} cells of "
+                    "columns WRF returned from"))
+    nonzero = int(cp.count_nonzero(
+        (state.nc[interior] != 0) & skipped[None]))
+    if nonzero:
+        record["skipped_column_violations"].append(
+            (n, f"nc nonzero in {nonzero} cells of columns WRF returned "
+                "from"))
+
+
 def _collect_step(cp, state, cfg, record, n, interior):
     for name in _FINITE_FIELDS:
         value = getattr(state, name, None)
@@ -364,6 +446,8 @@ def _collect_step(cp, state, cfg, record, n, interior):
     rho = _entry_density(cp, state)[interior]
 
     def bad(label, value, lo, hi):
+        if value.size == 0:
+            return
         lo_bad = float(cp.min(value)) < lo
         hi_bad = float(cp.max(value)) > hi
         if lo_bad or hi_bad:
@@ -371,8 +455,22 @@ def _collect_step(cp, state, cfg, record, n, interior):
                 (n, label, float(cp.min(value)), float(cp.max(value)),
                  lo, hi))
 
-    bad("nwfa", nwfa, NWFA_FLOOR * (1.0 - 1e-6), NWFA_CEILING * (1.0 + 1e-6))
-    bad("nifa", nifa, NIFA_FLOOR * (1.0 - 1e-6), NIFA_CEILING * (1.0 + 1e-6))
+    # The terminal apply's aerosol bounds, on the columns it ran in.  With
+    # no flag the whole interior is held to them, which is the stricter
+    # reading; the missing flag is itself a recorded violation.
+    updated = record["micro_columns"]
+    if updated is None:
+        updated = cp.ones(nwfa.shape[1:], dtype=bool)
+    in_updated = cp.broadcast_to(updated, nwfa.shape)
+    in_skipped = ~in_updated
+    bad("nwfa", nwfa[in_updated], NWFA_FLOOR * (1.0 - 1e-6),
+        NWFA_CEILING * (1.0 + 1e-6))
+    bad("nifa", nifa[in_updated], NIFA_FLOOR * (1.0 - 1e-6),
+        NIFA_CEILING * (1.0 + 1e-6))
+    # A column WRF returned from carries what transport left it: never
+    # negative, and not held to a floor the terminal apply never wrote.
+    bad("nwfa (returned at :2020)", nwfa[in_skipped], 0.0, float("inf"))
+    bad("nifa (returned at :2020)", nifa[in_skipped], 0.0, float("inf"))
     # nc: zero where the terminal apply zeroed qc, else <= Nt_c_max/rho.
     nc_ratio = nc * rho
     bad("nc*rho", nc_ratio, 0.0, NT_C_MAX * (1.0 + 1e-5))
@@ -422,7 +520,9 @@ def test_g4_multistep_specified_bc_forecast_is_finite_and_bounded():
     The first multi-step mp=28 forecast that has ever been run.  Per step:
     every prognostic and every radiation-facing effective radius finite, and
     every bound WRF's terminal apply establishes holding in the
-    microphysics-updated interior.
+    microphysics-updated interior, on the columns the call updated.  Every
+    column WRF returned from at ``:2020`` leaves the call with its aerosol
+    above the surface bitwise as it entered and its droplet number zero.
 
     ``nc`` is checked as ``nc*rho`` against ``Nt_c_max`` because that is the
     form WRF's terminal rediagnosis caps (:4020 caps the per-kilogram value
@@ -437,6 +537,15 @@ def test_g4_multistep_specified_bc_forecast_is_finite_and_bounded():
     assert not record["nonfinite"], (
         "non-finite state during the forecast: "
         + ", ".join(f"step {n} {name}" for n, name in record["nonfinite"][:12]))
+    assert not record["skipped_column_violations"], (
+        "a column WRF leaves at its no-microphysics exit (:2020) came out of "
+        "the call touched:\n  " + "\n  ".join(
+            f"step {n}: {what}"
+            for n, what in record["skipped_column_violations"][:12]))
+    # Both kinds of column were exercised, so neither check above or below
+    # holds vacuously.
+    assert max(record["updated_columns"]) > 0, record["updated_columns"][:12]
+    assert max(record["skipped_columns"]) > 0, record["skipped_columns"][:12]
     assert not record["bound_violations"], (
         "WRF terminal-clamp bound violated in the microphysics interior:\n"
         + "\n".join(
@@ -462,9 +571,10 @@ def test_g4_multistep_specified_bc_forecast_is_finite_and_bounded():
 
 #: The long run: 600 steps = 7200 s = 2 hours of model time, which is
 #: 2.6 ventilation times of this domain at FORECAST_U.  Long enough that the
-#: aerosol field is entirely inflow air and every tracer is sitting on WRF's
-#: floor -- the state a 6-hour operational run would spend most of its life
-#: in, and the one no column fixture can produce.
+#: aerosol field is entirely inflow air -- aerosol-free where WRF's :2020
+#: exit leaves a clear column alone, on WRF's floor where the scheme runs --
+#: the state a 6-hour operational run would spend most of its life in, and
+#: the one no column fixture can produce.
 LONG_FORECAST_STEPS = 600
 
 
@@ -476,7 +586,8 @@ def test_g4_a_two_hour_forecast_stays_finite_bounded_and_ring_clean():
     stepped; this establishes that it survives being stepped for long enough
     to reach the regime it would actually run in.  Two hours at 20 m/s
     ventilates this 56 km domain 2.6 times, so by the end EVERY cell holds
-    inflow air and both aerosol tracers are pinned on their floors.  That is
+    inflow air: aerosol-free in the columns WRF returns from at ``:2020``,
+    on WRF's floors in the columns the scheme updates.  That is
     a genuinely different state from anything the column fixtures or the
     30-minute run visit, and it is where a slow accumulator leak, a
     persistent-scratch carry or a clamp that is applied one step late would
@@ -496,16 +607,22 @@ def test_g4_a_two_hour_forecast_stays_finite_bounded_and_ring_clean():
 
     assert not record["nonfinite"], record["nonfinite"][:12]
     assert not record["bound_violations"], record["bound_violations"][:12]
+    assert not record["skipped_column_violations"], (
+        record["skipped_column_violations"][:12])
     assert not record["ring_violations"], record["ring_violations"][:12]
     assert float(record["state"].elapsed_seconds) == \
         LONG_FORECAST_STEPS * FORECAST_DT
 
-    # The domain really has been ventilated: both tracers end within a small
-    # multiple of WRF's floors, which is the regime the run is here to test.
+    # The domain really has been ventilated.  The inflow air carries no
+    # aerosol, the columns WRF returns from at :2020 keep it that way and the
+    # columns the scheme updates hold it at WRF's floors, so the interior
+    # mean ends below the floors; the initial profile started six times
+    # above (6.7e7 kg^-1 mean, nowhere below naCCN1 = 5.0e7).  nwfa stays
+    # positive because the surface emission at k = 0 keeps adding.
     final_nwfa = record["nwfa_interior_mean"][-1]
     final_nifa = record["nifa_interior_mean"][-1]
-    assert NWFA_FLOOR <= final_nwfa < 3.0 * NWFA_FLOOR, final_nwfa
-    assert NIFA_FLOOR <= final_nifa < 3.0 * NIFA_FLOOR, final_nifa
+    assert 0.0 < final_nwfa < NWFA_FLOOR, final_nwfa
+    assert 0.0 <= final_nifa < NIFA_FLOOR, final_nifa
     # and it made weather while doing it.
     assert max(record["w_max"]) > 5.0
     assert record["rain_sum"][-1] > 0.0
@@ -515,7 +632,9 @@ def test_g4_a_two_hour_forecast_stays_finite_bounded_and_ring_clean():
           f"final interior nwfa {final_nwfa:.4e} kg^-1 "
           f"(floor {NWFA_FLOOR:.3e}), nifa {final_nifa:.4e} kg^-1 "
           f"(floor {NIFA_FLOOR:.3e}), total RAINNC "
-          f"{record['rain_sum'][-1]:.4f} mm")
+          f"{record['rain_sum'][-1]:.4f} mm, columns WRF returned from "
+          f"on the last step {record['skipped_columns'][-1]} of "
+          f"{record['skipped_columns'][-1] + record['updated_columns'][-1]}")
 
 
 @requires_gpu
@@ -900,10 +1019,14 @@ def test_the_specified_zone_ring_ends_at_exactly_zero_aerosol():
     The depletion measurement above is about the INTERIOR.  The
     specified-zone ring itself is a separate and sharper statement, and it
     had never been looked at: WRF's clipped microphysics tiles never touch
-    the ring, so the terminal clamp that guarantees ``nwfa >= 11.1e6``
-    everywhere else does NOT run there.  What the ring carries is whatever
-    ``flow_dep_bdy`` left, and with no aerosol in the boundary file that is
-    exactly ZERO -- a value WRF itself can never produce.
+    the ring, so the terminal clamp that holds ``nwfa >= 11.1e6`` in the
+    columns the scheme updates does NOT run there.  What the ring carries is
+    whatever ``flow_dep_bdy`` left, and with no aerosol in the boundary file
+    that is exactly ZERO.  In this cloud-free run the same zero reaches the
+    interior too: every interior column takes WRF's ``:2020`` exit on every
+    call, which leaves it as transport delivered it.  WRF forces
+    ``qnwfa``/``qnifa`` at the boundary from the monthly dataset, so in WRF
+    neither zero arises; both are this deviation's.
 
     Measured here with a purely zonal 20 m/s flow: the west (inflow) face,
     and BOTH tangential faces where the normal velocity is zero, end at
@@ -945,13 +1068,22 @@ def test_the_specified_zone_ring_ends_at_exactly_zero_aerosol():
         "the outflow face should retain the interior value except at the "
         f"corners; measured zero fraction {zero_fraction['east']:.3f}")
 
-    # And the first row microphysics DOES update sits on WRF's floor, which
-    # is the boundary between "clipped tile" and "clamped state".
+    # Inside the ring the scheme ran on no column: this run never has
+    # condensate and is nowhere supersaturated over ice, so every call
+    # returned from every interior column at :2020 and left it untouched,
+    # and the inflow's zero reaches the interior exactly as WRF would leave
+    # it.  The floor holds wherever a call did update a column (the bounds
+    # recorded per step), and there is none here to hold it.
     sz = int(cfg.spec_zone)
-    assert float(cp.min(state.nwfa[:, sz:cfg.ny - sz, sz:cfg.nx - sz])) >= \
-        NWFA_FLOOR * (1.0 - 1.0e-6), (
-        "the microphysics-updated interior fell below WRF's floor, which "
-        "would be a real defect rather than the registered deviation")
+    assert record["updated_columns"], "no call recorded its :2020 decision"
+    assert max(record["updated_columns"]) == 0, (
+        "a column of the cloud-free run reached the terminal apply, so the "
+        "zero this test and its evidence page describe is not the whole "
+        f"interior's any more: {record['updated_columns'][:12]}")
+    assert not record["skipped_column_violations"], (
+        record["skipped_column_violations"][:12])
+    assert not record["bound_violations"], record["bound_violations"][:12]
+    assert float(cp.min(state.nwfa[:, sz:cfg.ny - sz, sz:cfg.nx - sz])) == 0.0
 
     # The ring is exactly the region microphysics does not update.
     ring = microphysics.spec_zone_ring_slices(cfg.ny, cfg.nx, sz)
@@ -1330,8 +1462,10 @@ def test_the_aerosol_profile_changes_the_forecast_measurably():
     same wind -- except that the counterfactual skips the production init
     path and therefore starts from ``nwfa = nifa = 0``.  With no aerosol the
     scheme's terminal clamp pins ``nwfa`` at ``11.1e6 kg^-1``
-    (``module_mp_thompson.F:3979-3980``): a maritime-clean CCN population
-    everywhere, which activates fewer, larger droplets and rains out faster.
+    (``module_mp_thompson.F:3979-3980``) in every column it updates, and the
+    entry reads the same floor (``:1805``) wherever cloud forms: a
+    maritime-clean CCN population, which activates fewer, larger droplets
+    and rains out faster.
     Skipping the init path also leaves the counterfactual without a
     PhysicsDriver, which is measured to be BITWISE irrelevant to this
     forecast (:func:`test_attaching_the_physics_driver_does_not_move_the

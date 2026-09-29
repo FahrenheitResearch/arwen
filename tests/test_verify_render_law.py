@@ -1,6 +1,6 @@
 """`gpuwm verify`'s weather fields come from the renderer, or not at all.
 
-CLAUDE.md, Drew 2026-08-06: "Weather-field product plots come from the
+The render law, 2026-08-06: "Weather-field product plots come from the
 real Rust renderer ``rw_wrfbatch`` driven through ``gpuwm.rustwx`` ...
 matplotlib, ``wrf.plot`` and cartopy are not allowed for weather
 fields".

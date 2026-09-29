@@ -64,6 +64,26 @@ pub fn build_static(
     build_static_with_sampler(&sampler, paths)
 }
 
+/// Build just terrain with the identical sampler and smoother as the full set.
+pub fn build_terrain(grid: &ProjectedGrid, terrain: &std::path::Path, halo: usize) -> Result<FieldSet> {
+    let dom = DomainSampler::new(grid, halo)?;
+    let (hgt, coverage) = sampled_terrain(&dom, terrain)?;
+    let mut set = FieldSet::default();
+    set.fields.insert("HGT_M".to_string(), Field::Plane(hgt));
+    set.coverage_reports.insert("terrain".to_string(), coverage);
+    Ok(set)
+}
+
+fn sampled_terrain(dom: &DomainSampler<'_>, terrain: &std::path::Path) -> Result<(Grid2, String)> {
+    let topo = GeogDataset::open(terrain, None)?;
+    let win = dom.window(&topo, 3)?;
+    let coverage = dom.require_source_coverage(&topo, &win, "terrain")?;
+    let hgt = dom.continuous(&topo, &win, 0,
+        &[InterpOp::FourPt, InterpOp::Average4Pt], 0.0, true, None)?;
+    let hgt = smth_desmth_special(&hgt, 1)?;
+    Ok((crop_grid(dom, &hgt), coverage))
+}
+
 /// Crop an extended plane to the mass grid.
 fn crop_grid(dom: &DomainSampler<'_>, g: &Grid2) -> Grid2 {
     let mut data = Vec::with_capacity(dom.ny * dom.nx);
@@ -121,22 +141,8 @@ pub fn build_static_with_sampler(
 
     // --- terrain: average_gcell(4.0)+four_pt+average_4pt, fill 0, one
     //     smoother-desmoother pass (choice arbitrated by geo_em HGT_M).
-    let hgt = {
-        let topo = GeogDataset::open(&paths.terrain, None)?;
-        let win = dom.window(&topo, 3)?;
-        require(&mut set, "terrain", &topo, &win)?;
-        let hgt_e = dom.continuous(
-            &topo,
-            &win,
-            0,
-            &[InterpOp::FourPt, InterpOp::Average4Pt],
-            0.0,
-            true,
-            None,
-        )?;
-        let hgt_e = smth_desmth_special(&hgt_e, 1)?;
-        crop_grid(dom, &hgt_e)
-    }; // Release terrain source, decoded tiles and extended planes together.
+    let (hgt, coverage) = sampled_terrain(dom, &paths.terrain)?;
+    set.coverage_reports.insert("terrain".to_string(), coverage);
 
     // --- landuse -> LANDUSEF / LANDMASK / LU_INDEX ---------------------
     let lu_ds = GeogDataset::open(&paths.landuse, None)?;

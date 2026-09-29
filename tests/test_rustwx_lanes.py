@@ -1012,10 +1012,15 @@ def test_the_streamed_lane_s_updraft_reaches_a_production_panel(tmp_path):
         # The window divergence is IN the file, not only in a docstring.
         assert "INSTANTANEOUS" in getattr(dataset, W_EXTREME_ATTR)
 
+    # The lane's own request: `all` is the named products, and the column
+    # extremes are stored variables no named product draws, so they come
+    # from `variables` beside it.
+    from tilestream.bigdomain_render import RUST_PRODUCTS
+    assert "variables" in RUST_PRODUCTS.split(",")
     out = tmp_path / "png"
     result = subprocess.run(
         [str(_built("rw_wrfbatch")), "--store-root", str(tmp_path / "store"),
-         "--out-dir", str(out), "--products", "all", "--frames", "all",
+         "--out-dir", str(out), "--products", RUST_PRODUCTS, "--frames", "all",
          "--width", "500", "--height", "400", str(written)],
         capture_output=True, text=True, errors="replace", timeout=600)
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
@@ -1122,16 +1127,15 @@ def test_a_structural_placeholder_survives_a_same_named_surface_field(
     """A 2-D ``T`` does not become the file's mass coordinate.
 
     Publishing by shape means a snapshot key reaches the file under its
-    own name, and ``T``/``MU`` are the two names where that would collide
-    with STRUCTURE rather than with a stand-in: the importer's preflight
-    reads ``T`` as a ``(1, ny, nx)`` mass coordinate, and a 2-D surface
-    plane put there would be read as a profile it is not.  So those two
-    are placed before the shape rule and a snapshot entry of the same name
-    is reported as already written rather than silently winning.
+    own name, and ``T`` is the name where that would collide with
+    STRUCTURE rather than with a placeholder: the renderer reads ``T`` as
+    a ``(1, ny, nx)`` mass coordinate, and a 2-D surface plane put there
+    would be read as a profile it is not.  So it is placed before the
+    shape rule and a snapshot entry of the same name is reported as
+    already written rather than silently winning.
 
-    ``HGT``/``SINALPHA``/``COSALPHA`` are the opposite case and stay
-    after: they stand in for a measurement, so a lane that knows its
-    terrain or its grid rotation overrides them.
+    ``SINALPHA``/``COSALPHA`` are the opposite case and stay after: a lane
+    that knows its grid rotation overrides the identity pair.
     """
 
     netCDF4 = pytest.importorskip("netCDF4")
@@ -1161,6 +1165,49 @@ def test_a_structural_placeholder_survives_a_same_named_surface_field(
     assert "T" in report.skipped, report.skipped
     assert "already written" in report.skipped["T"]
     assert "SINALPHA" in report.passed_through, report.passed_through
+
+
+def test_a_snapshot_with_no_terrain_gets_no_invented_terrain(tmp_path,
+                                                            monkeypatch):
+    """No zero ``HGT`` or ``MU`` stands in for a field the lane lacks.
+
+    Fails before this fix: the writer added both as zero planes, and the
+    renderer draws every plane a wrfout carries, so a frame drawn with
+    the default product set published a Terrain Height map reading 0 m
+    and flat-zero ``wrf_hgt``, ``wrf_terrain`` and ``wrf_mu`` pictures
+    (four of the eleven pictures of a ``gpuwm cycle`` boundary).  A lane
+    that has its terrain still publishes it.
+    """
+
+    netCDF4 = pytest.importorskip("netCDF4")
+    from gpuwm.io.surface_wrfout import write_surface_wrfout
+    from gpuwm.io.wrfout import WRFOUT_WRITER_ENV
+
+    monkeypatch.setenv(WRFOUT_WRITER_ENV, "python")
+
+    ny, nx = 4, 5
+    snapshot = {
+        "XLAT": np.full((ny, nx), 35.0, np.float32),
+        "XLONG": np.full((ny, nx), -97.0, np.float32),
+        "REFL_COMPOSITE": np.full((ny, nx), 30.0, np.float32),
+    }
+    bare = write_surface_wrfout(
+        tmp_path / "wrfout_d01_bare.nc", snapshot, time_str=_STAMP,
+        dx=3000.0, start_time=datetime.datetime(2026, 7, 28, 20))
+    measured = write_surface_wrfout(
+        tmp_path / "wrfout_d01_terrain.nc",
+        {**snapshot, "HT": np.full((ny, nx), 1650.0, np.float32)},
+        time_str=_STAMP, dx=3000.0,
+        start_time=datetime.datetime(2026, 7, 28, 20))
+
+    with netCDF4.Dataset(bare) as dataset:
+        names = set(dataset.variables)
+        assert "HGT" not in names and "MU" not in names, sorted(names)
+        # What the file needs to be read at all is still there.
+        assert dataset.variables["T"].shape == (1, 1, ny, nx)
+        assert {"REFL_10CM", "SINALPHA", "COSALPHA"} <= names
+    with netCDF4.Dataset(measured) as dataset:
+        assert np.allclose(dataset.variables["HGT"][0], 1650.0)
 
 
 def test_the_two_tilestream_carrier_tables_reach_the_writer(tmp_path,

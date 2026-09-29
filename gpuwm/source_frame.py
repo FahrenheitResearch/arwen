@@ -154,6 +154,11 @@ def _mask_input_paths(value: object, inputs: Sequence[tuple[str, str]]) -> objec
     return value
 
 
+#: The ``source_field`` prefix of a field a frame completed from its own
+#: state where the source left it out.
+COMPLETED_FIELD_REFERENCE_PREFIX = "@completed."
+
+
 def portable_frame_header(
     header: Mapping[str, object] | object,
     *,
@@ -216,13 +221,17 @@ def portable_frame_header(
     elided = set(libm_dependent)
     fields = masked.get("fields")
     if isinstance(fields, list):
+        # A field this frame completed hydrostatically took logarithms,
+        # whichever mapping declared it; its descriptor says so.
         masked["fields"] = [
             {
                 **descriptor,
                 "data_reference": f"libm:{descriptor['canonical_name']}",
             }
             if isinstance(descriptor, Mapping)
-            and descriptor.get("canonical_name") in elided
+            and (descriptor.get("canonical_name") in elided
+                 or str(descriptor.get("source_field", "")).startswith(
+                     COMPLETED_FIELD_REFERENCE_PREFIX))
             else descriptor
             for descriptor in fields
         ]

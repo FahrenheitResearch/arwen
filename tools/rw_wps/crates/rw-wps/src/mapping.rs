@@ -165,6 +165,11 @@ pub struct VerticalCoordinate {
     pub positive: Option<PositiveDirection>,
     #[serde(default)]
     pub levels: Vec<f64>,
+    /// The whole ladders other publications of the product carry, each
+    /// drawn from `levels`; a GRIB decode stacks the largest declared
+    /// ladder its records carry in full.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub era_ladders: Vec<Vec<f64>>,
     /// Inline hybrid A coefficients in Pa (declared-data fallback; the
     /// primary channel is the GRIB pv coordinate octets read at decode).
     #[serde(default)]
@@ -518,6 +523,10 @@ pub struct TargetContract {
     pub soil_layer_count: Option<u16>,
     #[serde(default)]
     pub boundary_interval_seconds: Option<u32>,
+    /// The target takes a uniform series at any whole multiple of
+    /// `boundary_interval_seconds`, not only at that spacing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accept_boundary_interval_multiples: bool,
     pub required_fields: Vec<FieldRequirement>,
     #[serde(default = "default_pressure_requirement")]
     pub pressure_requirement: PressureRequirement,
@@ -655,6 +664,17 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
             ),
         }
     }
+    if mapping.target.accept_boundary_interval_multiples
+        && !matches!(mapping.target.boundary_interval_seconds, Some(value) if value > 0)
+    {
+        error(
+            "boundary_interval_multiples_without_interval",
+            None,
+            "accept_boundary_interval_multiples needs a positive boundary_interval_seconds: \
+             the multiples it accepts are multiples of that declared spacing"
+                .to_owned(),
+        );
+    }
 
     validate_coordinate_selectors(mapping, &mut error);
 
@@ -785,11 +805,12 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
         }
         if matches!(field.missing, MissingPolicy::PreserveMask)
             && field.location != GridLocation::Soil
+            && !MASKED_WATER_STATE_FIELDS.contains(&name.as_str())
         {
             error(
                 "preserve_mask_location",
                 Some(name),
-                "preserve_mask is restricted to soil fields repaired by the land/water-aware initializer"
+                "preserve_mask is restricted to soil fields repaired by the land/water-aware initializer and the water-state fields read over water only"
                     .to_owned(),
             );
         }
@@ -1110,6 +1131,50 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
             None,
             "explicit vertical levels must be unique".to_owned(),
         );
+    }
+    let era_ladders = &mapping.coordinates.vertical.era_ladders;
+    if !era_ladders.is_empty() {
+        if mapping.coordinates.vertical.levels.is_empty() {
+            error(
+                "era_ladders_without_levels",
+                None,
+                "vertical.era_ladders needs vertical.levels: without declared \
+                 levels the decoder already takes the ladder the file offers"
+                    .to_owned(),
+            );
+        }
+        if mapping.format == SourceFormat::Netcdf {
+            error(
+                "era_ladders_unread",
+                None,
+                "vertical.era_ladders is read by the GRIB decoders only; the \
+                 NetCDF decoder selects vertical.levels by coordinate value"
+                    .to_owned(),
+            );
+        }
+        for (index, ladder) in era_ladders.iter().enumerate() {
+            let members = ladder
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<BTreeSet<_>>();
+            if ladder.is_empty() || members.len() != ladder.len() {
+                error(
+                    "invalid_era_ladder",
+                    None,
+                    format!("vertical.era_ladders[{index}] must be a non-empty unique list"),
+                );
+            }
+            if !members.is_subset(&unique_levels) {
+                error(
+                    "invalid_era_ladder",
+                    None,
+                    format!(
+                        "vertical.era_ladders[{index}] names levels vertical.levels \
+                         does not declare"
+                    ),
+                );
+            }
+        }
     }
     if mapping.fields.is_empty() {
         warnings.push(Diagnostic {
@@ -2225,12 +2290,27 @@ pub fn wrf_real_contract(max_dom: u16, physics_suite: impl Into<String>) -> Targ
         target_vertical_levels: None,
         soil_layer_count: None,
         boundary_interval_seconds: None,
+        accept_boundary_interval_multiples: false,
         required_fields: canonical_wrf_requirements(),
         pressure_requirement: PressureRequirement::AirPressureOrHybridCoordinate,
         policy_controlled_fields: canonical_policy_fields(),
         initialization_policies: BTreeMap::new(),
     }
 }
+
+/// `gpuwm.mapped_source.MASKED_WATER_STATE_FIELDS`: surface fields a
+/// mapping may carry with the source's missing mask intact, because only a
+/// consumer that takes water values from water cells reads them (the
+/// water-temperature assembly, the masked sea-ice chain and the lake
+/// mapping), so a land cell the source leaves missing never reaches the
+/// initial state.
+pub const MASKED_WATER_STATE_FIELDS: [&str; 5] = [
+    "lake_ice_depth",
+    "lake_ice_temperature",
+    "lake_water_temperature",
+    "sea_ice_fraction",
+    "sea_surface_temperature",
+];
 
 fn canonical_wrf_requirements() -> Vec<FieldRequirement> {
     let three_d = [
@@ -2410,6 +2490,7 @@ pub fn mapping_template(format: SourceFormat) -> NativeMapping {
                 },
                 positive: Some(PositiveDirection::Down),
                 levels: Vec::new(),
+                era_ladders: Vec::new(),
                 hybrid_a: Vec::new(),
                 hybrid_b: Vec::new(),
                 hybrid_a_field: None,
@@ -2823,6 +2904,32 @@ Param| Type |Level1|Level2| Name     | Units    | Description             |Discp
     }
 
     #[test]
+    fn era_ladders_round_trip_and_are_held_to_the_declared_levels() {
+        let mut mapping = mapping_template(SourceFormat::Grib2);
+        mapping.coordinates.vertical.levels = vec![1000.0, 5000.0, 10000.0];
+        mapping.coordinates.vertical.era_ladders = vec![vec![5000.0, 10000.0]];
+        let text = serde_json::to_string(&mapping).unwrap();
+        let read: NativeMapping = serde_json::from_str(&text).unwrap();
+        assert_eq!(read.coordinates.vertical.era_ladders, vec![vec![5000.0, 10000.0]]);
+        let era_errors = |mapping: &NativeMapping| {
+            validate_mapping(mapping)
+                .errors
+                .iter()
+                .filter(|item| item.code.contains("era_ladder"))
+                .count()
+        };
+        assert_eq!(era_errors(&mapping), 0);
+        mapping.coordinates.vertical.era_ladders[0].push(7.0);
+        assert_eq!(era_errors(&mapping), 1);
+        let mut without_levels = mapping_template(SourceFormat::Grib2);
+        without_levels.coordinates.vertical.era_ladders = vec![vec![5000.0]];
+        assert!(validate_mapping(&without_levels)
+            .errors
+            .iter()
+            .any(|item| item.code == "era_ladders_without_levels"));
+    }
+
+    #[test]
     fn declared_netcdf_missing_attribute_must_exist() {
         let mut mapping = mapping_template(SourceFormat::Netcdf);
         let field = mapping.fields.get_mut("air_temperature").unwrap();
@@ -2850,5 +2957,24 @@ Param| Type |Level1|Level2| Name     | Units    | Description             |Discp
             item.code == "target_contract_missing_canonical_requirement"
                 && item.field.as_deref() == Some("terrain_height")
         }));
+    }
+
+    #[test]
+    fn boundary_interval_multiples_need_the_interval_they_multiply() {
+        let mut mapping = mapping_template(SourceFormat::Grib2);
+        mapping.target.accept_boundary_interval_multiples = true;
+        mapping.target.boundary_interval_seconds = None;
+        assert!(validate_mapping(&mapping).errors.iter().any(|item| {
+            item.code == "boundary_interval_multiples_without_interval"
+        }));
+        mapping.target.boundary_interval_seconds = Some(3600);
+        assert!(!validate_mapping(&mapping).errors.iter().any(|item| {
+            item.code == "boundary_interval_multiples_without_interval"
+        }));
+        let text = serde_json::to_string(&mapping.target).unwrap();
+        assert!(text.contains("\"accept_boundary_interval_multiples\":true"));
+        mapping.target.accept_boundary_interval_multiples = false;
+        let text = serde_json::to_string(&mapping.target).unwrap();
+        assert!(!text.contains("accept_boundary_interval_multiples"));
     }
 }

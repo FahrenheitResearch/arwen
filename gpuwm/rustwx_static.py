@@ -22,7 +22,8 @@ from pathlib import Path
 import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           cargo_build_one_liner, default_bridge_dir,
+                           default_bridge_dir, lazy_build_hints,
+                           rustwx_build_hint,
                            accept_resolved, executable_name, launchable,
                            packaged_bridge_dir, quiet_loader_errors)
 
@@ -32,8 +33,10 @@ STATIC_ENV = "GPUWM_RW_MPAS_STATIC"
 #: Executable base name of the vendored static builder.
 STATIC_NAME = "rw_mpas_static"
 
-#: The one-liner that builds it, from a checkout root.
-CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
+#: ``CARGO_BUILD_HINT``: the one-liner that builds it, from a checkout
+#: root, spelled for the shell rule when it is read.
+__getattr__ = lazy_build_hints(
+    __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
 #: ``rw_mpas_static --abi`` output: the argument vector this wrapper was
 #: written against plus the progress grammar :func:`run_static` parses.
@@ -157,7 +160,7 @@ def static_remedy() -> str:
         env_var=STATIC_ENV, filename=executable_name(STATIC_NAME),
         subject="the mpas static builder",
         crate_relative=RUSTWX_CRATE_RELATIVE,
-        one_liner=CARGO_BUILD_HINT, artifact=STATIC_NAME)
+        one_liner=rustwx_build_hint(), artifact=STATIC_NAME)
 
 
 def probe_static_bin(path: Path) -> tuple[bool, str]:
@@ -193,7 +196,7 @@ def probe_static_bin(path: Path) -> tuple[bool, str]:
     if abi.returncode != 0 or observed != STATIC_ABI_MARKER:
         return False, ("executes but reports a different static-builder ABI "
                        "than this gpuwm expects -- rebuild it: "
-                       f"{CARGO_BUILD_HINT}")
+                       f"{rustwx_build_hint()}")
     return True, (f"{transcript.strip()} -- --abi matches the static "
                   "request and progress contract")
 

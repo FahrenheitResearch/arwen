@@ -95,6 +95,11 @@ from gpuwm.aerosol_source_receipt import (  # noqa: E402
     aerosol_source_report_entries,
 )
 from gpuwm.experiment import load_experiment  # noqa: E402
+from gpuwm.acoustic_adaptation import (  # noqa: E402
+    acoustic_receipt, adapt_experiment_to_terrain, fold_corridor_reading,
+    readings_from_static)
+from gpuwm.terrain_clock import (  # noqa: E402
+    clock_for_prepared_cache, clock_for_wrfinput, clock_receipt)
 from gpuwm.vertical_adaptation import (  # noqa: E402
     adopt_prepared_vertical, prepared_domain_coordinate_refusal)
 from gpuwm.kernel_compile_notice import (  # noqa: E402
@@ -379,8 +384,14 @@ def _require_directory(path: Path, label: str) -> Path:
 
 
 def _inside(path: Path, root: Path) -> bool:
+    # Compared in the plain spelling: a folder handed over in the extended
+    # Windows spelling (a deep runs folder) is the same place as its plain
+    # twin, and comparing the two spellings as text let an output folder
+    # inside the protected inputs pass as outside them.
+    from gpuwm.filesystem_paths import canonical_path
+
     try:
-        Path(path).resolve().relative_to(Path(root).resolve())
+        canonical_path(path).relative_to(canonical_path(root))
         return True
     except ValueError:
         return False
@@ -398,11 +409,18 @@ def _sibling_outdir(protected: Path) -> Path:
 
 
 def claim_output_directory(output: Path, *, protected_roots: tuple[Path, ...]) -> Path:
-    """Create exactly one output directory without adopting old content."""
+    """Create exactly one output directory without adopting old content.
 
-    result = Path(output).resolve()
+    The folder comes back in the spelling it was handed: a deep runs folder
+    arrives in the extended Windows spelling because the domains and
+    pictures below it pass the 260-character limit, and answering in the
+    plain spelling would have every write below it fail as a missing file.
+    """
+    from gpuwm.filesystem_paths import canonical_path, keep_spelling
+
+    result = keep_spelling(output, canonical_path(output))
     for protected in protected_roots:
-        protected = Path(protected).resolve()
+        protected = canonical_path(protected)
         if _inside(result, protected) or _inside(protected, result):
             raise ValueError(
                 f"output directory {result} overlaps protected input "
@@ -595,6 +613,73 @@ class PreparedTreeInputs:
     mapped_authority_paths: Mapping[str, Path] = field(
         default_factory=lambda: MappingProxyType({}))
     physics_profile_assertion: Mapping[str, object] | None = None
+    #: The acoustic substep derivation for every domain
+    #: (:func:`gpuwm.acoustic_adaptation.acoustic_receipt`), or ``None``
+    #: until :func:`_with_terrain_acoustics` has read the tree's ground.
+    acoustic_substeps: Mapping[str, object] | None = None
+    #: The long-step derivation for every domain
+    #: (:func:`gpuwm.terrain_clock.clock_receipt`), filled in beside the
+    #: substep one.
+    terrain_clock: Mapping[str, object] | None = None
+
+
+def _with_terrain_acoustics(inputs: PreparedTreeInputs) -> PreparedTreeInputs:
+    """The inputs with each domain's acoustic substeps derived from its ground.
+
+    Every domain is read off the static fields it restores; a relocating
+    nest also off its statics corridor, the ground it can move over.  An
+    inputs object that already carries the derivation is returned as it
+    is, so the runner and a preflight that both ask get one answer.
+    """
+
+    if getattr(inputs, "acoustic_substeps", None) is not None:
+        return inputs
+    exp = inputs.experiment
+    grids = {int(dc.grid_id): grid
+             for dc, grid in zip(exp.domains, inputs.grids)}
+    readings = readings_from_static(
+        exp, {bundle.grid_id: bundle.static_fields
+              for bundle in inputs.domains},
+        grids_by_grid_id=grids)
+    runs = {int(dc.grid_id): dc.run for dc in exp.domains}
+    corridors = inputs.statics_corridor
+    if not isinstance(corridors, Mapping):
+        corridors = {}
+    reach = {}
+    for grid_id, corridor in corridors.items():
+        fields = getattr(corridor, "fields", None)
+        run = runs.get(int(grid_id))
+        if run is None or not fields or "HGT_M" not in fields:
+            continue
+        fold_corridor_reading(readings, int(grid_id), run, fields["HGT_M"])
+        reach[int(grid_id)] = fields["HGT_M"]
+    adapted, acoustic = adapt_experiment_to_terrain(exp, readings)
+    # THE LONG STEP each domain's ground and crest-level wind allow, read
+    # off the start state and boundary data these inputs carry: every
+    # prepared and met_em domain holds a prepared cache, and the wrfinput
+    # door holds the files' own arrays and its wrfbdy.
+    statics = {int(bundle.grid_id): bundle.static_fields
+               for bundle in inputs.domains}
+    readers = {int(bundle.grid_id): bundle.cache_reader
+               for bundle in inputs.domains
+               if getattr(bundle, "cache_reader", None) is not None}
+    if readers:
+        adapted, clock = clock_for_prepared_cache(
+            adapted, acoustic, readers=readers, statics=statics,
+            boundaries=getattr(inputs, "boundaries", None),
+            corridors=reach)
+    else:
+        adapted, clock = clock_for_wrfinput(
+            adapted, acoustic,
+            restored={int(bundle.grid_id): bundle.restored
+                      for bundle in inputs.domains
+                      if getattr(bundle, "restored", None) is not None},
+            statics=statics, boundaries=getattr(inputs, "boundaries", None),
+            corridors=reach)
+    return replace(inputs, experiment=adapted,
+                   acoustic_substeps=MappingProxyType(
+                       acoustic_receipt(acoustic)),
+                   terrain_clock=MappingProxyType(clock_receipt(clock)))
 
 
 def _prepared_planning_nodes(inputs):
@@ -1134,7 +1219,7 @@ def preflight_prepared_tree(
         # WITHOUT its ingest inputs, so a relocated child's statics
         # cannot be rebuilt from a GEOG source at runtime.  What CAN
         # honor a follow source here is the sealed statics corridor:
-        # child-resolution statics over the whole parent extent, emitted
+        # child-resolution statics over the ground the nest can reach, emitted
         # at preparation time (--statics-corridor) with its digest bound
         # into the preparation document, and cropped per footprint at
         # runtime through the same rebuild machinery the case-data route
@@ -1158,8 +1243,8 @@ def preflight_prepared_tree(
                 "cannot rebuild a relocated child's statics for a new "
                 "footprint at runtime.  Re-prepare the tree with "
                 "--statics-corridor (the tree preparation front door "
-                "seals child-resolution statics over the whole parent "
-                "extent, which this runner then crops per move), run "
+                "seals child-resolution statics over the ground the nest "
+                "can reach, which this runner then crops per move), run "
                 "the case-data route (gpuwm run), or remove "
                 "[relocation.follow]/[[relocation.move]] from this "
                 "config.")
@@ -1308,6 +1393,9 @@ def preflight_prepared_tree(
     # default.  Normally empty; recorded either way, so a run on an
     # upgraded install can show exactly what it tolerated.
     tolerated_identity: dict[str, list[str]] = {}
+    from gpuwm.static.corridor import moving_grid_ids, relocating_subtree_grid_ids
+    relocating_ids = relocating_subtree_grid_ids(
+        exp, moving_roots=moving_grid_ids(exp))
     for domain, grid, embedded_receipt in zip(exp.domains, grids, domain_receipts):
         label = f"d{int(domain.grid_id):02d}"
         bundle = _require_directory(
@@ -1399,7 +1487,10 @@ def preflight_prepared_tree(
             domain.parent_id != 0 and lbc is not None
         ):
             raise ValueError(f"{label} external/nested LBC ownership differs")
-        verify_native_static_receipt(geometry_path, static_path, grid, domain.run)
+        verify_native_static_receipt(
+            geometry_path, static_path, grid, domain.run,
+            relocating=(domain.grid_id in relocating_ids
+                        and not preparation.get("statics_corridor")))
         static = load_native_static_cache(
             static_path, grid, domain.run.ny, domain.run.nx
         )
@@ -1449,8 +1540,8 @@ def preflight_prepared_tree(
         # arithmetic.  A corridor that fails ANY of these refuses loudly
         # -- it never degrades to a silently static nest.
         from gpuwm.static.corridor import (STATICS_CORRIDOR_DIRNAME,
-                                           corridor_frame_kwargs,
                                            load_child_statics_corridor,
+                                           planned_corridor,
                                            relocating_subtree_grid_ids)
         by_id = {int(domain.grid_id): index
                  for index, domain in enumerate(exp.domains)}
@@ -1463,12 +1554,17 @@ def preflight_prepared_tree(
         for grid_id in relocating_subtree_grid_ids(exp):
             child = exp.domains[by_id[grid_id]]
             parent_run = exp.domains[by_id[int(child.parent_id)]].run
+            # The sealed corridor must cover the ground THIS run's nest
+            # can reach, which the loader checks before any move needs it.
+            plan = planned_corridor(exp, child)
             statics_corridor[grid_id] = load_child_statics_corridor(
                 corridor_directory,
                 expected_set_receipt=preparation["statics_corridor"],
                 grid_id=grid_id, child_dc=child, parent_run=parent_run,
                 reference_grid=grids[by_id[grid_id]],
-                frame_kwargs=corridor_frame_kwargs(exp, child))
+                sealed_child_statics=bundles[by_id[grid_id]].static_fields,
+                frame_kwargs=plan.frame_kwargs,
+                required_window=plan.window, reach=plan.reach)
         statics_corridor_cache_path = [
             corridor_directory / (
                 preparation["statics_corridor"]["domains"]
@@ -1499,7 +1595,9 @@ def preflight_prepared_tree(
             **{name: _sha256(path) for name, path in mapped_paths.items()},
         }
     )
-    return PreparedTreeInputs(
+    # THE ACOUSTIC SUBSTEPS EACH DOMAIN'S OWN GROUND NEEDS, on the inputs
+    # every later reader takes its experiment from.
+    return _with_terrain_acoustics(PreparedTreeInputs(
         prepared_root=prepared_root,
         hierarchy_root=hierarchy_root,
         preparation_receipt_path=receipt_path,
@@ -1522,7 +1620,15 @@ def preflight_prepared_tree(
             for label, names in tolerated_identity.items()}),
         statics_corridor=statics_corridor,
         statics_corridor_cache_path=statics_corridor_cache_path,
-    )
+    ))
+
+
+def _prepared_input_bytes(inputs: PreparedTreeInputs) -> int:
+    """Price the prepared cache reads without imposing fields on other doors."""
+    return (sum(bundle.cache_reader.payload_bytes + bundle.static_path.stat().st_size
+                for bundle in inputs.domains)
+            + sum(path.stat().st_size
+                  for path in inputs.statics_corridor_cache_path or ()))
 
 
 def _verify_inputs_unchanged(inputs: PreparedTreeInputs) -> None:
@@ -1990,6 +2096,11 @@ def run_prepared_tree(
         if sealed_forcing_extension:
             raise ValueError("this initialization does not supply the sealed forcing-prefix identity required for horizon extension")
 
+    # Doors that assemble their own inputs (the met_em and wrfinput
+    # routes) reach the tree here without the preflight, so the
+    # derivation is asked again; inputs that carry it pass unchanged.
+    inputs = _with_terrain_acoustics(inputs)
+
     import cupy as cp
 
     from gpuwm import runtime
@@ -2035,6 +2146,7 @@ def run_prepared_tree(
     evidence = outdir / "evidence"
     evidence.mkdir()
     progress_path = evidence / "progress.json"
+    runtime._preparation_progress(observer, "restore-prepared-domain-tree")
     exp = inputs.experiment
     from gpuwm.case_data import trace_gas_overrides_from_config
     trace_gas_overrides = trace_gas_overrides_from_config(
@@ -2208,7 +2320,8 @@ def run_prepared_tree(
                 and clocks[domain.grid_id].spec.start_ticks == 0):
             from gpuwm.ingest.init_perturbation import build_initial_state_perturbation
             perturbation = build_initial_state_perturbation(exp.perturbation, grid,
-                grid_id=int(domain.grid_id), require_containment=domain.parent_id == 0)
+                grid_id=int(domain.grid_id), require_containment=domain.parent_id == 0,
+                cfg=domain.run)
         def physics(result, cfg, met, surface, static, landuse, slab_grid, valid_time,
                     *, row_start=None, domain_rows=None, **kwargs):
             from gpuwm.core.radiation_composition import attach_modern_workspace
@@ -2303,6 +2416,11 @@ def run_prepared_tree(
                 geog_selection=getattr(bundle, 'geog_selection', None),
                 initial_result=restored.initial_result, streamed_store=store_bundle)
             return SimpleNamespace(grid=node.grid, state=state), case
+        # The startup build's driver goes before the restore allocates its
+        # replacement: this map is the one owner of it the executor's
+        # release (gpuwm.core.model._release_startup_build) cannot see, and
+        # it kept a second child's physics on the card through activation.
+        drivers.pop(domain.grid_id, None)
         restored = restore_prepared_cache(
             bundle.cache, expected_identity=dict(bundle.cache_identity),
             cfg=domain.run, static=bundle.static_fields,
@@ -2369,15 +2487,16 @@ def run_prepared_tree(
                 build_initial_state_perturbation)
             # The cache serializes p as the preparation left it, and a
             # prepare-only cache leaves the EOS to its consumer -- so
-            # diagnose the RESTORED prognostics first; the bubble's
-            # rh_preserve reads state.p.  initialize_prepared_physics
+            # diagnose the RESTORED prognostics first; the bubble holds
+            # that state.p while it rebalances the geopotential, and its
+            # rh_preserve reads it.  initialize_prepared_physics
             # runs the same diagnostics again below, from the perturbed
             # prognostics, which is the order the seam wants anyway.
             update_diagnostics(
                 restored.initial_result.state, domain.run.hypsometric_opt)
             applier = build_initial_state_perturbation(
                 exp.perturbation, grid, grid_id=int(domain.grid_id),
-                require_containment=domain.parent_id == 0)
+                require_containment=domain.parent_id == 0, cfg=domain.run)
             initial_perturbation_receipts.append(
                 applier.apply_to_state(restored.initial_result.state))
         # The first domain's physics initialization is where a first
@@ -2466,6 +2585,12 @@ def run_prepared_tree(
             streamed_store=store_bundle,
         )
         drivers[domain.grid_id] = driver
+    # The loop's names for its LAST domain would otherwise live as long as
+    # this function, which is the whole run; when that domain is a delayed
+    # child they kept its startup restore and driver on the card after its
+    # activation had replaced both.  The node and the maps above own
+    # everything the run reads.
+    del restored, driver, initialized, store_bundle
     # This runner constructs DomainNodes directly rather than going through
     # core.model.build_experiment.  Bind the prepared root's already-attached
     # external mirror before restart validation or the first solve so Davies
@@ -2773,9 +2898,15 @@ def run_prepared_tree(
     def restart_handler(tree, ticks):
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
         restart_started = time.perf_counter()
-        tree._last_checkpoint = write_tree_restart(
-            outdir, tree, valid,
-            sealed_forcing_extension=sealed_forcing_extension)
+        # Written between two model steps, at the stop tick too: its own
+        # record, sized from the state it writes, or the supervisor times it
+        # as a step (see runtime._writing_progress).
+        with runtime._writing_progress(
+                observer, "checkpoint",
+                work_bytes=runtime._checkpoint_work_bytes(tree)):
+            tree._last_checkpoint = write_tree_restart(
+                outdir, tree, valid,
+                sealed_forcing_extension=sealed_forcing_extension)
         # WRF prints `Timing for Writing restart for domain N`, and this
         # one IS the blocking synchronous write WRF's number describes.
         step_log.restart_written(
@@ -2818,6 +2949,10 @@ def run_prepared_tree(
         None if first_products is None else first_products.frame_committed)
     if landing and writers is not None:
         writers.attach_progress_callback(landing)
+    if writers is not None:
+        # Each history write between two steps beats on the run's
+        # heartbeat; the landing fan-out above does not carry it.
+        writers.attach_write_progress(observer)
     if relocation_runner is not None and writers is not None:
         # Same seam as the case-data route: a moved domain's later
         # frames must describe the footprint that produced them.
@@ -2906,7 +3041,6 @@ def run_prepared_tree(
                     validate_state=True,
                     health_debug=health_debug,
                     skip_feedback_path=(int(exp.feedback) == 0),
-                    pool_trim_per_period=True,
                     relocation_runner=relocation_runner,
                     steppers=steppers,
                     step_observer=step_observer,
@@ -2926,15 +3060,15 @@ def run_prepared_tree(
                         validate_state=True,
                         health_debug=health_debug,
                         skip_feedback_path=(int(exp.feedback) == 0),
-                        pool_trim_per_period=True,
                         relocation_runner=relocation_runner,
                         steppers=steppers,
                         step_observer=step_observer,
                         experiment=exp,
                         delayed_child_initializer=initialize_delayed_child,
                     ))
-                writers.drain()
+                writers.drain(before_domain=runtime._drain_progress(observer))
                 wrfout_paths = writers.paths
+        runtime._finalizing_progress(observer, "close-relocation-receipt")
         if relocation_runner is not None:
             relocation_runner.close_receipt(model)
     except BaseException as error:
@@ -2948,11 +3082,13 @@ def run_prepared_tree(
         step_log.close(status="SUCCESS")
     finally:
         memory_watch.stop()
+    runtime._finalizing_progress(observer, "synchronize-device")
     cp.cuda.Stream.null.synchronize()
     timing["forecast_execution"] = time.perf_counter() - forecast_started
     model._io_manager = None
     memory_watch.sample()
 
+    runtime._finalizing_progress(observer, "microphysics-transition-receipt")
     transition_path, transition_sha, transitions = (
         runtime._write_microphysics_transition_receipt(
             evidence, model, exp, resumed=restart is not None
@@ -2962,8 +3098,11 @@ def run_prepared_tree(
     final_stability = {}
     final_digests = {}
     for grid_id, node in nodes.items():
+        validator = health_validator_for_domain(model, node)
+        runtime._finalizing_progress(observer, f"final-health-d{grid_id:02d}",
+            work_bytes=getattr(validator, "host_scan_bytes", None))
         result = vars(
-            health_validator_for_domain(model, node).validate(phase=f"final.d{grid_id:02d}")
+            validator.validate(phase=f"final.d{grid_id:02d}")
         )
         final_health[f"d{grid_id:02d}"] = _strict_json(result)
         if not result["ok"]:
@@ -2978,9 +3117,15 @@ def run_prepared_tree(
                 boundary_width=node.cfg.run.spec_bdy_width))
         stream = steppers.get(int(grid_id))
         final_digests[f"d{grid_id:02d}"] = (
-            stream.canonical_digest(node.clock, scope="trajectory") if stream is not None else
-            canonical_state_digest(node.state, node.clock, scope="trajectory"))
+            stream.canonical_digest(node.clock, scope="trajectory",
+                before_hash=runtime._digest_progress(observer, grid_id))
+            if stream is not None else
+            canonical_state_digest(node.state, node.clock, scope="trajectory",
+                before_hash=runtime._digest_progress(observer, grid_id)))
 
+    runtime._finalizing_progress(observer, "verify-inputs",
+        work_bytes=(None if initialization is not None else
+                    _prepared_input_bytes(inputs)))
     if initialization is None:
         _verify_inputs_unchanged(inputs)
     else:
@@ -2990,10 +3135,10 @@ def run_prepared_tree(
     if moved is not None:
         raise RuntimeError(
             f"forecast implementation changed during execution: {moved}")
-    from gpuwm.output_identity import file_records
-
-    outputs = file_records(
-        wrfout_paths, completed=getattr(writers, "completed_records", ()))
+    outputs = runtime._frame_records(
+        wrfout_paths, completed_records=getattr(writers, "completed_records", ()),
+        progress_callback=observer)
+    runtime._finalizing_progress(observer, "write-receipts")
     timing["total"] = time.perf_counter() - started_total
     # The MYNN column width this process derived, or None when the scheme
     # never ran.  Read here rather than at build time so the register count
@@ -3004,6 +3149,10 @@ def run_prepared_tree(
     report = {
         **({} if inputs.physics_profile_assertion is None else
            {"physics_profile_assertion": dict(inputs.physics_profile_assertion)}),
+        **({} if inputs.acoustic_substeps is None else
+           {"acoustic_substeps": dict(inputs.acoustic_substeps)}),
+        **({} if getattr(inputs, "terrain_clock", None) is None else
+           {"terrain_clock": dict(inputs.terrain_clock)}),
         "schema": REPORT_SCHEMA,
         "status": "PASS",
         "source": inputs.source,
@@ -3079,6 +3228,7 @@ def run_prepared_tree(
         "wall_seconds": timing["total"],
         "timing_seconds": timing,
         "executor": {
+            "pool_trim": getattr(model, "_pool_trim_policy", None),
             "steps": int(execution.steps),
             "forces": int(execution.forces),
             "feedback_calls": int(execution.feedback_calls),
@@ -3174,6 +3324,7 @@ def run_prepared_tree(
     # Join the existing daemon render before a standalone process can exit.
     # Absent/none leaves the previous receipt unchanged, as on the single arm.
     if first_products is not None:
+        runtime._finalizing_progress(observer, "finish-first-products")
         receipt = first_products.wait()
         if receipt is not None:
             report["first_products"] = receipt
@@ -3244,8 +3395,10 @@ def run_prepared_tree(
         # step receipts are incomplete refuses a clean capsule here.
         receipts={"run_receipt": {
             "path": str((evidence / "run-receipt.json").resolve())},
-            **_seam_capsule_receipts(model)},
+            **_seam_capsule_receipts(model),
+            "pool_trim": getattr(model, "_pool_trim_policy", None)},
     )
+    runtime._finalizing_progress(observer, "publish-completion")
     _atomic_json(
         progress_path,
         {
@@ -3293,8 +3446,9 @@ def build_parser() -> argparse.ArgumentParser:
              "the run that wrote it -- the same contract `gpuwm run "
              "--restart` publishes.  Under an adaptive clock the "
              "controller's targets and clamps (target_cfl, target_hcfl, "
-             "the time-step bounds, max_step_increase_pct) may differ "
-             "too: they govern future steps rather than model state, and "
+             "the time-step bounds, max_step_increase_pct, the substep "
+             "floor min_time_step_sound) may differ too: they govern "
+             "future steps rather than model state, and "
              "a resume that retunes them is reported rather than "
              "refused, so a dead run can be recovered with the setting "
              "that would have saved it.  Turning use_adaptive_time_step "
@@ -3306,10 +3460,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-debug", action="store_true")
     parser.add_argument("--outdir", type=Path, required=True)
     parser.add_argument("--render-products", default=None, metavar="SPEC",
-                        help="first committed frame's plot selectors, 'all', or "
-                             "'none'; omitted means no rendering")
+                        help="plot selectors for every committed frame of every "
+                             "grid, each drawn as it lands, 'all', or 'none'; "
+                             "omitted means no rendering")
     parser.add_argument("--render-dir", type=Path, default=None, metavar="DIR",
-                        help="first-frame picture directory (default OUTDIR/png); "
+                        help="picture directory (default OUTDIR/png); "
+                             "ignored without --render-products")
+    parser.add_argument("--render-section", default=None,
+                        metavar="lat,lon,lat,lon|FILE.json",
+                        help="the line every xsec: product is cut along, "
+                             "`gpuwm render --section`'s own value; "
                              "ignored without --render-products")
     # The same four flags the single-domain door carries, registered
     # from the same function so the two cannot drift.
@@ -3384,6 +3544,8 @@ def main(argv=None, *, observer=None) -> int:
         print(f"prepared_domain_tree_forecast: --outdir refused: {error}",
               file=sys.stderr)
         return 2
+    from gpuwm.runtime import _preparation_progress
+    _preparation_progress(observer, "validate-prepared-inputs")
     started = time.perf_counter()
     try:
         inputs = preflight_prepared_tree(
@@ -3422,6 +3584,7 @@ def main(argv=None, *, observer=None) -> int:
     first_products = prepared_single._route_owned_first_products(
         args, outdir=outdir, observer=observer, started=started)
     run_finished = False
+    interrupted = False
     try:
         report = run_prepared_tree(
             inputs,
@@ -3464,16 +3627,25 @@ def main(argv=None, *, observer=None) -> int:
               file=sys.stderr)
         return 2
     except BaseException as error:
+        interrupted = isinstance(error, KeyboardInterrupt)
         _write_failed_run_receipt(outdir, error)
         raise
     finally:
         # A later forecast failure must not abandon an already dispatched
         # daemon render. Success was joined while composing the run report;
         # on failure, preserve the forecast's refusal/exception even if the
-        # bounded render join itself fails or is interrupted.
+        # bounded render join itself fails or is interrupted.  A stop draws
+        # nothing more (the desktop kills a run 5 s after asking); a
+        # failure finishes drawing the frames it wrote.
         if first_products is not None and not run_finished:
             try:
-                first_products.wait()
+                if interrupted:
+                    getattr(first_products, "halt", lambda: None)()
+                else:
+                    from gpuwm.runtime import _finalizing_progress
+
+                    _finalizing_progress(observer, "finish-first-products-after-failure")
+                    first_products.wait()
             except BaseException as render_error:
                 print("prepared_domain_tree_forecast: first-frame plot join "
                       f"failed: {type(render_error).__name__}: {render_error}",

@@ -443,6 +443,78 @@ def test_a_short_download_is_removed_and_refused(tmp_path):
     assert not dest.exists()
 
 
+def test_a_bundle_file_this_computer_cannot_write_is_not_a_download_failure(
+        tmp_path, monkeypatch):
+    """The geography downloader's defect, in the bridge downloader too.
+
+    An ``OSError`` from opening the local file reached the network
+    handler and read "download failed from <url>: ...; the partial file
+    is kept and a re-run resumes" with nothing written and the server
+    fine.
+    """
+
+    payload = os.urandom(4096)
+    dest = tmp_path / "bundle.zip"
+    refused = "C:\\" + "b" * 269                 # 272 characters
+    real_open = Path.open
+
+    def windows_refuses(self, mode="r", *args, **kwargs):
+        if self == dest and "b" in mode and ("w" in mode or "a" in mode):
+            raise FileNotFoundError(2, "No such file or directory", refused)
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", windows_refuses)
+    monkeypatch.setattr(bridge_assets.fetch_guard, "windows_path_limit",
+                        lambda: 259)
+    with pytest.raises(bridge_assets.BridgeAssetError) as caught:
+        bridge_assets.download_bundle(
+            "https://example.invalid/bundle.zip", dest,
+            expected_bytes=len(payload), progress=lambda _l: None,
+            urlopen_fn=_RangeServer(payload, honour_range=True))
+    monkeypatch.setattr(Path, "open", real_open)
+
+    message = str(caught.value)
+    assert "download failed" not in message
+    assert "resumes" not in message
+    assert "272 characters" in message
+    assert "13 characters shorter" in message
+    assert "nothing was downloaded" in message
+
+
+class _DroppedResponse(_Response):
+    def read(self, size=-1):
+        if self.tell():
+            raise ConnectionResetError(104, "Connection reset by peer")
+        return super().read(100)
+
+
+@pytest.mark.parametrize("sent", (0, 100))
+def test_a_failed_transfer_promises_a_resume_only_with_bytes_to_resume(
+        tmp_path, sent):
+    payload = os.urandom(4096)
+    dest = tmp_path / "bundle.zip"
+
+    def server(request):
+        if not sent:
+            raise bridge_assets.URLError("connection refused")
+        return _DroppedResponse(payload, 200)
+
+    with pytest.raises(bridge_assets.BridgeAssetError) as caught:
+        bridge_assets.download_bundle(
+            "https://example.invalid/bundle.zip", dest,
+            expected_bytes=len(payload), progress=lambda _l: None,
+            urlopen_fn=server)
+
+    message = str(caught.value)
+    assert "download failed from https://example.invalid/" in message
+    if sent:
+        assert "the partial file (100 B) is kept and a re-run resumes" in (
+            message)
+    else:
+        assert "resumes" not in message
+        assert "nothing was downloaded" in message
+
+
 def test_a_bundle_whose_bytes_differ_never_reaches_staging(tmp_path):
     """The whole download path, against a served archive that lies."""
 
@@ -1069,6 +1141,22 @@ def real_bundle(tmp_path_factory):
                     f"({', '.join(sorted(revisions))}); rebuild all "
                     "ArWen-authored workspaces from one checkout")
     source_rev = revisions.pop()
+    # A user-level directory an older checkout filled holds binaries that
+    # predate a contract this tree has since changed; staging refuses them
+    # by their missing marker, so they are not a bundle for this release
+    # and prove nothing here.  (A 2.8 build host's ~/.gpuwm/bridges held
+    # an rw_zarr from before its units contract, and this fixture packed it.)
+    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        marker = bridges.BRIDGE_ABI_MARKERS.get(artifact.name)
+        if marker is None:
+            continue
+        name = bridge_assets.artifact_filename(artifact, host)
+        path = next(directory / name for directory in directories
+                    if (directory / name).is_file())
+        if marker not in path.read_bytes():
+            pytest.skip(f"{path} predates this tree's {artifact.name} contract; "
+                        "rebuild the bridges from this checkout to run the "
+                        "real-bundle integration tests")
 
     work = tmp_path_factory.mktemp("bridge-bundle")
     release = "v0.0.0-test"

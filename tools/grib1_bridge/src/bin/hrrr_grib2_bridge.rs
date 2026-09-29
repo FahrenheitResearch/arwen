@@ -39,13 +39,35 @@ struct Parameter {
 struct HybridSpec {
     name: &'static str,
     parameter: Parameter,
+    /// Codes an earlier HRRR published this same field under.  One is read
+    /// only from a file that publishes the field under `parameter` on no
+    /// hybrid level at all, and then on all 50 levels: a file is read under
+    /// exactly one code, never a mixture of the two.
+    earlier_parameters: &'static [Parameter],
     nonnegative: bool,
     require_any_positive: bool,
 }
 
-// Current HRRR's CIMIXR/QICE is 0/1/82.  The stale 0/6/0 mapping in an old
-// public Vtable is deliberately absent and therefore cannot silently select
-// an unrelated field.
+impl HybridSpec {
+    /// Every code this field may be published under, current first.
+    fn candidate_parameters(&self) -> impl Iterator<Item = Parameter> + '_ {
+        std::iter::once(self.parameter).chain(self.earlier_parameters.iter().copied())
+    }
+}
+
+/// HRRRv3 and later (July 2018 on) publish cloud ice as CIMIXR, 0/1/82.
+/// HRRRv1 and v2 wrfnat files publish the same mixing ratio as CICE,
+/// 0/6/0, on the same 50 hybrid levels and carry no CIMIXR; the archive's
+/// 2017-01-19 00Z wrfnatf00 and f01 hold CICE on 50 levels and no CIMIXR,
+/// the 2026-09-27 00Z wrfnatf00 holds CIMIXR on 50 levels and no CICE.
+/// Reading only 0/1/82 refused every cycle before July 2018 with
+/// `missing required field QI hybrid level 1`.
+const CLOUD_ICE_BEFORE_HRRR_V3: Parameter = Parameter {
+    discipline: 0,
+    category: 6,
+    number: 0,
+};
+
 const HYBRID_SPECS: [HybridSpec; 11] = [
     HybridSpec {
         name: "PRES",
@@ -54,6 +76,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 3,
             number: 0,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: false,
     },
@@ -64,6 +87,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 1,
             number: 22,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: true,
     },
@@ -74,6 +98,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 1,
             number: 82,
         },
+        earlier_parameters: &[CLOUD_ICE_BEFORE_HRRR_V3],
         nonnegative: true,
         require_any_positive: true,
     },
@@ -84,6 +109,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 1,
             number: 24,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: true,
     },
@@ -94,6 +120,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 1,
             number: 25,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: true,
     },
@@ -104,6 +131,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 1,
             number: 32,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: true,
     },
@@ -114,6 +142,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 3,
             number: 5,
         },
+        earlier_parameters: &[],
         nonnegative: false,
         require_any_positive: false,
     },
@@ -124,6 +153,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 0,
             number: 0,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: false,
     },
@@ -134,6 +164,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 1,
             number: 0,
         },
+        earlier_parameters: &[],
         nonnegative: true,
         require_any_positive: false,
     },
@@ -144,6 +175,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 2,
             number: 2,
         },
+        earlier_parameters: &[],
         nonnegative: false,
         require_any_positive: false,
     },
@@ -154,6 +186,7 @@ const HYBRID_SPECS: [HybridSpec; 11] = [
             category: 2,
             number: 3,
         },
+        earlier_parameters: &[],
         nonnegative: false,
         require_any_positive: false,
     },
@@ -297,6 +330,10 @@ struct SelectedField {
     index: usize,
     variable: &'static str,
     level_value: f64,
+    /// The code the record was selected under, so the cross-time check
+    /// refuses a series whose frames publish a field under different
+    /// codes and the gate names the cloud-ice code it bound.
+    parameter: Parameter,
 }
 
 #[derive(Clone, Debug)]
@@ -486,25 +523,50 @@ where
     }
 }
 
+/// The one code a file publishes `spec` under: the first candidate the
+/// file carries on any hybrid level.  All 50 levels are then selected under
+/// that code alone.  A file carrying none of them keeps the current code,
+/// so the refusal names the field as current HRRR publishes it.
+fn published_parameter(messages: &[Grib2Message], spec: &HybridSpec) -> Parameter {
+    spec.candidate_parameters()
+        .find(|&parameter| {
+            messages.iter().any(|message| {
+                parameter_matches(message, parameter)
+                    && message.product.template == 0
+                    && message.product.level_type == HYBRID_LEVEL_TYPE
+            })
+        })
+        .unwrap_or(spec.parameter)
+}
+
 fn inventory_atmosphere(
     path: &str,
     expected_cycle: &str,
     forecast_hour: u32,
 ) -> Result<AtmosInventory, Box<dyn Error>> {
     let file = Grib2File::open(path)?;
+    inventory_atmosphere_messages(&file.messages, expected_cycle, forecast_hour)
+}
+
+fn inventory_atmosphere_messages(
+    messages: &[Grib2Message],
+    expected_cycle: &str,
+    forecast_hour: u32,
+) -> Result<AtmosInventory, Box<dyn Error>> {
     let mut selected =
         Vec::with_capacity(HYBRID_SPECS.len() * N_HYBRID_LEVELS + SURFACE_SPECS.len());
     let mut common_grid: Option<GridFingerprint> = None;
     for spec in HYBRID_SPECS {
+        let parameter = published_parameter(messages, &spec);
         for level in 1..=N_HYBRID_LEVELS {
             let description = format!("{} hybrid level {level}", spec.name);
-            let index = unique_match(&file.messages, &description, |message| {
-                parameter_matches(message, spec.parameter)
+            let index = unique_match(messages, &description, |message| {
+                parameter_matches(message, parameter)
                     && message.product.template == 0
                     && message.product.level_type == HYBRID_LEVEL_TYPE
                     && level_matches(message.product.level_value, level as f64)
             })?;
-            let message = &file.messages[index];
+            let message = &messages[index];
             validate_message_common(message, expected_cycle, forecast_hour)?;
             let fingerprint = GridFingerprint::from_grid(&message.grid);
             if let Some(ref expected) = common_grid {
@@ -520,6 +582,7 @@ fn inventory_atmosphere(
                 index,
                 variable: spec.name,
                 level_value: level as f64,
+                parameter,
             });
         }
     }
@@ -528,13 +591,13 @@ fn inventory_atmosphere(
             "{} level type {} value {}",
             spec.name, spec.level_type, spec.level_value
         );
-        let index = unique_match(&file.messages, &description, |message| {
+        let index = unique_match(messages, &description, |message| {
             parameter_matches(message, spec.parameter)
                 && message.product.template == 0
                 && message.product.level_type == spec.level_type
                 && level_matches(message.product.level_value, spec.level_value)
         })?;
-        let message = &file.messages[index];
+        let message = &messages[index];
         validate_message_common(message, expected_cycle, forecast_hour)?;
         let fingerprint = GridFingerprint::from_grid(&message.grid);
         if common_grid.as_ref() != Some(&fingerprint) {
@@ -544,10 +607,11 @@ fn inventory_atmosphere(
             index,
             variable: spec.name,
             level_value: spec.level_value,
+            parameter: spec.parameter,
         });
     }
     Ok(AtmosInventory {
-        source_grid: file.messages[selected[0].index].grid.clone(),
+        source_grid: messages[selected[0].index].grid.clone(),
         selected,
         reference_time: expected_cycle.to_owned(),
         forecast_hour,
@@ -564,17 +628,15 @@ fn inventory_soil(
     let mut selected = Vec::with_capacity(18);
     let mut common_grid: Option<GridFingerprint> = None;
     for (name, parameter_number) in [("SOILT", 2u8), ("SOILW", 192u8)] {
+        let parameter = Parameter {
+            discipline: 2,
+            category: 0,
+            number: parameter_number,
+        };
         for depth in SOIL_DEPTHS_M {
             let description = format!("{name} depth {depth} m");
             let index = unique_match(&file.messages, &description, |message| {
-                parameter_matches(
-                    message,
-                    Parameter {
-                        discipline: 2,
-                        category: 0,
-                        number: parameter_number,
-                    },
-                ) && message.product.template == 0
+                parameter_matches(message, parameter) && message.product.template == 0
                     && message.product.level_type == SOIL_LEVEL_TYPE
                     && level_matches(message.product.level_value, depth)
             })?;
@@ -595,6 +657,7 @@ fn inventory_soil(
                 index,
                 variable: name,
                 level_value: depth,
+                parameter,
             });
         }
     }
@@ -632,15 +695,15 @@ fn compare_atmosphere_inventory(
         )
         .into());
     }
-    let left: Vec<(&str, u64)> = reference
+    let left: Vec<(&str, u64, Parameter)> = reference
         .selected
         .iter()
-        .map(|field| (field.variable, field.level_value.to_bits()))
+        .map(|field| (field.variable, field.level_value.to_bits(), field.parameter))
         .collect();
-    let right: Vec<(&str, u64)> = candidate
+    let right: Vec<(&str, u64, Parameter)> = candidate
         .selected
         .iter()
-        .map(|field| (field.variable, field.level_value.to_bits()))
+        .map(|field| (field.variable, field.level_value.to_bits(), field.parameter))
         .collect();
     if left != right {
         let missing: Vec<_> = left.iter().filter(|key| !right.contains(key)).collect();
@@ -672,15 +735,15 @@ fn compare_soil_inventory(
         )
         .into());
     }
-    let left: Vec<(&str, u64)> = reference
+    let left: Vec<(&str, u64, Parameter)> = reference
         .selected
         .iter()
-        .map(|field| (field.variable, field.level_value.to_bits()))
+        .map(|field| (field.variable, field.level_value.to_bits(), field.parameter))
         .collect();
-    let right: Vec<(&str, u64)> = candidate
+    let right: Vec<(&str, u64, Parameter)> = candidate
         .selected
         .iter()
-        .map(|field| (field.variable, field.level_value.to_bits()))
+        .map(|field| (field.variable, field.level_value.to_bits(), field.parameter))
         .collect();
     if left != right || left.len() != 18 {
         let missing: Vec<_> = left.iter().filter(|key| !right.contains(key)).collect();
@@ -691,6 +754,22 @@ fn compare_soil_inventory(
         .into());
     }
     Ok(())
+}
+
+/// The gate's cloud-ice line: the one code every QI record of the series
+/// was selected under (the cross-time check has already made the frames
+/// agree), then the value checks the decode applies to it.
+fn qice_mapping_line(reference: &AtmosInventory) -> Result<String, Box<dyn Error>> {
+    let qi = reference
+        .selected
+        .iter()
+        .find(|field| field.variable == "QI")
+        .ok_or("atmosphere inventory selected no QI record")?
+        .parameter;
+    Ok(format!(
+        "qice_mapping\tPASS discipline={} category={} parameter={} level_type={HYBRID_LEVEL_TYPE}; finite/nonnegative/nonzero",
+        qi.discipline, qi.category, qi.number
+    ))
 }
 
 fn validate_window(window: Window, grid: &GridFingerprint) -> Result<(), Box<dyn Error>> {
@@ -1485,7 +1564,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             gate,
             "output\tFP32 little-endian south-to-north row-major; 3-D level-major"
         )?;
-        writeln!(gate, "qice_mapping\tPASS discipline=0 category=1 parameter=82 level_type=105; finite/nonnegative/nonzero")?;
+        writeln!(gate, "{}", qice_mapping_line(atmosphere_reference)?)?;
         writeln!(
             gate,
             "cross_time_inventory\tPASS exact selected keys/levels/grid; packing may differ"
@@ -1775,25 +1854,208 @@ mod tests {
     }
 
     #[test]
-    fn current_hrrr_qice_mapping_is_explicit_and_stale_mapping_is_absent() {
+    fn qice_reads_cimixr_first_and_cice_only_as_its_earlier_code() {
         let qi = HYBRID_SPECS.iter().find(|spec| spec.name == "QI").unwrap();
-        assert_eq!(
-            qi.parameter,
-            Parameter {
-                discipline: 0,
-                category: 1,
-                number: 82
-            }
-        );
+        assert_eq!(qi.parameter, CIMIXR);
+        assert_eq!(qi.earlier_parameters, &[CICE]);
         assert!(qi.require_any_positive);
-        assert!(!HYBRID_SPECS.iter().any(|spec| {
-            spec.parameter
-                == Parameter {
-                    discipline: 0,
-                    category: 6,
-                    number: 0,
-                }
-        }));
+        // 0/6/0 is cloud ice and nothing else in this table: no other
+        // field may be selected under it, as its current or earlier code.
+        for spec in HYBRID_SPECS.iter().filter(|spec| spec.name != "QI") {
+            assert!(
+                !spec.candidate_parameters().any(|code| code == CICE),
+                "{}",
+                spec.name
+            );
+            assert!(spec.earlier_parameters.is_empty(), "{}", spec.name);
+        }
+    }
+
+    const CIMIXR: Parameter = Parameter {
+        discipline: 0,
+        category: 1,
+        number: 82,
+    };
+    const CICE: Parameter = Parameter {
+        discipline: 0,
+        category: 6,
+        number: 0,
+    };
+    const CYCLE: &str = "2017-01-19 00:00:00";
+
+    /// A header-only record on the canonical HRRR grid: everything the
+    /// inventory checks, and no payload, because the inventory never
+    /// decodes one.
+    fn canonical_record(
+        parameter: Parameter,
+        level_type: u8,
+        level_value: f64,
+        forecast_hour: u32,
+    ) -> Grib2Message {
+        use grib_core::grib2::{DataRepresentation, Identification, ProductDefinition};
+        Grib2Message {
+            discipline: parameter.discipline,
+            identification: Identification {
+                center_id: 7,
+                ..Default::default()
+            },
+            reference_time: chrono::NaiveDateTime::parse_from_str(CYCLE, "%Y-%m-%d %H:%M:%S")
+                .unwrap(),
+            grid: GridDefinition {
+                template: 30,
+                nx: 1799,
+                ny: 1059,
+                lat1: 21.138123,
+                lon1: 237.280472,
+                dx: 3000.0,
+                dy: 3000.0,
+                latin1: 38.5,
+                latin2: 38.5,
+                lov: 262.5,
+                scan_mode: 0x40,
+                shape_of_earth: 6,
+                resolution_flags: 0x08,
+                ..Default::default()
+            },
+            product: ProductDefinition {
+                template: 0,
+                parameter_category: parameter.category,
+                parameter_number: parameter.number,
+                level_type,
+                level_value,
+                time_range_unit: 1,
+                forecast_time: forecast_hour,
+                ..Default::default()
+            },
+            data_rep: DataRepresentation {
+                template: 3,
+                section5_num_data_points: 1799 * 1059,
+                ..Default::default()
+            },
+            bitmap: None,
+            raw_data: vec![],
+        }
+    }
+
+    /// Every record the atmosphere inventory requires, with cloud ice
+    /// published under `cloud_ice` on each hybrid level.
+    fn wrfnat_records(cloud_ice: Parameter, forecast_hour: u32) -> Vec<Grib2Message> {
+        let mut records = Vec::new();
+        for spec in HYBRID_SPECS {
+            let parameter = if spec.name == "QI" { cloud_ice } else { spec.parameter };
+            for level in 1..=N_HYBRID_LEVELS {
+                records.push(canonical_record(
+                    parameter,
+                    HYBRID_LEVEL_TYPE,
+                    level as f64,
+                    forecast_hour,
+                ));
+            }
+        }
+        for spec in SURFACE_SPECS {
+            records.push(canonical_record(
+                spec.parameter,
+                spec.level_type,
+                spec.level_value,
+                forecast_hour,
+            ));
+        }
+        records
+    }
+
+    fn qi_codes(inventory: &AtmosInventory) -> Vec<Parameter> {
+        inventory
+            .selected
+            .iter()
+            .filter(|field| field.variable == "QI")
+            .map(|field| field.parameter)
+            .collect()
+    }
+
+    #[test]
+    fn a_wrfnat_file_from_before_hrrr_v3_reads_its_cloud_ice_as_cice() {
+        // HRRRv1 and v2 wrfnat files (2017-01-19 among them) publish cloud
+        // ice as CICE, 0/6/0, on all 50 hybrid levels and no CIMIXR.  Read
+        // under 0/1/82 alone, every such cycle was refused with `missing
+        // required field QI hybrid level 1`.
+        let records = wrfnat_records(CICE, 0);
+        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert_eq!(inventory.selected.len(), 561);
+        assert_eq!(qi_codes(&inventory), vec![CICE; N_HYBRID_LEVELS]);
+        assert_eq!(
+            qice_mapping_line(&inventory).unwrap(),
+            "qice_mapping\tPASS discipline=0 category=6 parameter=0 level_type=105; \
+             finite/nonnegative/nonzero"
+        );
+    }
+
+    #[test]
+    fn a_current_wrfnat_file_is_selected_and_gated_exactly_as_before() {
+        let records = wrfnat_records(CIMIXR, 0);
+        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert_eq!(qi_codes(&inventory), vec![CIMIXR; N_HYBRID_LEVELS]);
+        // The literal the gate carried before CICE was readable, byte for
+        // byte, so a current cycle's publication does not move.
+        assert_eq!(
+            qice_mapping_line(&inventory).unwrap(),
+            "qice_mapping\tPASS discipline=0 category=1 parameter=82 level_type=105; \
+             finite/nonnegative/nonzero"
+        );
+        // And the very records a CIMIXR-only table selected.
+        let expected: Vec<usize> = (0..records.len()).collect();
+        let indices: Vec<usize> = inventory.selected.iter().map(|field| field.index).collect();
+        assert_eq!(indices, expected);
+    }
+
+    #[test]
+    fn cimixr_wins_wherever_a_file_publishes_it_and_the_codes_never_mix() {
+        // A file carrying both codes on every level is read under CIMIXR
+        // alone; the CICE records are not selected and are no duplicate.
+        let mut both = wrfnat_records(CIMIXR, 0);
+        let cice: Vec<Grib2Message> = (1..=N_HYBRID_LEVELS)
+            .map(|level| canonical_record(CICE, HYBRID_LEVEL_TYPE, level as f64, 0))
+            .collect();
+        both.extend(cice);
+        let inventory = inventory_atmosphere_messages(&both, CYCLE, 0).unwrap();
+        assert_eq!(qi_codes(&inventory), vec![CIMIXR; N_HYBRID_LEVELS]);
+
+        // A file publishing CIMIXR on 49 levels and CICE on the 50th is
+        // not stitched together from two codes: it lacks CIMIXR level 50.
+        let mut mixed = wrfnat_records(CIMIXR, 0);
+        let last = mixed
+            .iter()
+            .position(|record| {
+                parameter_matches(record, CIMIXR)
+                    && level_matches(record.product.level_value, N_HYBRID_LEVELS as f64)
+            })
+            .unwrap();
+        mixed[last] = canonical_record(CICE, HYBRID_LEVEL_TYPE, N_HYBRID_LEVELS as f64, 0);
+        let error = inventory_atmosphere_messages(&mixed, CYCLE, 0)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "missing required field QI hybrid level 50");
+
+        // A file publishing cloud ice under neither code is refused, the
+        // refusal naming the field.
+        let mut none = wrfnat_records(CIMIXR, 0);
+        none.retain(|record| !parameter_matches(record, CIMIXR));
+        let error = inventory_atmosphere_messages(&none, CYCLE, 0)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "missing required field QI hybrid level 1");
+    }
+
+    #[test]
+    fn a_series_whose_frames_publish_cloud_ice_under_different_codes_is_refused() {
+        let current = inventory_atmosphere_messages(&wrfnat_records(CIMIXR, 0), CYCLE, 0).unwrap();
+        let earlier = inventory_atmosphere_messages(&wrfnat_records(CICE, 1), CYCLE, 1).unwrap();
+        let error = compare_atmosphere_inventory(&current, &earlier, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("selected inventory does not exactly equal"), "{error}");
+        let same = inventory_atmosphere_messages(&wrfnat_records(CICE, 1), CYCLE, 1).unwrap();
+        let first = inventory_atmosphere_messages(&wrfnat_records(CICE, 0), CYCLE, 0).unwrap();
+        compare_atmosphere_inventory(&first, &same, 1).unwrap();
     }
 
     #[test]

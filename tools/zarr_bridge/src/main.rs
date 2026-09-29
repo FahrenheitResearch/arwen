@@ -1,6 +1,8 @@
 //! Generic regular-grid Zarr extraction. Provider names belong in request metadata.
 //! zarrs owns codecs/array decoding; the project's NetCDF writer owns serialization and
 //! mapped-engine owns the existing WRF humidity derivations.
+mod http_store;
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
 use serde::Deserialize;
@@ -368,7 +370,7 @@ fn extract(request: Request, output: &Path) -> Result<Value> {
         return fail("requested times must be unique and increasing");
     }
     let store: ReadableStorage = if request.store.starts_with("https://") {
-        Arc::new(zarrs_http::HTTPStore::new(&request.store)?)
+        Arc::new(http_store::HttpStore::new(&request.store)?)
     } else {
         Arc::new(zarrs::filesystem::FilesystemStore::new(&request.store)?)
     };

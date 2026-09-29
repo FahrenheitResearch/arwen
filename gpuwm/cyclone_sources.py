@@ -198,6 +198,12 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
         hints["out"] += "-" + selection
     if fetch_accepts_area(source):
         hints["area"] = dw.fetch_area_hint(projection, *dims, source=source, root_dx_m=dx_m)
+    # The run door's own keyless default, asked rather than copied: a
+    # reanalysis setup that names no provider reads the analysis-ready
+    # store.  Left to the fetch's keyed default, a cyclone configuration
+    # authored on any computer without a CDS key failed at acquisition.
+    from gpuwm.runplan import _keyless_era5_default
+    hints = _keyless_era5_default(hints, source)
     validate_fetch_hints(hints, source="cyclone setup")
     return hints
 
@@ -324,7 +330,13 @@ def declared_case_data(source: str, hints: dict, config_path: str) -> dict | Non
     if adapter.case_data_file is None:
         return None
     path = Path(config_path).resolve()
-    forcing = Path(hints["out"]).resolve() / adapter.case_data_file
+    # The file the declared fetch publishes, which depends on the provider
+    # it names; the adapter's row is the default provider's name.
+    name = adapter.case_data_file
+    if "era5_provider" in hints:
+        from gpuwm.fetch import era5_combined_name
+        name = era5_combined_name(hints["era5_provider"])
+    forcing = Path(hints["out"]).resolve() / name
     return {"forcing": [Path(os.path.relpath(forcing, path.parent)).as_posix()],
             "vtable": path.with_suffix(".Vtable").name,
             "forcing_interval_s": adapter.forcing_interval_seconds,

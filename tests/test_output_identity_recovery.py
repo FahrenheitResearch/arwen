@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import requires_cupy
 from gpuwm import go_cli, runplan, run_stamp, runtime, wrfinput_forecast
 from gpuwm.io.wrfout import WrfoutWriter, wrfout_filename
 
@@ -184,6 +185,7 @@ def test_nested_chain_relays_the_reserved_generation_to_runner_and_early_render(
     assert plans[0]['render'] == selected.parent/'png'
 
 
+@requires_cupy
 def test_table_chain_relays_the_reserved_generation_to_runner_and_final_render(tmp_path, monkeypatch):
     from test_runplan import _executed_staged_chain
     original = tmp_path/'run'/'chain'/'run'

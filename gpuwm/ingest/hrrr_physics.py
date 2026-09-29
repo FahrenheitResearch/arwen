@@ -321,7 +321,8 @@ def resolve_prepared_noah_surface(met, cfg, static, *, surface=None, soil_mesh=N
                                   or {}).get("policy"))
     return SimpleNamespace(fields=MappingProxyType(
         canonical_noah_surface(soil)),
-        soil_texture_downscale=getattr(soil, "soil_texture_downscale", None))
+        soil_texture_downscale=getattr(soil, "soil_texture_downscale", None),
+        soil_temperature_repair=getattr(soil, "soil_temperature_repair", None))
 
 
 _AUTO_SOIL_MESH = object()

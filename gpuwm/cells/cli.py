@@ -221,8 +221,9 @@ def register_cli(subparsers) -> None:
         help=f"titan threshold profile (default {_titan.DEFAULT_PROFILE})")
     analyze.add_argument(
         "--titan", type=Path, default=None, metavar="PATH",
-        help=f"the titan binary; default resolves ${_titan.TITAN_ENV}, "
-             f"then the bridge directories, then PATH")
+        help=f"the titan binary (a separate program ArWen does not ship; "
+             f"without one, analyze is off); default resolves "
+             f"${_titan.TITAN_ENV}, then the bridge directories, then PATH")
     analyze.add_argument(
         "--titan-config", type=Path, default=None, metavar="FILE",
         help="a titan key=value config overriding the profile")

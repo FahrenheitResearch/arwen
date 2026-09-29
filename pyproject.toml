@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.7.7"
+version = "2.8.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -90,8 +90,8 @@ requires-python = ">=3.11"
 #
 #   This block used to argue that the mandate did not bind either use,
 #   on the reading that Rust-or-CUDA-only is "a rule about READING and
-#   DECODING data".  That reading was WRONG and was never a Drew ruling:
-#   his 2026-08-16 wording is "GRIB decode, NetCDF read/write,
+#   DECODING data".  That reading was WRONG and was never a project ruling:
+#   its 2026-08-16 wording is "GRIB decode, NetCDF read/write,
 #   regrid/transform, dealiasing, rendering", and the two operations the
 #   argument exempted are the two the law names beyond decode --
 #   "regrid/transform" is gpuwm/verify/obs/regrid.py's k-d tree and
@@ -101,7 +101,7 @@ requires-python = ">=3.11"
 #   and it is open porting work.  This table says who SHIPS a library;
 #   it does not get to say which laws reach it.  Neither use is an
 #   exception, and this file has no authority to declare one -- only
-#   Drew does.  Open work is recorded where open work belongs and not
+#   a project ruling does.  Open work is recorded where open work belongs and not
 #   in a dependency comment.
 #
 #   Cost, measured on cp313/win_amd64: 36.6 MiB of wheel.  Platform reach
@@ -144,7 +144,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0",
-                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.7.7"]
+                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.8.0"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -155,10 +155,13 @@ Repository = "https://github.com/FahrenheitResearch/arwen"
 Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-# CuPy ships ONE wheel per CUDA major, and the wheel must match the CUDA
-# major the box actually serves: cupy-cuda12x on a CUDA-13-only box
-# imports cleanly, compiles kernels, and then dies at the first cuBLAS
-# load (proven on a rented CUDA 13.2 node, 2026-08-05).
+# CuPy ships ONE wheel per CUDA major.  A driver runs its own CUDA major
+# and every older one, so the wheel's major must not be newer than the
+# driver's.  Before the [ctk] extras below, cupy-cuda12x on a CUDA-13-only
+# box imported cleanly, compiled kernels, and then died at the first cuBLAS
+# load (a rented CUDA 13.2 node, 2026-08-05).  With them, cupy-cuda12x[ctk]
+# passes cuBLAS and kernel checks on a CUDA 13.3 driver (RTX 5090,
+# 2026-09-27).
 #
 # A pip extra CANNOT detect a CUDA major -- there is no environment
 # marker for it -- so this table does not pretend to choose.  The choice
@@ -174,8 +177,10 @@ Changelog = "https://github.com/FahrenheitResearch/arwen/blob/main/CHANGELOG.md"
 #
 # The accurate-intent rule this table cannot enforce by itself is enforced
 # by `gpuwm doctor`, which reads the box's CUDA major straight off the
-# driver -- with or without CuPy installed -- and prints the extra that
-# matches it rather than a cu12 default.
+# driver -- with or without CuPy installed.  Where no CuPy works it prints
+# the extra for that major rather than a cu12 default; a working install
+# of an older major is left alone, and only an extra newer than the driver
+# is told which one runs instead.
 #
 # `[ctk]`: THE CUDA TOOLKIT, WHICH THE WHEEL ALONE DOES NOT CARRY.
 #
@@ -543,6 +548,16 @@ gpuwm = [
     "*.json",
     "authorities/**/*",
     "data/**/*",
+    # `gpuwm gui`'s page and its words: served from the installed package,
+    # so the browser door works from a wheel with nothing fetched.
+    "gui/static/**/*",
+    "gui/copy/*.json",
+    "gui/seed/*.json",
+    "gui/seed/recipes/*.json",
+    # The Machines list's cloud providers: table data, one entry per provider.
+    "gui/providers.json",
+    # The assistant's table of models, server builds and endpoints.
+    "gui/assistant/*.json",
     # The prebuilt Rust artifacts a PLATFORM wheel carries, staged by
     # tools/stage_wheel_bridges.py between `cargo build --release` and
     # `python -m build`.  Absent from a source checkout and from the
@@ -619,8 +634,8 @@ docs = ["mpas-seam.md"]
 # they ship in the `gpuwm-data` companion distribution (gpuwm-data/), whose
 # pyproject.toml carries the two lists verbatim, for the same two reasons,
 # beside the files they name.  Nothing was dropped and nothing was
-# loosened -- the four CC-BY-NC-SA-4.0 RFMIP reference results still do not
-# ship, and freezeH2O.dat / qr_acr_qg_V4.dat still arrive only through
+# loosened -- no RFMIP file ships (since 2.8.0 none is in the tree at
+# all), and freezeH2O.dat / qr_acr_qg_V4.dat still arrive only through
 # `gpuwm fetch-tables` under their size + SHA-256 pins.
 #
 # The move was a channel limit: this wheel measured 103.62 MiB against

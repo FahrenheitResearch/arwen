@@ -24,9 +24,15 @@
       "air_temperature_2m": "2db766552f19ca43a57d4eda5245fc1c50604e79c01eacb25f68944d5b960d5b",
       "dewpoint_temperature_2m": "0314e75a40ed689d17fc74bd0458d72a3a14d1decb9e77566985853616610ba1",
       "eastward_wind_10m": "ff50b5c72a0afbdaeecebd8a3f8a51719c28437892e190c6fa031ec3e6fbabe1",
+      "lake_ice_depth": "56f29b66094c6282bc006411aebe23b209d42246ea7ae36821b4091b77582a23",
+      "lake_ice_temperature": "e6b32a6397674cddfe9a754fd5d745d6164ec309d6582b7ac141a97059623d6c",
+      "lake_water_temperature": "c9e2a3fbe1b8541004fe19439d842a53afd4ec473bbeee991eeb57f9417de2ca",
       "land_fraction": "f29d672616b6467d42407b9b9fe24ab5d60b6e7ace3adc6fa1046efe5bd9e0a4",
       "northward_wind_10m": "9265db4ac5519ec789852ac4aa7b111bb127ebdcffa16c237832f444365d6b56",
+      "sea_ice_fraction": "bfe5c67661877ca925262454cf8dcb490313250fd74663054e6c9495b25c1d0e",
+      "sea_surface_temperature": "30c25c3812757f3c259e7ab2b7c442d11958ba5bbc746b45a26ea83386a115df",
       "skin_temperature": "81f3a6b6824a3fdd5326707ac9febd73cc367930a82291bb2d38f570932102f1",
+      "snow_water_equivalent": "f804e049efb84d411753badac7e879449463fcf6b0ccd9d5a11938a24e4b20f5",
       "soil_temperature": "d373a33c22f5ac3057add488d7c4f30aa37390b787d575563b2b3c8a8f603d5e",
       "surface_pressure": "5b2138a253a6215ed167f7e346ecdafff031b17a80713713af9ce6689da484ce",
       "terrain_height": "7f41a55ddcc719b36348c84e66a57749cc2edc5da232b639e1b8fe6065039dde",
@@ -36,9 +42,15 @@
       "air_temperature_2m",
       "dewpoint_temperature_2m",
       "eastward_wind_10m",
+      "lake_ice_depth",
+      "lake_ice_temperature",
+      "lake_water_temperature",
       "land_fraction",
       "northward_wind_10m",
+      "sea_ice_fraction",
+      "sea_surface_temperature",
       "skin_temperature",
+      "snow_water_equivalent",
       "soil_temperature",
       "surface_pressure",
       "terrain_height",
@@ -71,7 +83,7 @@
   },
   "composition": {
     "name": "rw-wps-era5-model-level-l137-grib2.composition.json",
-    "sha256": "012bffc1322363560101ed393bb098e78f2cc013219ebf1e123561d6c0c0a05e"
+    "sha256": "eab1fcd5c10a746ebdaf269e910e08ea77a40d0db9789539423cbda477201e62"
   },
   "contributing_sources": [
     {
@@ -100,9 +112,15 @@
           "air_temperature_2m": "2db766552f19ca43a57d4eda5245fc1c50604e79c01eacb25f68944d5b960d5b",
           "dewpoint_temperature_2m": "0314e75a40ed689d17fc74bd0458d72a3a14d1decb9e77566985853616610ba1",
           "eastward_wind_10m": "ff50b5c72a0afbdaeecebd8a3f8a51719c28437892e190c6fa031ec3e6fbabe1",
+          "lake_ice_depth": "56f29b66094c6282bc006411aebe23b209d42246ea7ae36821b4091b77582a23",
+          "lake_ice_temperature": "e6b32a6397674cddfe9a754fd5d745d6164ec309d6582b7ac141a97059623d6c",
+          "lake_water_temperature": "c9e2a3fbe1b8541004fe19439d842a53afd4ec473bbeee991eeb57f9417de2ca",
           "land_fraction": "f29d672616b6467d42407b9b9fe24ab5d60b6e7ace3adc6fa1046efe5bd9e0a4",
           "northward_wind_10m": "9265db4ac5519ec789852ac4aa7b111bb127ebdcffa16c237832f444365d6b56",
+          "sea_ice_fraction": "bfe5c67661877ca925262454cf8dcb490313250fd74663054e6c9495b25c1d0e",
+          "sea_surface_temperature": "30c25c3812757f3c259e7ab2b7c442d11958ba5bbc746b45a26ea83386a115df",
           "skin_temperature": "81f3a6b6824a3fdd5326707ac9febd73cc367930a82291bb2d38f570932102f1",
+          "snow_water_equivalent": "f804e049efb84d411753badac7e879449463fcf6b0ccd9d5a11938a24e4b20f5",
           "soil_temperature": "d373a33c22f5ac3057add488d7c4f30aa37390b787d575563b2b3c8a8f603d5e",
           "surface_pressure": "5b2138a253a6215ed167f7e346ecdafff031b17a80713713af9ce6689da484ce",
           "terrain_height": "7f41a55ddcc719b36348c84e66a57749cc2edc5da232b639e1b8fe6065039dde",
@@ -112,9 +130,15 @@
           "air_temperature_2m",
           "dewpoint_temperature_2m",
           "eastward_wind_10m",
+          "lake_ice_depth",
+          "lake_ice_temperature",
+          "lake_water_temperature",
           "land_fraction",
           "northward_wind_10m",
+          "sea_ice_fraction",
+          "sea_surface_temperature",
           "skin_temperature",
+          "snow_water_equivalent",
           "soil_temperature",
           "surface_pressure",
           "terrain_height",
@@ -148,17 +172,23 @@
       "binding": "physical_analysis_surface",
       "data": [
         {
-          "path": "era5-combined-20260505-12z-15z.grib",
-          "sha256": "19ff6d574e1bf4d778a71a9e2ee60b81aa020819ff8f69549c3fcf1f0144ae4f"
+          "path": "era5-combined-lakes-20260505-12z-15z.grib",
+          "sha256": "27509968d51aefcd54339581cb7350c360becff3612e508f753d92ae0e6c9fe2"
         }
       ],
       "fields": [
         "air_temperature_2m",
         "dewpoint_temperature_2m",
         "eastward_wind_10m",
+        "lake_ice_depth",
+        "lake_ice_temperature",
+        "lake_water_temperature",
         "land_fraction",
         "northward_wind_10m",
+        "sea_ice_fraction",
+        "sea_surface_temperature",
         "skin_temperature",
+        "snow_water_equivalent",
         "soil_temperature",
         "surface_pressure",
         "terrain_height",
@@ -166,7 +196,7 @@
       ],
       "mapping": {
         "path": "rw-wps-era5-plev-surface-donor.mapping.json",
-        "sha256": "38bb519c8cad40afd422f3f9b03c0bedcac8512df43b386758c18a64334fe060"
+        "sha256": "a16c6a9b615d5999030051aa3fb2170de7993467580c4f44840eebd0f1ec5e69"
       },
       "provenance": {
         "path": "rw-wps-era5-model-level-l137-grib2.provenance.json",
@@ -283,7 +313,7 @@
           ],
           "location": "mass",
           "missing_count": 0,
-          "sha256": "9a1de45358acab00fa9cf8d7b8cd3a7620b061a70d6fe2a49fe0c9994c31d674",
+          "sha256": "3aaa9c26ab52926f2b615fcd5d4dcfce62c6e6ca689edc42271f5ca89be31c8f",
           "shape": [
             137,
             84,
@@ -291,6 +321,51 @@
           ],
           "staggering": "none",
           "units": "m"
+        },
+        "lake_ice_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "56f29b66094c6282bc006411aebe23b209d42246ea7ae36821b4091b77582a23",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "lake_ice_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "e6b32a6397674cddfe9a754fd5d745d6164ec309d6582b7ac141a97059623d6c",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "lake_water_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "c9e2a3fbe1b8541004fe19439d842a53afd4ec473bbeee991eeb57f9417de2ca",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
         },
         "land_fraction": {
           "axes": [
@@ -339,6 +414,36 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "sea_ice_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "bfe5c67661877ca925262454cf8dcb490313250fd74663054e6c9495b25c1d0e",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "sea_surface_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "30c25c3812757f3c259e7ab2b7c442d11958ba5bbc746b45a26ea83386a115df",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
         "skin_temperature": {
           "axes": [
             "y",
@@ -353,6 +458,21 @@
           ],
           "staggering": "none",
           "units": "K"
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "f804e049efb84d411753badac7e879449463fcf6b0ccd9d5a11938a24e4b20f5",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "kg m-2"
         },
         "soil_temperature": {
           "axes": [
@@ -395,7 +515,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "1351459a219da110c129f617b225cb98ddff5205cb4d151116c86e76bf2bf5e9",
+          "sha256": "266e0a5fcf9c5312a4842b3b91b8bab37ff43d2c80f258056c302a7951244447",
           "shape": [
             84,
             137
@@ -452,11 +572,10 @@
         }
       },
       "grid_fingerprint": "7af86763b6ff43f7a6a3ba187272688c1b2b7a341c6d2599c508df6abd501d0e",
-      "header_sha256": "bf22b52df1cb18df161d2d666de889b0748814b9a020031a27e3838647576dd0",
       "inputs": [
         {
-          "name": "era5-combined-20260505-12z-15z.grib",
-          "sha256": "19ff6d574e1bf4d778a71a9e2ee60b81aa020819ff8f69549c3fcf1f0144ae4f"
+          "name": "era5-combined-lakes-20260505-12z-15z.grib",
+          "sha256": "27509968d51aefcd54339581cb7350c360becff3612e508f753d92ae0e6c9fe2"
         },
         {
           "name": "era5-ml-l137-20260505-12z-15z.grib2",
@@ -472,6 +591,7 @@
         "sha256": "81e409436f409d73ef5efcd3290f9b7d3d3660f03a657165d1d587ea9d7c4fce"
       },
       "member": null,
+      "portable_header_sha256": "9972319a6d327a064bca068a6810d42352fdb2cebaa7bdd7c248de51c9bff9e1",
       "source_cycle": "2026-05-05T12:00:00",
       "valid_time": "2026-05-05T12:00:00",
       "vertical": {
@@ -587,7 +707,7 @@
           ],
           "location": "mass",
           "missing_count": 0,
-          "sha256": "1fe3bf6d71f355e319d94f5830b25b095ccdb82e41fc01c51c6665a765125608",
+          "sha256": "5e3a71605e970d58e602bdd7038e9912b913c63ab0f0712b592ded347abcea3e",
           "shape": [
             137,
             84,
@@ -595,6 +715,51 @@
           ],
           "staggering": "none",
           "units": "m"
+        },
+        "lake_ice_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "1cabb66a17cb074203b09429145f41513f1df54a7cc5a83f6611f34bad386e9c",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "lake_ice_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "7778d676e1003d0730d81d4cd54af5a96caae349a148b0317274337d3cb7c5c2",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "lake_water_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "7e1589451f70ac9cc2c666c5d5b14744f805445f33ef1371f9d369f53efc59f0",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
         },
         "land_fraction": {
           "axes": [
@@ -643,6 +808,36 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "sea_ice_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "bfe5c67661877ca925262454cf8dcb490313250fd74663054e6c9495b25c1d0e",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "sea_surface_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "26a692db1f3c160e7f54ceb45576021c8bc8b3a3654255f4ccb7e2be7c4ddcbe",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
         "skin_temperature": {
           "axes": [
             "y",
@@ -657,6 +852,21 @@
           ],
           "staggering": "none",
           "units": "K"
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "c5f62258e49451f8173172bb1abc7b19268f74da3838effa9dff2a1169590243",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "kg m-2"
         },
         "soil_temperature": {
           "axes": [
@@ -699,7 +909,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "4363dec01766282da65f77388c6e0c5094fddff6f10873f1dc31ee9d172a1fd1",
+          "sha256": "eba7ad58556c5b849ed373f9c06871d03948c59aa4fd09eb3f65f83049b45402",
           "shape": [
             84,
             137
@@ -756,11 +966,10 @@
         }
       },
       "grid_fingerprint": "7af86763b6ff43f7a6a3ba187272688c1b2b7a341c6d2599c508df6abd501d0e",
-      "header_sha256": "4af5b768fb4bb2e2ece98f8097a1b1d075d2869d8a7273c1769d49f6675f57b8",
       "inputs": [
         {
-          "name": "era5-combined-20260505-12z-15z.grib",
-          "sha256": "19ff6d574e1bf4d778a71a9e2ee60b81aa020819ff8f69549c3fcf1f0144ae4f"
+          "name": "era5-combined-lakes-20260505-12z-15z.grib",
+          "sha256": "27509968d51aefcd54339581cb7350c360becff3612e508f753d92ae0e6c9fe2"
         },
         {
           "name": "era5-ml-l137-20260505-12z-15z.grib2",
@@ -776,6 +985,7 @@
         "sha256": "81e409436f409d73ef5efcd3290f9b7d3d3660f03a657165d1d587ea9d7c4fce"
       },
       "member": null,
+      "portable_header_sha256": "0d3e1f5d12ef8129b053457a87abd9e20b51d82d3c6acaf3a3cf4d8ad7cc9bcb",
       "source_cycle": "2026-05-05T13:00:00",
       "valid_time": "2026-05-05T13:00:00",
       "vertical": {
@@ -891,7 +1101,7 @@
           ],
           "location": "mass",
           "missing_count": 0,
-          "sha256": "2ce52bc9221c76c7ada743324295983448cebe0c68a079c530281b44665d21b6",
+          "sha256": "e45be3e8e69e27f21ee110cb7aae187928aa83dddd0e56105f7c65db6761c0e2",
           "shape": [
             137,
             84,
@@ -899,6 +1109,51 @@
           ],
           "staggering": "none",
           "units": "m"
+        },
+        "lake_ice_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "3cc53f420bf2fd89de2ef740d4e77d6d0ea32b525626e4016f97f688835cab75",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "lake_ice_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "ab79165674987d94dc5a445c11e0cc03855b50dc33511640a5ab76343253096b",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "lake_water_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "d5e3ff7a2351fc80420bcf88d15a13e7ca7aa517966daa82d2f568bc81afae5b",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
         },
         "land_fraction": {
           "axes": [
@@ -947,6 +1202,36 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "sea_ice_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "bfe5c67661877ca925262454cf8dcb490313250fd74663054e6c9495b25c1d0e",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "sea_surface_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "f41b5f0e9b343a24c34115d3d612ea0f49f8a61f3617c9c7d6603a53b979ce86",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
         "skin_temperature": {
           "axes": [
             "y",
@@ -961,6 +1246,21 @@
           ],
           "staggering": "none",
           "units": "K"
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "4d242b7fd44cb2af27510daff593726056d3a6639b7fec1fccc60a7275124556",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "kg m-2"
         },
         "soil_temperature": {
           "axes": [
@@ -1003,7 +1303,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "9a266ed64b5106b4bb338f3e49ecf7ce1f43dfcaba52b897c0a9db191e6ee2f4",
+          "sha256": "26e9365f19f7023941f44d8570a760fb58cb117887c0ff80c20dc340e112e856",
           "shape": [
             84,
             137
@@ -1060,11 +1360,10 @@
         }
       },
       "grid_fingerprint": "7af86763b6ff43f7a6a3ba187272688c1b2b7a341c6d2599c508df6abd501d0e",
-      "header_sha256": "22ab4706086dec22c04289a65ac84bc20fe1c65e4b03ea2ec81ba3cbd643503a",
       "inputs": [
         {
-          "name": "era5-combined-20260505-12z-15z.grib",
-          "sha256": "19ff6d574e1bf4d778a71a9e2ee60b81aa020819ff8f69549c3fcf1f0144ae4f"
+          "name": "era5-combined-lakes-20260505-12z-15z.grib",
+          "sha256": "27509968d51aefcd54339581cb7350c360becff3612e508f753d92ae0e6c9fe2"
         },
         {
           "name": "era5-ml-l137-20260505-12z-15z.grib2",
@@ -1080,6 +1379,7 @@
         "sha256": "81e409436f409d73ef5efcd3290f9b7d3d3660f03a657165d1d587ea9d7c4fce"
       },
       "member": null,
+      "portable_header_sha256": "a3dbddf87bd5fba5a0d355d64c1cee58ecd698d05e6d6ca570ef86808b57cb82",
       "source_cycle": "2026-05-05T14:00:00",
       "valid_time": "2026-05-05T14:00:00",
       "vertical": {
@@ -1195,7 +1495,7 @@
           ],
           "location": "mass",
           "missing_count": 0,
-          "sha256": "aec650d6d27d7e17fca8bbafb7890ad0a7553db49e4100ce56996cc33ac679d9",
+          "sha256": "818e162c4613c553f5d9fa28b6787798979c5f48fcfc13ad9a4ab2149a83ce57",
           "shape": [
             137,
             84,
@@ -1203,6 +1503,51 @@
           ],
           "staggering": "none",
           "units": "m"
+        },
+        "lake_ice_depth": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "90a6a0a5e4236cde730da9eebec3df467f05a97f410485b68bcb3190fcd98b24",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "m"
+        },
+        "lake_ice_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "7c19c7edd767664d98ec2015e1293f36987abbb19d96fd0de064b71f8a7f5881",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
+        "lake_water_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "dcb95fefe160fc12b787e090d0608b1c41931136d1a631196d855ad8c7806b10",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
         },
         "land_fraction": {
           "axes": [
@@ -1251,6 +1596,36 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "sea_ice_fraction": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "bfe5c67661877ca925262454cf8dcb490313250fd74663054e6c9495b25c1d0e",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "1"
+        },
+        "sea_surface_temperature": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 10877,
+          "sha256": "c3384776260495fe3b1296c58a6f3fb8295a44032969744fdc3b78e65cb37fb5",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "K"
+        },
         "skin_temperature": {
           "axes": [
             "y",
@@ -1265,6 +1640,21 @@
           ],
           "staggering": "none",
           "units": "K"
+        },
+        "snow_water_equivalent": {
+          "axes": [
+            "y",
+            "x"
+          ],
+          "location": "surface",
+          "missing_count": 0,
+          "sha256": "395c3261d56cbe30d8801f7b43fa7179c806c6e8010b85b76d0770eabf480613",
+          "shape": [
+            84,
+            137
+          ],
+          "staggering": "none",
+          "units": "kg m-2"
         },
         "soil_temperature": {
           "axes": [
@@ -1307,7 +1697,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "a9d58f1fd3f0cd4e3baec03df7765fc694464564622115bdd7209d41f54c5a77",
+          "sha256": "54a58874eadd65f2176b176cb9ec1878fc8ef4a021a79150318b22fead9346e5",
           "shape": [
             84,
             137
@@ -1364,11 +1754,10 @@
         }
       },
       "grid_fingerprint": "7af86763b6ff43f7a6a3ba187272688c1b2b7a341c6d2599c508df6abd501d0e",
-      "header_sha256": "f227af2e35b4976a7bfb05cb2fc449ffcc1fd84e0cd72fe47c808248da5dad3c",
       "inputs": [
         {
-          "name": "era5-combined-20260505-12z-15z.grib",
-          "sha256": "19ff6d574e1bf4d778a71a9e2ee60b81aa020819ff8f69549c3fcf1f0144ae4f"
+          "name": "era5-combined-lakes-20260505-12z-15z.grib",
+          "sha256": "27509968d51aefcd54339581cb7350c360becff3612e508f753d92ae0e6c9fe2"
         },
         {
           "name": "era5-ml-l137-20260505-12z-15z.grib2",
@@ -1384,6 +1773,7 @@
         "sha256": "81e409436f409d73ef5efcd3290f9b7d3d3660f03a657165d1d587ea9d7c4fce"
       },
       "member": null,
+      "portable_header_sha256": "6c0631a5e5b87f8bc604f46cf5d222a206a07f78c677eee1232a2ad2b6b544b7",
       "source_cycle": "2026-05-05T15:00:00",
       "valid_time": "2026-05-05T15:00:00",
       "vertical": {
@@ -1394,15 +1784,16 @@
       "vertical_units": "1"
     }
   ],
+  "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-era5-model-level-l137-grib2.mapping.json",
-    "sha256": "51b656c17ba0bd29e3df7a8b07f8367be9cad731d9ee210fd7ae545c4da830ac"
+    "sha256": "e66420c7163beb25f4431df8a026a58e141276c85434260b4107255994b730af"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
-  "schema": "gpuwm-mapped-compose-parity-digest-v1",
+  "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
     "depth_units": "m",
     "missing": {
@@ -1533,8 +1924,8 @@
   "source": "era5-l137",
   "terrain_data": [
     {
-      "name": "era5-combined-20260505-12z-15z.grib",
-      "sha256": "19ff6d574e1bf4d778a71a9e2ee60b81aa020819ff8f69549c3fcf1f0144ae4f"
+      "name": "era5-combined-lakes-20260505-12z-15z.grib",
+      "sha256": "27509968d51aefcd54339581cb7350c360becff3612e508f753d92ae0e6c9fe2"
     }
   ],
   "terrain_provenance": {

@@ -83,6 +83,8 @@ from typing import Callable
 
 import numpy as np
 
+from gpuwm.cli_numbers import positive_int
+
 # The v1.0.1 product conventions, imported rather than re-implemented.
 # The underscored names are deliberate: they are gpuwm.render's own
 # private helpers, and reaching for them here is a statement that the
@@ -2796,7 +2798,7 @@ def register_cli(subparsers) -> None:
         "--out", type=Path, default=Path("out/enprod"), metavar="DIR",
         help="output directory for the PNGs (default out/enprod)")
     parser.add_argument(
-        "--dpi", type=int, default=150, metavar="N",
+        "--dpi", type=positive_int, default=150, metavar="N",
         help="PNG resolution (default 150)")
     parser.add_argument(
         "--source-label", default=DEFAULT_SOURCE_LABEL, metavar="TEXT",
@@ -2837,7 +2839,7 @@ def register_cli(subparsers) -> None:
         help="write a synthetic ensemble (members + manifest) to DIR and "
              "exit, for exercising the suite without a real ensemble")
     parser.add_argument(
-        "--members", type=int, default=5, metavar="N",
+        "--members", type=positive_int, default=5, metavar="N",
         help="--make-fixture member count (default 5)")
     parser.set_defaults(func=enprod_main)
     return parser

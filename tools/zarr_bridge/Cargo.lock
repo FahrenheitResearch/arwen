@@ -1074,12 +1074,14 @@ dependencies = [
  "bzip2",
  "chrono",
  "grib-core",
+ "libc",
  "ndarray",
  "netcrust",
  "rayon",
  "serde",
  "serde_json",
  "sha2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1718,11 +1720,13 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 name = "rw-zarr"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "chrono",
  "mapped-engine",
  "netcdf-writer",
  "netcrust",
  "openssl",
+ "reqwest",
  "serde",
  "serde_json",
  "zarrs",

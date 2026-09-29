@@ -159,6 +159,7 @@ def _used_cwp_scans(backend, cycle_index, when, max_age):
     """Prior committed windows own consumption, so there is no second ledger."""
     from gpuwm.local_da_runtime import _sha
     from gpuwm.obs.goes_window import ACQUISITION_SCHEMA
+    from gpuwm.obs.target_grid import identity_names_grid
     used = set()
     for index in range(cycle_index - 1, -1, -1):
         path = backend.root / 'observations' / f'cycle_{index:03d}' / 'window.json'
@@ -167,7 +168,7 @@ def _used_cwp_scans(backend, cycle_index, when, max_age):
         receipt = json.loads(path.read_text())
         if (receipt.get('schema') != WINDOW_SCHEMA
                 or receipt.get('review_sha256') != backend.plan['review_sha256']
-                or receipt.get('grid_identity') != backend.grid.identity_sha256()):
+                or not identity_names_grid(backend.grid, receipt.get('grid_identity'))):
             raise PlanError('A prior CWP window belongs to another review or grid.', code='OBSERVATION_WINDOW_CHANGED')
         if (when - utc(receipt['analysis_time'])).total_seconds() > max_age:
             break
@@ -199,7 +200,8 @@ def _load_frozen(backend, receipt, when):
     from gpuwm.da.obs_surface import read_record
     from gpuwm.obs.radar_grid import read_radar_grid
     from gpuwm.obs.goes_grid import read_goes_grid
-    if receipt.get('schema') != WINDOW_SCHEMA or receipt.get('review_sha256') != backend.plan['review_sha256'] or receipt.get('analysis_time') != _stamp(when) or receipt.get('grid_identity') != backend.grid.identity_sha256():
+    from gpuwm.obs.target_grid import identity_names_grid
+    if receipt.get('schema') != WINDOW_SCHEMA or receipt.get('review_sha256') != backend.plan['review_sha256'] or receipt.get('analysis_time') != _stamp(when) or not identity_names_grid(backend.grid, receipt.get('grid_identity')):
         raise PlanError('The saved observation window belongs to a different review, clock or grid; restore the matching receipt before resuming.', code='OBSERVATION_WINDOW_CHANGED')
     assets = receipt['assets']
     for asset in assets:

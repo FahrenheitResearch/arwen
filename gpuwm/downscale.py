@@ -39,13 +39,14 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 from pathlib import Path
 
 import netCDF4
 import numpy as np
 
-from gpuwm import downscale_pricing, netcdf_bridge
+from gpuwm import downscale_pricing
 
 from gpuwm.explain import layered, warn
 from gpuwm.offline_child import (
@@ -58,6 +59,7 @@ from gpuwm.offline_child import (
     bind_parent_physics_from_wrf_namelist,
     child_surface_requirement,
     derive_child_surface_from_parent,
+    open_parent_history,
     read_child_surface_state,
     require_offline_child_root_forcing,
     require_runnable_child_radiation_from_archive,
@@ -84,6 +86,9 @@ CADENCE_GUIDANCE_SECONDS = 900.0
 _GEOMETRY_KEYS = (
     "nx", "ny", "dx", "dy", "dt", "grid_id", "specified", "nested",
     "run_seconds", "output_interval_s", "clock_dt", "case",
+    # The lateral zone, sized for the parent (child_lateral_zone).
+    "spec_zone", "relax_zone", "spec_bdy_width", "relax_timescale_s",
+    "relax_w", "spec_exp",
 )
 
 
@@ -98,6 +103,62 @@ def _card_vram_gib() -> dict:
     from gpuwm.domain_wizard import CARD_VRAM_GIB
 
     return CARD_VRAM_GIB
+
+
+def _frame_spacing_m(path: Path) -> float | None:
+    """The DX global attribute of one history frame, or None if unreadable.
+
+    A global attribute of gpuwm's own output is identity plumbing, not
+    decoding, so it is read on netCDF4 like :func:`parent_initial_condition`.
+    """
+    try:
+        with netCDF4.Dataset(path) as dataset:
+            if "DX" not in dataset.ncattrs():
+                return None
+            value = float(dataset.getncattr("DX"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if math.isfinite(value) and value > 0.0 else None
+
+
+def parent_domain_inventory(directory: Path) -> list[dict]:
+    """Every domain a run directory wrote history for, with its spacing.
+
+    One row per ``wrfout_dNN_*`` domain: ``{"id", "dx_m", "frames"}``,
+    ordered by id.  ``dx_m`` is the first frame's DX (None when the frame
+    carries none), so a page or the terminal can pick a parent by spacing
+    instead of by guessing which domain number is the fine one.
+    """
+    frames: dict[int, list[Path]] = {}
+    for path in sorted(directory.iterdir()):
+        match = _FRAME_RE.match(path.name)
+        if match:
+            frames.setdefault(int(match.group("dom")), []).append(path)
+    return [{"id": domain, "dx_m": _frame_spacing_m(paths[0]),
+             "frames": len(paths)}
+            for domain, paths in sorted(frames.items())]
+
+
+def default_parent_domain(domains: list[dict]) -> int | None:
+    """The finest domain of an inventory: smallest DX, then highest id.
+
+    A domain whose spacing cannot be read is never the default, because
+    "finest" is then a guess; with no readable spacing at all the answer
+    is None and the caller must be told to choose.
+    """
+    readable = [row for row in domains if row["dx_m"] is not None]
+    if not readable:
+        return None
+    return min(readable, key=lambda row: (row["dx_m"], -row["id"]))["id"]
+
+
+def _describe_domains(domains: list[dict]) -> str:
+    return ", ".join(
+        f"d{row['id']:02d} ("
+        + (f"{row['dx_m']:g} m" if row["dx_m"] is not None
+           else "spacing unreadable")
+        + f", {row['frames']} frame{'s' if row['frames'] != 1 else ''})"
+        for row in domains)
 
 
 def _discover_parent_series(
@@ -121,9 +182,14 @@ def _discover_parent_series(
         elif len(domains) == 1:
             selected = domains[0]
         else:
+            inventory = parent_domain_inventory(raw_paths[0])
+            finest = default_parent_domain(inventory)
+            hint = (f" (the finest is d{finest:02d}: --parent-domain {finest})"
+                    if finest is not None else "")
             raise OfflineChildContractError(
-                f"{raw_paths[0]} carries multiple domains {domains}; "
-                "pass --parent-domain to choose the parent")
+                f"{raw_paths[0]} carries multiple domains: "
+                f"{_describe_domains(inventory)}; pass --parent-domain to "
+                f"choose the parent{hint}")
         return [p for p in candidates
                 if _FRAME_RE.match(p.name).group("dom") == selected]
     files = []
@@ -149,7 +215,17 @@ def _parse_point(raw: str) -> tuple[float, float]:
         ) from None
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 360.0):
         raise ValueError(f"--point {raw!r} is outside geographic bounds")
-    return lat, lon
+    # Both longitude conventions are accepted; the placement, the plan and
+    # every message read the one the parent's XLONG uses (-180..180).
+    return lat, _wrap_longitude(lon)
+
+
+def _wrap_longitude(lon):
+    """Longitude (scalar or array) folded into [-180, 180)."""
+
+    if np.isscalar(lon):
+        return (float(lon) + 180.0) % 360.0 - 180.0
+    return (np.asarray(lon, dtype=np.float64) + 180.0) % 360.0 - 180.0
 
 
 def parent_initial_condition(path: Path) -> dict[str, object]:
@@ -165,7 +241,7 @@ def parent_initial_condition(path: Path) -> dict[str, object]:
 
     from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 
-    with netCDF4.Dataset(path) as dataset:
+    with open_parent_history(path, netCDF4.Dataset) as dataset:
         present = set(dataset.ncattrs())
         return {
             name: _jsonable_attr(dataset.getncattr(name))
@@ -185,8 +261,12 @@ def _parent_geometry(path: Path) -> dict[str, object]:
     meteorological field is decode work whoever wrote the file.  The
     attribute reader stays on netCDF4 because reading a global attribute
     off gpuwm's own output is identity plumbing, not decoding.
+
+    Opened through :func:`open_parent_history`, like every parent read
+    on this door: a frame cut off partway through its data, or one the
+    reader refuses, is a sentence naming the file, not a traceback.
     """
-    with netcdf_bridge.open_dataset(path) as dataset:
+    with open_parent_history(path) as dataset:
         result = {
             "ny": len(dataset.dimensions["south_north"]),
             "nx": len(dataset.dimensions["west_east"]),
@@ -210,11 +290,22 @@ def _parent_geometry(path: Path) -> dict[str, object]:
 def inspect_downscale_parent(directory: Path, parent_domain: int | None) -> dict:
     """Read the selected archive's own geometry, including a standalone child.
 
+    For a run directory the answer also lists every domain it wrote
+    (``domains``: id, ``dx_m``, frame count) and names the finest as
+    ``default_parent``; without ``--parent-domain`` that finest domain is
+    the one inspected, so a multi-domain run no longer answers with an
+    error.
+
     A legacy child TOML has no projection. The Rust-decoded history coordinates
     remain authoritative regardless of the configuration schema that made it.
     """
     from gpuwm.filesystem_paths import io_path
-    frames = _discover_parent_series([io_path(directory)], parent_domain)
+    root = io_path(directory)
+    domains = parent_domain_inventory(root) if root.is_dir() else []
+    default_parent = default_parent_domain(domains)
+    if parent_domain is None and len(domains) > 1:
+        parent_domain = default_parent
+    frames = _discover_parent_series([root], parent_domain)
     frame = frames[0]
     grid = _parent_geometry(frame)
     j, i = int(grid['ny']) // 2, int(grid['nx']) // 2
@@ -227,7 +318,8 @@ def inspect_downscale_parent(directory: Path, parent_domain: int | None) -> dict
     return {'schema': 'gpuwm.downscale-parent.v1', 'parent_domain': actual_domain,
             'history_frame': str(frame), 'geometry_backend': 'rust-netcdf',
             'center_latlon': center, 'nx': grid['nx'], 'ny': grid['ny'],
-            'nz': grid['nz'], 'dx_m': grid['dx'], 'dy_m': grid['dy']}
+            'nz': grid['nz'], 'dx_m': grid['dx'], 'dy_m': grid['dy'],
+            'domains': domains, 'default_parent': default_parent}
 
 
 def downscale_parent_main(args) -> int:
@@ -276,7 +368,7 @@ def _parent_mass_dims(path: Path) -> tuple[int, int]:
     surface derivation below needs only the shape the placement is
     validated against.
     """
-    with netCDF4.Dataset(path) as dataset:
+    with open_parent_history(path, netCDF4.Dataset) as dataset:
         return (len(dataset.dimensions["south_north"]),
                 len(dataset.dimensions["west_east"]))
 
@@ -287,7 +379,7 @@ def _validate_parent_evidence_grid(path: Path, binding, restart=None) -> None:
 
     config = (None if restart is None else
               read_restart_header(Path(restart))["config"])
-    with netCDF4.Dataset(path) as dataset:
+    with open_parent_history(path, netCDF4.Dataset) as dataset:
         if "GRID_ID" in dataset.ncattrs():
             actual = int(dataset.getncattr("GRID_ID"))
             if actual != int(binding.domain_id):
@@ -317,6 +409,30 @@ def _validate_child_window(run_seconds: float, window_seconds: float) -> None:
         raise OfflineChildContractError(
             f"child run_seconds={run_seconds:g} exceeds the archived "
             f"parent forcing window of {window_seconds:g} seconds")
+
+
+def _frames_for_child_window(contract, run_seconds: float) -> list[Path]:
+    """The parent frames a child of ``run_seconds`` reads, in order.
+
+    Every frame up to the child's end, and the first frame at or after it,
+    which closes the last boundary interval.  The child used to be handed
+    the whole archive, and the runner builds and holds a boundary interval
+    for every consecutive pair it is handed: a 2 h child off a 12 h,
+    15-minute parent built 48 intervals and read 8.  With a relaxation
+    zone sized in parent cells (:func:`child_lateral_zone`) each interval
+    is 25 to 41 rows deep, so the unread ones cost gigabytes of host
+    memory, and their preprocessing costs time before the first step.
+    """
+
+    from datetime import timedelta
+
+    end = contract.start_time + timedelta(seconds=float(run_seconds))
+    kept = []
+    for frame in contract.frames:
+        kept.append(Path(frame.path))
+        if frame.valid_time >= end:
+            break
+    return kept
 
 
 def _validate_child_surface_placement(surface, parent_path: Path, *,
@@ -384,10 +500,17 @@ def _validate_child_surface_placement(surface, parent_path: Path, *,
 
 def _nearest_parent_index(lat_field, lon_field, lat: float,
                           lon: float) -> tuple[int, int]:
-    """Nearest parent mass point, projection-agnostic (0-based j, i)."""
+    """Nearest parent mass point, projection-agnostic (0-based j, i).
+
+    The longitude difference is taken the short way round, so a point
+    given as 276 and a parent written as -84 (or a parent written 0..360)
+    find the same cell, and a parent across the 180th meridian is measured
+    across it rather than round the world.
+    """
     scale = np.cos(np.deg2rad(lat))
+    dlon = _wrap_longitude(np.asarray(lon_field, dtype=np.float64) - lon)
     cost = ((lat_field - lat) ** 2
-            + (scale * (lon_field - lon)) ** 2)
+            + (scale * dlon) ** 2)
     j, i = np.unravel_index(int(np.argmin(cost)), cost.shape)
     return int(j), int(i)
 
@@ -465,12 +588,107 @@ def _parse_child_levels(spec):
     except ValueError as exc:
         raise OfflineChildContractError(str(exc)) from exc
 
+#: How many PARENT cells a derived child's relaxation zone spans.
+#:
+#: THE BREAKAGE.  The derived child used to copy the parent's root-domain
+#: zone verbatim -- spec_bdy_width 5, spec_zone 1, relax_zone 4 -- and
+#: those are counts of the CHILD's cells.  At ratio 12 or 20 the whole
+#: zone was 1.25 km or 0.75 km, narrower than one 3 km parent cell, so the
+#: parent's smooth state was imposed across a strip thinner than anything
+#: the parent can represent, and the child's own storms and cold pools met
+#: it head on.  Measured on a Front Range 3 km HRRR parent (21 June 2023):
+#: the 150 m child's only storm sat on its east edge (59-61 dBZ, 45.6 m/s)
+#: where the parent had 3 dBZ, and in every child the 99th percentile of
+#: |w| within 5 cells of the edge was about twice the interior's.
+CHILD_RELAX_PARENT_CELLS = 2
+
+#: The share of the child's shorter side the two relaxation zones may take
+#: together.  A child only a few parent cells wide keeps an interior
+#: rather than becoming all zone.
+_CHILD_RELAX_MAX_SHARE = 0.5
+
+#: The flow speed, in m/s, whose crossing time of ONE child cell is a
+#: derived child's relaxation time scale on its first relaxed row
+#: (``RunConfig.relax_timescale_s`` = child dx / this): 12.5 s at 250 m,
+#: 7.5 s at 150 m.
+#:
+#: WHY THE CHILD'S CELL AND NOT THE PARENT'S STEP.  The first relaxed row
+#: sits one cell inside a row that is SPECIFIED from the parent, so it
+#: has to follow the parent about as fast as the flow carries the child's
+#: own state across one cell, or the two rows part and the jump between
+#: them drives vertical motion on the edge.  Measured on a 2 h, 250 m
+#: child (300 x 300, ratio 12, Front Range 3 km HRRR parent, 21 June
+#: 2023, 20Z): with the 24-cell zone relaxed on the parent's own time
+#: scale (10 parent steps, 150 s) the column-max |w| 99th percentile on
+#: rows 1 to 3 was 5.5 to 6.0 m/s where the parent has 3.1 to 3.3, and
+#: the edge (rows 0 to 4) stood at 1.45 times the interior; the same zone
+#: at 12.5 s keeps rows 1 to 6 within 0.5 m/s of the parent's and the
+#: edge at 0.83 times the interior.  WRF's own 4-cell zone gave 2.4.
+#: Under that parent (15 s at 3 km) 12.5 s is exactly WRF's 10-step law
+#: at the child's step; it is written in seconds so a step edited at
+#: review, or an adaptive clock, does not move the zone's stiffness with
+#: it, and :func:`child_lateral_zone` never sets it shorter than 10 of
+#: the child's steps.
+CHILD_RELAX_CROSSING_SPEED = 20.0
+
+
+def child_lateral_zone(parent_config: dict, *, ratio: int,
+                       child_nx: int, child_ny: int, child_dx: float,
+                       child_dy: float, child_dt: float) -> dict:
+    """The lateral-boundary keys of a derived child, sized for its parent.
+
+    * the relaxation zone spans :data:`CHILD_RELAX_PARENT_CELLS` parent
+      cells (``ratio`` child cells each), never less than WRF's own
+      ``relax_zone`` of the child's cells and never more than
+      :data:`_CHILD_RELAX_MAX_SHARE` of the child's shorter side between
+      the two edges;
+    * the relaxation time scale is set in seconds
+      (``RunConfig.relax_timescale_s``): the time a
+      :data:`CHILD_RELAX_CROSSING_SPEED` flow takes to cross one child
+      cell, and never shorter than WRF's own 10 child steps, so the
+      coefficients never exceed WRF's per-step nudge;
+    * ``w`` is relaxed toward the parent's and specified from it
+      (``RunConfig.relax_w``), as on a nest, instead of copied onto the
+      boundary from the first interior row;
+    * the ramp across the zone is linear (``spec_exp = 0``), whatever
+      the parent's.  A parent's exponential ramp counts its own rows
+      (WRF's 0.33 decays by e over three of them); inherited, it cut the
+      child's zone back to its outer three or four rows.  The 2 h 250 m
+      arm with ``spec_exp`` 0.1 and 0.2 moved the band of vertical motion
+      where the relaxation lets go outward and widened it without
+      lowering it (docs/public/DOWNSCALE.md), so the linear ramp stays.
+    """
+
+    from dataclasses import fields as dataclass_fields
+
+    from gpuwm.config import RunConfig
+
+    wrf = {field.name: field.default for field in dataclass_fields(RunConfig)}
+    spec_zone = int(parent_config.get("spec_zone", wrf["spec_zone"]))
+    widest = int(min(int(child_nx), int(child_ny))
+                 * _CHILD_RELAX_MAX_SHARE / 2)
+    relax_zone = max(int(wrf["relax_zone"]),
+                     min(CHILD_RELAX_PARENT_CELLS * int(ratio), widest))
+    timescale = max(
+        min(float(child_dx), float(child_dy)) / CHILD_RELAX_CROSSING_SPEED,
+        10.0 * float(child_dt))
+    return {
+        "spec_zone": spec_zone,
+        "relax_zone": int(relax_zone),
+        "spec_bdy_width": spec_zone + int(relax_zone),
+        "relax_timescale_s": float(timescale),
+        "relax_w": True,
+        "spec_exp": 0.0,
+    }
+
+
 def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
                              child_nx: int, child_ny: int,
                              run_seconds: float,
                              output_interval_s: float,
                              child_eta_levels=None) -> dict:
-    """Child RunConfig dict: parent physics verbatim, geometry rescaled."""
+    """Child RunConfig dict: parent physics verbatim, geometry rescaled,
+    lateral zone sized in parent cells (:func:`child_lateral_zone`)."""
     from dataclasses import fields as dataclass_fields
 
     from gpuwm.config import RunConfig, validate_run_config
@@ -489,6 +707,12 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
         "output_interval_s": float(output_interval_s),
         "clock_dt": 0.0, "case": "",
     })
+    merged.update(child_lateral_zone(parent_config, ratio=int(ratio),
+                                     child_nx=int(child_nx),
+                                     child_ny=int(child_ny),
+                                     child_dx=merged["dx"],
+                                     child_dy=merged["dy"],
+                                     child_dt=merged["dt"]))
     if child_eta_levels is not None:
         # The child's OWN ladder, and the level count that goes with it.
         # p_top/hybrid_opt/etac stay inherited from the parent above: those
@@ -741,15 +965,36 @@ def _fit_requested_extent(parent, *, j0: int, i0: int, ratio: int,
     return fitted_nx, fitted_ny
 
 
+def _disk_line(disk: dict, outdir: Path) -> str:
+    """The plan's disk block as one line for a reader at a terminal."""
+    gib = 1024 ** 3
+    kept = int(disk["keep_checkpoints"])
+    sets = ("every checkpoint set kept" if not kept else
+            f"{kept} checkpoint set{'s' if kept != 1 else ''} kept")
+    free = disk["free_bytes"]
+    room = ("free space unknown" if free is None
+            else f"{free / gib:.1f} GiB free on the disk that holds {outdir}")
+    each = disk.get("pictures_per_frame")
+    drawn = ""
+    if each:
+        drawn = f", {each} picture{'' if each == 1 else 's'} a frame"
+    return (f"this child will write about {disk['total_bytes'] / gib:.1f} GiB "
+            f"({disk['history_bytes'] / gib:.1f} GiB of history, "
+            f"{disk['checkpoint_bytes'] / gib:.1f} GiB of checkpoints with "
+            f"{sets}, {disk['picture_bytes'] / gib:.1f} GiB of pictures{drawn}); {room}")
+
+
 def _parent_latlon(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """The parent's mass-point latitude and longitude fields.
 
     Read with netCDF4, the way the history contract reader hashes these
     same fields (:func:`gpuwm.offline_child.inspect_parent_history_frame`):
-    this is the placement's geography, not a product field.
+    this is the placement's geography, not a product field.  netCDF4
+    reads a classic file cut off partway through its data as zeros, so
+    the frame is proven whole first (:func:`open_parent_history`).
     """
 
-    with netCDF4.Dataset(path) as dataset:
+    with open_parent_history(path, netCDF4.Dataset) as dataset:
         fields = []
         for name in ("XLAT", "XLONG"):
             if name not in dataset.variables:
@@ -1060,7 +1305,8 @@ def _parent_cadence_seconds(frames: list[Path]) -> float:
     return float(seconds)
 
 
-def _release_output_reservation(outdir: Path) -> None:
+def _release_output_reservation(outdir: Path, claim=None, *,
+                                created: bool = True) -> None:
     """Give back the ``--out`` this command reserved, when it then refuses.
 
     THE POISONED RETRY: ``--out`` is created create-only before the
@@ -1077,53 +1323,98 @@ def _release_output_reservation(outdir: Path) -> None:
     holds nothing but the config this command wrote into it.  Anything
     else means the directory is not ours to remove, and it is named and
     left alone rather than deleted.
+
+    The owner file's token is checked first.  A reservation whose claim
+    was taken over by another downscale (this process was judged gone,
+    or the folder was reclaimed) no longer owns the child.toml in there:
+    that file is the other run's, and deleting it is the defect this
+    check exists for.  A folder this command adopted (it existed, empty)
+    is given back empty rather than removed.
     """
 
-    import shutil
+    from gpuwm.offline_child import _output_entries
 
+    if claim is not None and not claim.held():
+        warn(f"leaving {outdir} in place: another downscale now owns it",
+             why="A refused downscale releases only what it still owns.")
+        return
     try:
-        held = sorted(child.name for child in outdir.iterdir())
+        held = _output_entries(outdir)
     except OSError:
+        if claim is not None:
+            claim.release()
         return
     unexpected = [name for name in held if name != DERIVED_CHILD_CONFIG_NAME]
     if unexpected:
+        if claim is not None:
+            claim.release()
         warn(f"leaving {outdir} in place: it holds {', '.join(unexpected)}, "
              "which this refused command did not write",
              why="A refused downscale releases only the empty output "
                  "directory it reserved; anything else in there belongs "
                  "to something this command cannot account for.")
         return
-    shutil.rmtree(outdir, ignore_errors=True)
+    try:
+        (outdir / DERIVED_CHILD_CONFIG_NAME).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    if claim is not None:
+        claim.release()
+    if created:
+        try:
+            outdir.rmdir()
+        except OSError:
+            pass
 
 
 class _OutputReservation:
-    """The ``--out`` this command created, until something else owns it.
+    """The ``--out`` this command claimed, until the run takes it over.
 
     Held open across the whole plan so that any refusal downstream of the
-    reservation hands the directory back.  A directory that ALREADY
-    existed (and was empty, so adopting it merges nothing) is never
-    recorded here: releasing it would delete something this command did
-    not create.
+    reservation hands the directory back.  Both a directory this command
+    created and an empty one it adopted are claimed with an owner file;
+    a refusal removes the first and empties the second, and only after
+    checking the owner file still carries this reservation's token.
     """
 
     def __init__(self) -> None:
         self.path: Path | None = None
+        self.created = False
+        self.owner = None
 
     def claim(self, outdir: Path) -> Path:
+        from gpuwm import ownership
+        from gpuwm.offline_child import output_owner_path
+
         existed = outdir.exists()
         resolved = reserve_output_root(outdir, flag="--out")
-        if not existed:
-            self.path = outdir
+        self.path = outdir
+        self.created = not existed
+        self.owner = ownership.held_claim(output_owner_path(outdir))
         return resolved
 
     def hand_off(self) -> None:
-        """The run owns the directory now; its partial output is evidence."""
+        """The run owns the directory now; its partial output is evidence.
+
+        The owner file stays until :meth:`finish`: the run is still
+        writing, and a second downscale must still be refused.
+        """
         self.path = None
 
     def release(self) -> None:
         if self.path is not None:
-            _release_output_reservation(self.path)
+            _release_output_reservation(self.path, self.owner,
+                                        created=self.created)
             self.path = None
+            self.owner = None
+
+    def finish(self) -> None:
+        """The run is over: give up the owner file, keep the output."""
+        if self.owner is not None:
+            self.owner.release()
+            self.owner = None
 
 
 def downscale_main(args) -> int:
@@ -1140,11 +1431,17 @@ def downscale_main(args) -> int:
     reset_resolution_notices()
     reservation = _OutputReservation()
     warnings: list[dict] = []
+    from gpuwm.offline_child_run import stop_on_signal
+
     try:
         # The plan document carries every advisory this command raised.
         # A controller shows them beside the grid it is about to run; a
         # terminal reader still gets the same sentences on stderr.
-        with collect_warnings(warnings):
+        # From the first line, a SIGTERM -- which this command tells its
+        # reader to send when Ctrl-C cannot reach it -- ends it through
+        # the same path as a Ctrl-C, so the reservation below is released
+        # and a child already running records its stop.
+        with stop_on_signal(), collect_warnings(warnings):
             return _downscale_main(args, reservation, warnings)
     except BaseException:
         # Every exit that is not this command's own success releases the
@@ -1153,6 +1450,8 @@ def downscale_main(args) -> int:
         # tree the first attempt found.
         reservation.release()
         raise
+    finally:
+        reservation.finish()
 
 
 def _admit_render_products(render_products, *, dry_run: bool) -> str:
@@ -1255,6 +1554,19 @@ def _downscale_main(args, reservation: _OutputReservation,
                     warnings: list[dict]) -> int:
     from gpuwm.go_cli import DEFAULT_RENDER_PRODUCTS
 
+    # The parser refuses a ratio below 1 as it reads --ratio.  A caller
+    # that hands this command a namespace of its own skips the parser,
+    # and every later step divides by the ratio (0 was a division by zero,
+    # -1 advice about a -2x-2 child), so the same words refuse it here.
+    if getattr(args, "ratio", None) is not None:
+        ratio = args.ratio
+        if isinstance(ratio, float) and ratio.is_integer():
+            ratio = int(ratio)
+        try:
+            _refinement_ratio(str(ratio))
+        except argparse.ArgumentTypeError as error:
+            raise OfflineChildContractError(str(error)) from None
+
     # Absent means the forecast door's own default, read off that door
     # rather than repeated here: two doors of one product cannot draw
     # two different catalogs by default.
@@ -1266,6 +1578,12 @@ def _downscale_main(args, reservation: _OutputReservation,
     # would be a promise the finalize render does not keep.
     render_products = _admit_render_products(
         render_products, dry_run=bool(args.dry_run))
+    # How many checkpoint sets the child keeps: --keep-checkpoints, else
+    # the run-plan knob when it is set, else one.  Settled here so the plan
+    # prices the disk on the answer the run is handed.
+    from gpuwm.offline_child_run import child_checkpoint_retention
+    keep_checkpoints = child_checkpoint_retention(
+        getattr(args, "keep_checkpoints", None))
     auto_vram = bool(getattr(args, "auto_vram", False))
     if auto_vram and (args.card is not None or args.vram_gib is not None):
         # Two declarations of one budget: a measured card and a declared
@@ -1529,6 +1847,8 @@ def _downscale_main(args, reservation: _OutputReservation,
     tiles_options = resolve_child_streaming_options(
         child_config, getattr(args, "tiles", None))
     _validate_child_window(cfg.run_seconds, window_seconds)
+    archive_frame_count = len(frames)
+    frames = _frames_for_child_window(contract, cfg.run_seconds)
     # The child's clock, refused HERE if it is not a whole number of steps:
     # the same function the runner integrates on
     # (gpuwm.offline_child_run.child_cadence), so a hand-written
@@ -1536,7 +1856,7 @@ def _downscale_main(args, reservation: _OutputReservation,
     # dt is turned away at review with the runner's own sentence instead
     # of after the run has started and reserved --out.
     from gpuwm.offline_child_run import child_cadence
-    child_cadence(
+    child_clock = child_cadence(
         cfg, health_interval_seconds=float(args.health_interval_seconds))
     parent_ny, parent_nx = _parent_mass_dims(frames[0])
     placement = OfflineChildPlacement(
@@ -1711,6 +2031,27 @@ def _downscale_main(args, reservation: _OutputReservation,
             measured_free_bytes=memory_free_bytes,
             estimate=memory_estimate,
             decision_budget_bytes=pricing.admission_budget_bytes))
+    # THE DISK, projected on the same clock and the same retention the run
+    # is handed, against the free space under --out (the function the
+    # runner refuses on, gpuwm.offline_child_run.child_disk_projection).
+    # A child that fills its disk stops partway with a torn frame, and an
+    # 11 hour 250 m child wrote 28.5 GB of checkpoints with nothing saying
+    # so before it started.
+    from gpuwm.offline_child_run import child_disk_projection
+    disk = child_disk_projection(
+        cfg, child_clock, keep_checkpoints=keep_checkpoints,
+        render_products=render_products, outdir=Path(args.out))
+    plan["disk"] = disk
+    print("gpuwm downscale: " + _disk_line(disk, Path(args.out)))
+    if disk["refusal"] is not None:
+        refusal = disk["refusal"][0].upper() + disk["refusal"][1:] + "."
+        if not args.dry_run:
+            raise OfflineChildContractError(layered(
+                refusal, "Refused before the child started, so nothing was "
+                f"spent.  Bytes per cell: {disk['basis']}.  Pictures: "
+                f"{disk['picture_basis']}."))
+        warn(refusal, why="--dry-run continues so the plan can be read; "
+                          "the run itself refuses until the child fits.")
     plan["cadence"] = {
         "seconds": float(contract.interval_seconds),
         "guidance_seconds": float(CADENCE_GUIDANCE_SECONDS),
@@ -1719,10 +2060,17 @@ def _downscale_main(args, reservation: _OutputReservation,
         "warning": cadence_warning,
     }
     plan["parent"] = {
-        "run_dir": str(frames[0].parent),
+        # Absolute: a run browser finds the parent run by the folder
+        # names in this path, and `chain/run/wrfout` typed inside the
+        # parent's run folder names no run folder.  The checkpoint the
+        # same way, so the record names one file wherever it is read.
+        "run_dir": os.path.abspath(frames[0].parent),
         "restart": (None if args.parent_restart is None
-                    else str(args.parent_restart)),
-        "frames": len(frames),
+                    else os.path.abspath(args.parent_restart)),
+        # What the parent archive holds, and how many of those frames the
+        # child's run window reads (parent_frames lists them).
+        "frames": archive_frame_count,
+        "frames_used": len(frames),
         "domain": plan_parent_domain,
     }
     plan["warnings"] = [dict(record) for record in warnings]
@@ -1769,7 +2117,10 @@ def _downscale_main(args, reservation: _OutputReservation,
         outdir=Path(args.out),
         # This process created --out moments ago to hold the config it
         # derived; the never-adopt reservation already happened there.
-        outdir_reserved=outdir_reserved)
+        outdir_reserved=outdir_reserved,
+        # The retention the plan priced the disk on, settled once: 0
+        # keeps every set.
+        keep_checkpoints=int(keep_checkpoints or 0))
     # From here the directory belongs to the run: a forecast that dies
     # mid-integration leaves frames a reader needs, and a report.json
     # whose `result` is FAIL rather than one claiming it finished.
@@ -1784,7 +2135,53 @@ def _downscale_main(args, reservation: _OutputReservation,
     return 0 if report["result"] == "PASS" else 1
 
 
+def _refinement_ratio(raw: str) -> int:
+    """``--ratio``: a whole number of child cells per parent cell, 1 or more.
+
+    Checked where the argument is read, because every later step divides
+    by it: 0 used to end in a division by zero and a negative ratio in
+    advice about a -2x-2 child.
+    """
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"--ratio must be a whole number of child cells per parent "
+            f"cell (1, 3, 5 ...), got {raw!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"--ratio must be 1 or more child cells per parent cell, got "
+            f"{value}")
+    return value
+
+
+def _child_size_argument(value: str) -> str:
+    """``NX[,NY]`` for ``--child-size``: one or two whole cell counts.
+
+    A zero or negative extent used to be "adjusted" up to the smallest
+    legal child with a warning, as if it were a size that merely missed
+    the ratio's unit, and a non-number left as an unnamed int() error.
+    """
+
+    parts = str(value).split(",")
+    try:
+        cells = [int(part) for part in parts]
+    except ValueError:
+        cells = []
+    if not 1 <= len(parts) <= 2 or len(cells) != len(parts) or min(cells, default=0) < 1:
+        raise argparse.ArgumentTypeError(
+            f"--child-size {value!r} is not NX or NX,NY in whole cells of 1 or more")
+    return str(value)
+
+
 def register_cli(subparsers) -> None:
+    # Every count, index and interval below is typed with its range, so
+    # a NaN, an infinity, a negative or a zero is refused by name at the
+    # parser instead of reaching the parent archive (--hours -1 passed
+    # the window check, which only asks whether the run is too long).
+    from gpuwm.cli_numbers import positive_float, positive_int
+
     parser = subparsers.add_parser(
         "downscale",
         help="run a standalone CUDA child from archived parent history "
@@ -1792,7 +2189,7 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "parent", nargs="+",
         help="parent wrfout directory or explicit history files")
-    parser.add_argument("--parent-domain", type=int, default=None,
+    parser.add_argument("--parent-domain", type=positive_int, default=None,
                         help="parent domain id when the directory carries "
                              "several (e.g. 3 for the innermost archived "
                              "parent)")
@@ -1806,7 +2203,7 @@ def register_cli(subparsers) -> None:
                                "directory")
     evidence.add_argument("--parent-namelist", type=Path, default=None,
                           help="stock-WRF namelist.input of the parent run")
-    parser.add_argument("--parent-namelist-domain", type=int, default=1,
+    parser.add_argument("--parent-namelist-domain", type=positive_int, default=1,
                         help="domain column of --parent-namelist (default 1)")
     parser.add_argument("--child-config", type=Path, default=None,
                         help="legacy RunConfig TOML for the child "
@@ -1816,18 +2213,19 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--point", default=None, metavar="LAT,LON",
                         help="derive the child around this point instead "
                              "of --child-config (gpuwm parents only)")
-    parser.add_argument("--ratio", type=int, default=None,
+    parser.add_argument("--ratio", type=_refinement_ratio, default=None,
                         help="refinement ratio (child-config placement: "
                              "required; --point default 3)")
-    parser.add_argument("--i-parent-start", type=int, default=None,
+    parser.add_argument("--i-parent-start", type=positive_int, default=None,
                         help="1-based west-east parent index of the "
                              "child's southwest corner (required with "
                              "--child-config; --point derives it)")
-    parser.add_argument("--j-parent-start", type=int, default=None,
+    parser.add_argument("--j-parent-start", type=positive_int, default=None,
                         help="1-based south-north parent index of the "
                              "child's southwest corner (required with "
                              "--child-config; --point derives it)")
-    parser.add_argument("--child-size", default=None, metavar="NX[,NY]",
+    parser.add_argument("--child-size", type=_child_size_argument, default=None,
+                        metavar="NX[,NY]",
                         help="explicit child extent for --point")
     # THE [tiles] MODE THE CHILD INTEGRATES UNDER.  On --point it is
     # written into the config this command derives; on --child-config it
@@ -1864,15 +2262,15 @@ def register_cli(subparsers) -> None:
                              "--child-size is absent, prices the given "
                              "extent or child config otherwise; exclusive "
                              "with --card and --vram-gib")
-    parser.add_argument("--hours", type=float, default=None,
+    parser.add_argument("--hours", type=positive_float, default=None,
                         help="--point run window in hours (default: the "
                              "full parent archive window)")
-    parser.add_argument("--output-interval-seconds", type=float,
+    parser.add_argument("--output-interval-seconds", type=positive_float,
                         default=None,
                         help="--point child history cadence (default: the "
                              "parent cadence)")
     cadence = parser.add_mutually_exclusive_group()
-    cadence.add_argument("--max-boundary-interval-seconds", type=float,
+    cadence.add_argument("--max-boundary-interval-seconds", type=positive_float,
                          default=None,
                          help="explicit ceiling on acceptable parent "
                               "cadence (the scientific cadence contract); "
@@ -1887,12 +2285,14 @@ def register_cli(subparsers) -> None:
                         help="child-grid wrfinput/history file with land "
                              "identity + soil warm start (required for "
                              "surface-physics children)")
-    parser.add_argument("--preprocess-backend", choices=("cuda", "cpu"),
-                        default="cuda",
+    parser.add_argument("--preprocess-backend", choices=("cuda", "cpu", "auto"),
+                        default="auto",
                         help="where the parent-to-child interpolation "
-                             "runs (default cuda; cpu reproduces it "
-                             "off-GPU for verification)")
-    parser.add_argument("--health-interval-seconds", type=float,
+                             "runs (default auto: on the card when its "
+                             "priced interpolation fits the card's free "
+                             "memory, else on the CPU; cuda refuses rather "
+                             "than move it; cpu runs it off-GPU)")
+    parser.add_argument("--health-interval-seconds", type=positive_float,
                         default=60.0,
                         help="model seconds between child health lines "
                              "(CFL, w_max, NaN check; default 60)")
@@ -1921,20 +2321,30 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--render-products", default=None, metavar="LIST",
                         dest="render_products",
                         help="which products the child's frames are drawn "
-                             "into <out>/png once it finishes: a "
+                             "into <out>/png, each as it is written: a "
                              "comma-separated list of catalog slugs, 'all' "
                              "(the default -- the renderer's whole "
                              "catalog), or 'none' to keep only the frames.  "
                              "The same spelling `gpuwm render --products` "
                              "and `gpuwm go --products` take")
+    from gpuwm.resume import checkpoint_sets_argument
+    parser.add_argument("--keep-checkpoints", type=checkpoint_sets_argument,
+                        default=None, dest="keep_checkpoints", metavar="N",
+                        help="how many complete checkpoint sets the child "
+                             "keeps in --out (default 1, the newest, which "
+                             "a downscale from this child binds to); 0 "
+                             "keeps every set")
     parser.add_argument("--dry-run", action="store_true",
                         help="validate contracts, derive/print the plan, "
                              "write the derived TOML, run nothing")
     parser.set_defaults(func=downscale_main)
     parent_query = subparsers.add_parser('downscale-parent',
-        help='read the selected parent history geometry as JSON')
-    parent_query.add_argument('parent_run_dir', type=Path)
-    parent_query.add_argument('--parent-domain', type=int, default=None)
+        help='read the selected parent history geometry as JSON, with '
+             'every domain the run wrote and its grid spacing')
+    parent_query.add_argument('parent_run_dir', type=Path,
+        help='a run directory (or folder of wrfout frames) to read')
+    parent_query.add_argument('--parent-domain', type=positive_int, default=None,
+        help='the domain to read; default: the finest domain the run wrote')
     parent_query.set_defaults(func=downscale_parent_main)
 
 

@@ -180,7 +180,55 @@ def test_binding_detects_pointer_replacement_before_runtime_mutation():
         binding.validate(state, 1.0)
 
 
-def test_selector_step_mismatch_fails_before_any_scratch_mutation():
+def test_selector_follows_a_changed_step_on_the_same_buffers(monkeypatch):
+    """An adaptive clock hands microphysics a new dt every root step."""
+    state = _ScratchState()
+    state.qv = np.ones(_SHAPE, dtype=np.float32)
+    binding = make_nssl2_production_binding(state, 1.0)
+    state.physics = SimpleNamespace(
+        state=state, nssl2_binding=binding, mp_physics=18)
+    before = {name: value.tobytes()
+              for name, value in state._scratch.items()}
+    identities = {name: id(value) for name, value in state._scratch.items()}
+    calls = []
+
+    def apply(actual_state, cfg, dt_s, hooks, **kwargs):
+        calls.append((dt_s, hooks, kwargs["binding"]))
+        return None
+
+    monkeypatch.setattr(runtime, "apply_nssl2_production", apply)
+    for step in (1.25, 1.25, 0.5, 1.0):
+        microphysics.apply(state, _cfg(), step)
+
+    assert [dt_s for dt_s, _hooks, _binding in calls] == [
+        1.25, 1.25, 0.5, 1.0]
+    first, second, third, fourth = (bound for _dt, _h, bound in calls)
+    assert first is not binding
+    assert second is first
+    assert third is not first
+    for (dt_s, hooks, bound) in calls:
+        assert bound.dt_s == np.float32(dt_s)
+        assert isinstance(bound.dt_s, np.float32)
+        assert bound.fused_gs.dt_s == bound.dt_s
+        assert hooks is bound.hooks
+        assert bound.hooks.fused_gs is bound.fused_gs
+        assert bound.workspace is binding.workspace
+        assert bound.nucond_scratch is binding.nucond_scratch
+        assert bound.fused_gs.temperature_k is binding.fused_gs.temperature_k
+        assert bound.fused_gs.primary_ice_target_m3 is \
+            binding.fused_gs.primary_ice_target_m3
+        assert bound.mode == binding.mode
+        bound.validate(state, dt_s)
+    assert state.physics.nssl2_binding is fourth
+    # Rebinding allocates nothing and writes nothing.
+    assert {name: id(value) for name, value in state._scratch.items()} == \
+        identities
+    assert {name: value.tobytes()
+            for name, value in state._scratch.items()} == before
+    assert binding.with_step(1.0) is binding
+
+
+def test_adapter_still_refuses_a_binding_on_another_step():
     state = _ScratchState()
     state.qv = np.ones(_SHAPE, dtype=np.float32)
     binding = make_nssl2_production_binding(state, 1.0)
@@ -191,7 +239,8 @@ def test_selector_step_mismatch_fails_before_any_scratch_mutation():
 
     with pytest.raises(
             NSSL2ProductionConfigurationError, match="timestep differs"):
-        microphysics.apply(state, _cfg(), 1.25)
+        runtime.apply_nssl2_production(
+            state, _cfg(), 1.25, binding.hooks, binding=binding)
 
     assert {name: value.tobytes()
             for name, value in state._scratch.items()} == before
@@ -402,6 +451,61 @@ def test_gpu_real_selector_reuses_and_overwrites_all_binding_buffers():
     assert pool.total_bytes() == warmed_total
     assert tuple(id(value) for value in owned) == identities
     assert driver.microphysics_updates == 4
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_gpu_real_selector_step_change_matches_a_binding_built_on_it():
+    """A mid-run dt change runs the scheme exactly as a fresh binding would.
+
+    Both domains take one step at 0.25 s.  The reference then gets a
+    binding built from scratch on 0.5 s; the selector domain is left to
+    move its own.  Every prognostic and precipitation slot must agree to
+    the bit after the 0.5 s step and after a return to 0.25 s.
+    """
+    import cupy as cp
+
+    from gpuwm.core.nssl2_contract import resolve_nssl2_mode_for_config
+
+    cfg = _cfg(nx=2, ny=2, dt=0.25)
+    mode = resolve_nssl2_mode_for_config(cfg)
+
+    def advance(state, driver, step):
+        diagnostics = microphysics.apply(state, cfg, step)
+        driver.accept_microphysics(diagnostics)
+
+    def snapshot(state):
+        cp.cuda.Stream.null.synchronize()
+        values = {name: cp.asnumpy(getattr(state, name)).tobytes()
+                  for name in DEFAULT_RESTART_FIELDS}
+        for slot in restart.NSSL2_RESTART_PRECIPITATION_SLOTS:
+            values[slot] = cp.asnumpy(state._scratch[slot]).tobytes()
+        values["thp"] = cp.asnumpy(state.thp).tobytes()
+        return values
+
+    moving, moving_driver = _initialized_gpu_mp18_state(cfg)
+    reference, reference_driver = _initialized_gpu_mp18_state(cfg)
+    first_binding = moving_driver.nssl2_binding
+    for state, driver in ((moving, moving_driver),
+                          (reference, reference_driver)):
+        advance(state, driver, 0.25)
+    assert snapshot(moving) == snapshot(reference)
+
+    reference_driver.nssl2_binding = make_nssl2_production_binding(
+        reference, 0.5, mode=mode)
+    advance(moving, moving_driver, 0.5)
+    advance(reference, reference_driver, 0.5)
+    assert moving_driver.nssl2_binding.dt_s == np.float32(0.5)
+    assert moving_driver.nssl2_binding.workspace is first_binding.workspace
+    assert snapshot(moving) == snapshot(reference)
+
+    reference_driver.nssl2_binding = make_nssl2_production_binding(
+        reference, 0.25, mode=mode)
+    advance(moving, moving_driver, 0.25)
+    advance(reference, reference_driver, 0.25)
+    assert moving_driver.nssl2_binding.dt_s == np.float32(0.25)
+    assert snapshot(moving) == snapshot(reference)
+    assert moving_driver.microphysics_updates == 3
 
 
 @pytest.mark.gpu

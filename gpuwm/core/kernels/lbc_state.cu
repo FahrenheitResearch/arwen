@@ -15,6 +15,19 @@ int min4(int a, int b, int c, int d)
     return min(min(a, b), min(c, d));
 }
 
+// Ring d of the perimeter frames: its south row (j = d), north row
+// (j = ny-1-d), west column (i = d) and east column (i = nx-1-d); the rows
+// own the corners.  On a whole domain every ring has two distinct rows and
+// two distinct columns.  A streamed tile window narrower than two
+// relaxation zones along an odd side has a middle ring whose two rows (or
+// two columns) are the SAME line, and that line is listed once: listed
+// twice, two threads would read, modify and write each of its cells.
+static __device__ __forceinline__
+int frame_rows(int d, int ny) { return (ny - 1 - d > d) ? 2 : 1; }
+
+static __device__ __forceinline__
+int frame_cols(int d, int nx) { return (nx - 1 - d > d) ? 2 : 1; }
+
 static __device__ __forceinline__
 bool frame_point(int p, int ny, int nx, int width,
                  int* j, int* i, int* distance)
@@ -22,7 +35,8 @@ bool frame_point(int p, int ny, int nx, int width,
     for (int d = 0; d < width; ++d) {
         int ni = nx - 2*d;
         int nj = max(ny - 2*d - 2, 0);
-        int ring = 2*ni + 2*nj;
+        int rows = frame_rows(d, ny);
+        int ring = rows*ni + frame_cols(d, nx)*nj;
         if (p >= ring) {
             p -= ring;
             continue;
@@ -31,14 +45,14 @@ bool frame_point(int p, int ny, int nx, int width,
         if (p < ni) {
             *j = d;
             *i = d + p;
-        } else if (p < 2*ni) {
+        } else if (p < rows*ni) {
             *j = ny - 1 - d;
             *i = d + p - ni;
-        } else if (p < 2*ni + nj) {
-            *j = d + 1 + p - 2*ni;
+        } else if (p < rows*ni + nj) {
+            *j = d + 1 + p - rows*ni;
             *i = d;
         } else {
-            *j = d + 1 + p - 2*ni - nj;
+            *j = d + 1 + p - rows*ni - nj;
             *i = nx - 1 - d;
         }
         return true;
@@ -53,14 +67,16 @@ int frame_offset(int j, int i, int ny, int nx, int width)
     if (d < 0 || d >= width) return -1;
     int offset = 0;
     for (int q = 0; q < d; ++q) {
-        offset += 2*(nx - 2*q) + 2*max(ny - 2*q - 2, 0);
+        offset += frame_rows(q, ny)*(nx - 2*q)
+                  + frame_cols(q, nx)*max(ny - 2*q - 2, 0);
     }
     int ni = nx - 2*d;
     int nj = max(ny - 2*d - 2, 0);
+    int rows = frame_rows(d, ny);
     if (j == d) return offset + i - d;
     if (j == ny - 1 - d) return offset + ni + i - d;
-    if (i == d) return offset + 2*ni + j - d - 1;
-    return offset + 2*ni + nj + j - d - 1;
+    if (i == d) return offset + rows*ni + j - d - 1;
+    return offset + rows*ni + nj + j - d - 1;
 }
 
 static __device__ __forceinline__
@@ -350,7 +366,7 @@ void state_specified_relaxation(
     real dtbc, int width, int spec_zone, int relax_zone,
     int apply_relax, int clear_specified, int add_held, int divide_msf,
     int has_msf, int thb_3d, int kind,
-    int nz, int ny, int nx, int frame_count)
+    int nz, int ny, int nx, int frame_count, int relax_sides)
 {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     if (tid >= nz*frame_count) return;
@@ -359,6 +375,16 @@ void state_specified_relaxation(
     int j, i, mapped_d;
     if (!frame_point(p, ny, nx, max(spec_zone, relax_zone),
                      &j, &i, &mapped_d)) return;
+    // relax_sides: bit 1 south, 2 north, 4 west, 8 east.  15 on a whole
+    // domain, where every test below reduces to WRF's own corner rule
+    // (Y sides own the corners).  A streamed tile clears the bit of each
+    // interior seam: a seam relaxes nothing, and its distance stops
+    // bounding which true edge owns a corner cell, because in the domain
+    // that cell is nowhere near the seam's side.
+    const bool own_s = (relax_sides & 1) != 0;
+    const bool own_n = (relax_sides & 2) != 0;
+    const bool own_w = (relax_sides & 4) != 0;
+    const bool own_e = (relax_sides & 8) != 0;
     size_t idx = I3(k, j, i, ny, nx);
     real result = field_tend[idx];
     real specified;
@@ -372,7 +398,8 @@ void state_specified_relaxation(
         int dw = i;
         int de = nx - 1 - i;
         real f0, f1, f2, f3, f4;
-        if (ds >= spec_zone && ds < relax_zone && i >= ds && i < nx - ds) {
+        if (own_s && ds >= spec_zone && ds < relax_zone
+            && (!own_w || i >= ds) && (!own_e || i < nx - ds)) {
             int d = ds;
             size_t b0 = ((size_t)k*width + d)*nx + i;
             size_t bm = ((size_t)k*width + d)*nx + max(i - 1, 0);
@@ -402,8 +429,8 @@ void state_specified_relaxation(
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
-        } else if (dn >= spec_zone && dn < relax_zone
-                   && i >= dn && i < nx - dn) {
+        } else if (own_n && dn >= spec_zone && dn < relax_zone
+                   && (!own_w || i >= dn) && (!own_e || i < nx - dn)) {
             int d = dn;
             size_t b0 = ((size_t)k*width + d)*nx + i;
             size_t bm = ((size_t)k*width + d)*nx + max(i - 1, 0);
@@ -433,12 +460,19 @@ void state_specified_relaxation(
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
-        } else if (dw >= spec_zone && dw < relax_zone
-                   && j >= dw + 1 && j < ny - dw - 1) {
+        } else if (own_w && dw >= spec_zone && dw < relax_zone
+                   && (!own_s || j >= dw + 1)
+                   && (!own_n || j < ny - dw - 1)) {
             int d = dw;
+            // Clamped like the south/north branches' i neighbours.  Inert
+            // on a whole domain, where j >= dw + 1 >= 2 and
+            // j <= ny - dw - 2; reachable only on a tile whose south or
+            // north side is a seam, at the tile's own outer row.
+            int jm = max(j - 1, 0);
+            int jp = min(j + 1, ny - 1);
             size_t b0 = ((size_t)k*ny + j)*width + d;
-            size_t bm = ((size_t)k*ny + j - 1)*width + d;
-            size_t bp = ((size_t)k*ny + j + 1)*width + d;
+            size_t bm = ((size_t)k*ny + jm)*width + d;
+            size_t bp = ((size_t)k*ny + jp)*width + d;
             size_t bo = ((size_t)k*ny + j)*width + d - 1;
             size_t bi = ((size_t)k*ny + j)*width + d + 1;
             f0 = lbc_value(west, west_t, b0, dtbc)
@@ -446,11 +480,11 @@ void state_specified_relaxation(
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             f1 = lbc_value(west, west_t, bm, dtbc)
-                 - coupled_current(kind, k, j - 1, i, mub2d, mup, u, v, w,
+                 - coupled_current(kind, k, jm, i, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             f2 = lbc_value(west, west_t, bp, dtbc)
-                 - coupled_current(kind, k, j + 1, i, mub2d, mup, u, v, w,
+                 - coupled_current(kind, k, jp, i, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             f3 = lbc_value(west, west_t, bo, dtbc)
@@ -462,12 +496,15 @@ void state_specified_relaxation(
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
-        } else if (de >= spec_zone && de < relax_zone
-                   && j >= de + 1 && j < ny - de - 1) {
+        } else if (own_e && de >= spec_zone && de < relax_zone
+                   && (!own_s || j >= de + 1)
+                   && (!own_n || j < ny - de - 1)) {
             int d = de;
+            int jm = max(j - 1, 0);
+            int jp = min(j + 1, ny - 1);
             size_t b0 = ((size_t)k*ny + j)*width + d;
-            size_t bm = ((size_t)k*ny + j - 1)*width + d;
-            size_t bp = ((size_t)k*ny + j + 1)*width + d;
+            size_t bm = ((size_t)k*ny + jm)*width + d;
+            size_t bp = ((size_t)k*ny + jp)*width + d;
             size_t bo = ((size_t)k*ny + j)*width + d - 1;
             size_t bi = ((size_t)k*ny + j)*width + d + 1;
             f0 = lbc_value(east, east_t, b0, dtbc)
@@ -475,11 +512,11 @@ void state_specified_relaxation(
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             f1 = lbc_value(east, east_t, bm, dtbc)
-                 - coupled_current(kind, k, j - 1, i, mub2d, mup, u, v, w,
+                 - coupled_current(kind, k, jm, i, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             f2 = lbc_value(east, east_t, bp, dtbc)
-                 - coupled_current(kind, k, j + 1, i, mub2d, mup, u, v, w,
+                 - coupled_current(kind, k, jp, i, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
             f3 = lbc_value(east, east_t, bo, dtbc)

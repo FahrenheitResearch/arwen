@@ -54,9 +54,9 @@
 #   * the Shin-Hong parent carries its own subgrid TKE (published as
 #     TKE_SHINHONG in its wrfout); like WRF, that field is NOT handed down
 #     to the child -- the child cold-starts its own closure;
-#   * the km_opt=2-on-a-nest refusal keys on a km_opt=2 PARENT
-#     (docs/public/LES.md section 4).  A Shin-Hong parent is km_opt = 4 and
-#     passes that predicate.
+#   * a km_opt=2 child cold-starts its own TKE under any parent
+#     (docs/public/LES.md section 4); only a km_opt=2 parent adds a
+#     not-yet-verified warning.  A Shin-Hong parent is km_opt = 4.
 #
 # The `[fetch]` block names the HRRR cycle the shipped tree was built and
 # measured against, unchanged, so the two configurations run the same case.

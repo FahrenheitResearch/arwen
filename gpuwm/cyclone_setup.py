@@ -234,7 +234,10 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
                        forcing_source: str = DEFAULT_SOURCE,
                        member: str | None = None,
                        start_hour: int = 0,
-                       dimensions=None) -> tuple[str, object]:
+                       dimensions=None,
+                       isftcflx: int | None = None,
+                       history_interval_s: float | None = None,
+                       nest_history_interval_s: float | None = None) -> tuple[str, object]:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.cyclone_sources import (declared_case_data, fetch_hints,
@@ -285,7 +288,9 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
         profile=profile, cumulus_requested=False, tiles=tiles,
         fetch_hints=hints,
         case_data=declared_case_data(forcing_source, hints, source),
-        history_interval_s=3600., nest_history_interval_s=900.)
+        history_interval_s=3600. if history_interval_s is None else float(history_interval_s),
+        nest_history_interval_s=(900. if nest_history_interval_s is None
+                                 else float(nest_history_interval_s)))
     raw = tomllib.loads(text)
     child = next(row for row in raw["domain"] if row["grid_id"] == 2)
     # The maximums come from the dimensions this document actually
@@ -323,6 +328,7 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
             "# Following uses the 850 hPa circulation; the selection map uses MSLP.\n"
             + limit
             + render_tables(raw))
+    text = dw.with_surface_flux_option(text, isftcflx)
     experiment = dw.experiment_from_text(text, source=source)
     return text, experiment
 
@@ -1111,7 +1117,9 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                  tiles: str = "auto", source: str = "cyclone-setup.toml",
                  forcing_source: str = DEFAULT_SOURCE, member: str | None = None,
                  start_hour: int = 0, nest_budget_gib: float | None = None,
-                 cancelled=None) -> dict:
+                 cancelled=None, isftcflx: int | None = None,
+                 history_interval_s: float | None = None,
+                 nest_history_interval_s: float | None = None) -> dict:
     from gpuwm import domain_wizard as dw
     from gpuwm.companion_domains import VORTEX_PRESET_SOURCE
     from gpuwm.configuration_recovery import MemoryAdmissionError
@@ -1130,7 +1138,9 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     # be pricing a different configuration from the one being proposed.
     intent = dict(cycle=cycle, point=point, hours=hours, name=name, tiles=tiles,
                   source=source, forcing_source=forcing_source, member=member,
-                  start_hour=start_hour)
+                  start_hour=start_hour, isftcflx=isftcflx,
+                  history_interval_s=history_interval_s,
+                  nest_history_interval_s=nest_history_interval_s)
     if nest_budget_gib is not None and (
             not isinstance(nest_budget_gib, (int, float))
             or isinstance(nest_budget_gib, bool)
@@ -1641,7 +1651,10 @@ def main(args) -> int:
                     target_machine=machine, source=str(out or "cyclone-setup.toml"),
                     forcing_source=forcing_source, member=member,
                     start_hour=start_hour,
-                    nest_budget_gib=getattr(args, "nest_budget_gib", None))
+                    nest_budget_gib=getattr(args, "nest_budget_gib", None),
+                    isftcflx=getattr(args, "isftcflx", None),
+                    history_interval_s=getattr(args, "history_interval", None),
+                    nest_history_interval_s=getattr(args, "nest_history_interval", None))
                 result["seed"] = seed.to_dict()
                 # THE PLAN, on the human channel, in one line: where the run
                 # begins, how big the following nest ended up and what the
@@ -1737,6 +1750,7 @@ def main(args) -> int:
 
 
 def register_cli(subparsers):
+    from gpuwm.cli_numbers import positive_float
     from gpuwm.domain_wizard import CARD_VRAM_GIB
     parser = subparsers.add_parser("cyclone-setup", help="select a cyclone on any planable source's chosen cycle and lead and author a 12/3 km following nest")
     # NO `choices=`, deliberately, and for the same reason the domain
@@ -1761,7 +1775,7 @@ def register_cli(subparsers):
                              "cycle and member identity, to locate the center from")
     parser.add_argument("--advisory-position", metavar="LAT,LON",
                         help="advisory center; bounds the field search and is the last fallback")
-    parser.add_argument("--seed-radius-km", type=float, default=500.,
+    parser.add_argument("--seed-radius-km", type=positive_float, default=500.,
                         help="how far from the advisory position the field search may look")
     parser.add_argument("--start-hour", type=int, default=0, metavar="N",
                         help="forecast lead of the selected cycle to begin at "
@@ -1769,6 +1783,15 @@ def register_cli(subparsers):
                              "from fN and is forced from fN onward at the "
                              "source's own cadence")
     parser.add_argument("--hours", type=int, default=6)
+    parser.add_argument("--isftcflx", type=int, choices=(0, 1, 2), default=None,
+                        help="surface flux over water on both grids (WRF "
+                             "isftcflx), as `gpuwm domain --isftcflx`; "
+                             "default: the suite's own (0)")
+    parser.add_argument("--history-interval", type=positive_float, default=None, metavar="SECONDS",
+                        help="how often the 12 km parent writes a wrfout (default 3600)")
+    parser.add_argument("--nest-history-interval", type=positive_float, default=None, metavar="SECONDS",
+                        help="how often the following nest writes a wrfout (default 900); a "
+                             "longer interval is how a multi-day run fits its disk")
     parser.add_argument("--name", help="configuration name (default: the selected source's own title)")
     parser.add_argument("--tiles", choices=("off", "auto", "on"), default="auto")
     parser.add_argument("--hardware-json", type=Path)

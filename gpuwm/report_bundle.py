@@ -272,8 +272,13 @@ _EXPECTED = (
      "the tree failure receipt: error_type, error, traceback"),
     ("evidence/progress.json", "prepared domain-tree forecast",
      "the tree status file"),
+    # The route is the one the Missing section matches against the
+    # detected route, which is the front door whenever a failure capsule
+    # is found; ``gpuwm go`` writes the same file for its forecast
+    # stage, and that belongs in the description, not in the route.
     ("run-progress.json", "gpuwm run (supervised front door)",
-     "the supervisor heartbeat: phase, elapsed, last durable wrfout, "
+     "the heartbeat gpuwm run writes, and gpuwm go writes for its "
+     "forecast stage: phase, elapsed, last durable wrfout, "
      "last checkpoint"),
     ("failure-capsule.json", "gpuwm run (supervised front door)",
      "the supervisor's failure record: exception type, message, "
@@ -292,6 +297,8 @@ _ROUTE_MARKERS = (
     ("evidence/run-receipt.json", "prepared domain-tree forecast"),
     ("evidence/failed-run-receipt.json", "prepared domain-tree forecast"),
     ("report.json", "prepared single-domain forecast"),
+    ("evidence/progress.json", "prepared domain-tree forecast"),
+    ("progress.json", "prepared single-domain forecast"),
     ("failure-capsule.json", "gpuwm run (supervised front door)"),
     ("run-progress.json", "gpuwm run (supervised front door)"),
 )

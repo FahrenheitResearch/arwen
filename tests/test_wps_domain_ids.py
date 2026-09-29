@@ -78,5 +78,10 @@ def test_hrrr_gate_accepts_stable_child_id_without_changing_root_or_physics():
     child = replace(child, grid_id=3, run=replace(child.run, grid_id=3))
     exp = replace(exp, domains=(exp.domains[0], child))
     _supported_hierarchy_slice(exp, _target(), forcing_hours=tuple(range(13)))
-    with pytest.raises(ValueError, match="one-way"):
-        _supported_hierarchy_slice(replace(exp, feedback=1), _target(), forcing_hours=tuple(range(13)))
+    # Two-way feedback is admitted on the renumbered tree; a child whose
+    # physics departs from the root is still refused.
+    _supported_hierarchy_slice(replace(exp, feedback=1), _target(), forcing_hours=tuple(range(13)))
+    drifted = replace(exp, domains=(exp.domains[0], replace(
+        child, run=replace(child.run, sf_surface_physics=3))))
+    with pytest.raises(ValueError, match="trajectory controls differ"):
+        _supported_hierarchy_slice(drifted, _target(), forcing_hours=tuple(range(13)))

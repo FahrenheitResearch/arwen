@@ -33,6 +33,7 @@ pub mod ncdf;
 pub mod node;
 pub mod portable;
 pub mod refusal;
+pub mod space;
 pub mod threads;
 pub mod window;
 
@@ -51,7 +52,7 @@ pub const FRAMESET_SCHEMA: &str = "gpuwm-mapped-frameset-v1";
 /// marker that moved only with the first let a pre-fix binary pass the
 /// handshake and then refuse conformant IEEE-packed (template 5.4) bytes
 /// with a message blaming the publisher of the file.
-pub const ABI_CONTRACT: &str = "gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200";
+pub const ABI_CONTRACT: &str = "gpuwm-mapped-engine-abi frameset=gpuwm-mapped-frameset-v1 height-interfaces=1 grib2-drt=0,2,3,4,40,41,42,50,51,61,200";
 pub const REFUSAL_SCHEMA: &str = "gpuwm-mapped-refusal-v1";
 pub const PROGRESS_SCHEMA: &str = "gpuwm-mapped-engine-progress-v1";
 pub const INSPECTION_SCHEMA: &str = "gpuwm-mapped-source-inspection-v1";

@@ -6,7 +6,7 @@ kept their rasterio bodies behind a source comment ("until the port
 lanes integrate").  The lanes had landed.  A user who turned
 ``[static.highres] enabled = true`` on therefore ran GeoTIFF decode,
 CRS construction and the warp onto the model grid in Python -- a data
-path the project boundary places in Drew's Rust -- and nothing told
+path the project boundary places in the project's Rust -- and nothing told
 them: no registry entry, no doctor row, no receipt field, no console
 line.  A silent Python data path is exactly what fixed-means-default
 exists to stop.
@@ -235,6 +235,15 @@ def test_derive_windows_need_no_python_geography_stack(tmp_path):
     assert window.path.is_file()
     assert audit["total_pixels"] > 0
     assert audit["output_shape"] == meta["mosaic"]["shape"]
+    # The window is cut on the fixed lattice whose pixel centres are the
+    # whole arc-seconds.  These bounds fall on whole arc-seconds, so the
+    # covering window takes the pixel centred on each edge: one row and
+    # one column more than the bounds span.
+    resolution = meta["mosaic"]["resolution_deg"]
+    west, south, east, north = meta["mosaic"]["bounds_wsen"]
+    assert audit["output_shape"] == [
+        round((north - south) / resolution) + 1,
+        round((east - west) / resolution) + 1]
 
 
 def test_the_soilgrids_window_snap_needs_no_python_geography_stack():
@@ -494,3 +503,79 @@ def test_a_library_missing_an_entry_point_is_refused_not_a_traceback(
     monkeypatch.setattr(rust_bridge, "_LIBRARY", None)
     reason = rust_bridge.unavailable_reason()
     assert reason and "gpuwm_static_highres_resample" in reason
+
+
+#: The checkout build of the static library as each shell must receive it,
+#: written out rather than derived so a generator that loses its shell
+#: rule cannot also rewrite what it is judged against.  Windows
+#: PowerShell 5.1, the shell a Windows user pastes `gpuwm doctor`'s
+#: detail line into, rejects `&&` with a parser error.
+STATIC_BUILD_FOR_SHELL = {
+    False: "cd tools/rustwx && cargo build --release -p static-fields "
+           "--offline && cd ../..",
+    True: "cd tools/rustwx; cargo build --release -p static-fields "
+          "--offline; cd ../..",
+}
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_incompatible_sampling_marker_keeps_the_stale_build_remedy(
+        monkeypatch, tmp_path, windows):
+    """A complete library with old sampling still needs a useful refusal.
+
+    And a refusal whose remedy is a command must spell it for the shell
+    it will be pasted into.  This one printed `&&` on every OS, so on
+    Windows the line `gpuwm doctor` shows for a stale staged library was
+    a PowerShell parser error.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    library = SimpleNamespace(gpuwm_static_abi_version=_AbiOnlyEntry(rust_bridge.STATIC_ABI))
+    calls = []
+    class Marker(_AbiOnlyEntry):
+        def __call__(self, *args):
+            calls.append("marker")
+            return 0
+    setattr(library, rust_bridge.ABI_MARKER.decode("ascii"), Marker(0))
+    path = tmp_path / "static_fields.dll"
+    monkeypatch.setattr(rust_bridge, "_LIBRARY", None)
+    monkeypatch.setattr(rust_bridge, "resolve_static_bridge", lambda: path)
+    monkeypatch.setattr(rust_bridge.ctypes, "CDLL", lambda *_a, **_k: library)
+    monkeypatch.setattr(rust_bridge, "_bind_entry_points", lambda *_a, **_k: calls.append("bind"))
+    with pytest.raises(rust_bridge.StaticBridgeError) as error:
+        rust_bridge.load()
+    assert calls == ["bind", "marker"]
+    message = str(error.value)
+    for text in (str(path), "predates this release", "first move", "overlap-statics equality",
+                 "gpuwm fetch-bridges", STATIC_BUILD_FOR_SHELL[windows]):
+        assert text in message
+    if windows:
+        assert "&&" not in message, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {message}")
+
+
+@pytest.mark.parametrize("windows", (False, True))
+def test_the_missing_library_refusal_spells_the_build_for_the_shell(
+        monkeypatch, tmp_path, windows):
+    """The not-found refusal reads the same shell rule as the stale one.
+
+    Both refusals in this module print the same checkout build; one
+    spelling per shell, from one place, so neither can drift back to a
+    separator the reader's shell rejects.
+    """
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "WINDOWS_SHELL", windows)
+    monkeypatch.delenv(rust_bridge.STATIC_BRIDGE_ENV, raising=False)
+    monkeypatch.setattr(rust_bridge, "library_candidates",
+                        lambda: (tmp_path / "absent" / "static_fields.dll",))
+    with pytest.raises(FileNotFoundError) as error:
+        rust_bridge.resolve_static_bridge()
+    message = str(error.value)
+    assert STATIC_BUILD_FOR_SHELL[windows] in message, message
+    if windows:
+        assert "&&" not in message, (
+            f"Windows PowerShell 5.1 cannot parse '&&': {message}")

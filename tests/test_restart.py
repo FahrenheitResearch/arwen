@@ -2669,18 +2669,21 @@ def test_sealed_extension_header_tamper_and_rebuilt_child_contract(
 
 def _sealed_tree_fixture(monkeypatch, *, forcing_count: int,
                          run_seconds: float, payload_seed: int,
-                         nwp_diagnostics: int = 0):
+                         nwp_diagnostics: int = 0, run_overrides=None):
     from gpuwm.core.model import ModelRuntimeStatus
 
+    overrides = dict(run_overrides or {})
+    nwp_diagnostics = overrides.pop("nwp_diagnostics", nwp_diagnostics)
     root_cfg = _cfg(
         grid_id=1, moist=True, mp_physics=1,
         run_seconds=run_seconds, restart_interval_s=3600.0,
         nwp_diagnostics=nwp_diagnostics,
-        specified=True, spec_bdy_width=3, spec_zone=1, relax_zone=2)
+        specified=True, spec_bdy_width=3, spec_zone=1, relax_zone=2,
+        **overrides)
     child_cfg = _cfg(
         grid_id=2, nested=True, moist=True, mp_physics=1,
         nwp_diagnostics=nwp_diagnostics,
-        run_seconds=run_seconds, restart_interval_s=3600.0)
+        run_seconds=run_seconds, restart_interval_s=3600.0, **overrides)
     root_state = _extension_state(
         root_cfg, monkeypatch, count=forcing_count)
     child_state = _shim_state(child_cfg, monkeypatch)
@@ -2968,10 +2971,27 @@ def _member_names(path) -> list[str]:
 #: default is None -- "inherit the ladder the source carries", which is
 #: exactly what every checkpoint written before it describes -- so no
 #: prepared state moved with it.
+#:
+#: RE-PINNED for TWO appended RunConfig fields (`relax_timescale_s`,
+#: `relax_w`, the downscaled child's lateral zone).  Same attribution and
+#: the same gate: both keys joined _WIF_CONFIG_KEYS below, and the
+#: reconstruction unwinds all sixteen keys at once and lands on the
+#: pre-WIF pair exactly, root and child.  The config echo is the whole
+#: diff.  Their defaults (0.0, False) are WRF's own relaxation, which is
+#: what every checkpoint written before them ran.
+#:
+#: RE-PINNED for ONE appended RunConfig field (`min_time_step_sound`, the
+#: adaptive clock's floor under its derived acoustic substep count), from
+#: 53602b734854 / b770a432fe7a.  Same gate: the key is one of
+#: ADAPTIVE_TIMESTEP_RUN_FIELDS, which _WIF_CONFIG_KEYS imports, and the
+#: reconstruction unwinds it with the rest and lands on the pre-WIF pair
+#: exactly, root and child, so the config echo is the whole diff.  Its
+#: default 0 leaves WRF's derived count, and nothing reads it under the
+#: fixed clock this fixture runs.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "8d8885caba42960ffa9d1ff263296d6af1509f2e1edb22b698cee1d74915f51d"
+    "0cd69d00f6676d7bc24aea46ded07416e4bfabe4ade4aa6d8e23606dc2f38187"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
-    "911f904170751dfa6664cc73abbb1093c2976a26e908e8c42b3b554b499f5539"
+    "db0cff6b5e093496fd06e6c1c844086492aa9926b2324c30aefba8512e8f2fee"
 
 
 #: The values these pins carried immediately before the two mp=28 aerosol
@@ -3008,6 +3028,7 @@ _PRE_WIF_CHILD_DIGEST = \
 #: null in this fixture.
 _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
                     "p3_backend", "ntiedtke_tiedtke_closure", "eta_levels",
+                    "relax_timescale_s", "relax_w",
                     ) + ADAPTIVE_TIMESTEP_RUN_FIELDS
 
 
@@ -3040,9 +3061,7 @@ def _digest_without_config_keys(path, keys) -> str:
         header["format_version"] = _HISTORICAL_FORMAT_VERSION
         for key in keys:
             header["config"].pop(key, None)
-        values = {key: value for key, value in header["config"].items()
-                  if key not in restart.CONFIG_RUN_LENGTH_FIELDS
-                  and key not in restart.CONFIG_DIAGNOSTIC_FIELDS}
+        values = restart._configuration_digest_values(header["config"])
         setup = copy.deepcopy(header["physics_setup"])
         setup["configuration_sha256"] = restart._json_sha256(
             restart._json_value(values, "RunConfig"))
@@ -3684,6 +3703,129 @@ def test_a_checkpoint_written_after_a_move_attaches_the_posture_block(
     reason = restart.tree_fingerprint_mismatch_reason(
         2, restart.read_restart_header(root_path), model)
     assert "1 nest relocation(s)" in reason and "seg-1" in reason
+
+
+def _bind_tree_identity(model):
+    """Publish the named identity components the tree routes bind.
+
+    The experiment component is ``restart_identity_payload`` of a real
+    ExperimentConfig carrying this fixture's own RunConfigs, which is what
+    both tree routes store beside the fingerprint.
+    """
+    from gpuwm.core.model import restart_identity_payload
+    from test_nest_spawn_init import _experiment
+
+    exp = _experiment()
+    exp = replace(exp, domains=tuple(
+        replace(domain, run=model.node(domain.grid_id).cfg.run)
+        for domain in exp.domains))
+    components = {"experiment_identity": restart_identity_payload(exp),
+                  "inputs": "same-prepared-bytes"}
+    model._experiment_fingerprint_components = components
+    model.experiment_fingerprint = hashlib.sha256(json.dumps(
+        components, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _diagnostic_default(name):
+    return RunConfig.__dataclass_fields__[name].default
+
+
+def _diagnostic_on(name):
+    return True if isinstance(_diagnostic_default(name), bool) else 1
+
+
+@pytest.mark.parametrize("name", sorted(restart.CONFIG_DIAGNOSTIC_FIELDS))
+@pytest.mark.parametrize("switched_on", [True, False])
+def test_a_tree_resumes_with_an_output_only_switch_changed(
+        monkeypatch, tmp_path, name, switched_on):
+    """The tree accepts what each member's config walk accepts.
+
+    The member walk skips CONFIG_DIAGNOSTIC_FIELDS, but the tree compared
+    its outer experiment identity raw, so switching nwp_diagnostics (or
+    any output-only toggle) at a restart was refused as
+    "experiment_identity differ(s) from the checkpoint".
+    """
+    default = _diagnostic_default(name)
+    chosen = _diagnostic_on(name)
+    before, after = (default, chosen) if switched_on else (chosen, default)
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=7200.0, payload_seed=31,
+        run_overrides={name: before})
+    _bind_tree_identity(source)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+
+    resumed, _ = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=7200.0, payload_seed=61,
+        run_overrides={name: after})
+    _bind_tree_identity(resumed)
+    assert (resumed.experiment_fingerprint
+            != restart.read_restart_header(root_path)["experiment_fingerprint"])
+
+    info = restart.restore_tree_restart(root_path, resumed)
+
+    assert info.elapsed_ticks == 3600
+    for gid in (1, 2):
+        assert resumed.node(gid).clock.ticks == 3600
+        assert np.array_equal(resumed.node(gid).state.thp,
+                              source.node(gid).state.thp, equal_nan=True)
+
+
+@pytest.mark.parametrize("name", sorted(restart.CONFIG_DIAGNOSTIC_FIELDS))
+def test_the_configuration_digest_ignores_an_output_only_switch(name):
+    """Both values of a switch give one digest, and a configuration that
+    leaves the switch off keeps the digest it always had, so no checkpoint
+    byte pin moves for the table growing."""
+    off = _cfg(grid_id=1)
+    on = replace(off, **{name: _diagnostic_on(name)})
+    assert (restart._configuration_fingerprint(on)
+            == restart._configuration_fingerprint(off))
+    moved = replace(off, dt=off.dt * 2)
+    assert (restart._configuration_fingerprint(moved)
+            != restart._configuration_fingerprint(off))
+
+
+@pytest.mark.parametrize("change", ["dt", "nest_position", "inputs"])
+def test_an_output_only_switch_does_not_hide_a_tree_identity_change(
+        monkeypatch, tmp_path, change):
+    """Beside a switched diagnostic, a real change still refuses by name."""
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=7200.0, payload_seed=31)
+    _bind_tree_identity(source)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+
+    overrides = {"nwp_diagnostics": 1, "hmix_k_diag": True}
+    if change == "dt":
+        overrides["dt"] = 20.0
+    resumed, _ = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=7200.0, payload_seed=61,
+        run_overrides=overrides)
+    _bind_tree_identity(resumed)
+    components = json.loads(json.dumps(
+        resumed._experiment_fingerprint_components))
+    if change == "nest_position":
+        components["experiment_identity"]["domains"][1]["i_parent_start"] += 1
+    elif change == "inputs":
+        components["inputs"] = "different-prepared-bytes"
+    resumed._experiment_fingerprint_components = components
+    resumed.experiment_fingerprint = hashlib.sha256(json.dumps(
+        components, sort_keys=True).encode()).hexdigest()
+    before = resumed.root.state.thp.copy()
+
+    with pytest.raises(restart.RestartMismatchError) as refused:
+        restart.restore_tree_restart(root_path, resumed)
+
+    message = str(refused.value)
+    if change == "dt":
+        # The member's own config walk names the field first.
+        assert "dt: restart=10.0 run=20.0" in message
+    else:
+        named = ("experiment_identity" if change == "nest_position"
+                 else "inputs")
+        assert f"{named} differ(s) from the checkpoint" in message
+        assert "output-only diagnostic switches" in message
+    assert np.array_equal(resumed.root.state.thp, before, equal_nan=True)
 
 
 # ---------------------------------------------------------------------------

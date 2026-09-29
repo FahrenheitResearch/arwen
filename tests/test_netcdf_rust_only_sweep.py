@@ -12,7 +12,7 @@ Four lists, and the point is that all four are explicit:
 * :data:`_PLUMBING_OR_BLOCKED` may. Each entry carries the reason in the
   table below.
 * :data:`_WORKAROUND_ENGINE` may, and has to prove the netCDF4 half is an
-  ESCAPE: the default engine is Drew's Rust writer and the environment
+  ESCAPE: the default engine is the project's Rust writer and the environment
   variable that reaches netCDF4 is named in the module.
 * :data:`_OPEN_FINDINGS` may, and is the accurate one: a data path that has
   NOT been converted, named with the finding against it.  It is EMPTY
@@ -110,7 +110,7 @@ _PLUMBING_OR_BLOCKED = {
 }
 
 #: Modules whose netCDF4 import IS an announced workaround engine: the
-#: DEFAULT writes through Drew's Rust classic writer, and netCDF4 is
+#: DEFAULT writes through the project's Rust classic writer, and netCDF4 is
 #: reachable only by naming an environment variable.
 #:
 #: This is the category "plumbing" was hiding.  ``module -> the env var

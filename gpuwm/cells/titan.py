@@ -1,12 +1,14 @@
 """The ``titan`` binary: where it is, how it is run, what it wrote.
 
-titan-rs is a separate program, resolved the way every other built
-artifact in this project is (:mod:`gpuwm.bridges`): an environment
-override first, then the bridge directories an install stages into.
-It is not vendored here and nothing in this package reimplements any of
-it -- when the binary is absent, ``gpuwm cells analyze`` refuses by
-name and says what to set, because a cell catalog produced by a second
-segmentation would not be a titan catalog.
+titan is a separate program that ArWen does not ship or depend on,
+resolved the way every other built artifact in this project is
+(:mod:`gpuwm.bridges`): an environment override first, then the bridge
+directories an install stages into.  It is not vendored here and nothing
+in this package reimplements any of it.  The door is optional: when no
+binary resolves, ``gpuwm cells analyze`` is off and says so in one plain
+message, because a cell catalog produced by a second segmentation would
+not be a titan catalog; ``gpuwm cells export`` and ``gpuwm cells
+catalog`` need no titan at all.
 
 The bundle reader is deliberately thin: it loads the JSON the engine
 wrote and indexes it by frame and by track, adding nothing.
@@ -98,8 +100,8 @@ def find_titan(explicit: Path | str | None = None) -> Path | None:
         if not path.is_file():
             raise FileNotFoundError(
                 f"--titan names a missing file: {path}.  Point it at a "
-                f"built titan binary (titan-rs: cargo build --release -p "
-                f"titan-cli), or drop the flag to use the resolution ladder.")
+                f"titan binary, or drop the flag to use the resolution "
+                f"ladder.")
         return accept_resolved(path.resolve())
     override = os.environ.get(TITAN_ENV)
     for candidate in titan_candidates():
@@ -118,12 +120,13 @@ def titan_refusal(what: str) -> str:
 
     ladder = "\n".join(f"  {path}" for path in titan_candidates())
     return (
-        f"{what} needs the titan storm-cell engine (titan-rs) and none is "
-        f"installed: without it there are no cell objects, tracks or trends "
-        f"to catalog, and gpuwm does not substitute a second segmentation.  "
-        f"Build titan-rs (cargo build --release -p titan-cli) and either set "
-        f"{TITAN_ENV} to the binary, pass --titan PATH, or place "
-        f"{executable_name(TITAN_NAME)} in one of:\n{ladder}")
+        f"{what} is off on this install: it runs the titan storm-cell "
+        f"engine, a separate program ArWen does not ship, and none is "
+        f"installed.  Without it there are no cell objects, tracks or "
+        f"trends to catalog, and gpuwm does not substitute a second "
+        f"segmentation.  gpuwm cells export works without it.  If you have "
+        f"a titan binary, set {TITAN_ENV} to it, pass --titan PATH, or "
+        f"place {executable_name(TITAN_NAME)} in one of:\n{ladder}")
 
 
 def resolve_titan(explicit: Path | str | None = None, *,

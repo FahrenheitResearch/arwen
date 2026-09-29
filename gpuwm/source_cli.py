@@ -17,6 +17,7 @@ import sys
 import tempfile
 
 from gpuwm import __version__, command_output
+from gpuwm.cli_numbers import positive_float
 from gpuwm.explain import add_explain_flag, explain_enabled
 from gpuwm.source_adapters import (
     AdapterStatus,
@@ -157,7 +158,7 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
     )
     inventory.add_argument(
         "--source-top-pressure-pa",
-        type=float,
+        type=positive_float,
         help=(
             "smallest pressure represented by the selected source; used by "
             "--namelist-support-report to reject vertical extrapolation"
@@ -287,7 +288,18 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         type=int,
         help="bounded mapped d02..dNN initialization workers (1..32)",
     )
-    parser.add_argument("--source-root", type=Path)
+    parser.add_argument(
+        "--source-root", type=Path,
+        help=(
+            "the folder holding the source's files: the fetched HRRR "
+            "cycle, the 20CRv3 member files --author-only reads, or, for a "
+            "source whose fetch-route row declares its folder layout, the "
+            "folder whose inputs and supplements it binds itself, "
+            "authoring DIR/inputs.json and preparing into CONFIG-prepared "
+            "beside the experiment config (CONFIG-prepared-2 and on once "
+            "that exists) unless --output-root names one"
+        ),
+    )
     parser.add_argument(
         "--source-sha256s",
         "--source-manifest",
@@ -403,7 +415,19 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         choices=("cuda", "cpu", "auto"),
         help="select CUDA or deterministic parallel CPU preprocessing",
     )
-    preprocessing.add_argument("--preprocess-workers", type=int)
+    # Set by a caller whose configuration policy named the backend (a
+    # host-tiled GFS preparation runs on the CPU); the GFS preparation
+    # records it in its receipt's selection block.
+    preprocessing.add_argument("--preprocess-backend-reason",
+                               help=argparse.SUPPRESS)
+    preprocessing.add_argument(
+        "--preprocess-workers", type=int,
+        help=("threads for CPU preprocessing (default: this machine's CPUs, "
+              "at most 8, the count its host RAM estimate was measured at; "
+              "a larger count peaks above that estimate); under "
+              "--preprocess-backend cuda, the threads of the host steps "
+              "(masked soil, snow, skin temperature and sea ice), default "
+              "every CPU"))
     preprocessing.add_argument("--cpu-preprocess-bridge", type=Path)
     era5 = parser.add_argument_group("ERA5 combined-GRIB1 adapter")
     era5.add_argument("--grib", type=Path, help="combined ERA5 GRIB1 series")
@@ -453,7 +477,7 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         "--no-stock-wrf-export",
         action="store_true",
         help="prepare the forecast only, and do not attempt the bonus "
-             "unchanged-WRF wrfinput/wrfbdy export of a domain tree",
+             "unchanged-WRF wrfinput/wrfbdy export",
     )
     exports.add_argument(
         "--stock-wrf-export", choices=("optional", "required", "off"),
@@ -465,8 +489,8 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         const="all",
         default=None,
         metavar="GRID_IDS",
-        help="also seal child-resolution statics over each child's whole "
-             "parent extent (the moving-nest corridor); bare flag covers "
+        help="also seal child-resolution statics over the ground each "
+             "child can reach (the moving-nest corridor); bare flag covers "
              "every child domain, or pass comma-separated child grid ids "
              "(e.g. 2,3).  Required before the prepared tree runner will "
              "honor a [relocation] follow source",
@@ -739,7 +763,9 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--preprocess-workers": args.preprocess_workers,
             "--source-format": args.source_format,
             "--physics-profile": args.physics_profile,
-            "--ack": args.ack or None,
+            # --ack is NOT unused here: the hierarchy's namelist import
+            # needs the config's acknowledgements, which a namelist has
+            # no spelling for, and is forwarded below.
             "--mapping": args.mapping,
             "--descriptor": args.descriptor,
             "--author-mapping": args.author_mapping,
@@ -1204,6 +1230,17 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
     return errors
 
 
+#: The run flags the 20CRv3 member door requires beyond the manifest
+#: pair, in the order its authoring handoff names them.  Authoring
+#: refuses every one of them, so it cannot bind them and names them
+#: instead; the door's required list is built from this tuple, so the
+#: two cannot disagree.  The GRIB2 tool pair is not here: omitted, the
+#: door decodes on the default engine, and naming either tool pins the
+#: Python decoder (``_mapped_engine_choice``).
+TWENTYCR_CALLER_SUPPLIES = ("--wps-namelist", "--geog-root",
+                            "--experiment-config", "--output-root")
+
+
 def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
     if args.author_only:
         required = {
@@ -1242,10 +1279,8 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
             # --grib2-inventory / --grib2-dump are deliberately NOT
             # required: omitted, the dispatch resolves both through the
             # shared bridge ladder, and the flags override it.
-            "--wps-namelist": args.wps_namelist,
-            "--geog-root": args.geog_root,
-            "--experiment-config": args.experiment_config,
-            "--output-root": args.output_root,
+            **{flag: getattr(args, flag[2:].replace("-", "_"))
+               for flag in TWENTYCR_CALLER_SUPPLIES},
         }
         errors = [flag for flag, value in required.items() if value is None]
         if args.author_input_manifest is not None:
@@ -1407,6 +1442,129 @@ def _apply_packaged_profile(
         else:
             bound.append(f"{role}={text}")
     args.supplement = bound
+    return []
+
+
+def _fresh_prepared_root(config: Path) -> tuple[Path, Path | None]:
+    """Where ``--source-root`` prepares when no ``--output-root`` is named.
+
+    ``CONFIG-prepared`` beside the experiment config, or, when something
+    is already there, the first ``CONFIG-prepared-N`` (N from 2) that is
+    free, returned with the last taken folder it stepped past.  The
+    preparer refuses a folder that exists, because one may be a finished
+    run something else reads, so the fixed name made every second run of
+    the documented line exit 78, whether or not the folder's files had
+    changed.  Each run's tree is new and holds its own copy of the
+    manifest it was made from, so two input sets never share one.
+    """
+
+    taken = config.parent / f"{config.stem}-prepared"
+    if not os.path.lexists(taken):
+        return taken, None
+    number = 2
+    while True:
+        candidate = config.parent / f"{config.stem}-prepared-{number}"
+        if not os.path.lexists(candidate):
+            return candidate, taken
+        taken = candidate
+        number += 1
+
+
+def _bind_packaged_source_root(args: argparse.Namespace, adapter) -> list[str]:
+    """``--source-root DIR`` on a packaged mapped source.
+
+    The folder a user staged -- by hand, or with the fetch the source's
+    row names for a supplement -- is bound to the preparation's roles by
+    that row (:func:`gpuwm.local_preparation.bind_source_root`): the
+    ordered inputs, each supplement, the input manifest authored beside
+    them, and a fresh output root beside the experiment config when none
+    is named (:func:`_fresh_prepared_root`).  This is what makes the
+    documented short line run; it used to be refused as "--source-root is
+    not used by --source mapped" and to ask for five other arguments on
+    top.
+
+    Explicit spellings keep their meaning: an existing manifest pair is
+    bound instead of authoring one, and a named --output-root or
+    --geog-root is used as given.  A named --output-root that already
+    exists raises the preparer's own refusal here, before anything is
+    written.
+    """
+
+    from gpuwm import fetch_routes
+    from gpuwm.local_preparation import (SOURCE_ROOT_MANIFEST_NAME,
+                                         bind_source_root)
+
+    if fetch_routes.source_root_layout(adapter.source_id) is None:
+        return [f"--source-root is not used by --source {adapter.source_id}: "
+                "its row declares no folder layout; name the files with "
+                "--input and --supplement ROLE=PATH"]
+    # Named breakage: a second input list beside the folder's own binding
+    # leaves the relative order of the two unspecified, and a supplement
+    # typed beside the row's would bind the role twice.
+    conflicting = [flag for flag, value in {
+        "--input": args.mapped_inputs, "--input-list": args.input_list,
+        "--supplement": args.supplement}.items() if value]
+    if conflicting:
+        return [f"{flag} is not used with --source-root: the folder's layout "
+                "binds the inputs and supplements, and a second list beside "
+                "it would leave their order unspecified" for flag in conflicting]
+    existing_manifest = (args.source_sha256s is not None
+                         or args.source_sha256s_sha256 is not None)
+    if args.dry_run and not existing_manifest:
+        return ["--dry-run with --source-root cannot author the input "
+                "manifest the folder binds, because a dry run writes nothing; "
+                "run without --dry-run, or pass --source-manifest and "
+                "--source-manifest-sha256"]
+    try:
+        binding = bind_source_root(adapter.source_id, args.source_root)
+    except ValueError as error:
+        return [str(error)]
+    root = Path(binding["source_root"])
+    args.mapped_inputs = list(binding["inputs"])
+    args.supplement = [f"{role}={path}" for role, path in binding["supplements"]]
+    if not existing_manifest and args.author_input_manifest is None:
+        args.author_input_manifest = root / SOURCE_ROOT_MANIFEST_NAME
+        # This door chose the path, so it re-authors a manifest an earlier
+        # binding of the folder left there (see author_input_manifest).
+        args.source_root_manifest = True
+    defaulted = []
+    if not args.author_only:
+        if args.output_root is None and args.experiment_config is not None:
+            args.output_root, earlier = _fresh_prepared_root(
+                Path(args.experiment_config))
+            defaulted.append(
+                f"--output-root {args.output_root}"
+                + ("" if earlier is None else
+                   f" ({earlier} holds an earlier preparation, and prep "
+                   "never writes over one)"))
+        elif args.output_root is not None:
+            # Named breakage: a named folder that already exists is
+            # refused by the preparer, and that refusal used to arrive
+            # only after this door had replaced DIR/inputs.json, so a
+            # command that prepared nothing still changed the folder.
+            from gpuwm.ingest.source_coverage import (
+                existing_output_root_refusal)
+
+            refusal = existing_output_root_refusal(Path(args.output_root))
+            if refusal is not None:
+                raise refusal
+        if args.geog_root is None:
+            # The same default `gpuwm go` prepares with.
+            from gpuwm.geog_assets import default_geog_root
+
+            args.geog_root = default_geog_root()
+            defaulted.append(f"--geog-root {args.geog_root}")
+    # Consumed: the mapped route's own argument check reads the bound
+    # inputs, not the folder.
+    args.source_root = None
+    inputs = ", ".join(path.name for path in binding["inputs"])
+    supplements = ", ".join(f"{role}={path.name}"
+                            for role, path in binding["supplements"])
+    print(f"prep --source {adapter.source_id}: --source-root {root} binds "
+          f"input(s) {inputs}"
+          + (f" and supplement(s) {supplements}" if supplements else "")
+          + (f"; defaults {', '.join(defaulted)}" if defaulted else ""),
+          file=sys.stderr)
     return []
 
 
@@ -1630,6 +1788,8 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
             "--workers",
             str(8 if args.child_workers is None else args.child_workers),
         ]
+        for acknowledgement in args.ack or ():
+            command.extend(("--ack", str(acknowledgement)))
         if args.cpu_preprocess_bridge is not None:
             command.extend(("--cpu-preprocess-bridge", str(args.cpu_preprocess_bridge)))
         if args.statics_corridor is not None:
@@ -1799,6 +1959,9 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--static-input", str(args.static_input)))
         command.extend(("--static-receipt", str(args.static_receipt)))
     _append_preprocess_options(command, args)
+    reason = getattr(args, "preprocess_backend_reason", None)
+    if reason is not None:
+        command.extend(("--preprocess-backend-reason", reason))
     if args.geog_root is not None:
         command.extend(("--geog-root", str(args.geog_root)))
     if args.hierarchy_workers is not None:
@@ -1989,9 +2152,14 @@ def _author_mapped_contract(args: argparse.Namespace) -> dict[str, object]:
             args.provenance or (),
             multiple=False,
         )
+        replace_different = bool(getattr(args, "source_root_manifest", False))
+        manifest_path = Path(args.author_input_manifest)
+        previous = (_sha256(manifest_path)
+                    if replace_different and manifest_path.is_file() else None)
         try:
             receipt = author_input_manifest(
                 args.author_input_manifest,
+                replace_different=replace_different,
                 mapping_path=args.mapping,
                 composition_path=args.composition,
                 primary_files=args.mapped_inputs,
@@ -2022,13 +2190,29 @@ def _author_mapped_contract(args: argparse.Namespace) -> dict[str, object]:
                         authoring_path.unlink()
                         mapping_path.unlink()
             raise
-        args.source_sha256s = args.author_input_manifest
+        args.source_sha256s = Path(receipt["manifest"]["path"])
         args.source_sha256s_sha256 = receipt["manifest"]["sha256"]
         # A second paste of the printed prep command re-authors nothing
         # -- the manifest already on disk is byte-identical to what this
         # call composed -- and says so rather than claiming a write it
         # did not make (UX finding N13).
         verb = "AUTHORED" if receipt.get("reauthored", True) else "MATCHED"
+        if (previous is not None and previous != args.source_sha256s_sha256
+                and args.source_sha256s == manifest_path.resolve()):
+            # The upgraded copies of the replaced binding describe data the
+            # folder no longer holds, so the replacement removes them too.
+            removals = "".join(
+                f"; removed {row['path']}, the upgraded copy of that binding"
+                for row in receipt.get("removed_manifests", ()))
+            removals += "".join(
+                f"; could not remove {row['path']}, the upgraded copy of that "
+                f"binding ({row['error']}); nothing reads it"
+                for row in receipt.get("unremoved_manifests", ()))
+            print(f"REPLACED input_manifest={args.source_sha256s} "
+                  f"sha256={previous}  # an earlier binding of this folder; "
+                  "each preparation made from it keeps its own copy"
+                  + removals,
+                  file=sys.stderr)
         print(
             f"{verb} input_manifest="
             f"{args.source_sha256s} sha256={args.source_sha256s_sha256}"
@@ -2036,6 +2220,15 @@ def _author_mapped_contract(args: argparse.Namespace) -> dict[str, object]:
                else "  # already on disk, byte-identical; nothing rewritten"),
             file=sys.stderr,
         )
+        kept_manifest = Path(args.author_input_manifest).resolve()
+        if args.source_sha256s != kept_manifest:
+            print(
+                f"KEPT input_manifest={kept_manifest} "
+                "(left unchanged; it was sealed with other mapping, composition, "
+                "decoder or provenance files); "
+                f"this run binds {args.source_sha256s}",
+                file=sys.stderr,
+            )
         result["input_manifest"] = receipt
     if created_mapping is not None:
         print(
@@ -2057,14 +2250,17 @@ def _author_twentycr_manifest(args: argparse.Namespace) -> dict[str, object]:
     they could run anything.
 
     It cannot print the WHOLE command, and does not pretend to.  20CRv3
-    authoring deliberately REFUSES ``--wps-namelist``, ``--geog-root``,
-    ``--experiment-config``, ``--output-root`` and the two GRIB2 tool
-    paths, so those values do not exist in this process.  What it prints
-    is the half it knows -- bound, exact, pasteable -- and a comment
-    naming the half it does not, rather than a command with placeholders
-    in it that fails when pasted.
+    authoring deliberately REFUSES :data:`TWENTYCR_CALLER_SUPPLIES`, so
+    those values do not exist in this process.  What it prints is the
+    door's own command with the half it knows bound, and a comment
+    naming exactly the flags the door still requires, so the line runs
+    once those are added.  It used to print the manifest pair with no
+    command or ``--source`` in front of it, and named the GRIB2 tool pair
+    among the reader's flags, which the door does not need and which pin
+    the Python decoder when given.
     """
 
+    from gpuwm.fetch_routes import named_flags, render_prep_command
     from gpuwm.twentycrv3_direct import write_20crv3_manifest
 
     output = Path(args.author_input_manifest).resolve()
@@ -2074,13 +2270,15 @@ def _author_twentycr_manifest(args: argparse.Namespace) -> dict[str, object]:
           file=sys.stderr)
     print("20crv3: next: feed the 20CRv3 front door, manifest already "
           "bound:", file=sys.stderr)
-    print(f"  --source-manifest {output} "
-          f"--source-manifest-sha256 {digest}", file=sys.stderr)
-    print("  # authoring refuses the rest of the run's flags, so it "
-          "cannot bind them\n"
-          "  # for you: --grib2-inventory, --grib2-dump, "
-          "--wps-namelist, --geog-root,\n"
-          "  # --experiment-config, --output-root.",
+    print("  " + render_prep_command([
+        "--source", get_source_adapter(args.source).source_id,
+        "--source-manifest", str(output),
+        "--source-manifest-sha256", digest]), file=sys.stderr)
+    print("  # authoring refuses the run's own flags, so it cannot bind "
+          "them: "
+          + named_flags(TWENTYCR_CALLER_SUPPLIES)
+          + " are yours to supply.\n"
+          "  # The GRIB2 decoders resolve themselves.",
           file=sys.stderr)
     return {
         "schema": "rw-wps.20crv3-manifest-authoring.v1",
@@ -2114,14 +2312,41 @@ def _apply_configuration_preprocess_default(args: argparse.Namespace) -> None:
         return
     import tomllib
     from gpuwm.config_authority import read_config_authority
-    from gpuwm.preprocess_policy import resolve_preprocess_backend
+    from gpuwm.preprocess_policy import preprocess_backend_choice
 
     tables = tomllib.loads(read_config_authority(path).payload.decode("utf-8-sig"))
-    selected = resolve_preprocess_backend(source="gfs", tables=tables)
+    selected, reason = preprocess_backend_choice(source="gfs", tables=tables)
     if selected == "cpu":
         args.preprocess_backend = selected
-        print("prep: CPU preprocessing for the tiled GFS configuration.",
-              file=sys.stderr)
+        args.preprocess_backend_reason = reason
+        print(f"prep: CPU preprocessing for the tiled GFS configuration: "
+              f"{reason}.", file=sys.stderr)
+
+
+def _experiment_coverage_refusal(args: argparse.Namespace,
+                                 adapter) -> str | None:
+    """Why ``--source`` cannot force the ``--experiment-config`` root.
+
+    Asked before any input is normalized or decoded.  Breakage it
+    prevents: a domain outside a regional source's declared coverage
+    was refused only at the root forcing stage, after the whole cycle
+    had been decoded and the root statics built.  A source with no
+    declared coverage, or no config to read, is not asked; a config
+    that does not load is left to the route's own loader, which names
+    what is wrong with it.
+    """
+    path = getattr(args, "experiment_config", None)
+    if path is None or adapter.coverage_window is None:
+        return None
+    from gpuwm.source_coverage import config_source_coverage_refusal
+    from gpuwm.experiment import load_experiment
+
+    try:
+        experiment = load_experiment(path)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return None
+    return config_source_coverage_refusal(
+        experiment, adapter.source_id, source_option="--source")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2276,6 +2501,16 @@ def dispatch(args: argparse.Namespace, *,
             "--canonical-physics-plan-output is only valid with "
             "--validate-physics-plan"
         )
+    if getattr(args, "preprocess_backend_reason", None) is not None and (
+            args.source != "gfs"
+            or args.preprocess_backend not in ("cpu", "cuda")):
+        # Only the GFS preparation forwards it, and only beside a named
+        # backend; anywhere else it would be dropped without a word and
+        # the receipt would say "named by the caller".
+        print("--preprocess-backend-reason accompanies an explicit "
+              "--preprocess-backend cpu or cuda on --source gfs",
+              file=sys.stderr)
+        return EXIT_USAGE
     if args.dry_run and (
         args.descriptor is not None
         or args.author_mapping is not None
@@ -2493,6 +2728,22 @@ def dispatch(args: argparse.Namespace, *,
     # until it has, a packaged GRIB2 source looks formatless and the
     # GRIB2 tool binding would silently not apply to it.
     if (adapter.packaged_profile is not None
+            and adapter.runner == "mapped_composition_v1"
+            and args.source_root is not None):
+        from gpuwm.ingest.source_coverage import (
+            PreparationRefusal, report_preparation_refusal)
+
+        try:
+            binding_errors = _bind_packaged_source_root(args, adapter)
+        except PreparationRefusal as refusal:
+            return report_preparation_refusal(refusal)
+        if binding_errors:
+            print(
+                "invalid or missing run arguments: " + ", ".join(binding_errors),
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+    if (adapter.packaged_profile is not None
             and adapter.runner == "mapped_composition_v1"):
         profile_errors = _apply_packaged_profile(args, adapter, program)
         if profile_errors:
@@ -2697,7 +2948,11 @@ def dispatch(args: argparse.Namespace, *,
     # writes.  That second fetch invocation was the whole handoff gap of
     # UX finding N11: the fetch leaves the four-file front door and prep
     # follows it directly now.  The explicit pair stays an override and
-    # pins an existing manifest verbatim.
+    # pins an existing manifest verbatim.  The manifest is this
+    # preparation's own, written beside --output-root rather than into
+    # the download: preparations started in parallel from one download
+    # each bind their own namelist and experiment, and one shared file
+    # let a later one replace an earlier one's binding mid-preparation.
     if (adapter.runner == "gfs_pgrb2_0p25_v1"
             and args.source_sha256s is None
             and args.source_sha256s_sha256 is None):
@@ -2712,6 +2967,8 @@ def dispatch(args: argparse.Namespace, *,
                     experiment_config=Path(args.experiment_config),
                     static_input=args.static_input,
                     static_receipt=args.static_receipt,
+                    manifest_out=fetch_module.preparation_manifest_path(
+                        Path(args.output_root)),
                     progress=lambda line: None))
         except (OSError, ValueError) as error:
             print(f"gfs front-door manifest: {error}", file=sys.stderr)
@@ -2733,6 +2990,11 @@ def dispatch(args: argparse.Namespace, *,
               file=sys.stderr)
         return EXIT_CONFIG
 
+    uncovered = _experiment_coverage_refusal(args, adapter)
+    if uncovered is not None:
+        print(f"REFUSED: {uncovered}", file=sys.stderr)
+        return EXIT_CONFIG
+
     if authoring_twentycr:
         try:
             receipt = _author_twentycr_manifest(args)
@@ -2750,18 +3012,13 @@ def dispatch(args: argparse.Namespace, *,
         if args.prepare_workers is not None and args.prepare_workers <= 0:
             print("prepare-workers must be positive", file=sys.stderr)
             return EXIT_USAGE
-        selected = args.preprocess_backend or "cuda"
+        # A bare backend is relayed as nothing, so tools/prepare_hrrr_wrf
+        # resolves it with its own default, "auto"; judge it the same way.
+        selected = args.preprocess_backend or "auto"
         if args.root_preparation is None and (
                 selected != "cpu" and args.cpu_preprocess_bridge is not None):
             print(
                 "cpu-preprocess-bridge requires --preprocess-backend cpu",
-                file=sys.stderr,
-            )
-            return EXIT_USAGE
-        if (args.root_preparation is None and selected == "cuda"
-                and args.preprocess_workers is not None):
-            print(
-                "preprocess-workers requires --preprocess-backend cpu or auto",
                 file=sys.stderr,
             )
             return EXIT_USAGE
@@ -2776,12 +3033,9 @@ def dispatch(args: argparse.Namespace, *,
                 file=sys.stderr,
             )
             return EXIT_USAGE
-        if selected == "cuda" and args.preprocess_workers is not None:
-            print(
-                "preprocess-workers requires --preprocess-backend cpu or auto",
-                file=sys.stderr,
-            )
-            return EXIT_USAGE
+        # --preprocess-workers is accepted under cuda too: it sets the
+        # worker count of the host steps that backend runs in the Rust
+        # preprocessing library (the masked surface fields).
         if (args.hierarchy_workers is not None
                 and args.hierarchy_workers > 1 and selected != "cpu"):
             print(

@@ -32,6 +32,9 @@ def _case(tmp_path, monkeypatch, *, device_low, host_low):
                              streamed=SimpleNamespace(host_bytes=1024,
                                  host_budget_bytes=0 if host_low else 2048),
                              verdict=lambda free: 'estimated peak exceeds free memory')
+    # The shared admission's own comparison, over this stand-in's store.
+    phases.streamed_host_refusal = (
+        lambda: preflight.PhaseMemoryEstimate.streamed_host_refusal(phases))
     monkeypatch.setattr(preflight, 'device_memory_probe_subprocess',
                         lambda: dict(free_bytes=0 if device_low else 2048))
     monkeypatch.setattr(preflight, 'profile_from_device_probe', lambda probe: None)
@@ -74,6 +77,31 @@ def test_estimated_capacity_does_not_refuse_or_reduce_request(tmp_path, monkeypa
     assert 'requested settings are retained' in output
     assert ('VRAM' in output) is device_low
     assert ('host RAM' in output) is host_low
+
+
+@pytest.mark.parametrize('refused', [True, False])
+def test_the_host_advisory_reads_the_shared_streamed_admission(tmp_path, monkeypatch,
+                                                               refused):
+    """The metgrid advisory answers what `gpuwm go` refuses on, not its own sum.
+
+    It kept its own store-against-budget comparison beside
+    ``PhaseMemoryEstimate.streamed_host_refusal``, the one admission `gpuwm
+    go`, `gpuwm check` and `gpuwm domain` share, so the two could part the
+    moment either changed.  Here they disagree on purpose, both ways.
+    """
+    run = _case(tmp_path, monkeypatch, device_low=False, host_low=False)
+    refusal = ('the streamed forecast holds 14.20 GiB of host RAM against a '
+               '14.13 GiB host budget')
+    phases = SimpleNamespace(
+        peak_envelope_bytes=1024, forecast_envelope_bytes=512,
+        ingest_envelope_bytes=1024,
+        streamed=SimpleNamespace(host_bytes=1024,
+                                 host_budget_bytes=2048 if refused else 0),
+        streamed_host_refusal=lambda: refusal if refused else None)
+    monkeypatch.setattr(preflight, 'estimate_phases', lambda *a, **kw: phases)
+    receipt = metem_door.metgrid_memory_admission(run, run.experiment)
+    assert receipt['host_estimate_exceeds_available'] is refused
+    assert len(receipt['warnings']) == int(refused)
 
 
 def test_capacity_fit_has_no_advisory(tmp_path, monkeypatch):
@@ -141,3 +169,49 @@ def test_metem_auto_estimate_uses_the_existing_device_probe(tmp_path, monkeypatc
     assert receipt['policy'] == 'advisory'
     assert observed[-1]['vram_bytes'] == 2048
     assert estimates[-1]['machine'] is machine
+
+
+@pytest.mark.parametrize('requested', ['cuda', 'auto'])
+def test_metem_preparation_is_priced_and_decided_before_it_allocates(
+        tmp_path, monkeypatch, capsys, requested):
+    """A65 on the met_em door: the advisory that warned and allocated is
+    replaced by the price.  On a stand-in card with almost nothing free an
+    explicit cuda is refused by name before the output directory exists,
+    and auto moves the preparation to the CPU with its reason recorded."""
+    from types import SimpleNamespace
+    from gpuwm.core import device_probe
+    from gpuwm.ingest import preprocess_backend
+
+    run = _case(tmp_path, monkeypatch, device_low=False, host_low=False)
+    runtime = SimpleNamespace(getDeviceCount=lambda: 1, getDevice=lambda: 0,
+                              runtimeGetVersion=lambda: 13020)
+    cuda = SimpleNamespace(name='cuda', array_module=SimpleNamespace(
+        __version__='14.2.0', cuda=SimpleNamespace(runtime=runtime)))
+
+    class Reached(Exception):
+        pass
+
+    def cpu_receipt():
+        raise Reached
+    cpu = SimpleNamespace(name='cpu', receipt=cpu_receipt)
+    monkeypatch.setattr(preprocess_backend, 'CudaPreprocessBackend', lambda: cuda)
+    monkeypatch.setattr(preprocess_backend, 'ParallelCpuPreprocessBackend',
+                        lambda **_: cpu)
+    monkeypatch.setattr(preprocess_backend, '_gpu_runtime_installed', lambda: True)
+    monkeypatch.setattr(preprocess_backend, '_ANNOUNCED_AUTO_REASONS', set())
+    monkeypatch.setattr(device_probe, 'device_memory_probe_subprocess', lambda **_: {
+        'free_bytes': 2**20, 'total_bytes': 24 * 2**30,
+        'utilization_gpu_percent': 0})
+    if requested == 'cuda':
+        with pytest.raises(preprocess_backend.PreparationDeviceRefused,
+                           match='--preprocess-backend cpu'):
+            metem_forecast.prepare_metem_run(run, tmp_path / 'prepared',
+                                             preprocess_backend='cuda')
+    else:
+        with pytest.raises(Reached):
+            metem_forecast.prepare_metem_run(run, tmp_path / 'prepared',
+                                             preprocess_backend='auto')
+        assert cpu.selection['device_fit']['fits'] is False
+        assert cpu.selection['device_fit']['route'] == 'met_em'
+        assert 'the CUDA preparation needs' in capsys.readouterr().err
+    assert not (tmp_path / 'prepared').exists()

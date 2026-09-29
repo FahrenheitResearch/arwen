@@ -34,6 +34,44 @@ the spelling the tree already uses, so there is ONE copy of each table and
 
 from __future__ import annotations
 
+#: THE table of output-only RunConfig switches: each one decides what a
+#: forecast WRITES, never what it integrates, so it may differ between
+#: the run that wrote a checkpoint and the run that resumes it, and
+#: between the run that prepared a cache and the run that reads it.
+#: Every place that asks "does this switch change the model" reads this
+#: one set: the member restart walk and the configuration digest in
+#: :mod:`gpuwm.io.restart` (re-exported there under this name), the tree
+#: restart identity comparison beside them, and the prepared-cache
+#: identity in :mod:`gpuwm.ingest.prepared_cache`.  Two copies of this
+#: list drifted once already: the prepared cache knew only the first
+#: member, so switching any of the other three on refused an unchanged
+#: cache and forced a second preparation of identical arrays.
+#:
+#: Membership is a proof, not a label: the switch reads model state and
+#: writes only its own diagnostic buffers.
+#:
+#: * ``nwp_diagnostics`` -- inertness pinned by tests/test_uh_lifecycle.py;
+#:   its accumulator payloads are tolerant in both directions (missing in
+#:   the file restores as zeros with a note; present under a
+#:   diagnostics-off resume is dropped with a note).
+#: * ``tke_budget`` -- the accumulator writes only its own scratch
+#:   (tests/test_tke_budget.py).
+#: * ``sase_flux_diag`` -- four history buffers filled from arrays the
+#:   SASE step already holds (tests/test_sase_gpu.py, every prognostic
+#:   byte-identical with the switch on).
+#: * ``hmix_k_diag`` -- two history buffers copied from the eddy
+#:   viscosity the run's own mixing producer computed; nothing reads them
+#:   back (tests/test_sase_gpu.py, every prognostic byte-identical with
+#:   the switch on, under both producers).
+#:
+#: A newly switched-on diagnostic that a positive PBL cadence carries
+#: between steps restores as zeros, its cold value, and is refilled by
+#: the next due step.  The physics selectors beside them
+#: (``sase_moist_n2``, ``sase_stable_dissipation``,
+#: ``sase_additive_dissipation``) move the trajectory and are NOT here.
+CONFIG_DIAGNOSTIC_FIELDS = frozenset(
+    {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag"})
+
 #: Versioned semantic identities.  These are deliberately explicit instead
 #: of inferred from scheme numbers: a trajectory-changing implementation or
 #: policy change must advance its tag, causing an incompatible restart to

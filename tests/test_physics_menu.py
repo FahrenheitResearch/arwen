@@ -1,6 +1,6 @@
 """The per-source physics menu, and the refusals that read it.
 
-Drew's design, 2026-08-20: "why cant every model have multiple unique
+The design ruling, 2026-08-20: "why cant every model have multiple unique
 working default".  Every registered source gets its OWN default and its
 own set of suites that actually run on it, and both are COMPUTED from
 the admissibility rules that already refuse -- never a hand-kept table
@@ -131,7 +131,7 @@ def test_every_cell_is_the_pairing_predicate_the_wizard_refuses_by(capsys):
 
 
 def test_the_native_source_offers_implemented_kain_fritsch_combinations(capsys):
-    """The contrasting pair Drew hit, both directions.
+    """The contrasting pair, both directions.
 
     ERA5 admits every shipped suite; the native HRRR route pins
     ``cu_physics = 0`` because its 3 km grid resolves convection, so
@@ -258,7 +258,7 @@ def test_vertical_bounds_are_the_preflights_own_bounds(capsys):
 
 
 def test_every_source_default_is_admissible_on_that_source(capsys):
-    """Drew's ruling, as a gate.
+    """The ruling, as a gate.
 
     A default that its own route refuses is a source whose bare run
     cannot start, and "fixed" means a bare default run stops showing the
@@ -496,7 +496,7 @@ def _wizard_refusal(source, profile):
 
 
 def test_the_nocturnal_remedy_names_a_suite_the_active_source_admits():
-    """THE defect Drew hit, closed at the door that printed it.
+    """THE defect, closed at the door that printed it.
 
     Old behaviour: the remedy named the gfs/era5 default on every
     source, and ``--source hrrr`` then refused that suite for

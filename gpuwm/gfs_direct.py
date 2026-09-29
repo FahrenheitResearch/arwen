@@ -43,6 +43,7 @@ from gpuwm.ingest.horiz import (
     interpolate_era5_to_lambert,
     interpolate_lake_skin_temperature,
     orient_global_source_longitudes,
+    unrolled_source_ring,
 )
 from gpuwm.ingest.lateral_bc import (
     StateBoundaryFrames,
@@ -51,11 +52,20 @@ from gpuwm.ingest.lateral_bc import (
 )
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
+from gpuwm.ingest.boundary_stream import (
+    PreparedTreeWriter,
+    producer_device_bytes,
+    remove_unfinished_tree,
+)
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
-    write_prepared_cache,
 )
+from gpuwm.ingest.cpu_backend import host_step_workers
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+from gpuwm.ingest.preparation_price import (
+    price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
+    admit_preparation,
     release_backend_memory,
     resolve_preprocess_backend,
 )
@@ -67,9 +77,11 @@ from gpuwm.ingest.water_temperature import (
     MODIS_LAKE_CATEGORY, WaterTemperatureStatics,
     announce_water_temperature, assemble_for_route)
 from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
-from gpuwm.native_domain_artifacts import _atomic_staging_sibling
+from gpuwm.native_domain_artifacts import (
+    _atomic_staging_sibling, published_path_refusal)
 from gpuwm.native_wrf_contract import (
     native_geometry_contract,
+    require_land_terrain,
     validate_native_lambert_contract,
     validate_native_lambert_contracts,
     verify_native_static_receipt,
@@ -86,7 +98,12 @@ from gpuwm.physics_compat import (
     multi_domain_physics_selection,
     single_domain_physics_selection,
 )
-from gpuwm.wrf_direct import export_prepared_wrf
+from gpuwm.wrf_direct import (
+    StockWrfExportUnsupported,
+    export_prepared_wrf,
+    stock_wrf_export_not_requested,
+    stock_wrf_export_refused,
+)
 
 
 INPUT_MANIFEST_SCHEMA = "gpuwm-gfs-direct-input-manifest-v1"
@@ -364,6 +381,45 @@ def _manifest_source_top_pa(manifest: Mapping[str, object]) -> float:
     return top
 
 
+def _refuse_a_fetch_below_the_model_top(exp, source_top_pressure_pa: float):
+    """Refuse a download that stops under the config's model top, with the way out.
+
+    Every level above the source top would be extrapolated past the top
+    of the analysis, which is the vertical contract's own refusal.  Said
+    here first because on this route the way out is a fetch flag, not the
+    eta ladder: ``gpuwm go`` and ``gpuwm run-plan`` ask for the top on
+    their own, so only a folder fetched by hand gets here.
+
+    It is the vertical-ladder member of the preparation refusal family,
+    so the door prints it as the refusal and its own remedy at the
+    family's exit status, the way it printed the vertical contract's
+    refusal for the same breakage, rather than as one flat error line.
+    """
+
+    from gpuwm.ingest.source_coverage import VerticalLadderRefusal
+    from gpuwm.source_adapters import fetch_model_top_pa
+
+    p_top = float(exp.vertical.p_top)
+    source_top = float(source_top_pressure_pa)
+    if not source_top > p_top:
+        return
+    asked = fetch_model_top_pa("gfs", p_top)
+    if asked is None:
+        remedy = (f"remedy: raise [shared].p_top in the experiment config "
+                  f"to {source_top:g} Pa or above.")
+    else:
+        remedy = (f"remedy: gpuwm fetch --source gfs --p-top-pa {asked:g} "
+                  "into a new folder fetches the levels this top needs "
+                  "(gpuwm go and gpuwm run-plan ask for them on their own), "
+                  f"or raise [shared].p_top to {source_top:g} Pa or above.")
+    raise VerticalLadderRefusal(
+        f"GFS source atmosphere stops at {source_top:g} Pa but this config's "
+        f"model top is {p_top:g} Pa, so every level above {source_top:g} Pa "
+        "would be extrapolated past the top of the analysis; this folder "
+        "was fetched without the levels above it",
+        remedy=remedy)
+
+
 def _validate_grid_and_vertical_contract(exp, wps_namelist: Path, *,
                                          source_top_pressure_pa: float
                                          = _CERTIFIED_SOURCE_TOP_PA):
@@ -448,15 +504,28 @@ def _source_coverage_receipt(snapshot: Era5Snapshot, grid, lake_mask) -> dict[st
         "water": int(np.sum(source_landsea < 0.5)),
     }
 
+    # Lake coverage is reported, not enforced, for the same reason.  The
+    # nearest GFS water to a lake is the crop's nearest (WPS searches the
+    # source it is given), and a lake whose nearer donor could lie past
+    # the crop's edge is counted rather than refused: refusing it stopped
+    # a preparation over the extent of its download.  A crop with no
+    # water at all gives its lakes the skin temperature GFS has there
+    # (:func:`lake_skin_with_source_skin_fallback`), counted the same way.
+    # A whole-globe file is a ring with no edge in longitude, searched as
+    # one exactly as the lake search itself does.
     lakes = np.asarray(lake_mask, dtype=np.bool_)
     source_land = np.asarray(snapshot.fields["LANDSEA"], dtype=np.float64)
     skin = np.asarray(snapshot.fields["SKINTEMP"], dtype=np.float64)
     water = np.isfinite(source_land) & (source_land < 0.5) & np.isfinite(skin)
+    (water,), lake_x, period = unrolled_source_ring(
+        (water,), snapshot.longitude, mass_x)
+    lake_nx = water.shape[1]
     max_nearest_distance = 0.0
     max_search_radius = 0.0
-    for j, i in np.argwhere(lakes):
+    unproven = 0
+    for j, i in (np.argwhere(lakes) if np.any(water) else ()):
         y = float(mass_y[j, i])
-        x = float(mass_x[j, i])
+        x = float(lake_x[j, i])
         # Initial window only; the loop doubles it until the nearest water
         # donor is provably inside the searched rectangle.
         search_radius = 8.0
@@ -464,7 +533,7 @@ def _source_coverage_receipt(snapshot: Era5Snapshot, grid, lake_mask) -> dict[st
             j0 = max(0, int(np.ceil(y - search_radius)))
             j1 = min(ny - 1, int(np.floor(y + search_radius)))
             i0 = max(0, int(np.ceil(x - search_radius)))
-            i1 = min(nx - 1, int(np.floor(x + search_radius)))
+            i1 = min(lake_nx - 1, int(np.floor(x + search_radius)))
             rows, columns = np.nonzero(water[j0:j1 + 1, i0:i1 + 1])
             if rows.size:
                 rows = rows + j0
@@ -478,25 +547,71 @@ def _source_coverage_receipt(snapshot: Era5Snapshot, grid, lake_mask) -> dict[st
                     unseen_distance.append((j1 + 1) - y)
                 if i0 > 0:
                     unseen_distance.append(x - (i0 - 1))
-                if i1 < nx - 1:
+                if i1 < lake_nx - 1:
                     unseen_distance.append((i1 + 1) - x)
                 if (not unseen_distance
                         or best_squared < min(unseen_distance) ** 2):
                     break
-            if j0 == 0 and j1 == ny - 1 and i0 == 0 and i1 == nx - 1:
-                raise ValueError("GFS crop contains no finite source-water lake donor")
             search_radius *= 2.0
-        outside_squared = min(x + 1.0, nx - x, y + 1.0, ny - y) ** 2
+        outside_squared = min(
+            (y + 1.0, ny - y) if period is not None
+            else (x + 1.0, lake_nx - x, y + 1.0, ny - y)) ** 2
         if not best_squared < outside_squared:
-            raise ValueError(
-                "a source-water donor outside the GFS crop could be nearer to a model lake")
+            unproven += 1
         max_nearest_distance = max(max_nearest_distance, best_squared ** 0.5)
         max_search_radius = max(max_search_radius, search_radius)
     result["lake_cells"] = int(lakes.sum())
     result["lake_source_search"] = "global expanding nearest-water"
     result["max_lake_source_search_radius_cells"] = max_search_radius
     result["max_lake_source_water_distance_cells"] = max_nearest_distance
+    # Present only when they happened, so every other receipt keeps the
+    # bytes it had.
+    if np.any(lakes) and not np.any(water):
+        result["lake_cells_without_source_water"] = int(lakes.sum())
+    if unproven:
+        result["lake_cells_nearest_water_past_crop"] = unproven
     return result
+
+
+def lake_skin_with_source_skin_fallback(lake_skin, lake_mask, mapped_skin):
+    """Each lake's nearest GFS water, or the skin GFS has at the lake.
+
+    ``lake_skin`` is :func:`interpolate_lake_skin_temperature` on the
+    crop, NaN at every lake when the crop holds no water to search.  Such
+    a lake takes the mapped skin temperature at its own cells.  This route
+    maps its lakes as land, so that is the skin of the land GFS has where
+    the lake lies: the source model's own surface state there, and never
+    another basin's water.  Returns ``(lake_skin, cells)``, ``cells``
+    being how many lake cells took the mapped skin.
+    """
+    if hasattr(mapped_skin, "get"):
+        mapped_skin = mapped_skin.get()
+    lakes = np.asarray(lake_mask, dtype=bool)
+    lake_skin = np.array(lake_skin, dtype=np.float64, copy=True)
+    missing = lakes & ~np.isfinite(lake_skin)
+    if np.any(missing):
+        lake_skin[missing] = np.asarray(
+            mapped_skin, dtype=np.float64)[missing]
+    return lake_skin, int(np.count_nonzero(missing))
+
+
+def _announce_lake_source_water(on_source_skin, past_crop, *, lake_cells):
+    """One line when a lake's GFS water could not come from its nearest donor."""
+    parts = []
+    if on_source_skin:
+        parts.append(
+            f"{on_source_skin} took the skin temperature GFS has at the "
+            "lake, because the fetched area holds no GFS water at all")
+    if past_crop:
+        parts.append(
+            f"{past_crop} took the nearest GFS water inside the fetched "
+            "area, though nearer GFS water could lie past its edge")
+    if parts:
+        print(
+            f"lake water temperature: of {lake_cells} lake cell(s), "
+            + "; ".join(parts) + " (counted under source_coverage in the "
+            "preparation proof); a wider fetch area gives every lake its "
+            "nearest GFS water", file=sys.stderr)
 
 
 def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
@@ -1005,8 +1120,10 @@ def _announce_adaptation(sentence: str) -> None:
     """Say, once, that the run is not on the configured vertical coordinate."""
 
     warn(sentence,
-         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls this column "
-         "fatal and names reducing etac as the remedy; the remedy is "
+         "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182 calls a column "
+         "the coordinate cannot order fatal and names reducing etac as "
+         "the remedy, and a column it only just orders keeps one layer "
+         "too thin to integrate, which a lower etac thickens; the etac is "
          "derived here from the terrain this run can actually touch and "
          "applied, so the prepared inputs, their receipt and the forecast "
          "all carry the same coordinate.  p_top is untouched.")
@@ -1043,7 +1160,7 @@ def prepare_gfs_wrf(
     input_manifest: Path,
     input_manifest_sha256: str,
     output_root: Path,
-    preprocess_backend: str = "cuda",
+    preprocess_backend: str = "auto",
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: Path | None = None,
     geog_root: Path | None = None,
@@ -1052,6 +1169,7 @@ def prepare_gfs_wrf(
     expert_acknowledgements: tuple[str, ...] = (),
     stock_wrf_export: bool = True,
     statics_corridor=None,
+    preprocess_backend_reason: str | None = None,
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
 
@@ -1060,16 +1178,20 @@ def prepare_gfs_wrf(
     unchanged; source-neutral public hierarchy configuration is owned by the
     higher-level integration layer.
 
-    ``stock_wrf_export`` asks the DOMAIN-TREE route for the bonus
-    unchanged-WRF file set beside the forecast it prepares.  It defaults
-    to True, so a tree whose root the exporter can represent publishes
-    exactly what it always published.  A tree it cannot represent no
-    longer fails: the export is refused, by name, in the proof's export
-    slot, and the forecast preparation completes -- which physics a tree
-    may run belongs to the registry and the acknowledgement gate, not to
-    a downstream file-format contract.  Pass False to skip the export
-    outright.  The single-domain route is unaffected: there the export IS
-    the product, and it takes the profile-aware branch anyway.
+    ``stock_wrf_export`` asks for the bonus unchanged-WRF file set beside
+    the forecast this prepares, on the single-domain route and the
+    domain-tree route alike.  It defaults to True, so a domain the
+    exporter can represent publishes exactly what it always published.
+    One it cannot represent (Kessler, Milbrandt-Yau and WDM6 have no
+    stock package contract) does not fail: the export is refused, by
+    name, in the proof's export slot, and the forecast preparation
+    completes, because the forecast restores the prepared cache, not the
+    exported files.  Which physics a forecast may run belongs to the
+    registry and the acknowledgement gate, not to a downstream
+    file-format contract.  Pass False to skip the export outright; the
+    slot then records it as not requested.  On the single-domain route an
+    export that is written must carry exactly the physics this
+    preparation selected, or the preparation stops.
 
     ``statics_corridor`` opts the DOMAIN-TREE route into emitting sealed
     child-resolution statics corridors (``"all"`` or a sequence of child
@@ -1106,8 +1228,22 @@ def prepare_gfs_wrf(
             raise FileNotFoundError(f"missing GFS adapter input {role}: {path}")
     if not os.access(Path(bridge), os.X_OK):
         raise PermissionError("GFS Rust bridge is not executable")
+    # A head published early whose producer failed, was stopped or went
+    # silent is this tool's own unfinished product, not a finished run.
+    remove_unfinished_tree(Path(output_root))
     if Path(output_root).exists():
         raise FileExistsError(f"refusing to overwrite {output_root}")
+    # A domain tree is published through staging deeper than its
+    # output root; refused here, before any GRIB is hashed or decoded.
+    # The experiment is read only to count its domains, and only when
+    # the limit binds: a single-domain bundle publishes no tree and is
+    # not measured against it.  The load the preparation uses follows
+    # the manifest verification below.
+    refusal = published_path_refusal(
+        Path(output_root), wrf_export=stock_wrf_export)
+    if (refusal is not None
+            and len(load_experiment(Path(experiment_config)).domains) > 1):
+        raise ValueError(refusal)
     _prepare_output_root_parent(Path(output_root))
     # THE STAGE CLOCK STARTS HERE, not after the verification below.
     # It used to start after it, so `total` in the receipt excluded the
@@ -1140,7 +1276,7 @@ def prepare_gfs_wrf(
     experiment_config_digest = manifest["files"]["experiment_config"]["sha256"]
     preprocess = resolve_preprocess_backend(
         preprocess_backend, workers=preprocess_workers,
-        cpu_bridge=cpu_preprocess_bridge)
+        cpu_bridge=cpu_preprocess_bridge, reason=preprocess_backend_reason)
     preprocess_receipt = preprocess.receipt()
     # Everything above verified or identified an input: the manifest's
     # digest over every GRIB, this build's implementation hash, the
@@ -1152,6 +1288,15 @@ def prepare_gfs_wrf(
     verify_inputs_seconds = time.perf_counter() - verify_started
 
     exp = load_experiment(Path(experiment_config))
+    # THE FLOOR, BEFORE THE DECODE (A98).  The domains alone set a lower
+    # bound on the card price: an explicit cuda they cannot fit is refused
+    # here, in seconds, instead of after the host decode and the statics,
+    # and auto moves to the CPU here.  The decoded price below stays the
+    # binding check.
+    preprocess = admit_preparation(
+        preprocess, lambda: price_preparation_floor("gfs", exp),
+        workers=preprocess_workers)
+    preprocess_receipt = preprocess.receipt()
     from gpuwm.static.highres_production import (
         load_static_highres, apply_prepared_highres, static_highres_identity)
     static_highres = load_static_highres(experiment_config)
@@ -1235,6 +1380,7 @@ def prepare_gfs_wrf(
     # What the fetch actually reached, not what the default ladder would
     # have reached: the case's p_top is checked against this.
     source_top_pressure_pa = _manifest_source_top_pa(manifest)
+    _refuse_a_fetch_below_the_model_top(exp, source_top_pressure_pa)
     manifest_levels = manifest.get("source", {}).get("pressure_levels_hpa") \
         if isinstance(manifest.get("source"), dict) else None
     expected_levels_hpa = (tuple(float(level) for level in manifest_levels)
@@ -1291,6 +1437,10 @@ def prepare_gfs_wrf(
         static, grid, config=static_highres, domain_id=1,
         case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
         baseline_receipt=root_static_receipt)
+    # The land-height check reads the terrain the run will integrate: a
+    # declared high-resolution terrain gives the islands the baseline
+    # dataset holds at 0 m their height.
+    require_land_terrain(static["HGT_M"], static["LANDMASK"])
     # Both roads, one key: "build it from the geography tree" and "load
     # and verify the prebuilt cache" are two answers to one question,
     # and a receipt that timed only the first would go quiet on exactly
@@ -1387,7 +1537,8 @@ def prepare_gfs_wrf(
         # valid time the bridge decoded (cycle + its own lead), which is
         # exactly start_time + the model offset.
         snapshots = overlay_snapshot_sequence(decoded_snapshots[initial_index:], water_overlay,
-                                              binding=water_overlay_binding)
+                                              binding=water_overlay_binding,
+                                              workers=host_step_workers(preprocess))
         decode_seconds = time.perf_counter() - decode_started
         # The land-use table's own ISLAKE, never a hard-coded 21: the
         # category number is a property of the selected table, and a table
@@ -1430,12 +1581,26 @@ def prepare_gfs_wrf(
 
         from gpuwm.core.grid import make_vertical_coord
 
+        # THE FIT, BEFORE THE FIRST DEVICE ALLOCATION.  The decode above
+        # ran on the host; everything below builds on the chosen backend.
+        # auto moves a preparation the card cannot hold to the CPU, and an
+        # explicit cuda that cannot fit is refused here, by name, instead
+        # of stopping in DomainState.__init__ minutes later (A65).  A
+        # backend already on the CPU is not priced.
+        preprocess = admit_preparation(
+            preprocess,
+            lambda: price_forcing_preparation("gfs", exp, snapshots),
+            workers=preprocess_workers)
+        preprocess_receipt = preprocess.receipt()
         initialize_started = time.perf_counter()
         progress.enter("initialize_all_times",
                        forcing_times=len(records))
-        # ONE forcing time is ever resident.  The start time is built LAST
-        # (start_last_forcing_order) and is the only met/state this loop
-        # retains; every other time contributes its perimeter frames
+        # ONE forcing time is ever resident.  A single domain builds the
+        # start time FIRST, publishes it in the prepared head and releases
+        # it, then writes each boundary interval as soon as its two times
+        # exist (gpuwm.ingest.boundary_stream).  A hierarchy builds the
+        # start time LAST (start_last_forcing_order) and retains only that
+        # met/state; every other time contributes its perimeter frames
         # against its own position and is released before the next one is
         # interpolated.  Walking the times in order instead meant holding
         # the start time -- which nothing reads until the boundaries are
@@ -1456,7 +1621,10 @@ def prepare_gfs_wrf(
         # their atmospheric/soil source as land here, then apply the existing
         # explicit nearest-source-water lake initialization below.
         interpolation_landmask[lake_mask] = True
-        for index in start_last_forcing_order(len(snapshots)):
+        def build_forcing_time(index):
+            # One forcing time's build, unchanged.  A single domain calls
+            # it start first (gpuwm.ingest.boundary_stream); a hierarchy
+            # keeps the start time last until its children are chained.
             source = snapshots[index]
             met = interpolate_era5_to_lambert(
                 source, grid,
@@ -1469,25 +1637,45 @@ def prepare_gfs_wrf(
                 eta_levels=exp.vertical.eta_levels)
             initialized = initialize_real(
                 met, cfg, coord, static["HGT_M"], grid=grid,
+                landmask=static["LANDMASK"],
                 p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
                 preprocess_backend=preprocess,
-                state_backend="preprocess")
+                state_backend="preprocess", boundary_only=index != 0)
             initialized.state.set_map_coriolis(
                 static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
                 static["F"], static["E"], sina=static["SINALPHA"],
                 cosa=static["COSALPHA"])
-            forcing.add_state(initialized.state, index=index)
-            if index == 0:
-                initial_met = met
-                initial_result = initialized
-            else:
-                del met, initialized, coord
-                release_backend_memory(preprocess)
+            return met, initialized
+
         times = tuple(snapshot.valid_time for snapshot in snapshots)
-        boundaries = forcing.build(times)
-        attach_lateral_boundaries(initial_result.state, boundaries)
-        lake_skin = interpolate_lake_skin_temperature(
-            snapshots[0], grid, lake_mask)
+        if len(exp.domains) > 1:
+            for index in start_last_forcing_order(len(snapshots)):
+                met, initialized = build_forcing_time(index)
+                forcing.add_state(initialized.state, index=index)
+                if index == 0:
+                    initial_met = met
+                    initial_result = initialized
+                else:
+                    del met, initialized
+                    release_backend_memory(preprocess)
+            boundaries = forcing.build(times)
+            attach_lateral_boundaries(initial_result.state, boundaries)
+        else:
+            # START FIRST: the start time makes the head, the later times
+            # are built after it is published, one resident at a time.
+            initial_met, initial_result = build_forcing_time(0)
+            forcing.add_state(initial_result.state, index=0)
+            boundaries = None
+        lake_skin, lakes_on_source_skin = lake_skin_with_source_skin_fallback(
+            interpolate_lake_skin_temperature(
+                snapshots[0], grid, lake_mask,
+                workers=host_step_workers(preprocess)),
+            lake_mask, initial_met.fields["SKINTEMP"])
+        _announce_lake_source_water(
+            lakes_on_source_skin,
+            max((receipt.get("lake_cells_nearest_water_past_crop", 0)
+                 for receipt in coverage_receipt.values()), default=0),
+            lake_cells=int(np.count_nonzero(lake_mask)))
         # The assembly runs HERE and not inside the mapping, because this
         # route's water surface is only settled now: the interpolation
         # landmask deliberately calls GEOG lakes land (they are smaller
@@ -1502,16 +1690,15 @@ def prepare_gfs_wrf(
 
             assembly_skin = _as_host_float64(
                 initial_met.fields["SKINTEMP"]).copy()
-            # Only the FINITE lake values are substituted.  A lake
-            # cell whose nearest-source-water search found nothing
-            # keeps the mapped skin here, so the refusal that reaches
-            # the reader is the router's own "lake_skin_temperature
-            # is non-finite" and not this assembly's less specific
-            # count of inadmissible water cells.
+            # Every lake value is finite wherever the source carries a
+            # skin temperature at all (see
+            # lake_skin_with_source_skin_fallback), and only finite ones
+            # are substituted.
             usable_lake = lake_mask & np.isfinite(lake_skin)
             assembly_skin[usable_lake] = lake_skin[usable_lake]
             assembly = assemble_for_route(
-                water_statics, mapped_sst=None, mapped_skin=assembly_skin)
+                water_statics, mapped_sst=None, mapped_skin=assembly_skin,
+                workers=host_step_workers(preprocess))
             water_temperature = assembly.values
             # The receipt is printed only now that the field it describes
             # is the one soil consumes, two statements below.
@@ -1543,6 +1730,10 @@ def prepare_gfs_wrf(
             deep_soil_temperature=static["TMN"], lake_mask=lake_mask,
             lake_skin_temperature=lake_skin,
             landmask=static["LANDMASK"],
+            # Land the source holds no land for takes the column the
+            # router builds (gpuwm/ingest/soil.py: island_soil_columns).
+            soil_no_source_land=getattr(
+                initial_met, "soil_no_source_land", None),
             terrain=static["HGT_M"] if soil_orography is not None else None,
             source_orography=soil_orography,
             water_temperature=water_temperature,
@@ -1553,7 +1744,10 @@ def prepare_gfs_wrf(
             soil_mesh=soil_mesh_plan_from_case(
                 snapshots[0], grid, experiment_config),
             route=_WATER_ROUTE)
-        verify_overlay_sequence(snapshots)
+        if len(exp.domains) > 1:
+            # Every forcing time has been consumed; a single domain proves
+            # this after its remaining times, below.
+            verify_overlay_sequence(snapshots)
         initialize_seconds = time.perf_counter() - initialize_started
 
         native_source_identity = {
@@ -1590,6 +1784,7 @@ def prepare_gfs_wrf(
         if staging.exists():
             raise FileExistsError(f"stale GFS staging directory exists: {staging}")
         staging.mkdir(parents=True)
+        writer = None
         try:
             shutil.copy2(decoded / "gate.tsv", staging / "decoder-gate.tsv")
             shutil.copy2(
@@ -1608,7 +1803,8 @@ def prepare_gfs_wrf(
             if statics_corridor is not None and len(exp.domains) < 2:
                 raise ValueError(
                     "--statics-corridor prepares child-resolution statics "
-                    "over a parent extent, and this experiment has no "
+                    "over the ground a child domain can reach, and this "
+                    "experiment has no "
                     "child domain; remove the flag or prepare a domain "
                     "tree")
             if len(exp.domains) > 1:
@@ -1749,93 +1945,17 @@ def prepare_gfs_wrf(
                 forcing_hours=hours,
                 source_identity=native_source_identity,
             )
-            progress.enter("write_prepared_cache")
-            cache_started = time.perf_counter()
-            cache_receipt = write_prepared_cache(
-                prepared_cache, identity=identity,
-                initial_result=initial_result, met=initial_met,
-                boundaries=boundaries, surface=_canonical_surface(soil),
-                metadata={
-                    "source_adapter": "gfs",
-                    "initial_valid_time": times[0].isoformat(),
-                    "last_valid_time": times[-1].isoformat(),
-                    "forcing_hours": hours,
-                    "boundary_interval_seconds": boundary_interval_seconds,
-                    "preprocessing": preprocess_receipt,
-                },
-            )
-            cache_seconds = time.perf_counter() - cache_started
-            portable_cache_receipt = dict(cache_receipt)
-            portable_cache_receipt["path"] = prepared_cache.name
-            progress.enter("direct_wrf_export")
-            export_started = time.perf_counter()
-            export_receipt = export_prepared_wrf(
-                prepared_cache, static_cache, geometry_receipt, wrf_output,
-                valid_time=times[0],
-                boundary_interval_seconds=boundary_interval_seconds,
-                # The RESOLVED selection, not the caller's argument.
-                # Named, the exporter re-validates the same profile this
-                # gate just checked.  Unnamed (owner ruling 2026-07-31),
-                # the exporter recomputes the experiment-config suite
-                # selection from its OWN cache-bound config -- the
-                # profileless contract -- and the equality check below
-                # proves both spellings agree byte for byte.
-                physics_profile=physics_selection["profile"],
-                experiment_config_suite=(
-                    physics_selection["profile"] is None),
-                expert_acknowledgements=tuple(
-                    physics_selection["acknowledgements"]),
-                acknowledgement_provenance=physics_selection[
-                    "acknowledgement_provenance"])
-            if (export_receipt.get("schema")
-                    != "gpuwm-native-direct-wrf-export-v3"
-                    or export_receipt.get("physics") != physics_selection):
-                raise RuntimeError(
-                    "direct-WRF export physics provenance differs from the "
-                    "selected preparation profile")
-            export_seconds = time.perf_counter() - export_started
-            verify_overlay_sequence(snapshots)
-            final_manifest = _verify_input_manifest(
-                Path(input_manifest), manifest_digest, roles)
-            if final_manifest != manifest:
-                raise ValueError(
-                    "GFS input manifest content changed during preparation")
-            if _implementation_sha256() != implementation_sha256:
-                raise ValueError(
-                    "GFS adapter implementation changed during preparation")
+            writer = PreparedTreeWriter(
+                staging=staging, output_root=Path(output_root),
+                identity=identity)
             preprocessing_receipt_sha256 = hashlib.sha256(json.dumps(
                 preprocess_receipt, sort_keys=True, separators=(",", ":"),
                 allow_nan=False).encode("utf-8")).hexdigest()
-            initialization_artifacts = {
-                "source_manifest": {
-                    "path": portable_source_manifest.name,
-                    "bytes": portable_source_manifest.stat().st_size,
-                    "sha256": _sha256(portable_source_manifest),
-                },
-                "static_cache": {
-                    "path": static_cache.name,
-                    "bytes": static_cache.stat().st_size,
-                    "sha256": _sha256(static_cache),
-                },
-                "geometry_receipt": {
-                    "path": geometry_receipt.name,
-                    "bytes": geometry_receipt.stat().st_size,
-                    "sha256": _sha256(geometry_receipt),
-                },
-                "prepared_cache": {
-                    "path": prepared_cache.name,
-                    "content_sha256": portable_cache_receipt["content_sha256"],
-                    "payload_bytes": portable_cache_receipt["payload_bytes"],
-                },
-                "wrf_files": {
-                    name: {
-                        "path": f"{wrf_output.name}/{name}",
-                        **details,
-                    }
-                    for name, details in export_receipt["files"].items()
-                },
-            }
-            proof = {
+            # Everything the proof says that the start time already knows.
+            # The seal adds the artifact records, the cache receipt, the
+            # export and the wall times (SEAL_ONLY_PROOF_KEYS) and refuses
+            # a proof that differs from this head anywhere else.
+            proof_head = {
                 "schema": PROOF_SCHEMA,
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
                 # Cycle, lead and start, all three, in the document a
@@ -1865,7 +1985,6 @@ def prepare_gfs_wrf(
                     "manifest_sha256": manifest_digest,
                     "files": manifest["files"],
                 },
-                "initialization_artifacts": initialization_artifacts,
                 # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY
                 # IN.  Unconditional, and stated even when no floor fired.
                 **moisture_floor_proof_entry(
@@ -1884,9 +2003,126 @@ def prepare_gfs_wrf(
                 "soil_texture_downscale": dict(
                     getattr(soil, "soil_texture_downscale", {}) or {}),
                 "decoder_stdout": completed.stdout.strip(),
-                "prepared_cache": portable_cache_receipt,
                 "physics": physics_selection,
+                # Whether the unchanged-WRF files were asked for: the
+                # forecast reads this beside the export slot, which says
+                # whether they were written (READY), declined
+                # (NOT_REQUESTED) or refused by name (REFUSED).
+                "stock_wrf_export": ("optional" if stock_wrf_export
+                                     else "off"),
+            }
+            # One machine, one card: the forecast may start beside this
+            # producer only when both fit (boundary_stream.chained_admission).
+            writer.admit(
+                experiment=exp, backend=str(preprocess_receipt["backend"]),
+                device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])))
+            progress.enter("write_prepared_cache")
+            cache_started = time.perf_counter()
+            writer.write_head(
+                initial_result=initial_result, met=initial_met,
+                surface=_canonical_surface(soil),
+                metadata={
+                    "source_adapter": "gfs",
+                    "initial_valid_time": times[0].isoformat(),
+                    "last_valid_time": times[-1].isoformat(),
+                    "forcing_hours": hours,
+                    "boundary_interval_seconds": boundary_interval_seconds,
+                    "preprocessing": preprocess_receipt,
+                },
+                lbc={
+                    "spec_bdy_width": cfg.spec_bdy_width,
+                    "spec_zone": cfg.spec_zone,
+                    "relax_zone": cfg.relax_zone,
+                    "schedule": [
+                        [float(earlier * 3600), float(later * 3600)]
+                        for earlier, later in zip(hours, hours[1:])],
+                    "fields": forcing.inventory,
+                },
+                proof_head=proof_head,
+                input_manifest_sha256=manifest_digest,
+                forcing=forcing,
+            )
+            cache_seconds = time.perf_counter() - cache_started
+            # The start state has done its work: it is in the head.
+            del initial_result, initial_met
+            release_backend_memory(preprocess)
+            progress.enter("initialize_all_times",
+                           forcing_times=len(records))
+            boundaries_started = time.perf_counter()
+            writer.stream_forcing_times(
+                count=len(snapshots), build_forcing_time=build_forcing_time,
+                forcing=forcing, times=times,
+                release=lambda: release_backend_memory(preprocess))
+            verify_overlay_sequence(snapshots)
+            initialize_seconds += time.perf_counter() - boundaries_started
+            progress.enter("write_prepared_cache")
+            cache_started = time.perf_counter()
+            cache_receipt = writer.seal_cache()
+            cache_seconds += time.perf_counter() - cache_started
+            portable_cache_receipt = dict(cache_receipt)
+            portable_cache_receipt["path"] = prepared_cache.name
+            # Where the tree lives now: published at the head when
+            # chained, still staged otherwise.
+            static_cache = writer.root / static_cache.name
+            geometry_receipt = writer.root / geometry_receipt.name
+            portable_source_manifest = (
+                writer.root / portable_source_manifest.name)
+            prepared_cache = writer.cache_path
+            wrf_output = writer.root / wrf_output.name
+            progress.enter("direct_wrf_export")
+            export_started = time.perf_counter()
+            export_receipt, _refusal = _single_domain_stock_export(
+                prepared_cache, static_cache, geometry_receipt, wrf_output,
+                valid_time=times[0],
+                boundary_interval_seconds=boundary_interval_seconds,
+                physics_selection=physics_selection,
+                stock_wrf_export=stock_wrf_export)
+            export_seconds = time.perf_counter() - export_started
+            verify_overlay_sequence(snapshots)
+            final_manifest = _verify_input_manifest(
+                Path(input_manifest), manifest_digest, roles)
+            if final_manifest != manifest:
+                raise ValueError(
+                    "GFS input manifest content changed during preparation")
+            if _implementation_sha256() != implementation_sha256:
+                raise ValueError(
+                    "GFS adapter implementation changed during preparation")
+            initialization_artifacts = {
+                "source_manifest": {
+                    "path": portable_source_manifest.name,
+                    "bytes": portable_source_manifest.stat().st_size,
+                    "sha256": _sha256(portable_source_manifest),
+                },
+                "static_cache": {
+                    "path": static_cache.name,
+                    "bytes": static_cache.stat().st_size,
+                    "sha256": _sha256(static_cache),
+                },
+                "geometry_receipt": {
+                    "path": geometry_receipt.name,
+                    "bytes": geometry_receipt.stat().st_size,
+                    "sha256": _sha256(geometry_receipt),
+                },
+                "prepared_cache": {
+                    "path": prepared_cache.name,
+                    "content_sha256": portable_cache_receipt["content_sha256"],
+                    "payload_bytes": portable_cache_receipt["payload_bytes"],
+                },
+                "wrf_files": {
+                    name: {
+                        "path": f"{wrf_output.name}/{name}",
+                        **details,
+                    }
+                    for name, details in (
+                        export_receipt.get("files") or {}).items()
+                },
+            }
+            proof = {
+                **proof_head,
+                "initialization_artifacts": initialization_artifacts,
+                "prepared_cache": portable_cache_receipt,
                 "export": export_receipt,
+                "boundary_stream": writer.boundary_stream_proof(),
                 # Every phase this stage passes through, and a `total`
                 # its children account for.  `gpuwm.stage_timing` states
                 # the rule and the acceptance test holds this document
@@ -1902,14 +2138,74 @@ def prepare_gfs_wrf(
                 },
             }
             progress.enter("publish")
-            (staging / "proof.json").write_text(
-                json.dumps(proof, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8")
-            os.replace(staging, Path(output_root))
+            writer.publish(proof)
             return proof
-        except BaseException:
+        except BaseException as error:
             shutil.rmtree(staging, ignore_errors=True)
+            if writer is not None:
+                # A head already published stays, marked failed, so a
+                # waiting forecast ends with this reason and the next
+                # preparation of this output root rebuilds it.
+                writer.fail(error)
             raise
+
+
+#: The export receipt schema of the single-domain route.
+SINGLE_DOMAIN_EXPORT_SCHEMA = "gpuwm-native-direct-wrf-export-v3"
+
+
+def _single_domain_stock_export(prepared_cache, static_cache,
+                                geometry_receipt, wrf_output, *, valid_time,
+                                boundary_interval_seconds: int,
+                                physics_selection: Mapping[str, object],
+                                stock_wrf_export: bool = True,
+                                ) -> tuple[dict[str, object],
+                                           StockWrfExportUnsupported | None]:
+    """The single-domain route's stock-WRF export slot and any refusal.
+
+    Not requested (``stock_wrf_export`` False), nothing is attempted and
+    the slot says NOT_REQUESTED.  Requested, the export runs, but a
+    wrfinput for an unchanged WRF cannot represent every preparation
+    (WDM6, Kessler and Milbrandt-Yau have no stock package contract),
+    which says nothing about running it here: the forecast restores the
+    prepared cache, not these files.  Such a slot records the refusal by
+    name, as the mapped and HRRR routes write it for the same case, and
+    the proof's ``stock_wrf_export = "optional"`` beside it is what the
+    forecast reader admits.  An export that runs keeps its READY receipt
+    byte for byte, and must carry exactly the selected physics.
+    """
+
+    if not stock_wrf_export:
+        return (stock_wrf_export_not_requested(
+            schema=SINGLE_DOMAIN_EXPORT_SCHEMA), None)
+    try:
+        receipt = export_prepared_wrf(
+            prepared_cache, static_cache, geometry_receipt, wrf_output,
+            valid_time=valid_time,
+            boundary_interval_seconds=boundary_interval_seconds,
+            # The RESOLVED selection, not the caller's argument.  Named,
+            # the exporter re-validates the same profile the front door
+            # checked.  Unnamed (owner ruling 2026-07-31), the exporter
+            # recomputes the experiment-config suite selection from its
+            # OWN cache-bound config -- the profileless contract -- and
+            # the equality check below proves both spellings agree byte
+            # for byte.
+            physics_profile=physics_selection["profile"],
+            experiment_config_suite=physics_selection["profile"] is None,
+            expert_acknowledgements=tuple(
+                physics_selection["acknowledgements"]),
+            acknowledgement_provenance=physics_selection[
+                "acknowledgement_provenance"])
+    except StockWrfExportUnsupported as error:
+        shutil.rmtree(wrf_output, ignore_errors=True)
+        return (stock_wrf_export_refused(
+            error, schema=SINGLE_DOMAIN_EXPORT_SCHEMA), error)
+    if (receipt.get("schema") != SINGLE_DOMAIN_EXPORT_SCHEMA
+            or receipt.get("physics") != physics_selection):
+        raise RuntimeError(
+            "direct-WRF export physics provenance differs from the "
+            "selected preparation profile")
+    return receipt, None
 
 
 def _arg(value) -> str:
@@ -1936,7 +2232,11 @@ def stock_wrf_export_notice(proof: Mapping[str, object]) -> list[str]:
     other refusal on this door uses.  A READY export prints nothing.
     """
 
+    # A domain tree's slot is its hierarchy manifest; a single domain's
+    # is the export receipt.  Both carry the same three statuses.
     export = proof.get("wrf_manifest")
+    if not isinstance(export, Mapping):
+        export = proof.get("export")
     if not isinstance(export, Mapping):
         return []
     status = export.get("status")
@@ -1949,8 +2249,8 @@ def stock_wrf_export_notice(proof: Mapping[str, object]) -> list[str]:
         "",
         "rw-wps --source gfs: the prepared forecast is complete, but the "
         f"bonus stock-WRF export was refused: {export.get('reason')}.",
-        "  The domain tree itself is unaffected -- run the forecast "
-        "command below.",
+        "  The prepared forecast itself is unaffected -- run the "
+        "forecast command below.",
     ]
 
 
@@ -2111,6 +2411,10 @@ def _parser() -> argparse.ArgumentParser:
              "(default auto: CUDA when the certified runtime is usable, "
              "otherwise the deterministic parallel CPU backend, "
              "announced in one line)")
+    # Why a caller's configuration policy named the backend; recorded in
+    # the receipt's selection block in place of "named by the caller".
+    parser.add_argument("--preprocess-backend-reason",
+                        help=argparse.SUPPRESS)
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--geog-root", type=Path)
@@ -2129,12 +2433,12 @@ def _parser() -> argparse.ArgumentParser:
         "--no-stock-wrf-export", dest="stock_wrf_export",
         action="store_false", default=True,
         help="prepare the forecast only, and do not attempt the bonus "
-             "unchanged-WRF wrfinput/wrfbdy export of a domain tree")
+             "unchanged-WRF wrfinput/wrfbdy export")
     parser.add_argument(
         "--statics-corridor", nargs="?", const="all", default=None,
         metavar="GRID_IDS",
-        help="also seal child-resolution statics over each child's whole "
-             "parent extent (the moving-nest corridor); bare flag covers "
+        help="also seal child-resolution statics over the ground each "
+             "child can reach (the moving-nest corridor); bare flag covers "
              "every child domain, or pass comma-separated child grid ids "
              "(e.g. 2,3).  Required before the prepared tree runner will "
              "honor a [relocation] follow source; omitted, the bundle is "
@@ -2165,6 +2469,7 @@ def main(argv: list[str] | None = None) -> int:
             input_manifest_sha256=args.input_manifest_sha256,
             output_root=args.output_root,
             preprocess_backend=args.preprocess_backend,
+            preprocess_backend_reason=args.preprocess_backend_reason,
             preprocess_workers=args.preprocess_workers,
             cpu_preprocess_bridge=args.cpu_preprocess_bridge,
             geog_root=args.geog_root,
@@ -2181,6 +2486,15 @@ def main(argv: list[str] | None = None) -> int:
         # refusal reached the walk as one sentence with no door named
         # (UX finding R2) -- so it is re-raised to the owner.
         raise
+    except InitializationMemoryRefused as error:
+        # A preparation the card cannot hold under an explicit
+        # --preprocess-backend cuda (PreparationDeviceRefused), or any
+        # other measured initialization budget that refuses the case, is
+        # a refusal with its own remedy line: one message at exit 2, as
+        # `gpuwm` itself answers it, not a traceback that buries the
+        # remedy at the bottom of a stack.
+        print(f"rw-wps --source gfs: {error}", file=sys.stderr)
+        return 2
     except (ValueError, OSError) as error:
         # Every gate this door applies is a refusal, and a refusal is a
         # sentence.  A pilot met three of these as stack traces -- a
@@ -2195,17 +2509,11 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(proof, indent=2, sort_keys=True))
     corridor = proof.get("statics_corridor")
     if isinstance(corridor, dict):
-        # Size accuracy at the door: the corridor is parent-extent at
-        # child resolution, and its cost is stated where it is paid.
+        # Size accuracy at the door: the corridor's cost, and the ground
+        # it covers, are stated where they are paid.
+        from gpuwm.static.corridor import corridor_summary_line
         for label, entry in sorted(corridor.get("domains", {}).items()):
-            print(
-                f"  statics corridor {label}: "
-                f"{entry['corridor_nx']}x{entry['corridor_ny']} child "
-                f"cells over the whole d{int(entry['parent_id']):02d} "
-                f"extent, {entry['cache']['bytes'] / 1.0e6:.1f} MB on "
-                f"disk, {entry['host_bytes'] / 1.0e6:.1f} MB host when "
-                "loaded by a relocating run (no GPU residency)",
-                file=sys.stderr)
+            print(corridor_summary_line(label, entry), file=sys.stderr)
     for line in stock_wrf_export_notice(proof):
         print(line, file=sys.stderr)
     for line in prepared_forecast_next_command(

@@ -55,7 +55,7 @@ YSU_WARNINGS = [
     "this tree. Closing it needs a compare that cannot be flushed; --ftz=false "
     "is not available through CuPy.",
 
-    "gpuwm SHORT CIRCUITS a case WRF computes. kernels/ysu.cu:94 returns zero "
+    "gpuwm SHORT CIRCUITS a case WRF computes. kernels/ysu.cu:203 returns zero "
     "tendencies, PBLH = dz(1) and KPBL = 1 whenever UST, HFX and QFX are all "
     "zero. bl_ysu_run has no such branch: measured on that column it produces "
     "a 703 m PBL with nine levels in it, EXCH_M of 0.143 m2/s and nonzero "
@@ -69,7 +69,7 @@ YSU_WARNINGS = [
     "column with NaN -- pinned in the oracle fixture. gpuwm returns finite "
     "numbers. Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 "
     "reads thlix(i,k+2) one element past an array declared kts:kte; "
-    "kernels/ysu.cu:252 guards that access with kpbl < nz and skips the "
+    "kernels/ysu.cu:390 guards that access with kpbl < nz and skips the "
     "top-down block instead.",
 
     "THE ARM WRF ACTUALLY USES IS NOT THE ARM THIS PORT IMPLEMENTS. "
@@ -77,7 +77,8 @@ YSU_WARNINGS = [
     "default (topo_wind=0) fills both with 1.0, so every default WRF column "
     "takes bl_ysu.F90:1308 -- ad(i,1) = 1+fric*vconvlim+ctopo*fric*(1-vconvlim) "
     "-- which needs the paj TKE block, GET_PBLH and the Beljaars vconv, none of "
-    "which is ported. kernels/ysu.cu implements :1315, ad(i,1) = 1+fric, and "
+    "which is ported. kernels/ysu.cu implements bl_ysu.F90:1315, "
+    "ad(i,1) = 1+fric, and "
     "has no ctopo argument. Measured WRF against WRF on the same fixture: the "
     "two arms differ by up to 182 ULP (1.1e-08 m/s2) on 6 of 960 lanes, "
     "wherever vconvlim < 1. Small, but it means the port cannot be bitwise "

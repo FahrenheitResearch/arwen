@@ -8,9 +8,11 @@ held open by a forecast and a server restart loses nothing:
   ``receipt.json`` (argv, cwd, env additions, pids, log paths, declared
   outputs), the child's ``stdout.log``/``stderr.log``, and the
   wrapper's ``started.json``/``result.json``;
-* liveness is derived from the receipt's recorded pid plus the result
+* liveness is derived from the receipt's recorded wrapper process (its
+  pid and creation time, :mod:`gpuwm.proc_identity`) plus the result
   document, never from server memory, so ``job_status`` answers the
-  same after a restart;
+  same after a restart and a pid reused by another program is not the
+  job;
 * ``job_events`` tails a chosen stream incrementally with a byte
   cursor -- the run's own JSONL (``events.jsonl``/``progress.jsonl``)
   where the door writes one, stdout/stderr always;
@@ -30,11 +32,13 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from gpuwm import proc_identity
 from gpuwm.mcp.doors import ArwenRefusal, refusal_text
-from gpuwm.mcp.gpulock import GpuLock, _pid_alive
+from gpuwm.mcp.gpulock import CardHeld, GpuLock
 
 #: Job event streams a cursor can follow, mapped to how the file is
 #: found: fixed job-dir logs, or a name searched for under the job's
@@ -45,6 +49,20 @@ STREAMS = ("stdout", "stderr", "events", "progress")
 #: Cap on bytes one job_events call returns, so a chatty step log is
 #: paged rather than dumped into the model's context in one turn.
 MAX_EVENT_BYTES = 64 * 1024
+
+
+class CardTaken(ArwenRefusal):
+    """A GPU launch refused because another job holds the card.
+
+    ``str()`` is the refusal sentence an MCP client reads, with the job
+    tools it can use; ``holder`` is the card lock's record the sentence was
+    built from (:meth:`GpuLock.held_by`), so a caller whose reader has no
+    such tools (the page) says who holds the card in its own words.
+    """
+
+    def __init__(self, sentence: str, holder: dict | None) -> None:
+        super().__init__(sentence)
+        self.holder = holder
 
 
 def jobs_root() -> Path:
@@ -59,7 +77,11 @@ def _utc_now() -> str:
 
 
 def _publish(path: Path, document: dict) -> None:
-    tmp = path.with_suffix(".tmp")
+    # The temporary file is this writer's own.  A cancel publishes
+    # result.json while the wrapper it just signalled publishes its own;
+    # with one shared "result.tmp" the first replace took the other's
+    # file and the second raised FileNotFoundError, so Stop failed.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(document, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 
@@ -82,20 +104,41 @@ class JobManager:
 
     def launch(self, kind: str, argv: list[str], *, cwd: str | Path,
                gpu: bool, env_additions: dict[str, str] | None = None,
-               outputs: dict[str, str] | None = None) -> dict:
+               outputs: dict[str, str] | None = None,
+               owner_file: str | None = None) -> dict:
         """Detach one job; returns the launch document with its job_id.
 
         ``gpu=True`` takes the card lock first and refuses (verbatim
         sentence, running job named) when it is held -- never a silent
-        queue: a launch tool that queues has not launched.
+        queue: a launch tool that queues has not launched.  The refusal is
+        a :class:`CardTaken` carrying the lock's record.
+
+        ``owner_file`` is the card-sharing OWNER file whose line the
+        caller hands to this job's wrapper pid; the wrapper removes that
+        line when the job ends (see :mod:`gpuwm.mcp._jobwrap`).
         """
 
-        self._reap_gpu_lock()
-        if gpu:
-            refusal = self.gpu_lock.refusal()
-            if refusal is not None:
-                raise ArwenRefusal(refusal)
+        if not gpu:
+            return self._spawn(kind, argv, cwd=cwd, gpu=False, env_additions=env_additions,
+                               outputs=outputs, owner_file=owner_file)
+        # Check the card, spawn and record the holder as one step under the lock's mutex: checked apart,
+        # two starts in the same instant both passed the check and both ran on the card.
+        launched: dict = {}
 
+        def start() -> tuple[str, int, dict | None]:
+            launched.update(self._spawn(kind, argv, cwd=cwd, gpu=True, env_additions=env_additions,
+                                        outputs=outputs, owner_file=owner_file))
+            return launched["job_id"], launched["wrapper_pid"], launched["wrapper_process"]
+
+        try:
+            self.gpu_lock.claim(start, before=self._reap_gpu_lock_locked)
+        except CardHeld as held:
+            raise CardTaken(str(held), held.holder) from None
+        return launched
+
+    def _spawn(self, kind: str, argv: list[str], *, cwd: str | Path, gpu: bool,
+               env_additions: dict[str, str] | None, outputs: dict[str, str] | None,
+               owner_file: str | None = None) -> dict:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         job_id = f"job-{stamp}-{secrets.token_hex(3)}"
         jobdir = self.root / job_id
@@ -114,15 +157,23 @@ class JobManager:
             "stderr_log": str(jobdir / "stderr.log"),
             "outputs": dict(outputs or {}),
         }
+        if owner_file:
+            receipt["owner_file"] = str(owner_file)
         _publish(jobdir / "receipt.json", receipt)
 
-        wrapper_argv = [sys.executable, "-m", "gpuwm.mcp._jobwrap",
+        # -P: the wrapper starts in the job's folder, and a gpuwm checkout
+        # there must not be the gpuwm that runs it; a source or editable
+        # install is named on PYTHONPATH instead.
+        from gpuwm.runtime_manifest import child_python_env
+
+        wrapper_argv = [sys.executable, "-P", "-m", "gpuwm.mcp._jobwrap",
                         str(jobdir)]
         popen_kwargs: dict = {
             "stdin": subprocess.DEVNULL,
             "stdout": open(jobdir / "wrapper.log", "ab"),
             "stderr": subprocess.STDOUT,
             "cwd": str(cwd),
+            "env": {**os.environ, **child_python_env()},
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = (
@@ -132,14 +183,24 @@ class JobManager:
             popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(wrapper_argv, **popen_kwargs)
         popen_kwargs["stdout"].close()
+        # The wrapper's identity is read now, before the reaper below can collect it, so the receipt names
+        # this process and no later holder of its PID.
+        identity = proc_identity.identify(proc.pid)
+        if os.name != "nt":  # pragma: no cover - windows dev box
+            # Reap the wrapper when it exits.  Unreaped, it stays a zombie
+            # of this long-lived server, kill(pid, 0) keeps answering for
+            # it, and a job whose wrapper was killed read "running" for as
+            # long as the server lived (seen through `gpuwm gui` after a
+            # stop).
+            threading.Thread(target=proc.wait, name=f"reap-{job_id}", daemon=True).start()
 
         receipt["wrapper_pid"] = proc.pid
+        receipt["wrapper_process"] = identity
         _publish(jobdir / "receipt.json", receipt)
-        if gpu:
-            self.gpu_lock.acquire(job_id, proc.pid)
         return {"job_id": job_id, "kind": kind, "gpu": bool(gpu),
                 "argv": receipt["argv"], "jobs_dir": str(jobdir),
-                "outputs": receipt["outputs"],
+                "outputs": receipt["outputs"], "wrapper_pid": proc.pid,
+                "wrapper_process": identity,
                 "follow_with": ["job_status", "job_events", "job_result"]}
 
     # -- state -----------------------------------------------------------
@@ -165,14 +226,20 @@ class JobManager:
 
         if result is not None:
             state = "cancelled" if result.get("cancelled") else "exited"
-        elif _pid_alive(wrapper_pid):
+        elif proc_identity.alive(receipt.get("wrapper_process"), wrapper_pid):
+            # The wrapper this receipt launched, not whatever holds its PID now: a receipt written without an
+            # identity, or a PID reused after a crash or a reboot, reads as lost.
             state = "running"
         else:
             # No result document and nobody alive to ever write one:
             # the wrapper was killed outright or the machine went down.
             state = "lost"
         if state in ("exited", "cancelled") and receipt.get("gpu"):
-            self.gpu_lock.release(job_id)
+            # The mutex is taken only when this job is the holder: a job list read every ended GPU job's status,
+            # and each one locked the card's mutex to find it held by nobody.
+            held = self.gpu_lock.holder()
+            if isinstance(held, dict) and held.get("job_id") == job_id:
+                self.gpu_lock.release(job_id)
 
         document = {
             "job_id": job_id,
@@ -193,8 +260,8 @@ class JobManager:
                 "in the job directory are the surviving record.")
         return document
 
-    def _reap_gpu_lock(self) -> None:
-        """Release the GPU lock for a holder job that has exited.
+    def _reap_gpu_lock_locked(self) -> None:
+        """Release the GPU lock for a holder job that has exited (the caller holds the lock's mutex).
 
         The wrapper cannot release it (the lock is the server's), so
         release happens lazily at the next launch or status call.
@@ -206,7 +273,18 @@ class JobManager:
         job_id = held.get("job_id", "")
         result = _read_json(self.root / job_id / "result.json")
         if result is not None:
-            self.gpu_lock.release(job_id)
+            self.gpu_lock.release_locked(job_id)
+
+    def card_refusal(self) -> str | None:
+        """The sentence a launch that needs the card would be refused with now, or None when it would start.
+
+        The same question :meth:`launch` asks, finished jobs reaped first,
+        so a caller that checks before writing anything cannot disagree
+        with the launch that follows.
+        """
+
+        self._reap_gpu_lock()
+        return self.gpu_lock.refusal()
 
     # -- events ----------------------------------------------------------
 
@@ -313,17 +391,26 @@ class JobManager:
                 "untouched.")
         jobdir = self._jobdir(job_id)
         receipt = _read_json(jobdir / "receipt.json") or {}
-        wrapper_pid = int(receipt.get("wrapper_pid", 0))
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(wrapper_pid)],
-                capture_output=True)
-        else:  # pragma: no cover - windows dev box
-            import signal
-            try:
-                os.killpg(os.getpgid(wrapper_pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+        # The wrapper this receipt launched and its tree (Windows) or process
+        # group (Linux), through its identity: never whatever holds its PID
+        # now.  Only a signal that went through publishes the cancelled
+        # result and frees the card.  A kill the system refused left the
+        # run going on the card, and a cancelled result with the claim gone
+        # let the next GPU job start beside it.
+        import signal
+
+        try:
+            signalled = proc_identity.signal_process(
+                receipt.get("wrapper_process"), signal.SIGTERM, tree=True)
+        except OSError as error:
+            raise ArwenRefusal(
+                f"job {job_id} could not be stopped: {error}. It may still "
+                "be running, so it keeps its card claim and no result was "
+                "written; try the cancel again.") from error
+        if not signalled:
+            raise ArwenRefusal(
+                f"job {job_id} ended before it could be stopped, so nothing "
+                "was signalled; job_status says how it ended.")
         _publish(jobdir / "result.json", {
             "exit_code": None,
             "cancelled": True,

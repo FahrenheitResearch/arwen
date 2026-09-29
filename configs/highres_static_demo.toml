@@ -18,3 +18,5 @@ geog_root = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/static/WPS_G
 enabled = true
 cache_root = "${GPUWM_HIGHRES_CACHE_ROOT}"
 on_refuse = "error"
+# auto is CGLC-MODIS-LCZ (100 m, global); "annual-nlcd" pins the 30 m US map.
+landcover_source = "auto"

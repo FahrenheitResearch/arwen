@@ -243,3 +243,19 @@ tools/ens_sweep/release_card.sh
 # product, not one lane's transcripts.  Same reason `evidence/**` and
 # `work/**` are excluded above rather than deleted.
 proof/**
+
+# The release cut's own machinery.  It carries the residue scanner's account
+# and machine patterns and the site layout it drives (hosts, mirror, caches),
+# which the export's machine-path scan exists to keep out of a public tree,
+# and it is useless without the private repository it cuts from.  The public
+# half of what it relies on ships: gpuwm.bridge_assets.native_input_difference
+# and the pin and verifier tools that re-prove a reused binary.
+tools/release/cut/**
+docs/dev/RELEASE-CUT.md
+
+# The branch-dispositions ledger and its gate: internal branch bookkeeping
+# (branch names and their statuses) that means nothing to a release reader.
+# The gate already skips outside a git checkout; it stays in the development
+# tree, where branches exist to strand.
+docs/branch-dispositions.md
+tests/test_branch_dispositions.py

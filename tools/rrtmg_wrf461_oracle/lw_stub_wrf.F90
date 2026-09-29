@@ -1,7 +1,7 @@
 ! Stubs for WRF infrastructure required to compile phys/module_ra_rrtmg_lw.F
 ! from WRF v4.6.1 EXACTLY as shipped (no edits to the physics module).
 ! Pattern follows tools/ruc_wrf461_oracle/stub_wrf.F90 and the Phase-A RRTMG
-! scratch build (jobs/fea7a141/tmp/rrtmg_phaseA), which proved this set links.
+! scratch build, which proved this set links.
 !
 ! Constants below mirror share/module_model_constants.F of the same bundle.
 

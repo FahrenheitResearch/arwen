@@ -64,6 +64,30 @@ _TOP_LEVEL_EXCLUDES = {
     # exists to call is not in this wheel, so shipping it would offer a
     # command that cannot run.
     "go_cli.py",
+    # Its only importer, go_cli.py, is excluded, as is its dependency
+    # gpuwm.supervisor. A preprocessing wheel does not run forecasts.
+    "forecast_supervisor.py",
+    # `gpuwm warm-kernels` compiles the forecast's GPU kernels by stepping
+    # a synthetic domain through gpuwm.core.dycore, moist and physics,
+    # none of which this wheel stages; its only importer is gpuwm.cli,
+    # excluded above.  Staged, it was the one module reaching for those
+    # three, and this builder's unresolved-import scan refused the whole
+    # staging.  A preprocessing wheel runs no forecast to warm.
+    "warm_kernels.py",
+    # The live renderer that draws each frame as a forecast writes it.  Its
+    # importers are go_cli.py, first_products.py and runplan.py, all
+    # excluded above, and it reaches for gpuwm.first_products, gpuwm.render,
+    # gpuwm.render_receipts and gpuwm.go_cli, none of which this wheel
+    # stages, so the unresolved-import scan refused the whole staging.  A
+    # preprocessing wheel runs no forecast whose frames it could draw.
+    "live_products.py",
+    # The physics catalog behind `gpuwm physics-catalog` and New forecast's
+    # Physics step.  Its importers are gpuwm/cli.py and gpuwm/runplan.py,
+    # both excluded, and it reaches for gpuwm.domain_wizard,
+    # gpuwm.companion_domains and gpuwm.core.pace, none of which this wheel
+    # stages, so the unresolved-import scan refused the whole staging.  A
+    # preprocessing wheel picks no physics for a forecast.
+    "physics_catalog.py",
     # `gpuwm go`'s own telemetry writer: the append-only events.jsonl a
     # go chain emits per stage.  Its ONLY importer anywhere in gpuwm/ or
     # tools/ is gpuwm/go_cli.py:1674 -- excluded directly above -- and
@@ -111,6 +135,19 @@ _TOP_LEVEL_EXCLUDES = {
     # run to plan, and staging it would offer a command that cannot execute
     # one, which is exactly the reason go_cli.py is excluded above.
     "runplan.py",
+    # The run's disk projection and the download and preparation pricing it
+    # reads.  Their only importer in the package is gpuwm/runplan.py,
+    # excluded directly above (tools/wiki_seed reads them too, and is not
+    # staged), and download_budget.request_from_arguments reads a fetch argv
+    # through gpuwm.cli's parser, which this wheel does not carry.  Staged,
+    # download_budget was a module reaching for a deliberately absent one:
+    # this builder's own unresolved-import scan refused the whole staging and
+    # the 2.8.0 cut battery went red on it.  Its measured table
+    # (gpuwm/data/download-bytes.v1.json) is not staged either, so the module
+    # could not have priced anything here.  A preprocessing wheel plans no
+    # run, so it has no run disk to price.
+    "disk_budget.py",
+    "download_budget.py",
     # `gpuwm speedrun` and the capsule module behind it.  A speedrun
     # times the SHIPPED chain end to end by driving `gpuwm go` as a
     # subprocess -- prepare, forecast, render -- and seals a capsule of
@@ -163,6 +200,15 @@ _TOP_LEVEL_EXCLUDES = {
     # it fails this builder's own unresolved-import scan on four
     # imports.  A preprocessing wheel has no checkpoints to branch from.
     "branch.py",
+    # The saved history a resumed forecast's first pictures read from
+    # beside its checkpoint.  Its importers are go_cli.py, live_products.py
+    # and first_products.py, all excluded above, and it reaches
+    # gpuwm.io.restart (refused below), gpuwm.resume and
+    # gpuwm.live_products (both excluded above).  Staged, it was a module
+    # reaching for three deliberately absent ones, and this builder's own
+    # unresolved-import scan refused the whole staging.  A preprocessing
+    # wheel resumes no forecast and draws no pictures.
+    "restart_render.py",
     "runtime.py",
     "state_digest.py",
     "supervisor.py",
@@ -222,6 +268,16 @@ _TOP_LEVEL_EXCLUDES = {
     # Staging either put a module in the wheel that ImportErrors the moment
     # it is reached, and this builder's own staging scans refused outright.
     "local_da_controller.py", "local_da_score.py",
+    # The steep-terrain clock: the acoustic substep rule and the long step a
+    # domain's ground and crest-level wind allow.  Both set the time step a
+    # forecast integrates with, when the forecast starts, and besides each
+    # other their only importers are gpuwm/runtime.py and the two prepared
+    # forecast runners, all excluded above.  Both reach gpuwm.core.adaptive_clock, which this
+    # wheel does not stage (it reaches the physics cadence in
+    # gpuwm.core.physics), so staging them made this builder's own
+    # unresolved-import scan refuse the whole staging and the RW-WPS
+    # package could not be built.  A preprocessing wheel takes no step.
+    "acoustic_adaptation.py", "terrain_clock.py",
 }
 _CORE_MODULES = {
     "__init__.py",
@@ -242,6 +298,27 @@ _CORE_MODULES = {
     # Import-free constants: the table contract that re-exports them
     # (thompson_aerosol_contract.py) stays out, as recorded below.
     "thompson_aerosol_constants.py",
+    # The card probe `--preprocess-backend auto` reads before it keeps a
+    # certified card: free memory, utilization and the CUDA error of a
+    # card too full to open, from a short-lived subprocess.  Without it
+    # this package had no load reading and prepared on a card another
+    # program held busy or nearly full, where gpuwm moves that
+    # preparation to the CPU.  A leaf: stdlib at module scope plus a
+    # function-local gpuwm.local_gpu (staged); the forecast memory
+    # preflight that re-exports it stays out.
+    "device_probe.py",
+    # The inventories a CUDA preparation is priced from before its first
+    # device allocation: the exact DomainState allocation list, one
+    # boundary interval's side tables and the card's CUDA context.
+    # gpuwm/ingest/preparation_price.py (staged) reads all three for every
+    # GFS, ERA5 and mapped preparation; while they lived in the forecast
+    # memory preflight, which stays out, this builder refused the staging
+    # on three unresolved imports and a staged wheel raised
+    # ModuleNotFoundError at the price.  Module scope is stdlib plus
+    # gpuwm.config (staged), gpuwm.boundary_fields (staged) is
+    # function-local, and preflight re-exports every name.  No CuPy, no
+    # forecast executor.
+    "device_inventory.py",
     # The sea-level pressure reduction and its nine-point smoother,
     # reached by storm_tracking.py below when a follow block tracks
     # `field = 'pressure'`.  Same shape as sase_limits.py further down:
@@ -309,6 +386,12 @@ _CORE_MODULES = {
     # get_kernel inside the device fold, which no config-validation path
     # ever calls.
     "uh_diag.py",
+    # The same config-validation reason again: `gpuwm/experiment.py` and
+    # nest_lifecycle call `validate_reach_speed` for a follow block's
+    # `reach_speed_m_s` while LOADING a config, and the statics corridor
+    # (gpuwm/static/corridor.py, staged) sizes a moving nest from its
+    # reach.  Stdlib only: no CuPy, no forecast executor.
+    "nest_reach.py",
     # The [tiles] option surface, and NOT the streamed transport.  Module
     # scope here is dataclasses plus typing: every tilestream import in the
     # file is function-local, so staging it carries no forecast executor
@@ -506,6 +589,20 @@ _OPTIONAL_STAGED_IMPORTS = {
         "the relocation host-snapshot term of the tree admission, priced "
         "only when a forecast tree carries a moving nest; standalone "
         "preparation decides no tree and moves no nest",
+    ("gpuwm/ingest/boundary_stream.py", "gpuwm.runplan"):
+        "the interrupt test in _is_stop, reached only from run_chained, "
+        "whose callers (gpuwm/go_cli.py and gpuwm/runplan.py) run a "
+        "forecast and are not staged; standalone preparation never "
+        "chains, so it never calls run_chained",
+    ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.preflight"):
+        "the forecast's memory admission (chained_admission) and the host "
+        "RAM reader (host_admission), both reached only by a "
+        "PreparedTreeWriter that chains, i.e. publishes its head for a "
+        "forecast to start on while boundaries are still built.  Its "
+        "constructor declines chaining when forecast_installed() is false, "
+        "as it is here without gpuwm.core.preflight and gpuwm.core.model, "
+        "so an era5, gfs or mapped preparation publishes at its seal and "
+        "neither import runs",
     ("gpuwm/downscale_pricing.py", "gpuwm.core.preflight"):
         "the downscaled child's memory admission (estimate_experiment) "
         "inside price_child, reached only by the downscale door's plan "
@@ -667,6 +764,35 @@ _OPTIONAL_STAGED_IMPORTS = {
         "missing it",
     ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.physics"):
         "forecast-only physics setup after the public --prepare-only return",
+    ("gpuwm/source_availability.py", "gpuwm.domain_wizard"):
+        "availability() prices the download a run of a given length makes with "
+        "the wizard's fetch_window; it answers the web page's calendar and the "
+        "case catalog, neither staged here. The module stays because "
+        "gpuwm/source_adapters.py reads ArchiveWindow from it at import",
+    ("gpuwm/static/corridor.py", "gpuwm.core.nest_relocation"):
+        "the older-corridor check inside load_child_statics_corridor, which "
+        "compares a corridor sealed under an earlier build contract with "
+        "the tree's own child statics at the prepared placement. Its only "
+        "caller is the prepared-tree forecast runner "
+        "(gpuwm/prepared_domain_tree_forecast.py, excluded above) when it "
+        "loads a corridor for a moving nest; preparation seals corridors "
+        "under the current contract and loads none. The module stays "
+        "because gpuwm/source_hierarchy.py and "
+        "gpuwm/hrrr_hierarchy_direct.py build and seal corridors through "
+        "it at module scope",
+    ("gpuwm/static/corridor.py", "gpuwm.ingest.relocation_init"):
+        "the overlap rule the same older-corridor check reads, beside "
+        "gpuwm.core.nest_relocation directly above and on the same "
+        "forecast-only route; relocation_init.py is a forecast-time child "
+        "initializer and stays out with _INGEST_EXCLUDES",
+    ("gpuwm/ingest/init_perturbation.py", "gpuwm.core.rrtmgp"):
+        "radiation_temperature_ceiling reads the RTE+RRTMGP gas-table span "
+        "when a forecast runner builds the initial-state perturbation "
+        "(gpuwm/runtime.py, the prepared-tree runner and a nest's "
+        "initialization in gpuwm/core/model.py, none staged here); "
+        "preparation never builds one. The module ships with the rest of "
+        "gpuwm/ingest, and gpuwm/ingest/nest_init.py imports it on that same "
+        "forecast-only branch",
 }
 
 
